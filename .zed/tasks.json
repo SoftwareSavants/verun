@@ -1,0 +1,37 @@
+[
+  {
+    "label": "dev",
+    "command": "pnpm tauri dev",
+    "reveal": "always"
+  },
+  {
+    "label": "build",
+    "command": "pnpm tauri build",
+    "reveal": "always"
+  },
+  {
+    "label": "check",
+    "command": "bash scripts/check.sh",
+    "reveal": "always"
+  },
+  {
+    "label": "cargo check",
+    "command": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "reveal": "always"
+  },
+  {
+    "label": "cargo test",
+    "command": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "reveal": "always"
+  },
+  {
+    "label": "cargo clippy",
+    "command": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "reveal": "always"
+  },
+  {
+    "label": "pnpm check",
+    "command": "pnpm check",
+    "reveal": "always"
+  }
+]

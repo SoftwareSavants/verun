@@ -1,0 +1,3 @@
+[build]
+# Incremental compilation for faster dev builds
+incremental = true
