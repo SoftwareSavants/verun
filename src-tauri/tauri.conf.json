@@ -39,24 +39,10 @@
   },
   "plugins": {
     "shell": {
-      "open": true,
-      "scope": [
-        {
-          "name": "claude",
-          "cmd": "claude",
-          "args": true
-        },
-        {
-          "name": "git",
-          "cmd": "git",
-          "args": true
-        }
-      ]
+      "open": true
     },
     "sql": {
-      "preload": {
-        "db": "sqlite:verun.db"
-      }
+      "preload": ["sqlite:verun.db"]
     }
   }
 }
