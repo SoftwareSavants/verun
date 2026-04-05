@@ -10,6 +10,9 @@ cargo check --manifest-path src-tauri/Cargo.toml
 echo "→ Running Rust tests..."
 cargo test --manifest-path src-tauri/Cargo.toml
 
+echo "→ Running frontend tests..."
+pnpm test
+
 echo "→ Clippy..."
 cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 

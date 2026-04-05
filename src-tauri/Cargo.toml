@@ -25,6 +25,11 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 dashmap = "5"
 
+[dev-dependencies]
+rstest = "0.18"
+insta = { version = "1", features = ["json", "toml"] }
+tempfile = "3"
+
 [profile.dev]
 opt-level = 0
 incremental = true

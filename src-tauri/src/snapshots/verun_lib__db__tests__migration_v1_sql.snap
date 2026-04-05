@@ -1,10 +1,9 @@
-use tauri_plugin_sql::{Migration, MigrationKind};
+---
+source: src/db.rs
+assertion_line: 85
+expression: "m[0].sql"
+---
 
-pub fn migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "create initial tables",
-        sql: r#"
             CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -33,25 +32,3 @@ pub fn migrations() -> Vec<Migration> {
 
             CREATE INDEX IF NOT EXISTS idx_output_session ON output_lines(session_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
-        "#,
-        kind: MigrationKind::Up,
-    }]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn has_one_migration_at_version_1() {
-        let m = migrations();
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].version, 1);
-    }
-
-    #[test]
-    fn migration_sql_snapshot() {
-        let m = migrations();
-        insta::assert_snapshot!("migration_v1_sql", m[0].sql);
-    }
-}

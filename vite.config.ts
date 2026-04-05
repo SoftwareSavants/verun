@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from "vite";
 import solid from "vite-plugin-solid";
 import UnoCSS from "unocss/vite";
@@ -8,6 +9,12 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [UnoCSS(), solid()],
+
+  test: {
+    environment: "jsdom",
+    globals: true,
+    transformMode: { web: [/\.[jt]sx?$/] },
+  },
 
   clearScreen: false,
   server: {

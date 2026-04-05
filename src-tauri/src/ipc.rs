@@ -1,6 +1,12 @@
 use crate::agent::{self, Agent, AgentMap};
 use crate::worktree;
 use tauri::{AppHandle, State};
+use tokio::task::JoinError;
+
+/// Unwrap a spawn_blocking result, converting JoinError to String
+fn flatten_join<T>(result: Result<Result<T, String>, JoinError>) -> Result<T, String> {
+    result.map_err(|e| format!("Task join error: {}", e))?
+}
 
 #[tauri::command]
 pub async fn spawn_agent(
@@ -10,16 +16,15 @@ pub async fn spawn_agent(
     branch: String,
     prompt: String,
 ) -> Result<Agent, String> {
-    // Create worktree for the agent
-    let worktree_path = tokio::task::spawn_blocking({
-        let repo_path = repo_path.clone();
-        let branch = branch.clone();
-        move || worktree::create_worktree(&repo_path, &branch)
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))??;
+    let worktree_path = flatten_join(
+        tokio::task::spawn_blocking({
+            let repo_path = repo_path.clone();
+            let branch = branch.clone();
+            move || worktree::create_worktree(&repo_path, &branch)
+        })
+        .await,
+    )?;
 
-    // Spawn the agent process
     agent::spawn_agent(
         app,
         agents.inner().clone(),
@@ -54,27 +59,27 @@ pub async fn list_agents() -> Result<Vec<Agent>, String> {
 
 #[tauri::command]
 pub async fn create_worktree(repo_path: String, branch: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || worktree::create_worktree(&repo_path, &branch))
-        .await
-        .map_err(|e| format!("Task join error: {}", e))?
+    flatten_join(
+        tokio::task::spawn_blocking(move || worktree::create_worktree(&repo_path, &branch)).await,
+    )
 }
 
 #[tauri::command]
 pub async fn delete_worktree(worktree_path: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        // We need the repo path to delete — derive from worktree parent
-        // TODO: Phase 2 — get repo_path from DB
-        worktree::delete_worktree(".", &worktree_path)
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            // TODO: Phase 2 — get repo_path from DB
+            worktree::delete_worktree(".", &worktree_path)
+        })
+        .await,
+    )
 }
 
 #[tauri::command]
 pub async fn list_worktrees(repo_path: String) -> Result<Vec<String>, String> {
-    tokio::task::spawn_blocking(move || worktree::list_worktrees(&repo_path))
-        .await
-        .map_err(|e| format!("Task join error: {}", e))?
+    flatten_join(
+        tokio::task::spawn_blocking(move || worktree::list_worktrees(&repo_path)).await,
+    )
 }
 
 #[tauri::command]
@@ -94,17 +99,24 @@ pub async fn open_in_finder(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn get_diff(worktree_path: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || worktree::get_diff(&worktree_path))
-        .await
-        .map_err(|e| format!("Task join error: {}", e))?
+    flatten_join(
+        tokio::task::spawn_blocking(move || worktree::get_diff(&worktree_path)).await,
+    )
 }
 
 #[tauri::command]
 pub async fn merge_branch(_worktree_path: String, target_branch: String) -> Result<(), String> {
     // TODO: Phase 2 — derive repo_path and source_branch from DB
-    tokio::task::spawn_blocking(move || {
-        worktree::merge_branch(".", "source", &target_branch)
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            worktree::merge_branch(".", "source", &target_branch)
+        })
+        .await,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #[allow(unused_imports)]
+    use super::*;
 }
