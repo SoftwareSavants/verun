@@ -1,54 +1,72 @@
 import { describe, test, expect, beforeEach } from 'vitest'
-import { sessions, setSessions, getSessionForAgent } from './sessions'
+import { sessions, setSessions, outputLines, setOutputLines, sessionsForTask, sessionById, clearOutputLines } from './sessions'
 import type { Session } from '../types'
 
 const makeSession = (overrides: Partial<Session> = {}): Session => ({
-  id: 'sess-1',
-  agentId: 'agent-1',
-  outputLines: [],
+  id: 's-001',
+  taskId: 't-001',
+  name: null,
+  claudeSessionId: null,
+  status: 'running',
   startedAt: 1000,
+  endedAt: null,
   ...overrides,
 })
 
 describe('sessions store', () => {
   beforeEach(() => {
-    setSessions({})
+    setSessions([])
+    setOutputLines({})
   })
 
   test('starts empty', () => {
-    expect(Object.keys(sessions).length).toBe(0)
+    expect(sessions.length).toBe(0)
   })
 
   test('setSessions populates the store', () => {
-    setSessions({ 'agent-1': makeSession() })
-    expect(sessions['agent-1'].id).toBe('sess-1')
+    setSessions([makeSession()])
+    expect(sessions.length).toBe(1)
+    expect(sessions[0].id).toBe('s-001')
   })
 
-  test('getSessionForAgent returns the session', () => {
-    setSessions({ 'agent-1': makeSession({ id: 'sess-1' }) })
-    const session = getSessionForAgent('agent-1')
-    expect(session).toBeDefined()
-    expect(session.id).toBe('sess-1')
+  test('sessionsForTask filters by task id', () => {
+    setSessions([
+      makeSession({ id: 's-1', taskId: 't-001' }),
+      makeSession({ id: 's-2', taskId: 't-002' }),
+      makeSession({ id: 's-3', taskId: 't-001' }),
+    ])
+    const filtered = sessionsForTask('t-001')
+    expect(filtered.length).toBe(2)
+    expect(filtered.map(s => s.id)).toEqual(['s-1', 's-3'])
   })
 
-  test('getSessionForAgent returns undefined for missing agent', () => {
-    const session = getSessionForAgent('nonexistent')
-    expect(session).toBeUndefined()
+  test('sessionById finds the correct session', () => {
+    setSessions([
+      makeSession({ id: 's-1' }),
+      makeSession({ id: 's-2' }),
+    ])
+    expect(sessionById('s-2')?.id).toBe('s-2')
   })
 
-  test('multiple sessions keyed by agent id', () => {
-    setSessions({
-      'agent-1': makeSession({ id: 'sess-1', agentId: 'agent-1' }),
-      'agent-2': makeSession({ id: 'sess-2', agentId: 'agent-2' }),
-    })
-    expect(getSessionForAgent('agent-1').id).toBe('sess-1')
-    expect(getSessionForAgent('agent-2').id).toBe('sess-2')
+  test('sessionById returns undefined for missing id', () => {
+    setSessions([makeSession()])
+    expect(sessionById('nope')).toBeUndefined()
   })
 
-  test('session with output lines', () => {
-    setSessions({
-      'agent-1': makeSession({ outputLines: ['line 1', 'line 2'] }),
-    })
-    expect(getSessionForAgent('agent-1').outputLines).toEqual(['line 1', 'line 2'])
+  test('output lines stored by session id', () => {
+    setOutputLines('s-001', ['line 1', 'line 2'])
+    expect(outputLines['s-001']).toEqual(['line 1', 'line 2'])
+  })
+
+  test('clearOutputLines empties the array', () => {
+    setOutputLines('s-001', ['line 1', 'line 2'])
+    clearOutputLines('s-001')
+    expect(outputLines['s-001']).toEqual([])
+  })
+
+  test('status update works', () => {
+    setSessions([makeSession({ id: 's-1', status: 'running' })])
+    setSessions(s => s.id === 's-1', 'status', 'done')
+    expect(sessions[0].status).toBe('done')
   })
 })

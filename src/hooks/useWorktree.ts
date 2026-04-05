@@ -1,20 +1,18 @@
 import * as ipc from '../lib/ipc'
+import type { RepoInfo } from '../types'
 
 export function useWorktree() {
-  const create = (repoPath: string, branch: string) =>
-    ipc.createWorktree(repoPath, branch)
+  const getDiff = (taskId: string) =>
+    ipc.getDiff(taskId)
 
-  const remove = (worktreePath: string) =>
-    ipc.deleteWorktree(worktreePath)
+  const merge = (taskId: string, targetBranch: string) =>
+    ipc.mergeBranch(taskId, targetBranch)
 
-  const list = (repoPath: string) =>
-    ipc.listWorktrees(repoPath)
+  const getBranchStatus = (taskId: string) =>
+    ipc.getBranchStatus(taskId)
 
-  const getDiff = (worktreePath: string) =>
-    ipc.getDiff(worktreePath)
+  const getRepoInfo = (path: string): Promise<RepoInfo> =>
+    ipc.getRepoInfo(path)
 
-  const merge = (worktreePath: string, targetBranch: string) =>
-    ipc.mergeBranch(worktreePath, targetBranch)
-
-  return { create, remove, list, getDiff, merge }
+  return { getDiff, merge, getBranchStatus, getRepoInfo }
 }

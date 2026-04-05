@@ -1,38 +1,50 @@
-export type AgentStatus = 'idle' | 'running' | 'paused' | 'done' | 'error'
+export type SessionStatus = 'running' | 'idle' | 'done' | 'error'
 
-export interface Agent {
+export interface Project {
   id: string
   name: string
-  status: AgentStatus
   repoPath: string
+  createdAt: number
+}
+
+export interface Task {
+  id: string
+  projectId: string
+  name: string | null
   worktreePath: string
   branch: string
-  pid?: number
-  prompt: string
   createdAt: number
-  lastActiveAt: number
 }
 
 export interface Session {
   id: string
-  agentId: string
-  outputLines: string[]
+  taskId: string
+  name: string | null
+  claudeSessionId: string | null
+  status: SessionStatus
   startedAt: number
-  endedAt?: number
+  endedAt: number | null
 }
 
-export interface Worktree {
-  path: string
-  branch: string
-  agentId: string
+export interface OutputLine {
+  id: number
+  sessionId: string
+  line: string
+  emittedAt: number
 }
 
-export interface AgentOutputEvent {
-  agentId: string
+export interface RepoInfo {
+  root: string
+  currentBranch: string
+  branches: string[]
+}
+
+export interface SessionOutputEvent {
+  sessionId: string
   lines: string[]
 }
 
-export interface AgentStatusEvent {
-  agentId: string
-  status: AgentStatus
+export interface SessionStatusEvent {
+  sessionId: string
+  status: SessionStatus
 }

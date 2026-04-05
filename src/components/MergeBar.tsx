@@ -3,7 +3,7 @@ import { GitMerge, Eye } from 'lucide-solid'
 import * as ipc from '../lib/ipc'
 
 interface Props {
-  worktreePath: string
+  taskId: string
   branch: string
   onMerge: (targetBranch: string) => void
 }
@@ -14,7 +14,7 @@ export const MergeBar: Component<Props> = (props) => {
 
   const viewDiff = async () => {
     if (!diff()) {
-      const d = await ipc.getDiff(props.worktreePath)
+      const d = await ipc.getDiff(props.taskId)
       setDiff(d)
     }
     setShowDiff(!showDiff())
