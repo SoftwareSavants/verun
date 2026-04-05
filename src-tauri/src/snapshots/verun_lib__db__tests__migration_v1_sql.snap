@@ -1,24 +1,31 @@
 ---
 source: src/db.rs
-assertion_line: 85
+assertion_line: 394
 expression: "m[0].sql"
 ---
 
-            CREATE TABLE IF NOT EXISTS agents (
+            CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'idle',
-                repo_path TEXT NOT NULL,
+                repo_path TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                name TEXT,
                 worktree_path TEXT NOT NULL,
                 branch TEXT NOT NULL,
-                prompt TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                last_active_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
-                agent_id TEXT NOT NULL REFERENCES agents(id),
+                task_id TEXT NOT NULL REFERENCES tasks(id),
+                name TEXT,
+                claude_session_id TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
                 started_at INTEGER NOT NULL,
                 ended_at INTEGER
             );
@@ -30,5 +37,6 @@ expression: "m[0].sql"
                 emitted_at INTEGER NOT NULL
             );
 
+            CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_task ON sessions(task_id);
             CREATE INDEX IF NOT EXISTS idx_output_session ON output_lines(session_id);
-            CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
