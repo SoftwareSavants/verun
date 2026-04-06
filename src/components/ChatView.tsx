@@ -2,6 +2,7 @@ import { Component, For, Show, createEffect, on, createSignal } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { marked } from 'marked'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import type { OutputItem, SessionStatus } from '../types'
 import { ChevronDown, ChevronRight, Terminal, AlertCircle, CheckCircle, AlertTriangle, Copy, Check } from 'lucide-solid'
 
@@ -339,11 +340,20 @@ export const ChatView: Component<Props> = (props) => {
     autoScroll = scrollHeight - scrollTop - clientHeight < 30
   }
 
+  const handleLinkClick = (e: MouseEvent) => {
+    const anchor = (e.target as HTMLElement).closest('a')
+    if (anchor?.href) {
+      e.preventDefault()
+      openUrl(anchor.href)
+    }
+  }
+
   return (
     <div
       ref={containerRef}
       class="w-full h-full overflow-y-auto overflow-x-hidden"
       onScroll={handleScroll}
+      onClick={handleLinkClick}
     >
       <div class="flex flex-col gap-2 py-4">
         <Show when={props.sessionStatus === 'error'}>
