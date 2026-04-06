@@ -186,6 +186,47 @@ pub async fn send_message(
     }
 
     let has_attachments = !attachments.is_empty();
+    let is_first_turn = claude_session_id.as_ref().is_none_or(|s| s.is_empty());
+
+    // Generate AI title in background (non-blocking, tab shows "New session" until it arrives)
+    if is_first_turn && !message.is_empty() {
+        let title_app = app.clone();
+        let title_db = db_tx.clone();
+        let title_sid = session_id.clone();
+        let title_tid = task_id.clone();
+        let title_msg = message.clone();
+        let title_wt = worktree_path.clone();
+        tokio::spawn(async move {
+            if let Some(title) = generate_session_title(&title_msg, &title_wt).await {
+                let _ = title_db
+                    .send(db::DbWrite::UpdateSessionName {
+                        id: title_sid.clone(),
+                        name: title.clone(),
+                    })
+                    .await;
+                let _ = title_app.emit(
+                    "session-name",
+                    stream::SessionNameEvent {
+                        session_id: title_sid,
+                        name: title.clone(),
+                    },
+                );
+                let _ = title_db
+                    .send(db::DbWrite::UpdateTaskName {
+                        id: title_tid.clone(),
+                        name: title.clone(),
+                    })
+                    .await;
+                let _ = title_app.emit(
+                    "task-name",
+                    stream::TaskNameEvent {
+                        task_id: title_tid,
+                        name: title,
+                    },
+                );
+            }
+        });
+    }
 
     // Persist user message so it shows up on reload
     let attachment_names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
@@ -316,9 +357,6 @@ pub async fn send_message(
     let monitor_db_tx = db_tx.clone();
     let monitor_sid = session_id.clone();
     let monitor_active = active.clone();
-    let monitor_message = message.clone();
-    let monitor_task_id = task_id.clone();
-    let is_first_turn = claude_session_id.as_ref().is_none_or(|s| s.is_empty());
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let captured = stream::stream_and_capture(
@@ -346,47 +384,6 @@ pub async fn send_message(
                     claude_session_id: csid,
                 })
                 .await;
-        }
-
-        // Generate title on first successful turn (standalone call, doesn't affect session)
-        if is_first_turn && status != "error" {
-            let title_app = monitor_app.clone();
-            let title_db = monitor_db_tx.clone();
-            let title_sid = monitor_sid.clone();
-            let title_tid = monitor_task_id.clone();
-            let title_msg = monitor_message.clone();
-            tokio::spawn(async move {
-                if let Some(title) = generate_session_title(&title_msg).await {
-                    // Update session name
-                    let _ = title_db
-                        .send(db::DbWrite::UpdateSessionName {
-                            id: title_sid.clone(),
-                            name: title.clone(),
-                        })
-                        .await;
-                    let _ = title_app.emit(
-                        "session-name",
-                        stream::SessionNameEvent {
-                            session_id: title_sid,
-                            name: title.clone(),
-                        },
-                    );
-                    // Update task name too
-                    let _ = title_db
-                        .send(db::DbWrite::UpdateTaskName {
-                            id: title_tid.clone(),
-                            name: title.clone(),
-                        })
-                        .await;
-                    let _ = title_app.emit(
-                        "task-name",
-                        stream::TaskNameEvent {
-                            task_id: title_tid,
-                            name: title,
-                        },
-                    );
-                }
-            });
         }
 
         // Update session status
@@ -433,12 +430,11 @@ pub async fn abort_message(active: &ActiveMap, session_id: &str) -> Result<(), S
 /// Extract the claude session_id from stream-json output.
 /// Looks for `{"type":"system","subtype":"init",...,"session_id":"..."}` or
 /// `{"type":"result",...,"session_id":"..."}` in the captured lines.
-/// Generate a short title from the user's first message using a standalone Claude call.
-/// Does NOT resume the session — avoids polluting the conversation context.
-async fn generate_session_title(first_message: &str) -> Option<String> {
+/// Generate a short title using a standalone Haiku call (fast, doesn't affect session).
+async fn generate_session_title(first_message: &str, worktree_path: &str) -> Option<String> {
     let prompt = format!(
-        "Generate a 3-5 word title for a coding task. Reply with ONLY the title.\n\nUser message: {}",
-        first_message.chars().take(500).collect::<String>()
+        "Generate a 3-5 word title for this coding task. Reply with ONLY the title, nothing else.\n\nUser message: {}",
+        first_message.chars().take(300).collect::<String>()
     );
     let output = tokio::process::Command::new("claude")
         .args([
@@ -447,6 +443,7 @@ async fn generate_session_title(first_message: &str) -> Option<String> {
             "--no-session-persistence",
             "--model", "haiku",
         ])
+        .current_dir(worktree_path)
         .output()
         .await
         .ok()?;
