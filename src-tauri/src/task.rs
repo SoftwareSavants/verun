@@ -6,7 +6,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
-use tokio::process::Child;
+use tokio::process::{Child, ChildStdin};
+use tokio::sync::{oneshot, Mutex as TokioMutex};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -52,12 +53,31 @@ pub fn funny_branch_name() -> String {
 
 pub struct ActiveProcess {
     pub child: Child,
+    /// Kept alive so `stream_and_capture` can write control_response messages via the Arc clone.
+    #[allow(dead_code)]
+    pub stdin: Arc<TokioMutex<ChildStdin>>,
 }
 
 /// session_id → currently running claude process (only while processing a message)
 pub type ActiveMap = Arc<DashMap<String, ActiveProcess>>;
 
 pub fn new_active_map() -> ActiveMap {
+    Arc::new(DashMap::new())
+}
+
+// ---------------------------------------------------------------------------
+// Pending tool approval requests
+// ---------------------------------------------------------------------------
+
+/// Response from the frontend for a tool approval request
+pub struct ApprovalResponse {
+    pub behavior: String,
+}
+
+/// request_id → oneshot sender waiting for user's approval decision
+pub type PendingApprovals = Arc<DashMap<String, oneshot::Sender<ApprovalResponse>>>;
+
+pub fn new_pending_approvals() -> PendingApprovals {
     Arc::new(DashMap::new())
 }
 
@@ -171,12 +191,13 @@ pub struct SendMessageParams {
 }
 
 /// Send a message to Claude in this session's worktree.
-/// Without attachments: spawns `claude -p "msg" --output-format stream-json`.
-/// With attachments: spawns `claude -p --input-format stream-json` and pipes structured content to stdin.
+/// Always uses `--input-format stream-json` and pipes content via stdin, keeping stdin
+/// open so we can write `control_response` messages for tool approval.
 pub async fn send_message(
     app: AppHandle,
     db_tx: &DbWriteTx,
     active: ActiveMap,
+    pending_approvals: PendingApprovals,
     params: SendMessageParams,
 ) -> Result<(), String> {
     let SendMessageParams { session_id, task_id, worktree_path, message, claude_session_id, attachments, model } = params;
@@ -185,7 +206,6 @@ pub async fn send_message(
         return Err("Session is already processing a message".to_string());
     }
 
-    let has_attachments = !attachments.is_empty();
     let is_first_turn = claude_session_id.as_ref().is_none_or(|s| s.is_empty());
 
     // Generate AI title in background (non-blocking, tab shows "New session" until it arrives)
@@ -243,26 +263,15 @@ pub async fn send_message(
         .await;
 
     let mut cmd = tokio::process::Command::new("claude");
-
-    if has_attachments {
-        // With attachments: pipe structured content via stdin
-        cmd.args([
-            "-p",
-            "--output-format", "stream-json",
-            "--input-format", "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-        ]);
-        cmd.stdin(std::process::Stdio::piped());
-    } else {
-        // Text only: pass message as argument
-        cmd.args([
-            "-p", &message,
-            "--output-format", "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-        ]);
-    }
+    cmd.args([
+        "-p",
+        "--output-format", "stream-json",
+        "--input-format", "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--permission-prompt-tool", "stdio",
+    ]);
+    cmd.stdin(std::process::Stdio::piped());
 
     if let Some(ref rid) = claude_session_id {
         if !rid.is_empty() {
@@ -280,51 +289,50 @@ pub async fn send_message(
         .spawn()
         .map_err(|e| format!("Failed to spawn claude: {e}"))?;
 
-    // Write structured content to stdin when we have attachments
-    if has_attachments {
-        let mut stdin = child.stdin.take()
-            .ok_or_else(|| "Failed to capture stdin".to_string())?;
+    // Write user message to stdin (always via stream-json input)
+    let mut stdin_handle = child.stdin.take()
+        .ok_or_else(|| "Failed to capture stdin".to_string())?;
 
-        // Build content blocks: images first, then text
-        let mut content_blocks = Vec::new();
-        for attachment in &attachments {
-            content_blocks.push(serde_json::json!({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": attachment.mime_type,
-                    "data": attachment.data_base64,
-                }
-            }));
-        }
-        if !message.is_empty() {
-            content_blocks.push(serde_json::json!({
-                "type": "text",
-                "text": message,
-            }));
-        }
-
-        let user_msg = serde_json::json!({
-            "type": "user",
-            "session_id": "",
-            "parent_tool_use_id": null,
-            "message": {
-                "role": "user",
-                "content": content_blocks,
+    // Build content blocks
+    let mut content_blocks = Vec::new();
+    for attachment in &attachments {
+        content_blocks.push(serde_json::json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": attachment.mime_type,
+                "data": attachment.data_base64,
             }
-        });
-
-        let mut payload = serde_json::to_string(&user_msg)
-            .map_err(|e| format!("Failed to serialize message: {e}"))?;
-        payload.push('\n');
-
-        stdin.write_all(payload.as_bytes()).await
-            .map_err(|e| format!("Failed to write to stdin: {e}"))?;
-        stdin.flush().await
-            .map_err(|e| format!("Failed to flush stdin: {e}"))?;
-        // Drop stdin to signal EOF — Claude will process the message
-        drop(stdin);
+        }));
     }
+    if !message.is_empty() {
+        content_blocks.push(serde_json::json!({
+            "type": "text",
+            "text": message,
+        }));
+    }
+
+    let user_msg = serde_json::json!({
+        "type": "user",
+        "session_id": "",
+        "parent_tool_use_id": null,
+        "message": {
+            "role": "user",
+            "content": content_blocks,
+        }
+    });
+
+    let mut payload = serde_json::to_string(&user_msg)
+        .map_err(|e| format!("Failed to serialize message: {e}"))?;
+    payload.push('\n');
+
+    stdin_handle.write_all(payload.as_bytes()).await
+        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
+    stdin_handle.flush().await
+        .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+
+    // Keep stdin open — we need it for control_response messages
+    let stdin = Arc::new(TokioMutex::new(stdin_handle));
 
     let pid = child.id();
 
@@ -350,19 +358,22 @@ pub async fn send_message(
     );
 
     // Track the active process
-    active.insert(session_id.clone(), ActiveProcess { child });
+    active.insert(session_id.clone(), ActiveProcess { child, stdin: stdin.clone() });
 
     // Spawn monitor: stream output, detect exit, update DB
     let monitor_app = app.clone();
     let monitor_db_tx = db_tx.clone();
     let monitor_sid = session_id.clone();
     let monitor_active = active.clone();
+    let monitor_pending = pending_approvals.clone();
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let captured = stream::stream_and_capture(
             monitor_app.clone(),
             monitor_sid.clone(),
             stdout,
+            stdin,
+            monitor_pending,
             monitor_db_tx.clone(),
         )
         .await;

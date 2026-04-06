@@ -1,10 +1,10 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems } from '../store/sessions'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse } from '../store/sessions'
 import { effectiveModel, setSessionModel, setSelectedSessionId } from '../store/ui'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import type { Command } from '../store/commands'
-import { Send, Square, X, Plus } from 'lucide-solid'
+import { Send, Square, X, Plus, ShieldAlert } from 'lucide-solid'
 import { clsx } from 'clsx'
 import type { Attachment, ModelId } from '../types'
 import { selectedTaskId } from '../store/ui'
@@ -47,6 +47,19 @@ export const MessageInput: Component<Props> = (props) => {
   const [showPalette, setShowPalette] = createSignal(false)
 
   const currentModel = () => effectiveModel(props.sessionId)
+
+  const currentApproval = () => {
+    const sid = props.sessionId
+    if (!sid) return null
+    const list = pendingApprovals[sid]
+    return list && list.length > 0 ? list[0] : null
+  }
+
+  const pendingCount = () => {
+    const sid = props.sessionId
+    if (!sid) return 0
+    return pendingApprovals[sid]?.length ?? 0
+  }
 
   // Auto-focus textarea when session changes (e.g. new task created)
   createEffect(on(() => props.sessionId, () => {
@@ -240,6 +253,35 @@ export const MessageInput: Component<Props> = (props) => {
     el.style.height = Math.min(el.scrollHeight, 200) + 'px'
   }
 
+  // Keyboard shortcuts for approval: Enter/y = Allow, Escape/n = Deny
+  onMount(() => {
+    const approvalKeyHandler = (e: KeyboardEvent) => {
+      const approval = currentApproval()
+      if (!approval) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+
+      if (e.key === 'Enter' || e.key === 'y') {
+        e.preventDefault()
+        approveToolUse(approval.requestId, approval.sessionId)
+      } else if (e.key === 'Escape' || e.key === 'n') {
+        e.preventDefault()
+        denyToolUse(approval.requestId, approval.sessionId)
+      }
+    }
+    window.addEventListener('keydown', approvalKeyHandler)
+    onCleanup(() => window.removeEventListener('keydown', approvalKeyHandler))
+  })
+
+  const formatToolInput = (input: Record<string, unknown>) => {
+    const keys = Object.keys(input)
+    if (keys.length === 0) return null
+    // For Bash, just show the command
+    if ('command' in input && typeof input.command === 'string') return input.command
+    // For Edit/Write, show file path
+    if ('file_path' in input && typeof input.file_path === 'string') return input.file_path as string
+    return JSON.stringify(input, null, 2)
+  }
+
   return (
     <div
       class="px-4 py-3"
@@ -247,8 +289,50 @@ export const MessageInput: Component<Props> = (props) => {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {/* Tool approval overlay */}
+      <Show when={currentApproval()}>
+        {(approval) => (
+          <div class="bg-surface-1 border border-amber-500/30 rounded-xl p-3 mb-0">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <ShieldAlert size={14} class="text-amber-500" />
+                <span class="text-xs font-medium text-amber-500">Tool Approval</span>
+                <Show when={pendingCount() > 1}>
+                  <span class="text-[10px] bg-amber-500/15 text-amber-500 px-1.5 py-0.5 rounded-full">
+                    +{pendingCount() - 1} more
+                  </span>
+                </Show>
+              </div>
+            </div>
+            <div class="text-sm font-medium text-text-primary mb-1">{approval().toolName}</div>
+            <Show when={formatToolInput(approval().toolInput)}>
+              {(detail) => (
+                <pre class="text-[11px] text-text-muted font-mono bg-surface-2 rounded-lg p-2 mb-2 max-h-32 overflow-auto whitespace-pre-wrap break-all">
+                  {detail()}
+                </pre>
+              )}
+            </Show>
+            <div class="flex gap-2">
+              <button
+                class="flex-1 py-1.5 rounded-lg bg-status-running/15 text-status-running text-xs font-medium hover:bg-status-running/25 transition-colors"
+                onClick={() => approveToolUse(approval().requestId, approval().sessionId)}
+              >
+                Allow <span class="text-text-dim ml-1">(Enter)</span>
+              </button>
+              <button
+                class="flex-1 py-1.5 rounded-lg bg-status-error/15 text-status-error text-xs font-medium hover:bg-status-error/25 transition-colors"
+                onClick={() => denyToolUse(approval().requestId, approval().sessionId)}
+              >
+                Deny <span class="text-text-dim ml-1">(Esc)</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </Show>
+
       <div class={clsx(
         'relative bg-surface-1 border rounded-xl transition-all focus-within:border-accent focus-within:shadow-[0_0_0_3px_rgba(59,130,246,0.25)]',
+        currentApproval() ? 'hidden' : '',
         dragOver()
           ? 'border-accent/50 bg-accent/5'
           : 'border-border'

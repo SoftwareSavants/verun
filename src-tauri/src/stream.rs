@@ -1,9 +1,12 @@
 use crate::db::{DbWrite, DbWriteTx};
+use crate::task::{ApprovalResponse, PendingApprovals};
 use serde::Serialize;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::ChildStdout;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{ChildStdin, ChildStdout};
+use tokio::sync::Mutex as TokioMutex;
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(30);
 const MAX_PERSISTED_LINES: usize = 10_000;
@@ -72,6 +75,16 @@ pub struct SessionNameEvent {
 pub struct TaskNameEvent {
     pub task_id: String,
     pub name: String,
+}
+
+/// Emitted to frontend when Claude needs tool approval
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolApprovalEvent {
+    pub request_id: String,
+    pub session_id: String,
+    pub tool_name: String,
+    pub tool_input: serde_json::Value,
 }
 
 // ---------------------------------------------------------------------------
@@ -255,10 +268,15 @@ fn extract_text_content(content: Option<&serde_json::Value>) -> String {
 ///
 /// Text and thinking deltas are emitted immediately for real-time feel.
 /// Other items are batched with a short flush interval.
+///
+/// When a `control_request` (tool approval) is detected, we emit it to the
+/// frontend and block until the user responds via `respond_to_approval`.
 pub async fn stream_and_capture(
     app: AppHandle,
     session_id: String,
     stdout: ChildStdout,
+    stdin: Arc<TokioMutex<ChildStdin>>,
+    pending_approvals: PendingApprovals,
     db_tx: DbWriteTx,
 ) -> Vec<String> {
     let mut reader = BufReader::new(stdout).lines();
@@ -276,6 +294,16 @@ pub async fn stream_and_capture(
                 match line {
                     Ok(Some(line)) => {
                         captured.push(line.clone());
+
+                        // Intercept control_request for tool approval
+                        if let Some(handled) = handle_control_request(
+                            &app, &session_id, &line, &stdin, &pending_approvals,
+                        ).await {
+                            if handled {
+                                persist_line(&db_tx, &session_id, &line, &mut total_persisted);
+                                continue;
+                            }
+                        }
 
                         // Parse NDJSON into structured items
                         let items = parse_sdk_event(&line);
@@ -322,6 +350,86 @@ pub async fn stream_and_capture(
 
     flush_buffer(&app, &session_id, &mut buffer);
     captured
+}
+
+/// Check if a line is a `control_request` for tool approval.
+/// If so, emit to frontend, block until user responds, write response to stdin.
+/// Returns `Some(true)` if handled, `Some(false)` if not a control_request, `None` on parse error.
+async fn handle_control_request(
+    app: &AppHandle,
+    session_id: &str,
+    line: &str,
+    stdin: &Arc<TokioMutex<ChildStdin>>,
+    pending_approvals: &PendingApprovals,
+) -> Option<bool> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+
+    if v.get("type").and_then(|t| t.as_str()) != Some("control_request") {
+        return Some(false);
+    }
+
+    let request = v.get("request")?;
+    if request.get("subtype").and_then(|s| s.as_str()) != Some("can_use_tool") {
+        return Some(false);
+    }
+
+    let cli_request_id = v.get("request_id").and_then(|r| r.as_str()).unwrap_or("").to_string();
+    let tool_name = request.get("tool_name").and_then(|t| t.as_str()).unwrap_or("unknown").to_string();
+    let tool_input = request.get("input").cloned().unwrap_or(serde_json::Value::Null);
+
+    // Use a unique ID for the frontend round-trip
+    let request_id = uuid::Uuid::new_v4().to_string();
+
+    // Emit approval request to frontend
+    let _ = app.emit("tool-approval-request", ToolApprovalEvent {
+        request_id: request_id.clone(),
+        session_id: session_id.to_string(),
+        tool_name,
+        tool_input,
+    });
+
+    // Create oneshot channel and wait for user response
+    let (tx, rx) = tokio::sync::oneshot::channel::<ApprovalResponse>();
+    pending_approvals.insert(request_id.clone(), tx);
+
+    let behavior = match rx.await {
+        Ok(resp) => resp.behavior,
+        Err(_) => "deny".to_string(), // channel dropped (e.g. abort) → deny
+    };
+
+    pending_approvals.remove(&request_id);
+
+    // Build control_response
+    let response_inner = if behavior == "allow" {
+        serde_json::json!({
+            "behavior": "allow",
+            "updatedInput": null
+        })
+    } else {
+        serde_json::json!({
+            "behavior": "deny",
+            "message": "User denied this action",
+            "interrupt": false
+        })
+    };
+
+    let control_response = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": cli_request_id,
+            "response": response_inner,
+        }
+    });
+
+    let mut payload = serde_json::to_string(&control_response).unwrap_or_default();
+    payload.push('\n');
+
+    let mut stdin_guard = stdin.lock().await;
+    let _ = stdin_guard.write_all(payload.as_bytes()).await;
+    let _ = stdin_guard.flush().await;
+
+    Some(true)
 }
 
 fn emit_item(

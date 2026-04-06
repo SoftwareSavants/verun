@@ -20,6 +20,7 @@ pub fn run() {
                 .build(),
         )
         .manage(task::new_active_map())
+        .manage(task::new_pending_approvals())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
                 std::io::Error::other(format!("Failed to get app data dir: {e}"))
@@ -62,6 +63,7 @@ pub fn run() {
             ipc::close_session,
             ipc::clear_session,
             ipc::abort_message,
+            ipc::respond_to_approval,
             ipc::list_sessions,
             ipc::get_session,
             ipc::get_output_lines,

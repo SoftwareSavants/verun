@@ -1,7 +1,7 @@
 use crate::db::{
     self, DbWriteTx, OutputLine, Project, Session, Task,
 };
-use crate::task::{self, ActiveMap};
+use crate::task::{self, ActiveMap, ApprovalResponse, PendingApprovals};
 use crate::worktree;
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
@@ -170,6 +170,7 @@ pub async fn send_message(
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     active: State<'_, ActiveMap>,
+    pending: State<'_, PendingApprovals>,
     session_id: String,
     message: String,
     attachments: Option<Vec<task::Attachment>>,
@@ -187,6 +188,7 @@ pub async fn send_message(
         app,
         db_tx.inner(),
         active.inner().clone(),
+        pending.inner().clone(),
         task::SendMessageParams {
             session_id,
             task_id: session.task_id,
@@ -245,6 +247,21 @@ pub async fn abort_message(
     session_id: String,
 ) -> Result<(), String> {
     task::abort_message(active.inner(), &session_id).await
+}
+
+/// Respond to a pending tool approval request
+#[tauri::command]
+pub async fn respond_to_approval(
+    pending: State<'_, PendingApprovals>,
+    request_id: String,
+    behavior: String,
+) -> Result<(), String> {
+    if let Some((_, tx)) = pending.remove(&request_id) {
+        let _ = tx.send(ApprovalResponse { behavior });
+        Ok(())
+    } else {
+        Err(format!("No pending approval with id {request_id}"))
+    }
 }
 
 #[tauri::command]

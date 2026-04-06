@@ -40,6 +40,9 @@ export const clearSession = (sessionId: string) =>
 export const abortMessage = (sessionId: string) =>
   invoke<void>('abort_message', { sessionId })
 
+export const respondToApproval = (requestId: string, behavior: 'allow' | 'deny') =>
+  invoke<void>('respond_to_approval', { requestId, behavior })
+
 export const listSessions = (taskId: string) =>
   invoke<Session[]>('list_sessions', { taskId })
 

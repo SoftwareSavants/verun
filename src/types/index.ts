@@ -84,3 +84,10 @@ export interface SessionStatusEvent {
   sessionId: string
   status: SessionStatus
 }
+
+export interface ToolApprovalRequest {
+  requestId: string
+  sessionId: string
+  toolName: string
+  toolInput: Record<string, unknown>
+}

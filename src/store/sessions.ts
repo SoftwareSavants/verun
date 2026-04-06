@@ -1,6 +1,6 @@
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment } from '../types'
+import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment, ToolApprovalRequest } from '../types'
 import { setTasks } from './tasks'
 import * as ipc from '../lib/ipc'
 
@@ -8,6 +8,7 @@ const MAX_ITEMS_IN_MEMORY = 50_000
 
 export const [sessions, setSessions] = createStore<Session[]>([])
 export const [outputItems, setOutputItems] = createStore<Record<string, OutputItem[]>>({})
+export const [pendingApprovals, setPendingApprovals] = createStore<Record<string, ToolApprovalRequest[]>>({})
 
 export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
@@ -45,6 +46,27 @@ export async function sendMessage(sessionId: string, message: string, attachment
 
 export async function abortMessage(sessionId: string) {
   await ipc.abortMessage(sessionId)
+}
+
+export async function approveToolUse(requestId: string, sessionId: string) {
+  await ipc.respondToApproval(requestId, 'allow')
+  removeApproval(requestId, sessionId)
+}
+
+export async function denyToolUse(requestId: string, sessionId: string) {
+  await ipc.respondToApproval(requestId, 'deny')
+  removeApproval(requestId, sessionId)
+}
+
+function removeApproval(requestId: string, sessionId: string) {
+  setPendingApprovals(produce(store => {
+    const list = store[sessionId]
+    if (list) {
+      const idx = list.findIndex(r => r.requestId === requestId)
+      if (idx >= 0) list.splice(idx, 1)
+      if (list.length === 0) delete store[sessionId]
+    }
+  }))
 }
 
 export async function closeSession(sessionId: string) {
@@ -177,6 +199,22 @@ export async function initSessionListeners() {
   await listen<SessionStatusEvent>('session-status', (event) => {
     const { sessionId, status } = event.payload
     setSessions(s => s.id === sessionId, 'status', status)
+    // Clear pending approvals when session stops running
+    if (status !== 'running') {
+      setPendingApprovals(produce(store => { delete store[sessionId] }))
+    }
+  })
+
+  await listen<ToolApprovalRequest>('tool-approval-request', (event) => {
+    const req = event.payload
+    setPendingApprovals(produce(store => {
+      const existing = store[req.sessionId]
+      if (existing) {
+        existing.push(req)
+      } else {
+        store[req.sessionId] = [req]
+      }
+    }))
   })
 
   await listen<{ sessionId: string; name: string }>('session-name', (event) => {
