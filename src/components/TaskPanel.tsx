@@ -103,7 +103,7 @@ export const TaskPanel: Component = () => {
             <div class="px-4 pt-10 pb-2 flex items-center justify-between bg-surface-0 drag-region">
               <div class="min-w-0 no-drag">
                 <h2 class="text-sm font-semibold text-text-primary truncate">
-                  {t().name || t().branch}
+                  {t().name || 'New task'}
                 </h2>
                 <span class="text-[11px] text-text-dim truncate block mt-0.5">{t().worktreePath}</span>
               </div>
@@ -131,7 +131,7 @@ export const TaskPanel: Component = () => {
                     )}
                     onClick={() => setSelectedSessionId(session.id)}
                   >
-                    <span>{session.name || `Session ${session.id.slice(0, 6)}`}</span>
+                    <span>{session.name || 'New session'}</span>
                     <SessionTime session={session} />
 
                     <Show when={session.status === 'running'}>

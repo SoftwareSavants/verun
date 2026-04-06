@@ -120,6 +120,7 @@ pub enum DbWrite {
     UpdateSessionStatus { id: String, status: String },
     SetClaudeSessionId { id: String, claude_session_id: String },
     EndSession { id: String, ended_at: i64 },
+    CloseSession { id: String },
 
     // Output
     InsertOutputLines { session_id: String, lines: Vec<(String, i64)> },
@@ -271,6 +272,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             tx.commit().await?;
         }
 
+        DbWrite::CloseSession { id } => {
+            sqlx::query("UPDATE sessions SET status = 'closed' WHERE id = ?")
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+
         DbWrite::DeleteOutputLines { session_id } => {
             sqlx::query("DELETE FROM output_lines WHERE session_id = ?")
                 .bind(&session_id)
@@ -347,7 +355,7 @@ pub async fn list_sessions_for_task(
     task_id: &str,
 ) -> Result<Vec<Session>, String> {
     sqlx::query_as::<_, Session>(
-        "SELECT * FROM sessions WHERE task_id = ? ORDER BY started_at ASC",
+        "SELECT * FROM sessions WHERE task_id = ? AND status != 'closed' ORDER BY started_at ASC",
     )
     .bind(task_id)
     .fetch_all(pool)

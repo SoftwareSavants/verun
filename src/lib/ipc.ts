@@ -31,6 +31,9 @@ export const createSession = (taskId: string) =>
 export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string) =>
   invoke<void>('send_message', { sessionId, message, attachments, model })
 
+export const closeSession = (sessionId: string) =>
+  invoke<void>('close_session', { sessionId })
+
 export const clearSession = (sessionId: string) =>
   invoke<void>('clear_session', { sessionId })
 

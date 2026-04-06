@@ -1,6 +1,7 @@
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment } from '../types'
+import { setTasks } from './tasks'
 import * as ipc from '../lib/ipc'
 
 const MAX_ITEMS_IN_MEMORY = 50_000
@@ -46,11 +47,13 @@ export async function abortMessage(sessionId: string) {
   await ipc.abortMessage(sessionId)
 }
 
-export function closeSession(sessionId: string) {
-  // Remove from local store (keeps in DB for potential restore)
+export async function closeSession(sessionId: string) {
+  // Remove from local store
   setSessions(prev => prev.filter(s => s.id !== sessionId))
   // Clean up output from memory
   setOutputItems(produce(store => { delete store[sessionId] }))
+  // Persist closure to DB (status = 'closed', filtered from future loads)
+  await ipc.closeSession(sessionId)
 }
 
 export async function loadOutputLines(sessionId: string) {
@@ -174,5 +177,15 @@ export async function initSessionListeners() {
   await listen<SessionStatusEvent>('session-status', (event) => {
     const { sessionId, status } = event.payload
     setSessions(s => s.id === sessionId, 'status', status)
+  })
+
+  await listen<{ sessionId: string; name: string }>('session-name', (event) => {
+    const { sessionId, name } = event.payload
+    setSessions(s => s.id === sessionId, 'name', name)
+  })
+
+  await listen<{ taskId: string; name: string }>('task-name', (event) => {
+    const { taskId, name } = event.payload
+    setTasks(t => t.id === taskId, 'name', name)
   })
 }

@@ -162,6 +162,7 @@ pub struct Attachment {
 /// Parameters for sending a message to Claude
 pub struct SendMessageParams {
     pub session_id: String,
+    pub task_id: String,
     pub worktree_path: String,
     pub message: String,
     pub claude_session_id: Option<String>,
@@ -178,7 +179,7 @@ pub async fn send_message(
     active: ActiveMap,
     params: SendMessageParams,
 ) -> Result<(), String> {
-    let SendMessageParams { session_id, worktree_path, message, claude_session_id, attachments, model } = params;
+    let SendMessageParams { session_id, task_id, worktree_path, message, claude_session_id, attachments, model } = params;
     // Don't allow concurrent messages on the same session
     if active.contains_key(&session_id) {
         return Err("Session is already processing a message".to_string());
@@ -315,6 +316,9 @@ pub async fn send_message(
     let monitor_db_tx = db_tx.clone();
     let monitor_sid = session_id.clone();
     let monitor_active = active.clone();
+    let monitor_message = message.clone();
+    let monitor_task_id = task_id.clone();
+    let is_first_turn = claude_session_id.as_ref().is_none_or(|s| s.is_empty());
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let captured = stream::stream_and_capture(
@@ -342,6 +346,47 @@ pub async fn send_message(
                     claude_session_id: csid,
                 })
                 .await;
+        }
+
+        // Generate title on first successful turn (standalone call, doesn't affect session)
+        if is_first_turn && status != "error" {
+            let title_app = monitor_app.clone();
+            let title_db = monitor_db_tx.clone();
+            let title_sid = monitor_sid.clone();
+            let title_tid = monitor_task_id.clone();
+            let title_msg = monitor_message.clone();
+            tokio::spawn(async move {
+                if let Some(title) = generate_session_title(&title_msg).await {
+                    // Update session name
+                    let _ = title_db
+                        .send(db::DbWrite::UpdateSessionName {
+                            id: title_sid.clone(),
+                            name: title.clone(),
+                        })
+                        .await;
+                    let _ = title_app.emit(
+                        "session-name",
+                        stream::SessionNameEvent {
+                            session_id: title_sid,
+                            name: title.clone(),
+                        },
+                    );
+                    // Update task name too
+                    let _ = title_db
+                        .send(db::DbWrite::UpdateTaskName {
+                            id: title_tid.clone(),
+                            name: title.clone(),
+                        })
+                        .await;
+                    let _ = title_app.emit(
+                        "task-name",
+                        stream::TaskNameEvent {
+                            task_id: title_tid,
+                            name: title,
+                        },
+                    );
+                }
+            });
         }
 
         // Update session status
@@ -388,6 +433,39 @@ pub async fn abort_message(active: &ActiveMap, session_id: &str) -> Result<(), S
 /// Extract the claude session_id from stream-json output.
 /// Looks for `{"type":"system","subtype":"init",...,"session_id":"..."}` or
 /// `{"type":"result",...,"session_id":"..."}` in the captured lines.
+/// Generate a short title from the user's first message using a standalone Claude call.
+/// Does NOT resume the session — avoids polluting the conversation context.
+async fn generate_session_title(first_message: &str) -> Option<String> {
+    let prompt = format!(
+        "Generate a 3-5 word title for a coding task. Reply with ONLY the title.\n\nUser message: {}",
+        first_message.chars().take(500).collect::<String>()
+    );
+    let output = tokio::process::Command::new("claude")
+        .args([
+            "-p", &prompt,
+            "--output-format", "text",
+            "--no-session-persistence",
+            "--model", "haiku",
+        ])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let title = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .trim_matches('"')
+        .to_string();
+    if title.is_empty() || title.len() > 60 {
+        None
+    } else {
+        Some(title)
+    }
+}
+
 fn extract_claude_session_id(lines: &[String]) -> Option<String> {
     for line in lines.iter().rev() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {

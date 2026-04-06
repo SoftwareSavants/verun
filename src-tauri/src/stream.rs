@@ -60,6 +60,20 @@ pub struct SessionStatusEvent {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionNameEvent {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskNameEvent {
+    pub task_id: String,
+    pub name: String,
+}
+
 // ---------------------------------------------------------------------------
 // NDJSON event parser
 // ---------------------------------------------------------------------------

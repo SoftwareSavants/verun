@@ -189,6 +189,7 @@ pub async fn send_message(
         active.inner().clone(),
         task::SendMessageParams {
             session_id,
+            task_id: session.task_id,
             worktree_path: t.worktree_path,
             message,
             claude_session_id: session.claude_session_id,
@@ -197,6 +198,18 @@ pub async fn send_message(
         },
     )
     .await
+}
+
+/// Close a session (hides from UI, persists in DB as 'closed')
+#[tauri::command]
+pub async fn close_session(
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::CloseSession { id: session_id })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
 }
 
 /// Clear a session's Claude context (reset session_id + delete output lines)

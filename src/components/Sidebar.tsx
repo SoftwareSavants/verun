@@ -167,7 +167,7 @@ export const Sidebar: Component = () => {
                           >
                             <div class={clsx('w-1.5 h-1.5 rounded-full shrink-0', statusColor[status()])} />
                             <span class="text-xs text-text-secondary truncate">
-                              {task.name || task.branch}
+                              {task.name || 'New task'}
                             </span>
                           </button>
                         )
