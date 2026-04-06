@@ -255,7 +255,7 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
             <div class="border-t border-border">
               <pre
                 class={clsx(
-                  'text-[11px] whitespace-pre-wrap font-mono p-3 max-w-full overflow-x-auto',
+                  'text-[11px] whitespace-pre-wrap break-all font-mono p-3 max-w-full overflow-x-auto',
                   props.result!.isError ? 'text-status-error/80' : 'text-text-muted',
                   !isLongResult() ? '' : 'max-h-48 overflow-y-auto'
                 )}
@@ -277,7 +277,7 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
         <Show when={!expanded() && hasResult()}>
           <div class="border-t border-border px-3 py-1.5">
             <pre class={clsx(
-              'text-[11px] whitespace-pre-wrap font-mono max-h-16 overflow-hidden truncate',
+              'text-[11px] whitespace-pre-wrap break-all font-mono max-h-16 overflow-hidden truncate',
               props.result!.isError ? 'text-status-error/60' : 'text-text-dim'
             )}>
               {props.result!.text.split('\n').slice(0, 2).join('\n')}
@@ -342,7 +342,7 @@ export const ChatView: Component<Props> = (props) => {
   return (
     <div
       ref={containerRef}
-      class="w-full h-full overflow-y-auto"
+      class="w-full h-full overflow-y-auto overflow-x-hidden"
       onScroll={handleScroll}
     >
       <div class="flex flex-col gap-2 py-4">
@@ -384,7 +384,7 @@ export const ChatView: Component<Props> = (props) => {
                 return (
                   <div class="px-5 py-1 group">
                     <div
-                      class="text-sm text-text-primary leading-relaxed prose-verun select-text"
+                      class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
                       innerHTML={renderMarkdown(block.text)}
                     />
                     <Show when={props.sessionStatus !== 'running'}>
