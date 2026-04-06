@@ -66,14 +66,6 @@ main.rs     — entry point only, no logic
 - Never store derived state — compute from signals
 - Never block the tokio runtime with sync I/O — use spawn_blocking
 
-## Project Phases
-
-- **Phase 1** (DONE): Project scaffolding, configs, types, module stubs
-- **Phase 2** (DONE): Rust backend — db, task/session lifecycle, streaming, worktree, IPC (50 tests)
-- **Phase 3**: Frontend state & IPC integration (see PHASE-3-FRONTEND-STATE.md)
-- **Phase 4**: UI components full implementation (see PHASE-4-UI-COMPONENTS.md)
-- **Phase 5**: Polish, error handling & release (see PHASE-5-POLISH-RELEASE.md)
-
 ## Definition of Done
 
 A task is only complete when:
@@ -82,3 +74,4 @@ A task is only complete when:
 2. Rust clippy has zero warnings
 3. No TypeScript errors
 4. The feature works end-to-end in `pnpm tauri dev`
+5. Changes are committed
