@@ -11,7 +11,6 @@ import {
   showAddProjectDialog, setShowAddProjectDialog,
   addToast,
 } from './store/ui'
-import 'virtual:uno.css'
 
 const App: Component = () => {
   const [selMenu, setSelMenu] = createSignal<{ x: number; y: number; text: string } | null>(null)
@@ -37,6 +36,15 @@ const App: Component = () => {
 
     await initSessionListeners()
     await loadProjects()
+
+    // Dismiss splash screen, reveal app
+    const splash = document.getElementById('splash')
+    const root = document.getElementById('root')
+    if (root) root.style.opacity = '1'
+    if (splash) {
+      splash.style.opacity = '0'
+      splash.addEventListener('transitionend', () => splash.remove())
+    }
 
     // Check Claude CLI availability and load skills
     try {
