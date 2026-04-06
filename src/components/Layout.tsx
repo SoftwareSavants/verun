@@ -19,7 +19,7 @@ export const Layout: Component = () => {
     setDragging(true)
 
     const onMove = (e: MouseEvent) => {
-      const width = Math.max(180, Math.min(480, e.clientX))
+      const width = Math.max(200, Math.min(400, e.clientX))
       setSidebarWidth(width)
     }
 
@@ -41,7 +41,6 @@ export const Layout: Component = () => {
         e.preventDefault()
         setShowNewTaskDialog(true)
       }
-      // Cmd+1-9 to switch tasks
       if (e.metaKey && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
         const idx = parseInt(e.key) - 1
@@ -55,14 +54,14 @@ export const Layout: Component = () => {
   })
 
   return (
-    <div class="flex h-screen w-screen bg-surface-0 text-gray-200 select-none">
-      <div style={{ width: `${sidebarWidth()}px` }} class="shrink-0">
+    <div class="flex h-screen w-screen bg-surface-0 text-text-primary select-none overflow-hidden">
+      <div style={{ width: `${sidebarWidth()}px` }} class="shrink-0 h-full">
         <Sidebar />
       </div>
 
       {/* Resize handle */}
       <div
-        class="w-1 cursor-col-resize hover:bg-accent/30 transition-colors shrink-0"
+        class="w-px cursor-col-resize hover:bg-accent/20 transition-colors shrink-0 bg-border-subtle"
         classList={{ 'bg-accent/30': dragging() }}
         onMouseDown={startResize}
       />

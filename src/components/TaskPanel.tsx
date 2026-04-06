@@ -1,14 +1,14 @@
-import { Component, Show, For, lazy, createEffect, on, createSignal, onCleanup } from 'solid-js'
+import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
 import { selectedTaskId, selectedSessionId, setSelectedSessionId } from '../store/ui'
 import { taskById } from '../store/tasks'
-import { sessionsForTask, outputLines, startSession, stopSession, resumeSession, loadSessions, loadOutputLines } from '../store/sessions'
+import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, loadSessions, loadOutputLines } from '../store/sessions'
 import { MergeBar } from './MergeBar'
-import { Square, Plus, FolderOpen, Play, Terminal as TerminalIcon } from 'lucide-solid'
+import { MessageInput } from './MessageInput'
+import { ChatView } from './ChatView'
+import { Square, Plus, FolderOpen } from 'lucide-solid'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
-
-const Terminal = lazy(() => import('./Terminal').then(m => ({ default: m.Terminal })))
 
 function formatDuration(ms: number): string {
   const secs = Math.floor(ms / 1000)
@@ -35,7 +35,7 @@ function SessionTime(props: { session: Session }) {
     return formatDuration(end - props.session.startedAt)
   }
 
-  return <span class="text-gray-500">{elapsed()}</span>
+  return <span class="text-text-dim">{elapsed()}</span>
 }
 
 export const TaskPanel: Component = () => {
@@ -69,24 +69,19 @@ export const TaskPanel: Component = () => {
 
   const currentOutput = () => {
     const sid = selectedSessionId()
-    return sid ? (outputLines[sid] || []) : []
+    return sid ? (outputItems[sid] || []) : []
   }
 
   const handleNewSession = async () => {
     const tid = selectedTaskId()
     if (!tid) return
-    const session = await startSession(tid)
+    const session = await createSession(tid)
     setSelectedSessionId(session.id)
   }
 
-  const handleResume = async (sessionId: string) => {
-    const session = await resumeSession(sessionId)
-    setSelectedSessionId(session.id)
-  }
-
-  const openInTerminal = (path: string) => {
-    // Opens a new Terminal.app window at the given path
-    ipc.openInFinder(path)
+  const currentSession = () => {
+    const sid = selectedSessionId()
+    return sid ? sessionById(sid) : undefined
   }
 
   return (
@@ -94,34 +89,27 @@ export const TaskPanel: Component = () => {
       <Show
         when={task()}
         fallback={
-          <div class="flex-1 flex items-center justify-center text-gray-500">
+          <div class="flex-1 flex items-center justify-center">
             <div class="text-center">
-              <p class="text-lg mb-1">No task selected</p>
-              <p class="text-sm">Select a task from the sidebar or create a new one</p>
+              <p class="text-base text-text-muted mb-1">No task selected</p>
+              <p class="text-sm text-text-dim">Select a task from the sidebar or create a new one</p>
             </div>
           </div>
         }
       >
         {(t) => (
           <>
-            {/* Header */}
-            <div class="px-4 py-2 border-b border-border flex items-center justify-between bg-surface-1">
-              <div class="min-w-0">
-                <h2 class="text-sm font-semibold text-gray-200 truncate">
+            {/* Header — drag region for titlebar */}
+            <div class="px-4 pt-10 pb-2 flex items-center justify-between bg-surface-0 drag-region">
+              <div class="min-w-0 no-drag">
+                <h2 class="text-sm font-semibold text-text-primary truncate">
                   {t().name || t().branch}
                 </h2>
-                <span class="text-xs text-gray-500 truncate block">{t().worktreePath}</span>
+                <span class="text-[11px] text-text-dim truncate block mt-0.5">{t().worktreePath}</span>
               </div>
-              <div class="flex items-center gap-1 shrink-0">
+              <div class="flex items-center gap-1 shrink-0 no-drag">
                 <button
-                  class="btn-ghost p-1.5 rounded"
-                  onClick={() => openInTerminal(t().worktreePath)}
-                  title="Open in Terminal"
-                >
-                  <TerminalIcon size={14} />
-                </button>
-                <button
-                  class="btn-ghost p-1.5 rounded"
+                  class="p-1.5 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
                   onClick={() => ipc.openInFinder(t().worktreePath)}
                   title="Open in Finder"
                 >
@@ -130,46 +118,36 @@ export const TaskPanel: Component = () => {
               </div>
             </div>
 
-            {/* Session tabs */}
-            <div class="flex items-center border-b border-border bg-surface-1 px-2 gap-0.5 overflow-x-auto">
+            {/* Session tabs — pill style */}
+            <div class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
               <For each={taskSessions()}>
                 {(session) => (
                   <button
                     class={clsx(
-                      'flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors whitespace-nowrap',
+                      'flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap',
                       selectedSessionId() === session.id
-                        ? 'text-gray-200 border-b-2 border-accent'
-                        : 'text-gray-500 hover:text-gray-300'
+                        ? 'bg-accent-muted text-accent-hover border border-accent/20'
+                        : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
                     )}
                     onClick={() => setSelectedSessionId(session.id)}
                   >
                     <span>{session.name || `Session ${session.id.slice(0, 6)}`}</span>
                     <SessionTime session={session} />
 
-                    {/* Inline actions */}
                     <Show when={session.status === 'running'}>
                       <button
-                        class="ml-1 text-status-error hover:text-red-400"
-                        onClick={(e) => { e.stopPropagation(); stopSession(session.id) }}
+                        class="ml-0.5 text-status-error hover:text-red-300 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); abortMessage(session.id) }}
                         title="Stop"
                       >
-                        <Square size={10} />
-                      </button>
-                    </Show>
-                    <Show when={session.status === 'idle' && session.claudeSessionId}>
-                      <button
-                        class="ml-1 text-status-running hover:text-green-400"
-                        onClick={(e) => { e.stopPropagation(); handleResume(session.id) }}
-                        title="Resume"
-                      >
-                        <Play size={10} />
+                        <Square size={8} />
                       </button>
                     </Show>
                   </button>
                 )}
               </For>
               <button
-                class="btn-ghost p-1 rounded ml-1"
+                class="p-1 rounded-full text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
                 onClick={handleNewSession}
                 title="New Session"
               >
@@ -177,10 +155,19 @@ export const TaskPanel: Component = () => {
               </button>
             </div>
 
-            {/* Terminal */}
-            <div class="flex-1 overflow-hidden p-1">
-              <Terminal output={currentOutput()} />
+            {/* Chat */}
+            <div class="flex-1 overflow-hidden">
+              <ChatView
+                output={currentOutput()}
+                sessionStatus={currentSession()?.status}
+              />
             </div>
+
+            {/* Message input */}
+            <MessageInput
+              sessionId={selectedSessionId()}
+              isRunning={currentSession()?.status === 'running'}
+            />
 
             {/* Merge bar when latest session is done */}
             <Show when={taskSessions().length > 0 && taskSessions()[0].status === 'done'}>

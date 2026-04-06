@@ -1,5 +1,5 @@
 import { createStore, produce } from 'solid-js/store'
-import type { Task } from '../types'
+import type { Task, Session } from '../types'
 import * as ipc from '../lib/ipc'
 
 export const [tasks, setTasks] = createStore<Task[]>([])
@@ -9,10 +9,10 @@ export async function loadTasks(projectId: string) {
   setTasks(list)
 }
 
-export async function createTask(projectId: string): Promise<Task> {
-  const task = await ipc.createTask(projectId)
-  setTasks(produce(t => t.push(task)))
-  return task
+export async function createTask(projectId: string): Promise<{ task: Task; session: Session }> {
+  const result = await ipc.createTask(projectId)
+  setTasks(produce(t => t.push(result.task)))
+  return result
 }
 
 export async function deleteTask(id: string) {

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, Session, OutputLine, RepoInfo } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment } from '../types'
 
 // Projects
 export const addProject = (repoPath: string) =>
@@ -13,7 +13,7 @@ export const deleteProject = (id: string) =>
 
 // Tasks
 export const createTask = (projectId: string) =>
-  invoke<Task>('create_task', { projectId })
+  invoke<TaskWithSession>('create_task', { projectId })
 
 export const listTasks = (projectId: string) =>
   invoke<Task[]>('list_tasks', { projectId })
@@ -25,14 +25,14 @@ export const deleteTask = (id: string) =>
   invoke<void>('delete_task', { id })
 
 // Sessions
-export const startSession = (taskId: string) =>
-  invoke<Session>('start_session', { taskId })
+export const createSession = (taskId: string) =>
+  invoke<Session>('create_session', { taskId })
 
-export const resumeSession = (sessionId: string) =>
-  invoke<Session>('resume_session', { sessionId })
+export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[]) =>
+  invoke<void>('send_message', { sessionId, message, attachments })
 
-export const stopSession = (sessionId: string) =>
-  invoke<void>('stop_session', { sessionId })
+export const abortMessage = (sessionId: string) =>
+  invoke<void>('abort_message', { sessionId })
 
 export const listSessions = (taskId: string) =>
   invoke<Session[]>('list_sessions', { taskId })
@@ -57,5 +57,8 @@ export const getRepoInfo = (path: string) =>
   invoke<RepoInfo>('get_repo_info', { path })
 
 // Utility
+export const checkClaude = () =>
+  invoke<string>('check_claude')
+
 export const openInFinder = (path: string) =>
   invoke<void>('open_in_finder', { path })

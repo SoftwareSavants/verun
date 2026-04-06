@@ -1,13 +1,13 @@
 import { describe, test, expect, beforeEach } from 'vitest'
-import { sessions, setSessions, outputLines, setOutputLines, sessionsForTask, sessionById, clearOutputLines } from './sessions'
-import type { Session } from '../types'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, clearOutputItems } from './sessions'
+import type { Session, OutputItem } from '../types'
 
 const makeSession = (overrides: Partial<Session> = {}): Session => ({
   id: 's-001',
   taskId: 't-001',
   name: null,
   claudeSessionId: null,
-  status: 'running',
+  status: 'idle',
   startedAt: 1000,
   endedAt: null,
   ...overrides,
@@ -16,7 +16,7 @@ const makeSession = (overrides: Partial<Session> = {}): Session => ({
 describe('sessions store', () => {
   beforeEach(() => {
     setSessions([])
-    setOutputLines({})
+    setOutputItems({})
   })
 
   test('starts empty', () => {
@@ -53,20 +53,24 @@ describe('sessions store', () => {
     expect(sessionById('nope')).toBeUndefined()
   })
 
-  test('output lines stored by session id', () => {
-    setOutputLines('s-001', ['line 1', 'line 2'])
-    expect(outputLines['s-001']).toEqual(['line 1', 'line 2'])
+  test('output items stored by session id', () => {
+    const items: OutputItem[] = [
+      { kind: 'text', text: 'hello' },
+      { kind: 'thinking', text: 'hmm' },
+    ]
+    setOutputItems('s-001', items)
+    expect(outputItems['s-001']).toEqual(items)
   })
 
-  test('clearOutputLines empties the array', () => {
-    setOutputLines('s-001', ['line 1', 'line 2'])
-    clearOutputLines('s-001')
-    expect(outputLines['s-001']).toEqual([])
+  test('clearOutputItems empties the array', () => {
+    setOutputItems('s-001', [{ kind: 'text', text: 'hello' }])
+    clearOutputItems('s-001')
+    expect(outputItems['s-001']).toEqual([])
   })
 
   test('status update works', () => {
     setSessions([makeSession({ id: 's-1', status: 'running' })])
-    setSessions(s => s.id === 's-1', 'status', 'done')
-    expect(sessions[0].status).toBe('done')
+    setSessions(s => s.id === 's-1', 'status', 'idle')
+    expect(sessions[0].status).toBe('idle')
   })
 })

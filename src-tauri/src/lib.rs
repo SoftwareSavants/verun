@@ -19,13 +19,12 @@ pub fn run() {
                 .add_migrations("sqlite:verun.db", db::migrations())
                 .build(),
         )
-        .manage(task::new_session_map())
+        .manage(task::new_active_map())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
                 std::io::Error::other(format!("Failed to get app data dir: {e}"))
             })?;
 
-            // Ensure the data directory exists
             std::fs::create_dir_all(&app_data_dir).map_err(|e| {
                 std::io::Error::other(format!("Failed to create app data dir: {e}"))
             })?;
@@ -35,10 +34,7 @@ pub fn run() {
                 match db::connect(&app_data_dir).await {
                     Ok(pool) => {
                         let db_tx = db::spawn_write_queue(pool.clone());
-
-                        // Reset any sessions left running from a previous launch
                         let _ = db_tx.send(db::DbWrite::ResetRunningSessions).await;
-
                         handle.manage(pool);
                         handle.manage(db_tx);
                     }
@@ -61,9 +57,9 @@ pub fn run() {
             ipc::get_task,
             ipc::delete_task,
             // Sessions
-            ipc::start_session,
-            ipc::resume_session,
-            ipc::stop_session,
+            ipc::create_session,
+            ipc::send_message,
+            ipc::abort_message,
             ipc::list_sessions,
             ipc::get_session,
             ipc::get_output_lines,
@@ -73,6 +69,7 @@ pub fn run() {
             ipc::get_branch_status,
             ipc::get_repo_info,
             // Utility
+            ipc::check_claude,
             ipc::open_in_finder,
         ])
         .run(tauri::generate_context!())

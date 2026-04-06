@@ -21,27 +21,27 @@ export const MergeBar: Component<Props> = (props) => {
   }
 
   return (
-    <div class="border-t border-border bg-surface-1">
+    <div class="border-t border-border-subtle">
       <Show when={showDiff() && diff()}>
-        <pre class="p-3 text-xs font-mono overflow-auto max-h-60 bg-surface-0 border-b border-border text-gray-300">
+        <pre class="px-4 py-3 text-xs font-mono overflow-auto max-h-60 bg-surface-1 border-b border-border-subtle text-text-muted leading-relaxed">
           {diff()}
         </pre>
       </Show>
 
-      <div class="px-4 py-3 flex items-center justify-between">
-        <div class="text-sm text-gray-400">
-          Branch <span class="text-gray-200 font-medium">{props.branch}</span> is ready to merge
+      <div class="px-4 py-3 flex items-center justify-between bg-surface-1">
+        <div class="text-sm text-text-muted">
+          Branch <span class="text-text-primary font-medium">{props.branch}</span> ready to merge
         </div>
         <div class="flex items-center gap-2">
-          <button class="btn-ghost flex items-center gap-1.5" onClick={viewDiff}>
-            <Eye size={14} />
+          <button class="btn-ghost flex items-center gap-1.5 text-xs" onClick={viewDiff}>
+            <Eye size={13} />
             <span>{showDiff() ? 'Hide' : 'View'} Diff</span>
           </button>
           <button
-            class="btn-primary flex items-center gap-1.5"
+            class="btn-primary flex items-center gap-1.5 text-xs"
             onClick={() => props.onMerge('main')}
           >
-            <GitMerge size={14} />
+            <GitMerge size={13} />
             <span>Merge to main</span>
           </button>
         </div>

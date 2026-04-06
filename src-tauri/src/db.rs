@@ -369,9 +369,17 @@ pub async fn get_output_lines(
 pub async fn connect(app_data_dir: &std::path::Path) -> Result<SqlitePool, String> {
     let db_path = app_data_dir.join("verun.db");
     let url = format!("sqlite:{}?mode=rwc", db_path.display());
-    SqlitePool::connect(&url)
+    let pool = SqlitePool::connect(&url)
         .await
-        .map_err(|e| format!("Failed to connect to SQLite: {e}"))
+        .map_err(|e| format!("Failed to connect to SQLite: {e}"))?;
+
+    // Enable WAL mode for better concurrent read/write performance
+    sqlx::query("PRAGMA journal_mode=WAL")
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
+
+    Ok(pool)
 }
 
 // ---------------------------------------------------------------------------

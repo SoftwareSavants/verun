@@ -16,9 +16,9 @@ describe('ipc', () => {
   })
 
   test('all session functions are exported', () => {
-    expect(typeof ipc.startSession).toBe('function')
-    expect(typeof ipc.resumeSession).toBe('function')
-    expect(typeof ipc.stopSession).toBe('function')
+    expect(typeof ipc.createSession).toBe('function')
+    expect(typeof ipc.sendMessage).toBe('function')
+    expect(typeof ipc.abortMessage).toBe('function')
     expect(typeof ipc.listSessions).toBe('function')
     expect(typeof ipc.getSession).toBe('function')
     expect(typeof ipc.getOutputLines).toBe('function')

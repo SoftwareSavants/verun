@@ -4,9 +4,64 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
+import type { OutputItem } from '../types'
+
+// ANSI escape helpers
+const RESET = '\x1b[0m'
+const DIM = '\x1b[2m'
+const BOLD = '\x1b[1m'
+const ITALIC = '\x1b[3m'
+const CYAN = '\x1b[36m'
+const RED = '\x1b[31m'
+const GREEN = '\x1b[32m'
+const GRAY = '\x1b[90m'
+
+/** Convert a structured OutputItem to ANSI-formatted text for xterm.js */
+function formatItem(item: OutputItem): string {
+  switch (item.kind) {
+    case 'text':
+      return item.text
+
+    case 'thinking':
+      return `${DIM}${ITALIC}${item.text}${RESET}`
+
+    case 'toolStart': {
+      const header = `${CYAN}${BOLD}  ${item.tool}${RESET}`
+      if (item.input) {
+        // Show first line of input, truncated
+        const firstLine = item.input.split('\n')[0].slice(0, 200)
+        return `\r\n${header} ${DIM}${firstLine}${RESET}\r\n`
+      }
+      return `\r\n${header}\r\n`
+    }
+
+    case 'toolResult': {
+      const color = item.isError ? RED : DIM
+      // Indent tool output and cap at reasonable length
+      const lines = item.text.split('\n').slice(0, 50)
+      const formatted = lines.map(l => `${color}  ${l}${RESET}`).join('\r\n')
+      return `${formatted}\r\n`
+    }
+
+    case 'system':
+      return `\r\n${GRAY}${DIM}${item.text}${RESET}\r\n`
+
+    case 'turnEnd':
+      if (item.status === 'completed') {
+        return `\r\n${GREEN}${DIM} Turn completed${RESET}\r\n`
+      }
+      return `\r\n${RED}${DIM} Turn ended: ${item.status}${RESET}\r\n`
+
+    case 'raw':
+      return `${DIM}${item.text}${RESET}\r\n`
+
+    default:
+      return ''
+  }
+}
 
 interface Props {
-  output: string[]
+  output: OutputItem[]
 }
 
 export const Terminal: Component<Props> = (props) => {
@@ -119,7 +174,7 @@ export const Terminal: Component<Props> = (props) => {
     })
   })
 
-  // Write new output lines incrementally
+  // Write new output items incrementally
   createEffect(on(() => props.output.length, (len) => {
     if (!term || len === 0) {
       lastWrittenIndex = 0
@@ -133,7 +188,10 @@ export const Terminal: Component<Props> = (props) => {
     }
 
     for (let i = lastWrittenIndex; i < len; i++) {
-      batchWrite(props.output[i] + '\r\n')
+      const formatted = formatItem(props.output[i])
+      if (formatted) {
+        batchWrite(formatted)
+      }
     }
     lastWrittenIndex = len
   }))

@@ -8,6 +8,7 @@ import {
 } from '../store/ui'
 import { sessions, sessionsForTask } from '../store/sessions'
 import { deleteProject } from '../store/projects'
+import { ConfirmDialog } from './ConfirmDialog'
 import { Plus, FolderPlus } from 'lucide-solid'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
@@ -28,12 +29,12 @@ function taskStatus(taskId: string): SessionStatus {
   return taskSessions[0].status as SessionStatus
 }
 
-// Context menu
 interface MenuPos { x: number; y: number }
 interface MenuAction { label: string; action: () => void; danger?: boolean }
 
 export const Sidebar: Component = () => {
   const [contextMenu, setContextMenu] = createSignal<{ pos: MenuPos; items: MenuAction[] } | null>(null)
+  const [confirmAction, setConfirmAction] = createSignal<{ title: string; message: string; action: () => void } | null>(null)
 
   const statusCounts = createMemo(() => {
     const counts = { running: 0, done: 0, error: 0, idle: 0 }
@@ -57,7 +58,7 @@ export const Sidebar: Component = () => {
       pos: { x: e.clientX, y: e.clientY },
       items: [
         { label: 'Open in Finder', action: () => ipc.openInFinder(project.repoPath) },
-        { label: 'Delete Project', action: () => deleteProject(projectId), danger: true },
+        { label: 'Delete Project', action: () => setConfirmAction({ title: 'Delete Project', message: 'This will delete all tasks, sessions, and worktrees for this project.', action: () => deleteProject(projectId) }), danger: true },
       ],
     })
   }
@@ -70,7 +71,7 @@ export const Sidebar: Component = () => {
       pos: { x: e.clientX, y: e.clientY },
       items: [
         { label: 'Open in Finder', action: () => ipc.openInFinder(task.worktreePath) },
-        { label: 'Delete Task', action: () => deleteTask(taskId), danger: true },
+        { label: 'Delete Task', action: () => setConfirmAction({ title: 'Delete Task', message: 'This will delete all sessions and the worktree for this task.', action: () => deleteTask(taskId) }), danger: true },
       ],
     })
   }
@@ -79,19 +80,21 @@ export const Sidebar: Component = () => {
 
   return (
     <>
-      {/* Click-away to close context menu */}
+      {/* Context menu overlay */}
       <Show when={contextMenu()}>
         <div class="fixed inset-0 z-40" onClick={closeMenu} onContextMenu={(e) => { e.preventDefault(); closeMenu() }} />
         <div
-          class="fixed z-50 bg-surface-2 border border-border rounded-md shadow-lg py-1 min-w-36"
+          class="fixed z-50 bg-surface-3 border border-border-active rounded-lg shadow-xl py-1 min-w-40 animate-in"
           style={{ left: `${contextMenu()!.pos.x}px`, top: `${contextMenu()!.pos.y}px` }}
         >
           <For each={contextMenu()!.items}>
             {(item) => (
               <button
                 class={clsx(
-                  'w-full text-left px-3 py-1.5 text-xs hover:bg-surface-3 transition-colors',
-                  item.danger ? 'text-status-error' : 'text-gray-300'
+                  'w-full text-left px-3 py-1.5 text-xs transition-colors',
+                  item.danger
+                    ? 'text-status-error hover:bg-status-error/10'
+                    : 'text-text-secondary hover:bg-surface-4 hover:text-text-primary'
                 )}
                 onClick={() => { item.action(); closeMenu() }}
               >
@@ -102,67 +105,70 @@ export const Sidebar: Component = () => {
         </div>
       </Show>
 
-      <div class="w-60 h-full bg-surface-1 border-r border-border flex flex-col">
+      <div class="h-full bg-surface-1 flex flex-col">
+        {/* Titlebar drag region */}
+        <div class="h-12 shrink-0 drag-region" />
+
         {/* Header */}
-        <div class="p-3 border-b border-border flex items-center justify-between">
-          <span class="text-sm font-semibold text-gray-300">Projects</span>
+        <div class="px-4 pb-2 flex items-center justify-between no-drag">
+          <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Projects</span>
           <button
-            class="btn-ghost p-1 rounded"
+            class="p-1 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
             onClick={() => setShowAddProjectDialog(true)}
             title="Add Project"
           >
-            <FolderPlus size={16} />
+            <FolderPlus size={14} />
           </button>
         </div>
 
         {/* Project + task list */}
-        <div class="flex-1 overflow-y-auto">
+        <div class="flex-1 overflow-y-auto px-2 no-drag">
           <For each={projects}>
             {(project) => (
-              <div>
-                <button
+              <div class="mb-1">
+                <div
                   class={clsx(
-                    'w-full text-left px-3 py-2 border-b border-border transition-colors flex items-center justify-between group',
+                    'w-full text-left px-2 py-1.5 rounded-lg transition-colors flex items-center justify-between group cursor-pointer',
                     'hover:bg-surface-2',
                     selectedProjectId() === project.id && 'bg-surface-2'
                   )}
                   onClick={() => handleSelectProject(project.id)}
                   onContextMenu={(e) => showProjectMenu(e, project.id)}
                 >
-                  <span class="text-sm text-gray-200 truncate">{project.name}</span>
+                  <span class="text-sm text-text-primary truncate">{project.name}</span>
                   <button
-                    class="btn-ghost p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                    class="p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-secondary"
                     onClick={(e) => { e.stopPropagation(); setSelectedProjectId(project.id); setShowNewTaskDialog(true) }}
                     title="New Task"
                   >
                     <Plus size={14} />
                   </button>
-                </button>
+                </div>
 
                 <Show when={selectedProjectId() === project.id}>
-                  <For each={tasks}>
-                    {(task) => {
-                      const status = () => taskStatus(task.id)
-                      return (
-                        <button
-                          class={clsx(
-                            'w-full text-left pl-6 pr-3 py-1.5 border-b border-border transition-colors',
-                            'hover:bg-surface-2',
-                            selectedTaskId() === task.id && 'bg-surface-2'
-                          )}
-                          onClick={() => setSelectedTaskId(task.id)}
-                          onContextMenu={(e) => showTaskMenu(e, task.id)}
-                        >
-                          <div class="flex items-center gap-2">
-                            <div class={clsx('w-2 h-2 rounded-full shrink-0', statusColor[status()])} />
-                            <span class="text-xs text-gray-300 truncate">
+                  <div class="ml-2 mt-0.5">
+                    <For each={tasks}>
+                      {(task) => {
+                        const status = () => taskStatus(task.id)
+                        return (
+                          <button
+                            class={clsx(
+                              'w-full text-left px-2 py-1 rounded-md transition-colors flex items-center gap-2',
+                              'hover:bg-surface-2',
+                              selectedTaskId() === task.id && 'bg-surface-2'
+                            )}
+                            onClick={() => setSelectedTaskId(task.id)}
+                            onContextMenu={(e) => showTaskMenu(e, task.id)}
+                          >
+                            <div class={clsx('w-1.5 h-1.5 rounded-full shrink-0', statusColor[status()])} />
+                            <span class="text-xs text-text-secondary truncate">
                               {task.name || task.branch}
                             </span>
-                          </div>
-                        </button>
-                      )
-                    }}
-                  </For>
+                          </button>
+                        )
+                      }}
+                    </For>
+                  </div>
                 </Show>
               </div>
             )}
@@ -170,8 +176,8 @@ export const Sidebar: Component = () => {
 
           {/* Empty state */}
           <Show when={projects.length === 0}>
-            <div class="p-4 text-center">
-              <p class="text-sm text-gray-500 mb-3">No projects yet</p>
+            <div class="px-2 py-8 text-center">
+              <p class="text-sm text-text-muted mb-3">No projects yet</p>
               <button
                 class="btn-primary text-xs"
                 onClick={() => setShowAddProjectDialog(true)}
@@ -183,8 +189,8 @@ export const Sidebar: Component = () => {
         </div>
 
         {/* Footer */}
-        <div class="p-3 border-t border-border">
-          <div class="text-xs text-gray-500 flex gap-3">
+        <div class="px-4 py-3 border-t border-border-subtle no-drag">
+          <div class="text-[11px] flex gap-3">
             <Show when={statusCounts().running > 0}>
               <span class="text-status-running">{statusCounts().running} running</span>
             </Show>
@@ -195,11 +201,21 @@ export const Sidebar: Component = () => {
               <span class="text-status-error">{statusCounts().error} error</span>
             </Show>
             <Show when={statusCounts().running === 0 && statusCounts().done === 0 && statusCounts().error === 0}>
-              <span>No active sessions</span>
+              <span class="text-text-dim">No active sessions</span>
             </Show>
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={!!confirmAction()}
+        title={confirmAction()?.title || ''}
+        message={confirmAction()?.message || ''}
+        confirmLabel="Delete"
+        danger
+        onConfirm={() => { confirmAction()?.action(); setConfirmAction(null) }}
+        onCancel={() => setConfirmAction(null)}
+      />
     </>
   )
 }

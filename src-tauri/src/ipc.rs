@@ -1,7 +1,7 @@
 use crate::db::{
     self, DbWriteTx, OutputLine, Project, Session, Task,
 };
-use crate::task::{self, SessionMap};
+use crate::task::{self, ActiveMap};
 use crate::worktree;
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
@@ -9,9 +9,15 @@ use tauri::{AppHandle, State};
 use tokio::task::JoinError;
 use uuid::Uuid;
 
-/// Unwrap a spawn_blocking result, converting JoinError to String.
 fn flatten_join<T>(result: Result<Result<T, String>, JoinError>) -> Result<T, String> {
     result.map_err(|e| format!("Task join error: {e}"))?
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskWithSession {
+    pub task: Task,
+    pub session: Session,
 }
 
 fn epoch_ms() -> i64 {
@@ -31,7 +37,6 @@ pub async fn add_project(
     db_tx: State<'_, DbWriteTx>,
     repo_path: String,
 ) -> Result<Project, String> {
-    // Validate it's a real git repo
     let resolved = flatten_join(
         tokio::task::spawn_blocking({
             let rp = repo_path.clone();
@@ -40,13 +45,11 @@ pub async fn add_project(
         .await,
     )?;
 
-    // Derive name from the repo directory
     let name = std::path::Path::new(&resolved)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| resolved.clone());
 
-    // Check if already added
     let existing = db::list_projects(pool.inner()).await?;
     if existing.iter().any(|p| p.repo_path == resolved) {
         return Err("Project already added".to_string());
@@ -76,17 +79,16 @@ pub async fn list_projects(pool: State<'_, SqlitePool>) -> Result<Vec<Project>, 
 pub async fn delete_project(
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
-    sessions: State<'_, SessionMap>,
+    active: State<'_, ActiveMap>,
     id: String,
 ) -> Result<(), String> {
-    // Kill sessions and clean up worktrees for all tasks in this project
     let project = db::get_project(pool.inner(), &id)
         .await?
         .ok_or_else(|| format!("Project {id} not found"))?;
 
     let tasks = db::list_tasks_for_project(pool.inner(), &id).await?;
     for t in &tasks {
-        task::delete_task(db_tx.inner(), sessions.inner(), &project.repo_path, t).await?;
+        task::delete_task(db_tx.inner(), active.inner(), &project.repo_path, t).await?;
     }
 
     db_tx
@@ -106,12 +108,13 @@ pub async fn create_task(
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     project_id: String,
-) -> Result<Task, String> {
+) -> Result<TaskWithSession, String> {
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or_else(|| format!("Project {project_id} not found"))?;
 
-    task::create_task(db_tx.inner(), project_id, project.repo_path).await
+    let (task, session) = task::create_task(db_tx.inner(), project_id, project.repo_path).await?;
+    Ok(TaskWithSession { task, session })
 }
 
 #[tauri::command]
@@ -131,7 +134,7 @@ pub async fn get_task(pool: State<'_, SqlitePool>, id: String) -> Result<Option<
 pub async fn delete_task(
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
-    sessions: State<'_, SessionMap>,
+    active: State<'_, ActiveMap>,
     id: String,
 ) -> Result<(), String> {
     let t = db::get_task(pool.inner(), &id)
@@ -142,73 +145,64 @@ pub async fn delete_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
-    task::delete_task(db_tx.inner(), sessions.inner(), &project.repo_path, &t).await
+    task::delete_task(db_tx.inner(), active.inner(), &project.repo_path, &t).await
 }
 
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
 
+/// Create a new session (no process spawned — call send_message to talk to Claude)
 #[tauri::command]
-pub async fn start_session(
-    app: AppHandle,
-    pool: State<'_, SqlitePool>,
+pub async fn create_session(
     db_tx: State<'_, DbWriteTx>,
-    sessions: State<'_, SessionMap>,
     task_id: String,
 ) -> Result<Session, String> {
-    let t = db::get_task(pool.inner(), &task_id)
-        .await?
-        .ok_or_else(|| format!("Task {task_id} not found"))?;
-
-    task::start_session(
-        app,
-        db_tx.inner(),
-        sessions.inner().clone(),
-        task_id,
-        t.worktree_path,
-    )
-    .await
+    task::create_session(db_tx.inner(), task_id).await
 }
 
+/// Send a message to Claude in this session.
+/// Spawns claude -p with --resume if we have a prior session_id.
 #[tauri::command]
-pub async fn resume_session(
+pub async fn send_message(
     app: AppHandle,
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
-    sessions: State<'_, SessionMap>,
+    active: State<'_, ActiveMap>,
     session_id: String,
-) -> Result<Session, String> {
-    let s = db::get_session(pool.inner(), &session_id)
+    message: String,
+    attachments: Option<Vec<task::Attachment>>,
+) -> Result<(), String> {
+    let session = db::get_session(pool.inner(), &session_id)
         .await?
         .ok_or_else(|| format!("Session {session_id} not found"))?;
 
-    let claude_sid = s
-        .claude_session_id
-        .ok_or_else(|| "Session has no Claude session ID to resume".to_string())?;
-
-    let t = db::get_task(pool.inner(), &s.task_id)
+    let t = db::get_task(pool.inner(), &session.task_id)
         .await?
-        .ok_or_else(|| format!("Task {} not found", s.task_id))?;
+        .ok_or_else(|| format!("Task {} not found", session.task_id))?;
 
-    task::resume_session(
+    task::send_message(
         app,
         db_tx.inner(),
-        sessions.inner().clone(),
-        s.task_id,
-        t.worktree_path,
-        claude_sid,
+        active.inner().clone(),
+        task::SendMessageParams {
+            session_id,
+            worktree_path: t.worktree_path,
+            message,
+            claude_session_id: session.claude_session_id,
+            attachments: attachments.unwrap_or_default(),
+        },
     )
     .await
 }
 
+/// Abort a currently running message
 #[tauri::command]
-pub async fn stop_session(
-    db_tx: State<'_, DbWriteTx>,
-    sessions: State<'_, SessionMap>,
+pub async fn abort_message(
+    active: State<'_, ActiveMap>,
     session_id: String,
 ) -> Result<(), String> {
-    task::stop_session(db_tx.inner(), sessions.inner(), &session_id).await
+    task::abort_message(active.inner(), &session_id).await
 }
 
 #[tauri::command]
@@ -236,7 +230,7 @@ pub async fn get_output_lines(
 }
 
 // ---------------------------------------------------------------------------
-// Worktree / Git
+// Git / Worktree
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
@@ -336,6 +330,18 @@ pub async fn get_repo_info(path: String) -> Result<RepoInfo, String> {
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn check_claude() -> Result<String, String> {
+    let output = std::process::Command::new("claude")
+        .arg("--version")
+        .output()
+        .map_err(|_| "Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code".to_string())?;
+    if !output.status.success() {
+        return Err("Claude CLI returned an error".to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
 
 #[tauri::command]
 pub async fn open_in_finder(path: String) -> Result<(), String> {

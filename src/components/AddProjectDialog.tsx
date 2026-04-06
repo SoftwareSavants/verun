@@ -48,31 +48,35 @@ export const AddProjectDialog: Component<Props> = (props) => {
   return (
     <Show when={props.open}>
       <div
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
         onClick={(e) => { if (e.target === e.currentTarget) props.onClose() }}
         onKeyDown={handleKeyDown}
       >
-        <div class="bg-surface-1 border border-border rounded-lg shadow-xl w-96 p-5">
-          <h2 class="text-lg font-semibold text-gray-200 mb-4">Add Project</h2>
+        <div class="bg-surface-2 border border-border rounded-xl shadow-2xl w-96 p-5 animate-in">
+          <h2 class="text-base font-semibold text-text-primary mb-4">Add Project</h2>
 
           <div class="mb-4">
-            <label class="text-xs text-gray-400 mb-1 block">Repository Path</label>
+            <label class="text-[11px] text-text-muted mb-1.5 block uppercase tracking-wider">Repository Path</label>
             <div class="flex gap-2">
               <input
-                class="flex-1 bg-surface-0 border border-border rounded px-3 py-2 text-sm text-gray-200 outline-none focus:border-accent"
+                class="flex-1 bg-surface-0 border border-border rounded-lg px-3 py-2 text-sm text-text-primary outline-none focus:border-accent/40 transition-colors"
                 value={path()}
                 onInput={(e) => setPath(e.currentTarget.value)}
                 placeholder="/path/to/repo"
                 readOnly
               />
-              <button class="btn-ghost p-2 rounded" onClick={pickFolder} title="Browse">
+              <button
+                class="p-2 rounded-lg text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors border border-border"
+                onClick={pickFolder}
+                title="Browse"
+              >
                 <FolderOpen size={16} />
               </button>
             </div>
           </div>
 
           <Show when={error()}>
-            <div class="text-xs text-status-error mb-3">{error()}</div>
+            <div class="text-xs text-status-error mb-3 bg-status-error/5 border border-status-error/10 rounded-lg px-3 py-2">{error()}</div>
           </Show>
 
           <div class="flex justify-end gap-2">
