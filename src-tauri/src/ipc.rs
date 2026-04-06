@@ -163,6 +163,7 @@ pub async fn create_session(
 
 /// Send a message to Claude in this session.
 /// Spawns claude -p with --resume if we have a prior session_id.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn send_message(
     app: AppHandle,
@@ -172,6 +173,7 @@ pub async fn send_message(
     session_id: String,
     message: String,
     attachments: Option<Vec<task::Attachment>>,
+    model: Option<String>,
 ) -> Result<(), String> {
     let session = db::get_session(pool.inner(), &session_id)
         .await?
@@ -191,9 +193,36 @@ pub async fn send_message(
             message,
             claude_session_id: session.claude_session_id,
             attachments: attachments.unwrap_or_default(),
+            model,
         },
     )
     .await
+}
+
+/// Clear a session's Claude context (reset session_id + delete output lines)
+#[tauri::command]
+pub async fn clear_session(
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+) -> Result<(), String> {
+    // Clear the claude_session_id so next message starts fresh
+    db_tx
+        .send(db::DbWrite::SetClaudeSessionId {
+            id: session_id.clone(),
+            claude_session_id: String::new(),
+        })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+
+    // Clear persisted output lines
+    db_tx
+        .send(db::DbWrite::DeleteOutputLines {
+            session_id,
+        })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+
+    Ok(())
 }
 
 /// Abort a currently running message
@@ -330,6 +359,49 @@ pub async fn get_repo_info(path: String) -> Result<RepoInfo, String> {
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeSkill {
+    pub name: String,
+    pub description: String,
+}
+
+#[tauri::command]
+pub async fn list_claude_skills() -> Result<Vec<ClaudeSkill>, String> {
+    let output = std::process::Command::new("claude")
+        .args(["skills", "list"])
+        .output()
+        .map_err(|e| format!("Failed to run claude skills list: {e}"))?;
+
+    if !output.status.success() {
+        return Err("claude skills list failed".to_string());
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut skills = Vec::new();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // Parse lines like: - `/name` — description
+        // or:                - `/name` — description
+        if let Some(rest) = trimmed.strip_prefix("- `/").or_else(|| trimmed.strip_prefix("- `/")) {
+            if let Some(idx) = rest.find('`') {
+                let name = rest[..idx].to_string();
+                let desc = rest[idx + 1..]
+                    .trim_start_matches(" — ")
+                    .trim_start_matches(" — ")
+                    .trim()
+                    .to_string();
+                if !name.is_empty() {
+                    skills.push(ClaudeSkill { name, description: desc });
+                }
+            }
+        }
+    }
+
+    Ok(skills)
+}
 
 #[tauri::command]
 pub async fn check_claude() -> Result<String, String> {

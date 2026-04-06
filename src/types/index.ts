@@ -44,6 +44,19 @@ export interface RepoInfo {
   branches: string[]
 }
 
+export type ModelId = 'opus' | 'sonnet' | 'haiku'
+
+export const MODEL_OPTIONS: { id: ModelId; label: string; description: string }[] = [
+  { id: 'sonnet', label: 'Sonnet', description: 'Balanced' },
+  { id: 'opus', label: 'Opus', description: 'Most capable' },
+  { id: 'haiku', label: 'Haiku', description: 'Fastest' },
+]
+
+export interface ClaudeSkill {
+  name: string
+  description: string
+}
+
 export interface Attachment {
   name: string
   mimeType: string

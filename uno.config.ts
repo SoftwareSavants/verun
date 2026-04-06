@@ -25,9 +25,9 @@ export default defineConfig({
         subtle: '#16161e',
       },
       accent: {
-        DEFAULT: '#7c5cfc',
-        hover: '#9b82fd',
-        muted: 'rgba(124, 92, 252, 0.12)',
+        DEFAULT: '#3b82f6',
+        hover: '#60a5fa',
+        muted: 'rgba(59, 130, 246, 0.12)',
       },
       status: {
         running: '#34d399',
@@ -60,7 +60,7 @@ export default defineConfig({
         ::-webkit-scrollbar-thumb:hover { background: #2e2e3a; }
 
         /* Focus ring */
-        :focus-visible { outline: 2px solid rgba(124, 92, 252, 0.5); outline-offset: 1px; }
+        :focus-visible { outline: 2px solid rgba(59, 130, 246, 0.5); outline-offset: 1px; }
 
         /* Reset native form element appearance */
         button, input, textarea, select {
@@ -135,12 +135,12 @@ export default defineConfig({
         }
         .prose-verun th { background: #17171c; font-weight: 600; color: #e4e4e7; }
         .prose-verun blockquote {
-          border-left: 3px solid #7c5cfc30;
+          border-left: 3px solid #3b82f630;
           padding-left: 0.8em;
           margin: 0.4em 0;
           color: #a1a1aa;
         }
-        .prose-verun a { color: #7c5cfc; text-decoration: none; }
+        .prose-verun a { color: #3b82f6; text-decoration: none; }
         .prose-verun a:hover { text-decoration: underline; }
         .prose-verun hr { border: none; border-top: 1px solid #1e1e26; margin: 0.8em 0; }
 
@@ -153,7 +153,7 @@ export default defineConfig({
           display: inline-block;
           width: 5px; height: 5px;
           border-radius: 50%;
-          background: #7c5cfc;
+          background: #3b82f6;
           margin: 0 2px;
           animation: pulseDot 1.4s infinite ease-in-out;
         }

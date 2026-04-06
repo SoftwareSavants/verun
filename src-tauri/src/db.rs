@@ -123,6 +123,7 @@ pub enum DbWrite {
 
     // Output
     InsertOutputLines { session_id: String, lines: Vec<(String, i64)> },
+    DeleteOutputLines { session_id: String },
 
     // Startup recovery
     ResetRunningSessions,
@@ -270,6 +271,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             tx.commit().await?;
         }
 
+        DbWrite::DeleteOutputLines { session_id } => {
+            sqlx::query("DELETE FROM output_lines WHERE session_id = ?")
+                .bind(&session_id)
+                .execute(pool)
+                .await?;
+        }
+
         // -- Startup recovery --
         DbWrite::ResetRunningSessions => {
             sqlx::query("UPDATE sessions SET status = 'idle' WHERE status = 'running'")
@@ -339,7 +347,7 @@ pub async fn list_sessions_for_task(
     task_id: &str,
 ) -> Result<Vec<Session>, String> {
     sqlx::query_as::<_, Session>(
-        "SELECT * FROM sessions WHERE task_id = ? ORDER BY started_at DESC",
+        "SELECT * FROM sessions WHERE task_id = ? ORDER BY started_at ASC",
     )
     .bind(task_id)
     .fetch_all(pool)
@@ -650,7 +658,7 @@ mod tests {
 
         let sessions = list_sessions_for_task(&pool, "t-001").await.unwrap();
         assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].id, "s-002"); // newest first
+        assert_eq!(sessions[0].id, "s-001"); // oldest first
     }
 
     // -- Output tests --

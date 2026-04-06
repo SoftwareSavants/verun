@@ -6,8 +6,12 @@ export const [tasks, setTasks] = createStore<Task[]>([])
 
 export async function loadTasks(projectId: string) {
   const list = await ipc.listTasks(projectId)
-  setTasks(list)
+  // Replace tasks for this project, keep tasks from other projects
+  setTasks(prev => [...prev.filter(t => t.projectId !== projectId), ...list])
 }
+
+export const tasksForProject = (projectId: string) =>
+  tasks.filter(t => t.projectId === projectId)
 
 export async function createTask(projectId: string): Promise<{ task: Task; session: Session }> {
   const result = await ipc.createTask(projectId)

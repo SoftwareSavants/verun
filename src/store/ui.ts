@@ -1,4 +1,5 @@
 import { createSignal } from 'solid-js'
+import type { ModelId } from '../types'
 
 export const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
 export const [selectedTaskId, setSelectedTaskId] = createSignal<string | null>(null)
@@ -6,6 +7,28 @@ export const [selectedSessionId, setSelectedSessionId] = createSignal<string | n
 
 export const [sidebarWidth, setSidebarWidth] = createSignal(280)
 export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
+
+// Model selection
+const savedModel = (typeof localStorage !== 'undefined' ? localStorage.getItem('verun:model') : null) as ModelId | null
+export const [globalModel, setGlobalModel] = createSignal<ModelId>(savedModel || 'sonnet')
+export const [sessionModelOverrides, setSessionModelOverrides] = createSignal<Record<string, ModelId>>({})
+
+export function setGlobalModelAndPersist(model: ModelId) {
+  setGlobalModel(model)
+  localStorage.setItem('verun:model', model)
+}
+
+export function setSessionModel(sessionId: string, model: ModelId) {
+  setSessionModelOverrides(prev => ({ ...prev, [sessionId]: model }))
+}
+
+export function effectiveModel(sessionId: string | null): ModelId {
+  if (sessionId) {
+    const override = sessionModelOverrides()[sessionId]
+    if (override) return override
+  }
+  return globalModel()
+}
 export const [showAddProjectDialog, setShowAddProjectDialog] = createSignal(false)
 
 export interface Toast {

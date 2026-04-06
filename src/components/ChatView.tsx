@@ -1,10 +1,10 @@
 import { Component, For, Show, createEffect, on, createSignal } from 'solid-js'
+import { createStore } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { marked } from 'marked'
 import type { OutputItem, SessionStatus } from '../types'
 import { ChevronDown, ChevronRight, Terminal, AlertCircle, CheckCircle, AlertTriangle, Copy, Check } from 'lucide-solid'
 
-// Configure marked for safe HTML output
 marked.setOptions({ breaks: true, gfm: true })
 
 function renderMarkdown(text: string): string {
@@ -16,8 +16,38 @@ interface Props {
   sessionStatus?: SessionStatus
 }
 
-/** Group consecutive text/thinking deltas and link toolStart+toolResult */
-function groupItems(items: OutputItem[]): DisplayBlock[] {
+// ---------------------------------------------------------------------------
+// Stable block store — only mutates existing blocks or appends new ones
+// ---------------------------------------------------------------------------
+
+interface UserBlock {
+  type: 'user'
+  text: string
+  images?: Array<{ mimeType: string; dataBase64: string }>
+}
+interface AssistantBlock {
+  type: 'assistant'
+  text: string
+}
+interface ThinkingBlock {
+  type: 'thinking'
+  text: string
+}
+interface ToolBlock {
+  type: 'tool'
+  id: string
+  tool: string
+  input: string
+  result: { text: string; isError: boolean } | undefined
+}
+interface SystemBlock {
+  type: 'system'
+  text: string
+}
+
+type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock
+
+function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
   const blocks: DisplayBlock[] = []
   let currentText = ''
   let currentThinking = ''
@@ -28,7 +58,6 @@ function groupItems(items: OutputItem[]): DisplayBlock[] {
       currentText = ''
     }
   }
-
   const flushThinking = () => {
     if (currentThinking) {
       blocks.push({ type: 'thinking', text: currentThinking })
@@ -36,16 +65,16 @@ function groupItems(items: OutputItem[]): DisplayBlock[] {
     }
   }
 
-  // Find the last unfinished tool block to attach results to
-  const lastOpenTool = (): ToolDisplayBlock | undefined => {
+  const lastOpenTool = (): ToolBlock | undefined => {
     for (let i = blocks.length - 1; i >= 0; i--) {
       const b = blocks[i]
       if (b.type === 'tool' && !b.result) return b
-      // Stop searching past non-tool blocks
       if (b.type !== 'tool') break
     }
     return undefined
   }
+
+  let toolCounter = 0
 
   for (const item of items) {
     switch (item.kind) {
@@ -58,36 +87,29 @@ function groupItems(items: OutputItem[]): DisplayBlock[] {
         currentThinking += item.text
         break
       case 'userMessage':
-        flushText()
-        flushThinking()
+        flushText(); flushThinking()
         blocks.push({ type: 'user', text: item.text, images: item.images })
         break
       case 'toolStart':
-        flushText()
-        flushThinking()
-        blocks.push({ type: 'tool', tool: item.tool, input: item.input, result: undefined })
+        flushText(); flushThinking()
+        blocks.push({ type: 'tool', id: `tool-${toolCounter++}`, tool: item.tool, input: item.input, result: undefined })
         break
       case 'toolResult': {
-        flushText()
-        flushThinking()
+        flushText(); flushThinking()
         const openTool = lastOpenTool()
         if (openTool) {
-          // Attach result to matching tool
           openTool.result = { text: item.text, isError: item.isError }
         } else {
-          // Orphan result — show as standalone tool block
-          blocks.push({ type: 'tool', tool: 'Tool', input: '', result: { text: item.text, isError: item.isError } })
+          blocks.push({ type: 'tool', id: `tool-${toolCounter++}`, tool: 'Tool', input: '', result: { text: item.text, isError: item.isError } })
         }
         break
       }
       case 'system':
-        flushText()
-        flushThinking()
+        flushText(); flushThinking()
         blocks.push({ type: 'system', text: item.text })
         break
       case 'turnEnd':
-        flushText()
-        flushThinking()
+        flushText(); flushThinking()
         if (item.status !== 'completed') {
           blocks.push({ type: 'system', text: `Turn ended: ${item.status}` })
         }
@@ -96,35 +118,21 @@ function groupItems(items: OutputItem[]): DisplayBlock[] {
         break
     }
   }
-
-  flushText()
-  flushThinking()
+  flushText(); flushThinking()
   return blocks
 }
 
-interface ToolDisplayBlock {
-  type: 'tool'
-  tool: string
-  input: string
-  result: { text: string; isError: boolean } | undefined
-}
-
-type DisplayBlock =
-  | { type: 'user'; text: string; images?: Array<{ mimeType: string; dataBase64: string }> }
-  | { type: 'assistant'; text: string }
-  | { type: 'thinking'; text: string }
-  | ToolDisplayBlock
-  | { type: 'system'; text: string }
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
 
 const CopyButton: Component<{ text: string }> = (props) => {
   const [copied, setCopied] = createSignal(false)
-
   const handleCopy = async () => {
     await navigator.clipboard.writeText(props.text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
-
   return (
     <button
       class="p-1 rounded-md text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors"
@@ -138,11 +146,10 @@ const CopyButton: Component<{ text: string }> = (props) => {
   )
 }
 
-const ThinkingBlock: Component<{ text: string }> = (props) => {
+const ThinkingBlockView: Component<{ text: string }> = (props) => {
   const [expanded, setExpanded] = createSignal(false)
-
   return (
-    <div class="px-5 py-1 animate-in">
+    <div class="px-5 py-1">
       <div class="flex-1 min-w-0">
         <button
           class="flex items-center gap-1.5 text-xs text-text-dim hover:text-text-muted transition-colors"
@@ -168,13 +175,20 @@ const ThinkingBlock: Component<{ text: string }> = (props) => {
   )
 }
 
-const ToolBlock: Component<{ tool: string; input: string; result?: { text: string; isError: boolean } }> = (props) => {
-  const [expanded, setExpanded] = createSignal(false)
-  const hasResult = () => !!props.result
-  const resultLines = () => props.result?.text.split('\n') || []
-  const isLongResult = () => resultLines().length > 8
+// Stable UI state — survives block rebuilds
+const expandedTools = new Map<string, boolean>()
+const toolScrollPositions = new Map<string, { input: number; output: number }>()
 
-  // Status icon for the header
+const ToolBlockView: Component<{ id: string; tool: string; input: string; result?: { text: string; isError: boolean } }> = (props) => {
+  const [expanded, setExpanded] = createSignal(expandedTools.get(props.id) ?? false)
+  const toggle = () => {
+    const next = !expanded()
+    setExpanded(next)
+    expandedTools.set(props.id, next)
+  }
+  const hasResult = () => !!props.result
+  const isLongResult = () => (props.result?.text.split('\n').length || 0) > 8
+
   const statusIcon = () => {
     if (!hasResult()) return <div class="w-3 h-3 rounded-full border-2 border-accent/40 animate-pulse" />
     if (props.result!.isError) return <AlertCircle size={13} class="text-status-error" />
@@ -182,12 +196,11 @@ const ToolBlock: Component<{ tool: string; input: string; result?: { text: strin
   }
 
   return (
-    <div class="px-5 py-1 animate-in">
+    <div class="px-5 py-1">
       <div class="flex-1 min-w-0 border border-border rounded-lg overflow-hidden bg-surface-1">
-        {/* Tool header — always visible */}
         <button
           class="w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-surface-2"
-          onClick={() => setExpanded(e => !e)}
+          onClick={toggle}
         >
           <Show when={expanded()} fallback={<ChevronRight size={11} class="text-text-dim" />}>
             <ChevronDown size={11} class="text-text-dim" />
@@ -202,32 +215,47 @@ const ToolBlock: Component<{ tool: string; input: string; result?: { text: strin
           <div class="ml-auto shrink-0">{statusIcon()}</div>
         </button>
 
-        {/* Expanded content: input + output */}
         <Show when={expanded()}>
-          {/* Input */}
           <Show when={props.input}>
             <div class="border-t border-border">
-              <pre class="text-[11px] text-text-muted whitespace-pre-wrap font-mono p-3 max-h-40 overflow-y-auto">
+              <pre
+                class="text-[11px] text-text-muted whitespace-pre-wrap font-mono p-3 max-h-40 overflow-y-auto"
+                ref={(el) => {
+                  const saved = toolScrollPositions.get(props.id)
+                  if (saved) requestAnimationFrame(() => { el.scrollTop = saved.input })
+                }}
+                onScroll={(e) => {
+                  const prev = toolScrollPositions.get(props.id) || { input: 0, output: 0 }
+                  toolScrollPositions.set(props.id, { ...prev, input: e.currentTarget.scrollTop })
+                }}
+              >
                 {props.input}
               </pre>
             </div>
           </Show>
-
-          {/* Output */}
           <Show when={hasResult()}>
             <div class="border-t border-border">
-              <pre class={clsx(
-                'text-[11px] whitespace-pre-wrap font-mono p-3 max-w-full overflow-x-auto',
-                props.result!.isError ? 'text-status-error/80' : 'text-text-muted',
-                !isLongResult() ? '' : 'max-h-48 overflow-y-auto'
-              )}>
+              <pre
+                class={clsx(
+                  'text-[11px] whitespace-pre-wrap font-mono p-3 max-w-full overflow-x-auto',
+                  props.result!.isError ? 'text-status-error/80' : 'text-text-muted',
+                  !isLongResult() ? '' : 'max-h-48 overflow-y-auto'
+                )}
+                ref={(el) => {
+                  const saved = toolScrollPositions.get(props.id)
+                  if (saved) requestAnimationFrame(() => { el.scrollTop = saved.output })
+                }}
+                onScroll={(e) => {
+                  const prev = toolScrollPositions.get(props.id) || { input: 0, output: 0 }
+                  toolScrollPositions.set(props.id, { ...prev, output: e.currentTarget.scrollTop })
+                }}
+              >
                 {props.result!.text}
               </pre>
             </div>
           </Show>
         </Show>
 
-        {/* Collapsed result summary */}
         <Show when={!expanded() && hasResult()}>
           <div class="border-t border-border px-3 py-1.5">
             <pre class={clsx(
@@ -243,25 +271,50 @@ const ToolBlock: Component<{ tool: string; input: string; result?: { text: strin
   )
 }
 
+// ---------------------------------------------------------------------------
+// Main ChatView
+// ---------------------------------------------------------------------------
+
 export const ChatView: Component<Props> = (props) => {
   let containerRef!: HTMLDivElement
-  let shouldAutoScroll = true
+  let autoScroll = true
+  let scrollRafPending = false
 
-  const blocks = () => groupItems(props.output)
+  // Use a store for blocks so mutations are granular
+  const [blocks, setBlocks] = createStore<DisplayBlock[]>([])
+  let lastItemCount = 0
 
-  const handleScroll = () => {
-    if (!containerRef) return
-    const { scrollTop, scrollHeight, clientHeight } = containerRef
-    shouldAutoScroll = scrollHeight - scrollTop - clientHeight < 40
-  }
-
-  createEffect(on(() => props.output.length, () => {
-    if (shouldAutoScroll && containerRef) {
-      requestAnimationFrame(() => {
-        containerRef.scrollTop = containerRef.scrollHeight
-      })
+  // Rebuild blocks only when output items change
+  createEffect(on(() => props.output.length, (len) => {
+    if (len === 0 && lastItemCount !== 0) {
+      setBlocks([])
+      lastItemCount = 0
+      return
+    }
+    if (len !== lastItemCount) {
+      const newBlocks = rebuildBlocks(props.output)
+      setBlocks(newBlocks)
+      lastItemCount = len
+      scheduleAutoScroll()
     }
   }))
+
+  const scheduleAutoScroll = () => {
+    if (!autoScroll || !containerRef || scrollRafPending) return
+    scrollRafPending = true
+    requestAnimationFrame(() => {
+      scrollRafPending = false
+      if (autoScroll && containerRef) {
+        containerRef.scrollTop = containerRef.scrollHeight
+      }
+    })
+  }
+
+  const handleScroll = () => {
+    if (!containerRef || scrollRafPending) return
+    const { scrollTop, scrollHeight, clientHeight } = containerRef
+    autoScroll = scrollHeight - scrollTop - clientHeight < 30
+  }
 
   return (
     <div
@@ -270,20 +323,19 @@ export const ChatView: Component<Props> = (props) => {
       onScroll={handleScroll}
     >
       <div class="flex flex-col gap-2 py-4">
-        {/* Error banner */}
         <Show when={props.sessionStatus === 'error'}>
-          <div class="mx-5 flex items-center gap-2 px-3 py-2 rounded-lg bg-status-error/8 border border-status-error/15 animate-in">
+          <div class="mx-5 flex items-center gap-2 px-3 py-2 rounded-lg bg-status-error/8 border border-status-error/15">
             <AlertTriangle size={14} class="text-status-error shrink-0" />
             <span class="text-xs text-status-error">Session encountered an error. Create a new session to continue.</span>
           </div>
         </Show>
 
-        <For each={blocks()}>
+        <For each={blocks}>
           {(block) => {
             switch (block.type) {
               case 'user':
                 return (
-                  <div class="flex justify-end px-5 py-1 animate-in">
+                  <div class="flex justify-end px-5 py-1">
                     <div class="max-w-[75%] bg-accent/15 rounded-2xl rounded-br-lg border border-accent/10 overflow-hidden">
                       <Show when={block.images && block.images.length > 0}>
                         <div class="flex gap-1 p-2 pb-0">
@@ -307,7 +359,7 @@ export const ChatView: Component<Props> = (props) => {
                 )
               case 'assistant':
                 return (
-                  <div class="px-5 py-1 animate-in group">
+                  <div class="px-5 py-1 group">
                     <div
                       class="text-sm text-text-primary leading-relaxed prose-verun select-text"
                       innerHTML={renderMarkdown(block.text)}
@@ -318,9 +370,9 @@ export const ChatView: Component<Props> = (props) => {
                   </div>
                 )
               case 'thinking':
-                return <ThinkingBlock text={block.text} />
+                return <ThinkingBlockView text={block.text} />
               case 'tool':
-                return <ToolBlock tool={block.tool} input={block.input} result={block.result} />
+                return <ToolBlockView id={block.id} tool={block.tool} input={block.input} result={block.result} />
               case 'system':
                 return (
                   <div class="flex justify-center px-5 py-1">
@@ -331,17 +383,15 @@ export const ChatView: Component<Props> = (props) => {
           }}
         </For>
 
-        {/* Loading indicator when AI is running */}
         <Show when={props.sessionStatus === 'running'}>
-          <div class="px-5 py-2 animate-in">
+          <div class="px-5 py-2">
             <div class="thinking-dots">
               <span /><span /><span />
             </div>
           </div>
         </Show>
 
-        {/* Empty state */}
-        <Show when={blocks().length === 0 && props.sessionStatus !== 'error'}>
+        <Show when={blocks.length === 0 && props.sessionStatus !== 'error'}>
           <div class="flex-1 flex items-center justify-center pt-20">
             <p class="text-sm text-text-dim">Send a message to start</p>
           </div>

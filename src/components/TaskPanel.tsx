@@ -1,11 +1,11 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
 import { selectedTaskId, selectedSessionId, setSelectedSessionId } from '../store/ui'
 import { taskById } from '../store/tasks'
-import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, loadSessions, loadOutputLines } from '../store/sessions'
+import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines } from '../store/sessions'
 import { MergeBar } from './MergeBar'
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
-import { Square, Plus, FolderOpen } from 'lucide-solid'
+import { Square, Plus, FolderOpen, X } from 'lucide-solid'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
@@ -122,9 +122,9 @@ export const TaskPanel: Component = () => {
             <div class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
               <For each={taskSessions()}>
                 {(session) => (
-                  <button
+                  <div
                     class={clsx(
-                      'flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap',
+                      'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap cursor-pointer',
                       selectedSessionId() === session.id
                         ? 'bg-accent-muted text-accent-hover border border-accent/20'
                         : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
@@ -143,7 +143,27 @@ export const TaskPanel: Component = () => {
                         <Square size={8} />
                       </button>
                     </Show>
-                  </button>
+
+                    <Show when={session.status !== 'running'}>
+                      <button
+                        class="ml-0.5 opacity-0 group-hover:opacity-100 text-text-dim hover:text-text-muted transition-all"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          const sessions = taskSessions()
+                          const idx = sessions.findIndex(s => s.id === session.id)
+                          // Select adjacent session before closing
+                          if (selectedSessionId() === session.id) {
+                            const next = sessions[idx + 1] || sessions[idx - 1]
+                            setSelectedSessionId(next?.id ?? null)
+                          }
+                          closeSession(session.id)
+                        }}
+                        title="Close session"
+                      >
+                        <X size={10} />
+                      </button>
+                    </Show>
+                  </div>
                 )}
               </For>
               <button

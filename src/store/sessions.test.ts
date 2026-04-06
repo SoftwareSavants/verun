@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from 'vitest'
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, clearOutputItems } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById } from './sessions'
 import type { Session, OutputItem } from '../types'
 
 const makeSession = (overrides: Partial<Session> = {}): Session => ({
@@ -62,9 +62,9 @@ describe('sessions store', () => {
     expect(outputItems['s-001']).toEqual(items)
   })
 
-  test('clearOutputItems empties the array', () => {
+  test('setOutputItems can clear to empty', () => {
     setOutputItems('s-001', [{ kind: 'text', text: 'hello' }])
-    clearOutputItems('s-001')
+    setOutputItems('s-001', [])
     expect(outputItems['s-001']).toEqual([])
   })
 

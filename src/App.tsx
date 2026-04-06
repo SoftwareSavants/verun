@@ -6,6 +6,7 @@ import { NewTaskDialog } from './components/NewTaskDialog'
 import { ToastContainer } from './components/ToastContainer'
 import { loadProjects } from './store/projects'
 import { initSessionListeners } from './store/sessions'
+import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
 import {
   selectedProjectId,
@@ -40,9 +41,10 @@ const App: Component = () => {
     await initSessionListeners()
     await loadProjects()
 
-    // Check Claude CLI availability
+    // Check Claude CLI availability and load skills
     try {
       await ipc.checkClaude()
+      loadClaudeSkills() // fire and forget
     } catch {
       addToast('Claude CLI not found. Install with: npm i -g @anthropic-ai/claude-code', 'error')
     }

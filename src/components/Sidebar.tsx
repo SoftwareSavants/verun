@@ -1,6 +1,6 @@
-import { Component, For, Show, createSignal, createMemo } from 'solid-js'
+import { Component, For, Show, createSignal, createMemo, createEffect, on } from 'solid-js'
 import { projects } from '../store/projects'
-import { tasks, loadTasks, deleteTask } from '../store/tasks'
+import { tasks, tasksForProject, loadTasks, deleteTask } from '../store/tasks'
 import {
   selectedProjectId, setSelectedProjectId,
   selectedTaskId, setSelectedTaskId,
@@ -36,6 +36,13 @@ export const Sidebar: Component = () => {
   const [contextMenu, setContextMenu] = createSignal<{ pos: MenuPos; items: MenuAction[] } | null>(null)
   const [confirmAction, setConfirmAction] = createSignal<{ title: string; message: string; action: () => void } | null>(null)
 
+  // Load tasks for all projects on mount / when projects change
+  createEffect(on(() => projects.length, () => {
+    for (const p of projects) {
+      loadTasks(p.id)
+    }
+  }))
+
   const statusCounts = createMemo(() => {
     const counts = { running: 0, done: 0, error: 0, idle: 0 }
     for (const s of sessions) {
@@ -44,10 +51,8 @@ export const Sidebar: Component = () => {
     return counts
   })
 
-  const handleSelectProject = async (id: string) => {
+  const handleSelectProject = (id: string) => {
     setSelectedProjectId(id)
-    setSelectedTaskId(null)
-    await loadTasks(id)
   }
 
   const showProjectMenu = (e: MouseEvent, projectId: string) => {
@@ -145,9 +150,9 @@ export const Sidebar: Component = () => {
                   </button>
                 </div>
 
-                <Show when={selectedProjectId() === project.id}>
+                <Show when={tasksForProject(project.id).length > 0}>
                   <div class="ml-2 mt-0.5">
-                    <For each={tasks}>
+                    <For each={tasksForProject(project.id)}>
                       {(task) => {
                         const status = () => taskStatus(task.id)
                         return (

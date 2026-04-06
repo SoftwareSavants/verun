@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill } from '../types'
 
 // Projects
 export const addProject = (repoPath: string) =>
@@ -28,8 +28,11 @@ export const deleteTask = (id: string) =>
 export const createSession = (taskId: string) =>
   invoke<Session>('create_session', { taskId })
 
-export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[]) =>
-  invoke<void>('send_message', { sessionId, message, attachments })
+export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string) =>
+  invoke<void>('send_message', { sessionId, message, attachments, model })
+
+export const clearSession = (sessionId: string) =>
+  invoke<void>('clear_session', { sessionId })
 
 export const abortMessage = (sessionId: string) =>
   invoke<void>('abort_message', { sessionId })
@@ -57,6 +60,9 @@ export const getRepoInfo = (path: string) =>
   invoke<RepoInfo>('get_repo_info', { path })
 
 // Utility
+export const listClaudeSkills = () =>
+  invoke<ClaudeSkill[]>('list_claude_skills')
+
 export const checkClaude = () =>
   invoke<string>('check_claude')
 

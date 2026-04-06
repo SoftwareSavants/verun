@@ -59,6 +59,7 @@ pub fn run() {
             // Sessions
             ipc::create_session,
             ipc::send_message,
+            ipc::clear_session,
             ipc::abort_message,
             ipc::list_sessions,
             ipc::get_session,
@@ -69,6 +70,7 @@ pub fn run() {
             ipc::get_branch_status,
             ipc::get_repo_info,
             // Utility
+            ipc::list_claude_skills,
             ipc::check_claude,
             ipc::open_in_finder,
         ])

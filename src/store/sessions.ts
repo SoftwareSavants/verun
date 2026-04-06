@@ -20,7 +20,7 @@ export async function createSession(taskId: string): Promise<Session> {
   return session
 }
 
-export async function sendMessage(sessionId: string, message: string, attachments?: Attachment[]) {
+export async function sendMessage(sessionId: string, message: string, attachments?: Attachment[], model?: string) {
   const images = attachments
     ?.filter(a => a.mimeType.startsWith('image/'))
     .map(a => ({ mimeType: a.mimeType, dataBase64: a.dataBase64 }))
@@ -39,11 +39,18 @@ export async function sendMessage(sessionId: string, message: string, attachment
       store[sessionId] = [item]
     }
   }))
-  await ipc.sendMessage(sessionId, message, attachments)
+  await ipc.sendMessage(sessionId, message, attachments, model)
 }
 
 export async function abortMessage(sessionId: string) {
   await ipc.abortMessage(sessionId)
+}
+
+export function closeSession(sessionId: string) {
+  // Remove from local store (keeps in DB for potential restore)
+  setSessions(prev => prev.filter(s => s.id !== sessionId))
+  // Clean up output from memory
+  setOutputItems(produce(store => { delete store[sessionId] }))
 }
 
 export async function loadOutputLines(sessionId: string) {
@@ -127,8 +134,12 @@ function extractText(content: unknown): string {
   return ''
 }
 
-export function clearOutputItems(sessionId: string) {
+export async function clearOutputItems(sessionId: string) {
   setOutputItems(sessionId, [])
+  // Also clear the Claude session context + persisted output in DB
+  await ipc.clearSession(sessionId)
+  // Reset the local session's claudeSessionId so next message starts fresh
+  setSessions(s => s.id === sessionId, 'claudeSessionId', null)
 }
 
 export const sessionsForTask = (taskId: string) =>

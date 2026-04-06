@@ -166,6 +166,7 @@ pub struct SendMessageParams {
     pub message: String,
     pub claude_session_id: Option<String>,
     pub attachments: Vec<Attachment>,
+    pub model: Option<String>,
 }
 
 /// Send a message to Claude in this session's worktree.
@@ -177,7 +178,7 @@ pub async fn send_message(
     active: ActiveMap,
     params: SendMessageParams,
 ) -> Result<(), String> {
-    let SendMessageParams { session_id, worktree_path, message, claude_session_id, attachments } = params;
+    let SendMessageParams { session_id, worktree_path, message, claude_session_id, attachments, model } = params;
     // Don't allow concurrent messages on the same session
     if active.contains_key(&session_id) {
         return Err("Session is already processing a message".to_string());
@@ -222,7 +223,12 @@ pub async fn send_message(
     }
 
     if let Some(ref rid) = claude_session_id {
-        cmd.args(["--resume", rid]);
+        if !rid.is_empty() {
+            cmd.args(["--resume", rid]);
+        }
+    }
+    if let Some(ref m) = model {
+        cmd.args(["--model", m]);
     }
     cmd.current_dir(&worktree_path)
         .stdout(std::process::Stdio::piped())
