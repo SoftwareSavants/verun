@@ -310,6 +310,7 @@ pub async fn stream_and_capture(
 
                         // Emit text/thinking deltas immediately for real-time streaming
                         let mut has_immediate = false;
+                        let mut is_turn_end = false;
                         for item in items {
                             match &item {
                                 OutputItem::Text { .. } | OutputItem::Thinking { .. } => {
@@ -320,6 +321,10 @@ pub async fn stream_and_capture(
                                     emit_item(&app, &session_id, item);
                                     has_immediate = true;
                                 }
+                                OutputItem::TurnEnd { .. } => {
+                                    is_turn_end = true;
+                                    buffer.push(item);
+                                }
                                 _ => {
                                     buffer.push(item);
                                 }
@@ -328,6 +333,13 @@ pub async fn stream_and_capture(
 
                         // Persist raw line to DB
                         persist_line(&db_tx, &session_id, &line, &mut total_persisted);
+
+                        // Close stdin after turn completes so the CLI process can exit
+                        if is_turn_end {
+                            // Take the ChildStdin out of the mutex and drop it to send EOF
+                            let mut guard = stdin.lock().await;
+                            let _ = guard.shutdown().await;
+                        }
 
                         // Flush non-streaming buffer periodically
                         if !buffer.is_empty() && (has_immediate || last_flush.elapsed() >= FLUSH_INTERVAL) {
