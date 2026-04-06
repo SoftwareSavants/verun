@@ -385,7 +385,7 @@ async fn handle_control_request(
         request_id: request_id.clone(),
         session_id: session_id.to_string(),
         tool_name,
-        tool_input,
+        tool_input: tool_input.clone(),
     });
 
     // Create oneshot channel and wait for user response
@@ -403,7 +403,7 @@ async fn handle_control_request(
     let response_inner = if behavior == "allow" {
         serde_json::json!({
             "behavior": "allow",
-            "updatedInput": null
+            "updatedInput": tool_input
         })
     } else {
         serde_json::json!({
