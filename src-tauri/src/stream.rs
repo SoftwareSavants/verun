@@ -275,7 +275,7 @@ pub async fn stream_and_capture(
     app: AppHandle,
     session_id: String,
     stdout: ChildStdout,
-    stdin: Arc<TokioMutex<ChildStdin>>,
+    stdin: Arc<TokioMutex<Option<ChildStdin>>>,
     pending_approvals: PendingApprovals,
     db_tx: DbWriteTx,
 ) -> Vec<String> {
@@ -336,9 +336,9 @@ pub async fn stream_and_capture(
 
                         // Close stdin after turn completes so the CLI process can exit
                         if is_turn_end {
-                            // Take the ChildStdin out of the mutex and drop it to send EOF
+                            // Take the ChildStdin out and drop it to close the fd (sends EOF)
                             let mut guard = stdin.lock().await;
-                            let _ = guard.shutdown().await;
+                            drop(guard.take());
                         }
 
                         // Flush non-streaming buffer periodically
@@ -371,7 +371,7 @@ async fn handle_control_request(
     app: &AppHandle,
     session_id: &str,
     line: &str,
-    stdin: &Arc<TokioMutex<ChildStdin>>,
+    stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
     pending_approvals: &PendingApprovals,
 ) -> Option<bool> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
@@ -438,8 +438,10 @@ async fn handle_control_request(
     payload.push('\n');
 
     let mut stdin_guard = stdin.lock().await;
-    let _ = stdin_guard.write_all(payload.as_bytes()).await;
-    let _ = stdin_guard.flush().await;
+    if let Some(ref mut writer) = *stdin_guard {
+        let _ = writer.write_all(payload.as_bytes()).await;
+        let _ = writer.flush().await;
+    }
 
     Some(true)
 }

@@ -54,8 +54,9 @@ pub fn funny_branch_name() -> String {
 pub struct ActiveProcess {
     pub child: Child,
     /// Kept alive so `stream_and_capture` can write control_response messages via the Arc clone.
+    /// Inner Option is `take()`n on turn end to close the fd and let the process exit.
     #[allow(dead_code)]
-    pub stdin: Arc<TokioMutex<ChildStdin>>,
+    pub stdin: Arc<TokioMutex<Option<ChildStdin>>>,
 }
 
 /// session_id → currently running claude process (only while processing a message)
@@ -332,7 +333,7 @@ pub async fn send_message(
         .map_err(|e| format!("Failed to flush stdin: {e}"))?;
 
     // Keep stdin open — we need it for control_response messages
-    let stdin = Arc::new(TokioMutex::new(stdin_handle));
+    let stdin = Arc::new(TokioMutex::new(Some(stdin_handle)));
 
     let pid = child.id();
 
