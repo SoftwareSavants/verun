@@ -1,4 +1,4 @@
-import { Component, createSignal, Show, For, onMount, onCleanup } from 'solid-js'
+import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
 import { sendMessage, abortMessage, createSession, clearOutputItems } from '../store/sessions'
 import { effectiveModel, setSessionModel, setSelectedSessionId } from '../store/ui'
 import { ModelSelector } from './ModelSelector'
@@ -47,6 +47,13 @@ export const MessageInput: Component<Props> = (props) => {
   const [showPalette, setShowPalette] = createSignal(false)
 
   const currentModel = () => effectiveModel(props.sessionId)
+
+  // Auto-focus textarea when session changes (e.g. new task created)
+  createEffect(on(() => props.sessionId, () => {
+    if (textareaRef && !textareaRef.disabled) {
+      requestAnimationFrame(() => textareaRef.focus())
+    }
+  }))
 
   // Auto-focus textarea when user starts typing anywhere
   onMount(() => {

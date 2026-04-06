@@ -19,6 +19,22 @@ export async function createTask(projectId: string): Promise<{ task: Task; sessi
   return result
 }
 
+/** Create a task and select it + its first session immediately. No dialog needed. */
+export async function quickCreateTask(projectId: string) {
+  const { setSessions, setOutputItems } = await import('./sessions')
+  const { setSelectedTaskId, setSelectedSessionId, addToast } = await import('./ui')
+  const { produce } = await import('solid-js/store')
+  try {
+    const { task, session } = await createTask(projectId)
+    setSelectedTaskId(task.id)
+    setSessions(produce((s: any[]) => s.push(session)))
+    setOutputItems(session.id, [])
+    setSelectedSessionId(session.id)
+  } catch (e) {
+    addToast(String(e), 'error')
+  }
+}
+
 export async function deleteTask(id: string) {
   await ipc.deleteTask(id)
   setTasks(prev => prev.filter(t => t.id !== id))

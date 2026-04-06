@@ -2,16 +2,13 @@ import { Component, onMount, createSignal } from 'solid-js'
 import { Layout } from './components/Layout'
 import { SelectionMenu } from './components/SelectionMenu'
 import { AddProjectDialog } from './components/AddProjectDialog'
-import { NewTaskDialog } from './components/NewTaskDialog'
 import { ToastContainer } from './components/ToastContainer'
 import { loadProjects } from './store/projects'
 import { initSessionListeners } from './store/sessions'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
 import {
-  selectedProjectId,
   showAddProjectDialog, setShowAddProjectDialog,
-  showNewTaskDialog, setShowNewTaskDialog,
   addToast,
 } from './store/ui'
 import 'virtual:uno.css'
@@ -56,11 +53,6 @@ const App: Component = () => {
       <AddProjectDialog
         open={showAddProjectDialog()}
         onClose={() => setShowAddProjectDialog(false)}
-      />
-      <NewTaskDialog
-        open={showNewTaskDialog()}
-        projectId={selectedProjectId()}
-        onClose={() => setShowNewTaskDialog(false)}
       />
       <ToastContainer />
       <SelectionMenu

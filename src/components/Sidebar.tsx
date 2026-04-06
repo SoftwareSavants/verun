@@ -1,10 +1,10 @@
 import { Component, For, Show, createSignal, createMemo, createEffect, on } from 'solid-js'
 import { projects } from '../store/projects'
-import { tasks, tasksForProject, loadTasks, deleteTask } from '../store/tasks'
+import { tasks, tasksForProject, loadTasks, deleteTask, quickCreateTask } from '../store/tasks'
 import {
   selectedProjectId, setSelectedProjectId,
   selectedTaskId, setSelectedTaskId,
-  setShowNewTaskDialog, setShowAddProjectDialog,
+  setShowAddProjectDialog,
 } from '../store/ui'
 import { sessions, sessionsForTask } from '../store/sessions'
 import { deleteProject } from '../store/projects'
@@ -143,7 +143,7 @@ export const Sidebar: Component = () => {
                   <span class="text-sm text-text-primary truncate">{project.name}</span>
                   <button
                     class="p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-secondary"
-                    onClick={(e) => { e.stopPropagation(); setSelectedProjectId(project.id); setShowNewTaskDialog(true) }}
+                    onClick={(e) => { e.stopPropagation(); quickCreateTask(project.id) }}
                     title="New Task"
                   >
                     <Plus size={14} />

@@ -2,8 +2,8 @@ import { Component, onMount, onCleanup, createSignal } from 'solid-js'
 import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
 import { sidebarWidth, setSidebarWidth } from '../store/ui'
-import { tasks } from '../store/tasks'
-import { setSelectedTaskId, setShowNewTaskDialog } from '../store/ui'
+import { tasks, quickCreateTask } from '../store/tasks'
+import { selectedProjectId, setSelectedTaskId } from '../store/ui'
 
 export const Layout: Component = () => {
   const [dragging, setDragging] = createSignal(false)
@@ -39,7 +39,8 @@ export const Layout: Component = () => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === 'n') {
         e.preventDefault()
-        setShowNewTaskDialog(true)
+        const pid = selectedProjectId()
+        if (pid) quickCreateTask(pid)
       }
       if (e.metaKey && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
