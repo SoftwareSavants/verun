@@ -31,6 +31,7 @@ interface AssistantBlock {
 }
 interface ThinkingBlock {
   type: 'thinking'
+  id: string
   text: string
 }
 interface ToolBlock {
@@ -60,7 +61,7 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
   }
   const flushThinking = () => {
     if (currentThinking) {
-      blocks.push({ type: 'thinking', text: currentThinking })
+      blocks.push({ type: 'thinking', id: `thinking-${thinkingCounter++}`, text: currentThinking })
       currentThinking = ''
     }
   }
@@ -75,6 +76,7 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
   }
 
   let toolCounter = 0
+  let thinkingCounter = 0
 
   for (const item of items) {
     switch (item.kind) {
@@ -146,14 +148,19 @@ const CopyButton: Component<{ text: string }> = (props) => {
   )
 }
 
-const ThinkingBlockView: Component<{ text: string }> = (props) => {
-  const [expanded, setExpanded] = createSignal(false)
+const ThinkingBlockView: Component<{ id: string; text: string }> = (props) => {
+  const [expanded, setExpanded] = createSignal(expandedThinking.get(props.id) ?? false)
+  const toggle = () => {
+    const next = !expanded()
+    setExpanded(next)
+    expandedThinking.set(props.id, next)
+  }
   return (
     <div class="px-5 py-1">
       <div class="flex-1 min-w-0">
         <button
           class="flex items-center gap-1.5 text-xs text-text-dim hover:text-text-muted transition-colors"
-          onClick={() => setExpanded(e => !e)}
+          onClick={toggle}
         >
           <Show when={expanded()} fallback={<ChevronRight size={11} />}>
             <ChevronDown size={11} />
@@ -166,7 +173,16 @@ const ThinkingBlockView: Component<{ text: string }> = (props) => {
           </Show>
         </button>
         <Show when={expanded()}>
-          <pre class="text-xs text-text-dim whitespace-pre-wrap font-mono leading-relaxed mt-1.5 max-h-60 overflow-y-auto pl-4 border-l border-border-subtle">
+          <pre
+            class="text-xs text-text-dim whitespace-pre-wrap font-mono leading-relaxed mt-1.5 max-h-60 overflow-y-auto pl-4 border-l border-border-subtle"
+            ref={(el) => {
+              const saved = thinkingScrollPositions.get(props.id)
+              if (saved) requestAnimationFrame(() => { el.scrollTop = saved })
+            }}
+            onScroll={(e) => {
+              thinkingScrollPositions.set(props.id, e.currentTarget.scrollTop)
+            }}
+          >
             {props.text}
           </pre>
         </Show>
@@ -176,6 +192,8 @@ const ThinkingBlockView: Component<{ text: string }> = (props) => {
 }
 
 // Stable UI state — survives block rebuilds
+const expandedThinking = new Map<string, boolean>()
+const thinkingScrollPositions = new Map<string, number>()
 const expandedTools = new Map<string, boolean>()
 const toolScrollPositions = new Map<string, { input: number; output: number }>()
 
@@ -299,6 +317,11 @@ export const ChatView: Component<Props> = (props) => {
     }
   }))
 
+  // Auto-scroll when session starts running (thinking dots appear)
+  createEffect(on(() => props.sessionStatus, (status) => {
+    if (status === 'running') scheduleAutoScroll()
+  }))
+
   const scheduleAutoScroll = () => {
     if (!autoScroll || !containerRef || scrollRafPending) return
     scrollRafPending = true
@@ -364,13 +387,15 @@ export const ChatView: Component<Props> = (props) => {
                       class="text-sm text-text-primary leading-relaxed prose-verun select-text"
                       innerHTML={renderMarkdown(block.text)}
                     />
-                    <div class="opacity-0 group-hover:opacity-100 transition-opacity mt-0.5">
-                      <CopyButton text={block.text} />
-                    </div>
+                    <Show when={props.sessionStatus !== 'running'}>
+                      <div class="opacity-0 group-hover:opacity-100 transition-opacity mt-0.5">
+                        <CopyButton text={block.text} />
+                      </div>
+                    </Show>
                   </div>
                 )
               case 'thinking':
-                return <ThinkingBlockView text={block.text} />
+                return <ThinkingBlockView id={(block as ThinkingBlock).id} text={block.text} />
               case 'tool':
                 return <ToolBlockView id={block.id} tool={block.tool} input={block.input} result={block.result} />
               case 'system':
