@@ -13,8 +13,8 @@ export async function loadTasks(projectId: string) {
 export const tasksForProject = (projectId: string) =>
   tasks.filter(t => t.projectId === projectId)
 
-export async function createTask(projectId: string): Promise<{ task: Task; session: Session }> {
-  const result = await ipc.createTask(projectId)
+export async function createTask(projectId: string, baseBranch?: string): Promise<{ task: Task; session: Session }> {
+  const result = await ipc.createTask(projectId, baseBranch)
   setTasks(produce(t => t.unshift(result.task)))
   return result
 }

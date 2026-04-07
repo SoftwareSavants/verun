@@ -114,6 +114,7 @@ pub async fn create_task(
     db_tx: &DbWriteTx,
     project_id: String,
     repo_path: String,
+    base_branch: String,
 ) -> Result<(Task, Session), String> {
     let id = Uuid::new_v4().to_string();
     let branch = funny_branch_name();
@@ -122,7 +123,8 @@ pub async fn create_task(
     let worktree_path = {
         let rp = repo_path.clone();
         let br = branch.clone();
-        tokio::task::spawn_blocking(move || worktree::create_worktree(&rp, &br))
+        let bb = base_branch;
+        tokio::task::spawn_blocking(move || worktree::create_worktree(&rp, &br, &bb))
             .await
             .map_err(|e| format!("Join error: {e}"))?
     }?;

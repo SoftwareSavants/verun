@@ -11,6 +11,7 @@ export const [outputItems, setOutputItems] = createStore<Record<string, OutputIt
 export const [pendingApprovals, setPendingApprovals] = createStore<Record<string, ToolApprovalRequest[]>>({})
 export const [autoApprovedCounts, setAutoApprovedCounts] = createStore<Record<string, number>>({})
 export const [sessionPlanMode, setSessionPlanMode] = createStore<Record<string, boolean>>({})
+export const [sessionPlanFilePath, setSessionPlanFilePath] = createStore<Record<string, string | null>>({})
 
 export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
@@ -102,12 +103,23 @@ export async function loadOutputLines(sessionId: string) {
   const lines = await ipc.getOutputLines(sessionId)
   const items: OutputItem[] = []
   let lastPlanMode = false
+  let planFilePath: string | null = null
   for (const l of lines) {
-    // Check plan_mode on user messages for persistence
     try {
       const v = JSON.parse(l.line)
+      // Check plan_mode on user messages for persistence
       if (v.type === 'verun_user_message' && typeof v.plan_mode === 'boolean') {
         lastPlanMode = v.plan_mode
+      }
+      // Extract plan file path from ExitPlanMode control_request
+      if (v.type === 'control_request') {
+        const req = v.request as Record<string, unknown> | undefined
+        if (req?.tool_name === 'ExitPlanMode') {
+          const input = req.input as Record<string, unknown> | undefined
+          if (input?.planFilePath) {
+            planFilePath = input.planFilePath as string
+          }
+        }
       }
     } catch { /* ignore */ }
     const parsed = parseNdjsonLine(l.line)
@@ -115,6 +127,7 @@ export async function loadOutputLines(sessionId: string) {
   }
   setOutputItems(sessionId, items)
   setSessionPlanMode(sessionId, lastPlanMode)
+  setSessionPlanFilePath(sessionId, planFilePath)
 }
 
 /** Re-parse a persisted NDJSON line back into OutputItems (mirrors Rust parse_sdk_event) */

@@ -14,12 +14,15 @@
 
 ## UX & Interactions
 
-- [ ] Remove the outline from the other option's input when answering agent
-- [ ] Clicking on links navigates to them
+- [X] Remove the outline from the other option's input when answering agent
+- [X] Clicking on links navigates to them
+- [ ] Conflicts resolving should use rebase not merge
 - [ ] Persists the last selected model per project
-- [ ] Creatign a new task should always start from freshly pulled based branch (e.g. main)
+- [ ] Double click now is on the main div but not the top header bar
+- [ ] Deleting a task should have a switch to delete the branch with it or not
+- [-] Creatign a new task should always start from freshly pulled based branch (e.g. main)
 - [X] Interrupt not working
-- [ ] Keep state of tasks when switching between them
+- [-] Keep state of tasks when switching between them
 - [ ] Need an unread/attention required indicator on tasks in sidebar
 - [ ] Mention files
 - [ ] Keybindings
@@ -27,7 +30,8 @@
 
 ## Session Modes
 
-- [ ] Support plan, fast, thinking mode toggles
+- [X] Support plan mode
+- [ ] Support fast, thinking mode toggles
 - [ ] Steer & queue interaction modes
 
 ## Subagents
@@ -42,11 +46,11 @@
     - [X] New project should be a dropdown instead of modal, with just an "open folder" option
     - [X] Tool calls are too noticeable — should be collapsed like thinking
     - [X] Remove path under task name; replace with an "open in" button (default: VS Code, dropdown: Cursor, Zed, Finder) that shows before the right sidebar toggle
-- Error recovery (still P2): Error messages in toasts are still technical strings. No guided recovery for git failures.
-- Help & docs (still P2): No formal help panel or keyboard shortcut overlay. Empty states help first-run, but returning users have no reference.
-- Sidebar task creation: No loading indicator when quickCreateTask runs (worktree creation can be slow).
-- Session tab overflow: No visual scroll affordance when many sessions overflow the tab bar.
-- Accessibility: No ARIA labels, no explicit tab order management.
+- [ ] Error recovery (still P2): Error messages in toasts are still technical strings. No guided recovery for git failures.
+- [ ] Help & docs (still P2): No formal help panel or keyboard shortcut overlay. Empty states help first-run, but returning users have no reference.
+- [ ] Sidebar task creation: No loading indicator when quickCreateTask runs (worktree creation can be slow).
+- [ ] Session tab overflow: No visual scroll affordance when many sessions overflow the tab bar.
+- [ ] Accessibility: No ARIA labels, no explicit tab order management.
 
 ## Settings
 
@@ -58,6 +62,7 @@
 - [ ] File tree
 - [ ] Code editor/viewer
 - [ ] Code linting/server
+- [ ] Integrated terminal
 
 ## Usage & Billing
 

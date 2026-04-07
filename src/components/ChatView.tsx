@@ -94,6 +94,8 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         blocks.push({ type: 'user', text: item.text, images: item.images })
         break
       case 'toolStart': {
+        // Hide ExitPlanMode from the chat — it's shown as a dedicated plan overlay
+        if (item.tool === 'ExitPlanMode') break
         flushText(); flushThinking()
         // Deduplicate: if the last block is an open tool with the same name AND same input,
         // it's a duplicate from control_request + content_block_start. Merge it.

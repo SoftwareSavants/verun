@@ -26,20 +26,21 @@ export const GitActions: Component<Props> = (props) => {
   const [pr, setPr] = createSignal<PrInfo | null>(null)
   const [checks, setChecks] = createSignal<CiCheck[]>([])
   const [branchUrl, setBranchUrl] = createSignal<string | null>(null)
-  const [pushed, setPushed] = createSignal(false)
+  const [ahead, setAhead] = createSignal(0)
   const [confirming, setConfirming] = createSignal<string | null>(null)
   const [actionLoading, setActionLoading] = createSignal(false)
 
   const refresh = async () => {
-    const [, prInfo, brUrl] = await Promise.all([
+    const [, prInfo, brUrl, branchStatus] = await Promise.all([
       ipc.checkGithub(props.taskId).catch(() => null),
       ipc.getPullRequest(props.taskId).catch(() => null),
       ipc.getBranchUrl(props.taskId).catch(() => null),
+      ipc.getBranchStatus(props.taskId).catch(() => [0, 0] as [number, number]),
     ])
 
     setPr(prInfo)
     setBranchUrl(brUrl)
-    setPushed(!!brUrl)
+    setAhead(branchStatus?.[0] ?? 0)
 
     if (prInfo) {
       const ciChecks = await ipc.getCiChecks(props.taskId).catch(() => [])
@@ -120,8 +121,8 @@ export const GitActions: Component<Props> = (props) => {
     if (conflicts()) return { icon: Swords, label: 'Resolve conflicts', message: 'resolve all merge conflicts' }
     if (failedChecks().length > 0) return { icon: Wrench, label: 'Fix CI', message: `fix the failing CI checks: ${failedChecks().map(c => c.name).join(', ')}` }
     if (props.fileCount > 0) return { icon: GitCommit, label: 'Commit', message: 'commit all changes with a descriptive message' }
-    if (!pushed()) return { icon: Upload, label: 'Push', action: doPush }
-    if (!pr()) return { icon: GitPullRequest, label: 'Create PR', message: 'create a pull request with an appropriate title and description' }
+    if (ahead() > 0) return { icon: Upload, label: 'Push', action: doPush }
+    if (!pr() && branchUrl()) return { icon: GitPullRequest, label: 'Create PR', message: 'create a pull request with an appropriate title and description' }
     if (pr()?.state === 'OPEN') return { icon: GitMerge, label: 'Merge PR', message: 'merge the pull request for this branch' }
     return { icon: GitCommit, label: 'Commit', message: 'commit all changes with a descriptive message' }
   }
@@ -137,7 +138,16 @@ export const GitActions: Component<Props> = (props) => {
     if (hasReviewSkill()) {
       all.push({ icon: Search, label: 'Review', message: '/review' })
     }
-    return all.filter(a => a.label !== primary.label)
+    const hasPr = !!pr()
+    const hasPushed = !!branchUrl()
+    return all.filter(a => {
+      if (a.label === primary.label) return false
+      if (a.label === 'Push' && ahead() === 0) return false
+      if (a.label === 'Create PR' && !hasPushed) return false
+      if (a.label === 'Merge PR' && !hasPr) return false
+      if (a.label === 'Review' && !hasPr) return false
+      return true
+    })
   }
 
   // Close dropdown on outside click

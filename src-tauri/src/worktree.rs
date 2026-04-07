@@ -55,8 +55,36 @@ pub fn validate_branch_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Create a new git worktree for a task branch.
-pub fn create_worktree(repo_path: &str, branch: &str) -> Result<String, String> {
+/// Detect the default base branch for a repository.
+/// Checks for origin/main, origin/master, then falls back to the current HEAD branch.
+pub fn detect_base_branch(repo_path: &str) -> String {
+    for candidate in ["main", "master"] {
+        let output = git(repo_path)
+            .args(["rev-parse", "--verify", &format!("origin/{candidate}")])
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                return candidate.to_string();
+            }
+        }
+    }
+
+    // Fallback: current HEAD branch name
+    if let Ok(output) = git(repo_path).args(["rev-parse", "--abbrev-ref", "HEAD"]).output() {
+        if output.status.success() {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !branch.is_empty() && branch != "HEAD" {
+                return branch;
+            }
+        }
+    }
+
+    "main".to_string()
+}
+
+/// Create a new git worktree for a task branch, based off `base_branch`.
+/// Fetches the latest from origin first (best-effort).
+pub fn create_worktree(repo_path: &str, branch: &str, base_branch: &str) -> Result<String, String> {
     validate_git_installed()?;
     validate_branch_name(branch)?;
 
@@ -66,8 +94,30 @@ pub fn create_worktree(repo_path: &str, branch: &str) -> Result<String, String> 
 
     let worktree_path = format!("{}/../.verun/worktrees/{}", repo_path, branch);
 
-    // Create the branch if it doesn't exist
-    let _ = git(repo_path).args(["branch", branch]).output();
+    // Best-effort fetch from origin
+    let _ = git(repo_path).args(["fetch", "origin", base_branch]).output();
+
+    // Create the branch from the base branch.
+    // Try origin/{base_branch} first, then local {base_branch}, then fall back to HEAD.
+    let remote_ref = format!("origin/{base_branch}");
+    let branch_created = git(repo_path)
+        .args(["branch", branch, &remote_ref])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !branch_created {
+        let local_ok = git(repo_path)
+            .args(["branch", branch, base_branch])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if !local_ok {
+            // Last resort: branch from HEAD
+            let _ = git(repo_path).args(["branch", branch]).output();
+        }
+    }
 
     let output = git(repo_path)
         .args(["worktree", "add", &worktree_path, branch])
@@ -309,7 +359,7 @@ mod tests {
     fn create_and_list_worktree() {
         let (_dir, repo_path) = init_test_repo();
 
-        let wt_path = create_worktree(&repo_path, "test-branch").unwrap();
+        let wt_path = create_worktree(&repo_path, "test-branch", "main").unwrap();
         assert!(Path::new(&wt_path).exists());
 
         let worktrees = list_worktrees(&repo_path).unwrap();
@@ -321,7 +371,7 @@ mod tests {
     fn create_and_delete_worktree() {
         let (_dir, repo_path) = init_test_repo();
 
-        let wt_path = create_worktree(&repo_path, "delete-me").unwrap();
+        let wt_path = create_worktree(&repo_path, "delete-me", "main").unwrap();
         assert!(Path::new(&wt_path).exists());
 
         delete_worktree(&repo_path, &wt_path).unwrap();
@@ -330,7 +380,7 @@ mod tests {
 
     #[test]
     fn create_worktree_validates_repo() {
-        let result = create_worktree("/nonexistent/path", "branch");
+        let result = create_worktree("/nonexistent/path", "branch", "main");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("does not exist"));
     }
@@ -338,7 +388,7 @@ mod tests {
     #[test]
     fn create_worktree_validates_branch_name() {
         let (_dir, repo_path) = init_test_repo();
-        let result = create_worktree(&repo_path, "foo bar");
+        let result = create_worktree(&repo_path, "foo bar", "main");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid branch name"));
     }
@@ -347,7 +397,7 @@ mod tests {
     fn get_diff_empty_on_clean_worktree() {
         let (_dir, repo_path) = init_test_repo();
 
-        let wt_path = create_worktree(&repo_path, "clean-branch").unwrap();
+        let wt_path = create_worktree(&repo_path, "clean-branch", "main").unwrap();
         let diff = get_diff(&wt_path).unwrap();
         assert!(diff.is_empty(), "Expected empty diff, got: {diff}");
     }
@@ -356,7 +406,7 @@ mod tests {
     fn get_diff_shows_changes() {
         let (_dir, repo_path) = init_test_repo();
 
-        let wt_path = create_worktree(&repo_path, "dirty-branch").unwrap();
+        let wt_path = create_worktree(&repo_path, "dirty-branch", "main").unwrap();
 
         fs::write(format!("{wt_path}/new-file.txt"), "hello").unwrap();
         git(&wt_path).args(["add", "."]).output().unwrap();
@@ -389,7 +439,7 @@ mod tests {
         let output = git(&repo_path).args(["branch", "--show-current"]).output().unwrap();
         let main_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-        let wt_path = create_worktree(&repo_path, "merge-cleanup").unwrap();
+        let wt_path = create_worktree(&repo_path, "merge-cleanup", "main").unwrap();
         fs::write(format!("{wt_path}/feature.txt"), "feature").unwrap();
         git(&wt_path).args(["add", "."]).output().unwrap();
         git(&wt_path).args(["commit", "-m", "add feature"]).output().unwrap();
@@ -409,7 +459,7 @@ mod tests {
     #[test]
     fn branch_status_on_fresh_worktree() {
         let (_dir, repo_path) = init_test_repo();
-        let wt_path = create_worktree(&repo_path, "status-test").unwrap();
+        let wt_path = create_worktree(&repo_path, "status-test", "main").unwrap();
 
         let (ahead, behind) = get_branch_status(&wt_path).unwrap();
         assert_eq!(ahead, 0);
@@ -419,7 +469,7 @@ mod tests {
     #[test]
     fn branch_status_with_commits_ahead() {
         let (_dir, repo_path) = init_test_repo();
-        let wt_path = create_worktree(&repo_path, "ahead-test").unwrap();
+        let wt_path = create_worktree(&repo_path, "ahead-test", "main").unwrap();
 
         fs::write(format!("{wt_path}/new.txt"), "new").unwrap();
         git(&wt_path).args(["add", "."]).output().unwrap();

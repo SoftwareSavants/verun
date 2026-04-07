@@ -17,7 +17,6 @@ import {
   tasksForProject,
   loadTasks,
   deleteTask,
-  quickCreateTask,
 } from "../store/tasks";
 import {
   selectedProjectId,
@@ -28,8 +27,9 @@ import {
   setShowSettings,
 } from "../store/ui";
 import { sessionsForTask, loadSessions } from "../store/sessions";
-import { deleteProject } from "../store/projects";
+import { deleteProject, updateBaseBranch } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { NewTaskDialog } from "./NewTaskDialog";
 import {
   Plus,
   FolderPlus,
@@ -42,6 +42,7 @@ import {
   Archive,
   Folder,
   Settings,
+  GitBranch,
 } from "lucide-solid";
 import { clsx } from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -183,6 +184,9 @@ export const Sidebar: Component = () => {
     message: string;
     action: () => void;
   } | null>(null);
+  const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null);
+  const [baseBranchProject, setBaseBranchProject] = createSignal<string | null>(null);
+  const [branchOptions, setBranchOptions] = createSignal<string[]>([]);
 
   // Load tasks for all projects on mount / when projects change
   createEffect(
@@ -237,6 +241,18 @@ export const Sidebar: Component = () => {
         {
           label: "Open in Finder",
           action: () => ipc.openInFinder(project.repoPath),
+        },
+        {
+          label: `Base branch: ${project.baseBranch}`,
+          action: async () => {
+            setBaseBranchProject(projectId);
+            try {
+              const info = await ipc.getRepoInfo(project.repoPath);
+              setBranchOptions(info.branches);
+            } catch {
+              setBranchOptions([project.baseBranch]);
+            }
+          },
         },
         {
           label: "Delete Project",
@@ -367,7 +383,7 @@ export const Sidebar: Component = () => {
                     class="p-0.5 rounded opacity-60 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-secondary shrink-0"
                     onClick={(e) => {
                       e.stopPropagation();
-                      quickCreateTask(project.id);
+                      setNewTaskProjectId(project.id);
                     }}
                     title="New Task (⌘N)"
                   >
@@ -387,7 +403,7 @@ export const Sidebar: Component = () => {
                   >
                     <button
                       class="text-[10px] text-text-dim hover:text-text-muted transition-colors cursor-pointer"
-                      onClick={() => quickCreateTask(project.id)}
+                      onClick={() => setNewTaskProjectId(project.id)}
                     >
                       + New task
                     </button>
@@ -509,6 +525,54 @@ export const Sidebar: Component = () => {
         }}
         onCancel={() => setConfirmAction(null)}
       />
+
+      <NewTaskDialog
+        open={!!newTaskProjectId()}
+        projectId={newTaskProjectId()}
+        onClose={() => setNewTaskProjectId(null)}
+      />
+
+      <Show when={baseBranchProject()}>
+        <div
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={(e) => { if (e.target === e.currentTarget) setBaseBranchProject(null) }}
+          onKeyDown={(e) => { if (e.key === 'Escape') setBaseBranchProject(null) }}
+        >
+          <div class="bg-surface-2 border border-border rounded-xl shadow-2xl w-72 p-5 animate-in">
+            <h2 class="text-base font-semibold text-text-primary mb-3">Base Branch</h2>
+            <div class="flex flex-col gap-1 max-h-48 overflow-y-auto">
+              <For each={branchOptions()}>
+                {(branch) => {
+                  const project = () => projects.find(p => p.id === baseBranchProject());
+                  const isActive = () => project()?.baseBranch === branch;
+                  return (
+                    <button
+                      class={clsx(
+                        "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-left transition-colors",
+                        isActive() ? "bg-accent/15 text-accent" : "text-text-secondary hover:bg-surface-3"
+                      )}
+                      onClick={async () => {
+                        const pid = baseBranchProject();
+                        if (pid) {
+                          await updateBaseBranch(pid, branch);
+                          addToast(`Base branch set to ${branch}`, 'success');
+                        }
+                        setBaseBranchProject(null);
+                      }}
+                    >
+                      <GitBranch size={13} class="shrink-0" />
+                      {branch}
+                    </button>
+                  );
+                }}
+              </For>
+            </div>
+            <div class="flex justify-end mt-3">
+              <button class="btn-ghost text-xs" onClick={() => setBaseBranchProject(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      </Show>
     </>
   );
 };

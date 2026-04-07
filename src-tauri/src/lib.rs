@@ -56,6 +56,7 @@ pub fn run() {
             ipc::add_project,
             ipc::list_projects,
             ipc::delete_project,
+            ipc::update_project_base_branch,
             // Tasks
             ipc::create_task,
             ipc::list_tasks,

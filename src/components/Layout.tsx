@@ -3,8 +3,9 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage } from './SettingsPage'
+import { NewTaskDialog } from './NewTaskDialog'
 import { sidebarWidth, setSidebarWidth, addToast, showSettings, setShowSettings } from '../store/ui'
-import { tasks, quickCreateTask } from '../store/tasks'
+import { tasks } from '../store/tasks'
 import { addProject, projects } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId } from '../store/ui'
 
@@ -22,6 +23,7 @@ async function pickAndAddProject() {
 
 export const Layout: Component = () => {
   const [dragging, setDragging] = createSignal(false)
+  const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null)
 
   // Restore sidebar width from localStorage
   onMount(() => {
@@ -59,8 +61,8 @@ export const Layout: Component = () => {
       if (e.metaKey && e.key === 'n') {
         e.preventDefault()
         const pid = selectedProjectId()
-        if (pid) quickCreateTask(pid)
-        else if (projects.length > 0) quickCreateTask(projects[projects.length - 1].id)
+        if (pid) setNewTaskProjectId(pid)
+        else if (projects.length > 0) setNewTaskProjectId(projects[projects.length - 1].id)
         else pickAndAddProject()
       }
       if (e.metaKey && e.key >= '1' && e.key <= '9') {
@@ -104,6 +106,12 @@ export const Layout: Component = () => {
       <Show when={showSettings()} fallback={<TaskPanel />}>
         <SettingsPage />
       </Show>
+
+      <NewTaskDialog
+        open={!!newTaskProjectId()}
+        projectId={newTaskProjectId()}
+        onClose={() => setNewTaskProjectId(null)}
+      />
     </div>
   )
 }

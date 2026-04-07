@@ -6,6 +6,7 @@ const makeProject = (overrides: Partial<Project> = {}): Project => ({
   id: 'p-001',
   name: 'my-app',
   repoPath: '/tmp/my-app',
+  baseBranch: 'main',
   createdAt: 1000,
   ...overrides,
 })

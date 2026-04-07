@@ -1,7 +1,7 @@
 import { Component, createSignal, For, Show } from 'solid-js'
 import { ChevronDown, X } from 'lucide-solid'
 import { ACCENT_THEMES, getActiveTheme, setActiveTheme, type AccentTheme } from '../lib/theme'
-import { setShowSettings } from '../store/ui'
+import { setShowSettings, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist } from '../store/ui'
 
 export const SettingsPage: Component = () => {
   const [activeTheme, setActiveThemeSignal] = createSignal(getActiveTheme().name)
@@ -83,6 +83,47 @@ export const SettingsPage: Component = () => {
                   </For>
                 </div>
               </Show>
+            </div>
+          </div>
+        </div>
+
+        {/* Code Changes section */}
+        <div class="mb-8">
+          <h2 class="text-xs font-medium text-text-muted uppercase tracking-wider mb-4">Code Changes</h2>
+
+          <div class="space-y-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-sm text-text-primary">Wrap lines by default</div>
+                <div class="text-xs text-text-dim mt-0.5">Wrap long lines in diff views</div>
+              </div>
+              <button
+                class="w-9 h-5 rounded-full transition-colors relative"
+                classList={{ 'bg-accent': defaultWrapLines(), 'bg-surface-3': !defaultWrapLines() }}
+                onClick={() => setDefaultWrapLinesAndPersist(!defaultWrapLines())}
+              >
+                <div
+                  class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"
+                  classList={{ 'translate-x-4': defaultWrapLines(), 'translate-x-0.5': !defaultWrapLines() }}
+                />
+              </button>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-sm text-text-primary">Hide whitespace by default</div>
+                <div class="text-xs text-text-dim mt-0.5">Ignore whitespace changes in diffs</div>
+              </div>
+              <button
+                class="w-9 h-5 rounded-full transition-colors relative"
+                classList={{ 'bg-accent': defaultHideWhitespace(), 'bg-surface-3': !defaultHideWhitespace() }}
+                onClick={() => setDefaultHideWhitespaceAndPersist(!defaultHideWhitespace())}
+              >
+                <div
+                  class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"
+                  classList={{ 'translate-x-4': defaultHideWhitespace(), 'translate-x-0.5': !defaultHideWhitespace() }}
+                />
+              </button>
             </div>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionPlanMode, setSessionPlanMode } from '../store/sessions'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionPlanMode, setSessionPlanMode, sessionPlanFilePath } from '../store/sessions'
 import { effectiveModel, setSessionModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
@@ -94,6 +94,8 @@ export const MessageInput: Component<Props> = (props) => {
 
   const showPlanResponse = () => {
     const sid = props.sessionId
+    // Don't show the simple panel when the full plan viewer is active
+    if (showPlanViewer() && planContent()) return false
     return sid !== null && planResponseSession() === sid && !currentApproval()
   }
 
@@ -108,12 +110,20 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
 
-  // Detect when plan response should show: was running → now idle, plan mode on
+  // Detect when plan response should show:
+  // 1. Running → idle transition with plan mode on
+  // 2. Session loaded (e.g. app restart) with plan mode on and already idle
   createEffect(on(
-    () => [props.isRunning, planMode()] as const,
-    ([running, plan], prev) => {
-      if (prev && prev[0] && !running && plan && props.sessionId) {
-        setPlanResponseSession(props.sessionId)
+    () => [props.isRunning, planMode(), props.sessionId] as const,
+    ([running, plan, sid], prev) => {
+      if (!plan || !sid) return
+      // Was running, now idle → show plan response
+      if (prev && prev[0] && !running) {
+        setPlanResponseSession(sid)
+      }
+      // Session just selected, already idle, plan mode on → show plan response
+      if (!running && (!prev || prev[2] !== sid)) {
+        setPlanResponseSession(sid)
       }
     }
   ))
@@ -124,6 +134,29 @@ export const MessageInput: Component<Props> = (props) => {
     setPlanMode(false)
     setShowPlanResponse(false)
     sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+  }
+
+  // Handles both live ExitPlanMode approval and persisted plan viewer
+  const handlePlanViewerAction = (feedback: string) => {
+    const sid = props.sessionId
+    if (!sid) return
+    const approval = currentApproval()
+    if (feedback) {
+      // Request changes
+      setPlanChanges('')
+      if (approval && isExitPlanMode()) {
+        denyToolUse(approval.requestId, approval.sessionId)
+      }
+      sendMessage(sid, feedback, undefined, currentModel(), true)
+    } else {
+      // Approve
+      setPlanMode(false)
+      if (approval && isExitPlanMode()) {
+        approveToolUse(approval.requestId, approval.sessionId)
+      } else {
+        sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+      }
+    }
   }
 
   const handlePlanFeedback = () => {
@@ -147,35 +180,63 @@ export const MessageInput: Component<Props> = (props) => {
 
   const isExitPlanMode = () => currentApproval()?.toolName === 'ExitPlanMode'
   const [planFileContent, setPlanFileContent] = createSignal<string | null>(null)
-  const [planFilePath, setPlanFilePath] = createSignal<string | null>(null)
+  const [planFilePathSignal, setPlanFilePathSignal] = createSignal<string | null>(null)
 
-  // Load plan file content when ExitPlanMode approval appears
-  createEffect(on(isExitPlanMode, async (is) => {
-    if (!is) { setPlanFileContent(null); setPlanFilePath(null); return }
-    const approval = currentApproval()
-    if (!approval) return
-    // Try to get plan from tool input directly, or read from file
-    const inlinePlan = approval.toolInput.plan as string | undefined
-    const filePath = approval.toolInput.planFilePath as string | undefined
-    setPlanFilePath(filePath || null)
-    if (inlinePlan) {
-      setPlanFileContent(inlinePlan)
-    } else if (filePath) {
-      try {
-        const content = await invoke<string>('read_text_file', { path: filePath })
-        setPlanFileContent(content)
-      } catch {
-        setPlanFileContent('*Could not read plan file.*')
+  // Whether to show the full plan viewer (live approval OR persisted plan file)
+  const showPlanViewer = () => {
+    if (isExitPlanMode()) return true
+    // No live approval, but plan mode on + idle + have plan file → show viewer
+    const sid = props.sessionId
+    if (sid && planMode() && !props.isRunning && sessionPlanFilePath[sid] && planFileContent()) return true
+    return false
+  }
+
+  // Load plan file content — from live approval or persisted path
+  createEffect(on(
+    () => [isExitPlanMode(), props.sessionId, planMode()] as const,
+    async ([isExit, sid]) => {
+      // From live ExitPlanMode approval
+      if (isExit) {
+        const approval = currentApproval()
+        if (!approval) return
+        const inlinePlan = approval.toolInput.plan as string | undefined
+        const filePath = approval.toolInput.planFilePath as string | undefined
+        setPlanFilePathSignal(filePath || null)
+        if (inlinePlan) {
+          setPlanFileContent(inlinePlan)
+        } else if (filePath) {
+          try {
+            const content = await invoke<string>('read_text_file', { path: filePath })
+            setPlanFileContent(content)
+          } catch {
+            setPlanFileContent('*Could not read plan file.*')
+          }
+        }
+        return
       }
-    } else {
+      // From persisted plan file path (e.g. after restart)
+      if (sid && planMode()) {
+        const filePath = sessionPlanFilePath[sid]
+        if (filePath) {
+          setPlanFilePathSignal(filePath)
+          try {
+            const content = await invoke<string>('read_text_file', { path: filePath })
+            setPlanFileContent(content)
+          } catch {
+            setPlanFileContent(null)
+          }
+          return
+        }
+      }
       setPlanFileContent(null)
+      setPlanFilePathSignal(null)
     }
-  }))
+  ))
 
   const planContent = () => {
     const content = planFileContent()
     if (!content) return null
-    return { plan: content, filePath: planFilePath() }
+    return { plan: content, filePath: planFilePathSignal() }
   }
   const [planChanges, setPlanChanges] = createSignal('')
 
@@ -474,11 +535,24 @@ export const MessageInput: Component<Props> = (props) => {
         return
       }
 
-      // Tool approval: Enter/y = Allow, Escape/n = Deny
-      if (e.key === 'Enter' || e.key === 'y') {
+      // Skip shortcuts when plan viewer is active (it has its own input)
+      if (showPlanViewer()) return
+
+      // Skip y/n shortcuts when an input is focused
+      const active = document.activeElement
+      const isInputFocused = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')
+
+      // Tool approval: Enter = Allow, Escape = Deny, y/n only when not typing
+      if (e.key === 'Enter' && !isInputFocused) {
         e.preventDefault()
         approveToolUse(approval.requestId, approval.sessionId)
-      } else if (e.key === 'Escape' || e.key === 'n') {
+      } else if (e.key === 'y' && !isInputFocused) {
+        e.preventDefault()
+        approveToolUse(approval.requestId, approval.sessionId)
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        denyToolUse(approval.requestId, approval.sessionId)
+      } else if (e.key === 'n' && !isInputFocused) {
         e.preventDefault()
         denyToolUse(approval.requestId, approval.sessionId)
       }
@@ -724,8 +798,8 @@ export const MessageInput: Component<Props> = (props) => {
         }}
       </Show>
 
-      {/* ExitPlanMode — full plan viewer */}
-      <Show when={isExitPlanMode() && planContent()}>
+      {/* Plan viewer — live ExitPlanMode approval or persisted plan file */}
+      <Show when={showPlanViewer() && planContent()}>
         {(plan) => (
           <div
             class={clsx(
@@ -787,16 +861,7 @@ export const MessageInput: Component<Props> = (props) => {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
-                    if (planChanges().trim()) {
-                      const approval = currentApproval()!
-                      const feedback = planChanges().trim()
-                      setPlanChanges('')
-                      denyToolUse(approval.requestId, approval.sessionId)
-                      const sid = props.sessionId
-                      if (sid) sendMessage(sid, feedback, undefined, currentModel(), true)
-                    } else {
-                      approveToolUse(currentApproval()!.requestId, currentApproval()!.sessionId)
-                    }
+                    handlePlanViewerAction(planChanges().trim())
                   }
                 }}
               />
@@ -807,20 +872,9 @@ export const MessageInput: Component<Props> = (props) => {
                     ? 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25'
                     : 'bg-status-running/15 text-status-running hover:bg-status-running/25'
                 )}
-                onClick={() => {
-                  if (planChanges().trim()) {
-                    const approval = currentApproval()!
-                    const feedback = planChanges().trim()
-                    setPlanChanges('')
-                    denyToolUse(approval.requestId, approval.sessionId)
-                    const sid = props.sessionId
-                    if (sid) sendMessage(sid, feedback, undefined, currentModel(), true)
-                  } else {
-                    approveToolUse(currentApproval()!.requestId, currentApproval()!.sessionId)
-                  }
-                }}
+                onClick={() => handlePlanViewerAction(planChanges().trim())}
               >
-                {planChanges().trim() ? 'Request Changes' : 'Approve'} <span class="text-text-dim ml-1">(Enter)</span>
+                {planChanges().trim() ? 'Send' : 'Approve'} <span class="text-text-dim ml-1">(Enter)</span>
               </button>
             </div>
           </div>
@@ -828,7 +882,7 @@ export const MessageInput: Component<Props> = (props) => {
       </Show>
 
       {/* Backdrop for fullscreen plan viewer */}
-      <Show when={isExitPlanMode() && planExpanded()}>
+      <Show when={showPlanViewer() && planContent() && planExpanded()}>
         <div class="fixed inset-0 bg-black/60 z-40" />
       </Show>
 
@@ -923,7 +977,7 @@ export const MessageInput: Component<Props> = (props) => {
 
       <div class={clsx(
         'relative bg-surface-1 rounded-xl transition-all outline-none',
-        currentApproval() || showPlanResponse() ? 'hidden' : '',
+        currentApproval() || showPlanResponse() || (showPlanViewer() && planContent()) ? 'hidden' : '',
         planMode()
           ? 'border border-accent/40 shadow-[0_0_0_2px_rgba(59,130,246,0.15)]'
           : dragOver()

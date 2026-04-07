@@ -4,6 +4,7 @@ export interface Project {
   id: string
   name: string
   repoPath: string
+  baseBranch: string
   createdAt: number
 }
 

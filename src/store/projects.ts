@@ -20,5 +20,10 @@ export async function deleteProject(id: string) {
   setProjects(prev => prev.filter(p => p.id !== id))
 }
 
+export async function updateBaseBranch(id: string, baseBranch: string) {
+  await ipc.updateProjectBaseBranch(id, baseBranch)
+  setProjects(p => p.id === id, 'baseBranch', baseBranch)
+}
+
 export const projectById = (id: string) =>
   projects.find(p => p.id === id)

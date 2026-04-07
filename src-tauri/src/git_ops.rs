@@ -143,6 +143,11 @@ fn parse_porcelain_status(worktree_path: &str) -> Result<Vec<FileStatus>, String
             }
         };
 
+        // Skip directories (untracked dirs end with '/')
+        if path.ends_with('/') {
+            continue;
+        }
+
         files.push(FileStatus {
             path,
             status: status.to_string(),

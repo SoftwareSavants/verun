@@ -32,6 +32,23 @@ export function effectiveModel(sessionId: string | null): ModelId {
 export const [showAddProjectDialog, setShowAddProjectDialog] = createSignal(false)
 export const [showSettings, setShowSettings] = createSignal(false)
 
+// Code changes defaults
+const savedWrapDefault = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:defaultWrapLines') : null
+export const [defaultWrapLines, setDefaultWrapLines] = createSignal(savedWrapDefault !== null ? savedWrapDefault === 'true' : true)
+
+const savedHideWsDefault = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:defaultHideWhitespace') : null
+export const [defaultHideWhitespace, setDefaultHideWhitespace] = createSignal(savedHideWsDefault === 'true')
+
+export function setDefaultWrapLinesAndPersist(v: boolean) {
+  setDefaultWrapLines(v)
+  localStorage.setItem('verun:defaultWrapLines', String(v))
+}
+
+export function setDefaultHideWhitespaceAndPersist(v: boolean) {
+  setDefaultHideWhitespace(v)
+  localStorage.setItem('verun:defaultHideWhitespace', String(v))
+}
+
 export interface Toast {
   id: string
   message: string

@@ -1,6 +1,7 @@
 import { Component, createSignal, createEffect, on, Show, For } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { ChevronDown, ChevronRight, FileText, FilePlus, FileX, FileEdit, RefreshCw, X, WrapText, EyeOff } from 'lucide-solid'
+import { defaultWrapLines, defaultHideWhitespace } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { highlightLine, langFromPath, type HighlightToken } from '../lib/highlighter'
 import { GitActions } from './GitActions'
@@ -70,8 +71,8 @@ export const CodeChanges: Component<Props> = (props) => {
     return () => { unlisten.then(fn => fn()) }
   })
 
-  const [wordWrap, setWordWrap] = createSignal(false)
-  const [hideWhitespace, setHideWhitespace] = createSignal(false)
+  const [wordWrap, setWordWrap] = createSignal(defaultWrapLines())
+  const [hideWhitespace, setHideWhitespace] = createSignal(defaultHideWhitespace())
 
   // Syntax highlighting: shared cache across all files
   const [tokenCache, setTokenCache] = createSignal<Map<string, HighlightToken[]>>(new Map())

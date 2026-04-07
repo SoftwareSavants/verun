@@ -77,6 +77,12 @@ pub fn migrations() -> Vec<Migration> {
             CREATE INDEX IF NOT EXISTS idx_audit_task ON policy_audit_log(task_id);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 3,
+        description: "add base_branch to projects",
+        sql: "ALTER TABLE projects ADD COLUMN base_branch TEXT NOT NULL DEFAULT 'main';",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -90,6 +96,7 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub repo_path: String,
+    pub base_branch: String,
     pub created_at: i64,
 }
 
@@ -146,6 +153,7 @@ pub struct AuditEntry {
 pub enum DbWrite {
     // Projects
     InsertProject(Project),
+    UpdateProjectBaseBranch { id: String, base_branch: String },
     DeleteProject { id: String },
 
     // Tasks
@@ -201,14 +209,22 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Projects --
         DbWrite::InsertProject(p) => {
             sqlx::query(
-                "INSERT INTO projects (id, name, repo_path, created_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO projects (id, name, repo_path, base_branch, created_at) VALUES (?, ?, ?, ?, ?)",
             )
             .bind(&p.id)
             .bind(&p.name)
             .bind(&p.repo_path)
+            .bind(&p.base_branch)
             .bind(p.created_at)
             .execute(pool)
             .await?;
+        }
+        DbWrite::UpdateProjectBaseBranch { id, base_branch } => {
+            sqlx::query("UPDATE projects SET base_branch = ? WHERE id = ?")
+                .bind(&base_branch)
+                .bind(&id)
+                .execute(pool)
+                .await?;
         }
         DbWrite::DeleteProject { id } => {
             // Cascade: audit_log → trust_levels → output_lines → sessions → tasks → project
@@ -545,11 +561,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_two_migrations() {
+    fn has_three_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 2);
+        assert_eq!(m.len(), 3);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
+        assert_eq!(m[2].version, 3);
     }
 
     #[test]
@@ -571,6 +588,7 @@ mod tests {
             id: "p-001".into(),
             name: "My App".into(),
             repo_path: "/tmp/myapp".into(),
+            base_branch: "main".into(),
             created_at: 1000,
         }
     }
@@ -869,6 +887,7 @@ mod tests {
         let p = make_project();
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("repoPath").is_some());
+        assert!(json.get("baseBranch").is_some());
         assert!(json.get("createdAt").is_some());
     }
 

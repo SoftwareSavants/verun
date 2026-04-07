@@ -39,10 +39,14 @@ pub async fn add_project(
     db_tx: State<'_, DbWriteTx>,
     repo_path: String,
 ) -> Result<Project, String> {
-    let resolved = flatten_join(
+    let (resolved, base_branch) = flatten_join(
         tokio::task::spawn_blocking({
             let rp = repo_path.clone();
-            move || worktree::get_repo_root(&rp)
+            move || {
+                let root = worktree::get_repo_root(&rp)?;
+                let branch = worktree::detect_base_branch(&root);
+                Ok((root, branch))
+            }
         })
         .await,
     )?;
@@ -61,6 +65,7 @@ pub async fn add_project(
         id: Uuid::new_v4().to_string(),
         name,
         repo_path: resolved,
+        base_branch,
         created_at: epoch_ms(),
     };
 
@@ -102,6 +107,18 @@ pub async fn delete_project(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn update_project_base_branch(
+    db_tx: State<'_, DbWriteTx>,
+    id: String,
+    base_branch: String,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::UpdateProjectBaseBranch { id, base_branch })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 // Tasks
 // ---------------------------------------------------------------------------
@@ -111,12 +128,14 @@ pub async fn create_task(
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     project_id: String,
+    base_branch: Option<String>,
 ) -> Result<TaskWithSession, String> {
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or_else(|| format!("Project {project_id} not found"))?;
 
-    let (task, session) = task::create_task(db_tx.inner(), project_id, project.repo_path).await?;
+    let branch = base_branch.unwrap_or(project.base_branch);
+    let (task, session) = task::create_task(db_tx.inner(), project_id, project.repo_path, branch).await?;
     Ok(TaskWithSession { task, session })
 }
 
@@ -436,16 +455,38 @@ pub async fn get_repo_info(path: String) -> Result<RepoInfo, String> {
         tokio::task::spawn_blocking(move || {
             let root = worktree::get_repo_root(&path)?;
 
-            let output = std::process::Command::new("git")
+            // Remote branches first (stripped of origin/ prefix), then local-only branches
+            let remote_output = std::process::Command::new("git")
+                .current_dir(&root)
+                .args(["branch", "-r", "--format=%(refname:short)"])
+                .output()
+                .map_err(|e| format!("Failed to list remote branches: {e}"))?;
+
+            let mut branches: Vec<String> = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+
+            // Add remote branches first (strip origin/ prefix, skip HEAD pointer and arrows)
+            for line in String::from_utf8_lossy(&remote_output.stdout).lines() {
+                if line.contains("->") || line == "origin" { continue; }
+                let name = line.strip_prefix("origin/").unwrap_or(line);
+                if name == "HEAD" || name.is_empty() { continue; }
+                if seen.insert(name.to_string()) {
+                    branches.push(name.to_string());
+                }
+            }
+
+            // Then add local-only branches that don't have a remote
+            let local_output = std::process::Command::new("git")
                 .current_dir(&root)
                 .args(["branch", "--format=%(refname:short)"])
                 .output()
-                .map_err(|e| format!("Failed to list branches: {e}"))?;
+                .map_err(|e| format!("Failed to list local branches: {e}"))?;
 
-            let branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(|l| l.to_string())
-                .collect();
+            for line in String::from_utf8_lossy(&local_output.stdout).lines() {
+                if seen.insert(line.to_string()) {
+                    branches.push(line.to_string());
+                }
+            }
 
             let output = std::process::Command::new("git")
                 .current_dir(&root)

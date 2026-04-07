@@ -11,9 +11,12 @@ export const listProjects = () =>
 export const deleteProject = (id: string) =>
   invoke<void>('delete_project', { id })
 
+export const updateProjectBaseBranch = (id: string, baseBranch: string) =>
+  invoke<void>('update_project_base_branch', { id, baseBranch })
+
 // Tasks
-export const createTask = (projectId: string) =>
-  invoke<TaskWithSession>('create_task', { projectId })
+export const createTask = (projectId: string, baseBranch?: string) =>
+  invoke<TaskWithSession>('create_task', { projectId, baseBranch })
 
 export const listTasks = (projectId: string) =>
   invoke<Task[]>('list_tasks', { projectId })
