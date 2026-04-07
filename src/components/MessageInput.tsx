@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionPlanMode, setSessionPlanMode, sessionPlanFilePath } from '../store/sessions'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionPlanMode, setSessionPlanMode, sessionPlanFilePath, setSessionPlanFilePath } from '../store/sessions'
 import { effectiveModel, setSessionModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
@@ -149,13 +149,14 @@ export const MessageInput: Component<Props> = (props) => {
       }
       sendMessage(sid, feedback, undefined, currentModel(), true)
     } else {
-      // Approve
+      // Approve — always send a message so plan_mode: false gets persisted
       setPlanMode(false)
+      setSessionPlanFilePath(sid, null)
       if (approval && isExitPlanMode()) {
         approveToolUse(approval.requestId, approval.sessionId)
-      } else {
-        sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
       }
+      // Send implementation message (persists plan_mode: false so restart doesn't re-show)
+      sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
     }
   }
 
