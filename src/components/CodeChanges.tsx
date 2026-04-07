@@ -285,8 +285,9 @@ export const CodeChanges: Component<Props> = (props) => {
       {/* File list + diff */}
       <div class="flex-1 overflow-auto">
         <Show when={status()?.files.length === 0 && !loading()}>
-          <div class="px-4 py-8 text-center text-sm text-text-dim">
-            No changes
+          <div class="px-4 py-10 text-center">
+            <p class="text-sm text-text-muted mb-1">No changes yet</p>
+            <p class="text-xs text-text-dim">File modifications will appear here as Claude works.</p>
           </div>
         </Show>
 

@@ -43,7 +43,13 @@ export default defineConfig({
       },
     },
   },
-  safelist: ['btn', 'btn-primary', 'btn-ghost', 'btn-danger'],
+  safelist: [
+    'btn', 'btn-primary', 'btn-ghost', 'btn-danger',
+    // Sidebar task phase icons — dynamically applied
+    'text-status-idle', 'text-status-running', 'text-status-done', 'text-status-error',
+    'text-text-muted', 'text-amber-400', 'text-emerald-400', 'text-purple-400', 'text-red-400',
+    'animate-spin',
+  ],
   shortcuts: [
     ['btn', 'px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer'],
     ['btn-primary', 'btn bg-accent text-white hover:bg-accent-hover active:scale-98 disabled:opacity-40 disabled:cursor-not-allowed'],
@@ -63,6 +69,7 @@ export default defineConfig({
         :focus-visible { outline: 2px solid rgba(59, 130, 246, 0.5); outline-offset: 1px; }
 
         /* Reset native form element appearance */
+        *, *::before, *::after { box-sizing: border-box; }
         button, input, textarea, select {
           appearance: none;
           -webkit-appearance: none;
@@ -88,11 +95,12 @@ export default defineConfig({
         .prose-verun p:first-child { margin-top: 0; }
         .prose-verun p:last-child { margin-bottom: 0; }
         .prose-verun h1, .prose-verun h2, .prose-verun h3, .prose-verun h4 {
-          font-weight: 600; color: #e4e4e7; margin: 0.8em 0 0.3em;
+          color: #e4e4e7; margin: 0.8em 0 0.3em;
         }
-        .prose-verun h1 { font-size: 1.25em; }
-        .prose-verun h2 { font-size: 1.1em; }
-        .prose-verun h3 { font-size: 1em; }
+        .prose-verun h1 { font-size: 1.3em; font-weight: 700; }
+        .prose-verun h2 { font-size: 1.15em; font-weight: 600; }
+        .prose-verun h3 { font-size: 1em; font-weight: 600; color: #a1a1aa; }
+        .prose-verun h4 { font-size: 0.9em; font-weight: 600; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.03em; }
         .prose-verun strong { font-weight: 600; color: #e4e4e7; }
         .prose-verun em { font-style: italic; }
         .prose-verun code {
@@ -159,6 +167,12 @@ export default defineConfig({
         }
         .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
         .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+        /* Scroll shadow for horizontal overflow */
+        .scroll-shadow-x {
+          mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
+          -webkit-mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
+        }
 
         /* Entry animation */
         @keyframes fadeInUp {

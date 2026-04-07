@@ -1,6 +1,6 @@
 import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
-import { GitCommit, Upload, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown } from 'lucide-solid'
+import { GitCommit, Upload, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2 } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import * as ipc from '../lib/ipc'
 import { claudeSkills } from '../store/commands'
@@ -27,6 +27,8 @@ export const GitActions: Component<Props> = (props) => {
   const [checks, setChecks] = createSignal<CiCheck[]>([])
   const [branchUrl, setBranchUrl] = createSignal<string | null>(null)
   const [pushed, setPushed] = createSignal(false)
+  const [confirming, setConfirming] = createSignal<string | null>(null)
+  const [actionLoading, setActionLoading] = createSignal(false)
 
   const refresh = async () => {
     const [, prInfo, brUrl] = await Promise.all([
@@ -63,13 +65,27 @@ export const GitActions: Component<Props> = (props) => {
     setOpen(false)
   }
 
+  const needsConfirmation = (label: string) =>
+    label === 'Push' || label === 'Merge PR'
+
   const runAction = async (a: GitAction) => {
-    if (a.action) {
-      await a.action()
-      setOpen(false)
-      refresh()
-    } else if (a.message) {
-      send(a.message)
+    if (needsConfirmation(a.label) && confirming() !== a.label) {
+      setConfirming(a.label)
+      setTimeout(() => setConfirming(null), 3000)
+      return
+    }
+    setConfirming(null)
+    setActionLoading(true)
+    try {
+      if (a.action) {
+        await a.action()
+        setOpen(false)
+        refresh()
+      } else if (a.message) {
+        send(a.message)
+      }
+    } finally {
+      setActionLoading(false)
     }
   }
 
@@ -150,17 +166,27 @@ export const GitActions: Component<Props> = (props) => {
         {/* Split button */}
         <div class="flex items-center">
           <button
-            class="btn-primary flex items-center gap-1.5 text-[11px] rounded-r-none pr-2"
+            class={`flex items-center gap-1.5 text-[11px] rounded-r-none pr-2 ${
+              confirming() === primaryAction().label
+                ? 'btn-primary bg-amber-600 hover:bg-amber-500'
+                : 'btn-primary'
+            }`}
             onClick={() => runAction(primaryAction())}
-            disabled={props.isRunning}
+            disabled={props.isRunning || actionLoading()}
           >
-            <PrimaryIcon />
-            <span>{primaryAction().label}</span>
+            <Show when={actionLoading()} fallback={<PrimaryIcon />}>
+              <Loader2 size={12} class="animate-spin" />
+            </Show>
+            <span>
+              {confirming() === primaryAction().label
+                ? `Confirm ${primaryAction().label}?`
+                : primaryAction().label}
+            </span>
           </button>
           <button
             class="btn-primary rounded-l-none border-l border-white/15 px-1.5"
-            onClick={() => setOpen(!open())}
-            disabled={props.isRunning}
+            onClick={() => { setConfirming(null); setOpen(!open()) }}
+            disabled={props.isRunning || actionLoading()}
           >
             <ChevronDown size={11} />
           </button>

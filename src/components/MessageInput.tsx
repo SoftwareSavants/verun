@@ -40,6 +40,7 @@ async function fileToAttachment(file: File): Promise<Attachment | null> {
 export const MessageInput: Component<Props> = (props) => {
   let fileInputRef!: HTMLInputElement
   let textareaRef!: HTMLTextAreaElement
+  let customAnswerRef!: HTMLInputElement
   const [message, setMessage] = createSignal('')
   const [sending, setSending] = createSignal(false)
   const [attachments, setAttachments] = createSignal<Attachment[]>([])
@@ -71,20 +72,30 @@ export const MessageInput: Component<Props> = (props) => {
   }
   const [questionIndex, setQuestionIndex] = createSignal(0)
   const [questionAnswers, setQuestionAnswers] = createSignal<Record<string, string>>({})
-  const [customAnswer, setCustomAnswer] = createSignal('')
+  const [customAnswers, setCustomAnswers] = createSignal<Record<string, string>>({})
+  const [isCustomSelected, setIsCustomSelected] = createSignal<Record<string, boolean>>({})
   const currentQuestion = () => questions()[questionIndex()]
+  const customAnswer = () => customAnswers()[currentQuestion()?.question ?? ''] ?? ''
+  const setCustomAnswer = (val: string) => {
+    const q = currentQuestion()
+    if (q) setCustomAnswers(prev => ({ ...prev, [q.question]: val }))
+  }
 
   // Reset question state when approval changes
   createEffect(on(() => currentApproval()?.requestId, () => {
     setQuestionIndex(0)
     setQuestionAnswers({})
-    setCustomAnswer('')
+    setCustomAnswers({})
+    setIsCustomSelected({})
   }))
 
-  // Auto-focus textarea when session changes (e.g. new task created)
+  // Auto-focus textarea and reset height when session changes
   createEffect(on(() => props.sessionId, () => {
-    if (textareaRef && !textareaRef.disabled) {
-      requestAnimationFrame(() => textareaRef.focus())
+    if (textareaRef) {
+      textareaRef.style.height = 'auto'
+      if (!textareaRef.disabled) {
+        requestAnimationFrame(() => textareaRef.focus())
+      }
     }
   }))
 
@@ -285,12 +296,21 @@ export const MessageInput: Component<Props> = (props) => {
         const q = currentQuestion()
         if (!q) return
         const num = parseInt(e.key)
-        if (num >= 1 && num <= (q.options?.length ?? 0)) {
+        const optCount = q.options?.length ?? 0
+        if (num >= 1 && num <= optCount) {
           e.preventDefault()
           selectQuestionOption(q.options![num - 1].label)
+        } else if (num === optCount + 1) {
+          e.preventDefault()
+          customAnswerRef?.focus()
         } else if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault()
-          submitQuestionAnswers()
+          const qs = questions()
+          if (questionIndex() < qs.length - 1) {
+            setQuestionIndex(i => i + 1)
+          } else {
+            submitQuestionAnswers()
+          }
         }
         return
       }
@@ -312,7 +332,7 @@ export const MessageInput: Component<Props> = (props) => {
     const q = currentQuestion()
     if (!q) return
     setQuestionAnswers(prev => ({ ...prev, [q.question]: label }))
-    setCustomAnswer('')
+    setIsCustomSelected(prev => ({ ...prev, [q.question]: false }))
     // Auto-advance to next question after short delay
     const qs = questions()
     if (questionIndex() < qs.length - 1) {
@@ -320,17 +340,35 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
 
+  const selectCustomOption = () => {
+    const q = currentQuestion()
+    if (!q) return
+    setIsCustomSelected(prev => ({ ...prev, [q.question]: true }))
+    // Clear the preset selection so custom is the answer
+    setQuestionAnswers(prev => {
+      const next = { ...prev }
+      delete next[q.question]
+      return next
+    })
+    customAnswerRef?.focus()
+  }
+
+  const getEffectiveAnswers = () => {
+    const answers = { ...questionAnswers() }
+    const customs = customAnswers()
+    const customFlags = isCustomSelected()
+    for (const q of questions()) {
+      if (customFlags[q.question] && customs[q.question]?.trim()) {
+        answers[q.question] = customs[q.question].trim()
+      }
+    }
+    return answers
+  }
+
   const submitQuestionAnswers = () => {
     const approval = currentApproval()
     if (!approval) return
-    // If there's a custom answer for the current question, use it
-    const custom = customAnswer().trim()
-    const q = currentQuestion()
-    let answers = { ...questionAnswers() }
-    if (custom && q) {
-      answers[q.question] = custom
-    }
-    // Check all questions have answers
+    const answers = getEffectiveAnswers()
     const qs = questions()
     const allAnswered = qs.every(q => answers[q.question])
     if (!allAnswered && qs.length > 0) return
@@ -349,7 +387,7 @@ export const MessageInput: Component<Props> = (props) => {
 
   return (
     <div
-      class="px-4 py-3"
+      class="px-4 py-3 min-w-0"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -360,7 +398,7 @@ export const MessageInput: Component<Props> = (props) => {
           const q = () => currentQuestion()
           const qs = () => questions()
           return (
-            <div class="bg-surface-1 border border-accent/30 rounded-xl p-3 mb-0">
+            <div class="bg-surface-1 border border-accent/30 rounded-xl p-3 mb-0 min-w-0 overflow-hidden">
               <div class="flex items-center gap-2 mb-2">
                 <HelpCircle size={14} class="text-accent" />
                 <span class="text-xs font-medium text-accent">Question from Claude</span>
@@ -385,7 +423,7 @@ export const MessageInput: Component<Props> = (props) => {
                             return (
                               <button
                                 class={clsx(
-                                  'flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs transition-colors',
+                                  'flex items-start gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs transition-colors min-w-0',
                                   selected()
                                     ? 'bg-accent/15 border border-accent/30 text-accent'
                                     : 'bg-surface-2 border border-border text-text-secondary hover:border-border-active'
@@ -393,31 +431,67 @@ export const MessageInput: Component<Props> = (props) => {
                                 onClick={() => selectQuestionOption(opt.label)}
                               >
                                 <span class={clsx(
-                                  'w-4 h-4 rounded flex items-center justify-center text-[10px] font-medium shrink-0',
+                                  'w-4 h-4 rounded flex items-center justify-center text-[10px] font-medium shrink-0 mt-0.5',
                                   selected() ? 'bg-accent text-white' : 'bg-surface-3 text-text-dim'
                                 )}>
                                   {i() + 1}
                                 </span>
-                                <span class="font-medium">{opt.label}</span>
-                                <Show when={opt.description}>
-                                  <span class="text-text-dim">— {opt.description}</span>
-                                </Show>
+                                <div class="min-w-0">
+                                  <div class="font-medium">{opt.label}</div>
+                                  <Show when={opt.description}>
+                                    <div class="text-text-dim text-[11px] mt-0.5">{opt.description}</div>
+                                  </Show>
+                                </div>
                               </button>
                             )
                           }}
                         </For>
                       </div>
                     </Show>
-                    <input
-                      type="text"
-                      class="w-full bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 text-xs text-text-primary placeholder-text-dim outline-none focus:border-accent mb-2"
-                      placeholder="Or type a custom answer..."
-                      value={customAnswer()}
-                      onInput={(e) => setCustomAnswer(e.currentTarget.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); submitQuestionAnswers() }
-                      }}
-                    />
+                    {(() => {
+                      const customActive = () => isCustomSelected()[question().question] ?? false
+                      return (
+                        <div
+                          class={clsx(
+                            'flex items-start gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs transition-colors min-w-0 cursor-text',
+                            customActive()
+                              ? 'bg-accent/15 border border-accent/30 text-accent'
+                              : 'bg-surface-2 border border-border text-text-secondary hover:border-border-active'
+                          )}
+                          onClick={() => selectCustomOption()}
+                        >
+                          <span class={clsx(
+                            'w-4 h-4 rounded flex items-center justify-center text-[10px] font-medium shrink-0 mt-0.5',
+                            customActive() ? 'bg-accent text-white' : 'bg-surface-3 text-text-dim'
+                          )}>
+                            {(question().options?.length ?? 0) + 1}
+                          </span>
+                          <input
+                            ref={(el) => { customAnswerRef = el }}
+                            type="text"
+                            class="flex-1 min-w-0 bg-transparent outline-none text-xs text-text-primary placeholder-text-dim"
+                            placeholder="Or type a custom answer..."
+                            value={customAnswer()}
+                            onInput={(e) => {
+                              setCustomAnswer(e.currentTarget.value)
+                              if (!customActive()) selectCustomOption()
+                            }}
+                            onFocus={() => { if (!customActive()) selectCustomOption() }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault(); e.stopPropagation()
+                                const qs = questions()
+                                if (questionIndex() < qs.length - 1) {
+                                  setQuestionIndex(i => i + 1)
+                                } else {
+                                  submitQuestionAnswers()
+                                }
+                              }
+                            }}
+                          />
+                        </div>
+                      )
+                    })()}
                   </>
                 )}
               </Show>
@@ -430,13 +504,29 @@ export const MessageInput: Component<Props> = (props) => {
                     Back
                   </button>
                 </Show>
-                <button
-                  class="flex-1 py-1.5 rounded-lg bg-accent/15 text-accent text-xs font-medium hover:bg-accent/25 transition-colors disabled:opacity-30"
-                  onClick={submitQuestionAnswers}
-                  disabled={!questions().every(q => questionAnswers()[q.question] || customAnswer().trim())}
+                <Show
+                  when={questionIndex() < qs().length - 1}
+                  fallback={
+                    <button
+                      class="flex-1 py-1.5 rounded-lg bg-accent/15 text-accent text-xs font-medium hover:bg-accent/25 transition-colors disabled:opacity-30"
+                      onClick={submitQuestionAnswers}
+                      disabled={(() => {
+                        const answers = getEffectiveAnswers()
+                        return !questions().every(q => answers[q.question])
+                      })()}
+                    >
+                      Submit <span class="text-text-dim ml-1">(Enter)</span>
+                    </button>
+                  }
                 >
-                  Submit <span class="text-text-dim ml-1">(Enter)</span>
-                </button>
+                  <button
+                    class="flex-1 py-1.5 rounded-lg bg-accent/15 text-accent text-xs font-medium hover:bg-accent/25 transition-colors disabled:opacity-30"
+                    onClick={() => setQuestionIndex(i => i + 1)}
+                    disabled={!questionAnswers()[currentQuestion()?.question ?? ''] && !(isCustomSelected()[currentQuestion()?.question ?? ''] && customAnswer().trim())}
+                  >
+                    Next <span class="text-text-dim ml-1">(Enter)</span>
+                  </button>
+                </Show>
               </div>
             </div>
           )
@@ -602,7 +692,7 @@ export const MessageInput: Component<Props> = (props) => {
             <button
               class="w-8 h-8 flex items-center justify-center rounded-lg bg-status-error/10 text-status-error hover:bg-status-error/20 transition-colors"
               onClick={handleAbort}
-              title="Stop"
+              title="Stop session"
             >
               <Square size={14} />
             </button>

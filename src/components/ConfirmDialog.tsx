@@ -1,4 +1,4 @@
-import { Component, Show } from 'solid-js'
+import { Component, Show, createEffect, onCleanup } from 'solid-js'
 
 interface Props {
   open: boolean
@@ -11,17 +11,21 @@ interface Props {
 }
 
 export const ConfirmDialog: Component<Props> = (props) => {
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') props.onCancel()
-    if (e.key === 'Enter') props.onConfirm()
-  }
+  createEffect(() => {
+    if (!props.open) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') props.onCancel()
+      if (e.key === 'Enter') { e.preventDefault(); props.onConfirm() }
+    }
+    window.addEventListener('keydown', handler)
+    onCleanup(() => window.removeEventListener('keydown', handler))
+  })
 
   return (
     <Show when={props.open}>
       <div
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
         onClick={(e) => { if (e.target === e.currentTarget) props.onCancel() }}
-        onKeyDown={handleKeyDown}
       >
         <div class="bg-surface-2 border border-border rounded-xl shadow-2xl w-80 p-5 animate-in">
           <h2 class="text-base font-semibold text-text-primary mb-2">{props.title}</h2>

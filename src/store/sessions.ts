@@ -12,7 +12,8 @@ export const [pendingApprovals, setPendingApprovals] = createStore<Record<string
 
 export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
-  setSessions(list)
+  // Merge — keep sessions from other tasks, replace sessions for this task
+  setSessions(prev => [...prev.filter(s => s.taskId !== taskId), ...list])
 }
 
 export async function createSession(taskId: string): Promise<Session> {

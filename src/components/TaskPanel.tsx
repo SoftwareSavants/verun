@@ -1,11 +1,12 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionId } from '../store/ui'
+import { selectedTaskId, selectedSessionId, setSelectedSessionId, setShowAddProjectDialog } from '../store/ui'
+import { projects } from '../store/projects'
 import { taskById } from '../store/tasks'
 import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines } from '../store/sessions'
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { CodeChanges } from './CodeChanges'
-import { Square, Plus, X } from 'lucide-solid'
+import { Square, Plus, X, PanelRightClose, PanelRightOpen } from 'lucide-solid'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
@@ -72,11 +73,17 @@ export const TaskPanel: Component = () => {
     return sid ? (outputItems[sid] || []) : []
   }
 
+  const [creatingSession, setCreatingSession] = createSignal(false)
   const handleNewSession = async () => {
     const tid = selectedTaskId()
-    if (!tid) return
-    const session = await createSession(tid)
-    setSelectedSessionId(session.id)
+    if (!tid || creatingSession()) return
+    setCreatingSession(true)
+    try {
+      const session = await createSession(tid)
+      setSelectedSessionId(session.id)
+    } finally {
+      setCreatingSession(false)
+    }
   }
 
   const currentSession = () => {
@@ -84,15 +91,60 @@ export const TaskPanel: Component = () => {
     return sid ? sessionById(sid) : undefined
   }
 
+  const [showChanges, setShowChanges] = createSignal(
+    localStorage.getItem('verun:showChanges') !== 'false'
+  )
+  const toggleChanges = () => {
+    const next = !showChanges()
+    setShowChanges(next)
+    localStorage.setItem('verun:showChanges', String(next))
+  }
+
   return (
     <div class="flex-1 h-full flex bg-surface-0">
       <Show
         when={task()}
         fallback={
-          <div class="flex-1 flex items-center justify-center">
-            <div class="text-center">
-              <p class="text-base text-text-muted mb-1">No task selected</p>
-              <p class="text-sm text-text-dim">Select a task from the sidebar or create a new one</p>
+          <div class="flex-1 flex items-center justify-center drag-region">
+            <div class="text-center max-w-xs no-drag">
+              <div class="flex items-center justify-center gap-3 mb-5 text-text-dim">
+                <div class="flex flex-col items-center gap-1">
+                  <div class="w-8 h-8 rounded-lg bg-surface-2 flex items-center justify-center text-xs font-medium text-text-muted">1</div>
+                  <span class="text-[10px]">Project</span>
+                </div>
+                <span class="text-text-dim/40 mt-[-14px]">&rarr;</span>
+                <div class="flex flex-col items-center gap-1">
+                  <div class="w-8 h-8 rounded-lg bg-surface-2 flex items-center justify-center text-xs font-medium text-text-muted">2</div>
+                  <span class="text-[10px]">Task</span>
+                </div>
+                <span class="text-text-dim/40 mt-[-14px]">&rarr;</span>
+                <div class="flex flex-col items-center gap-1">
+                  <div class="w-8 h-8 rounded-lg bg-surface-2 flex items-center justify-center text-xs font-medium text-text-muted">3</div>
+                  <span class="text-[10px]">Session</span>
+                </div>
+              </div>
+              <Show
+                when={projects.length > 0}
+                fallback={
+                  <>
+                    <p class="text-sm text-text-secondary mb-1">Add a project to get started</p>
+                    <p class="text-xs text-text-dim leading-relaxed mb-4">
+                      Point Verun at a git repo, then create tasks to spin up parallel worktrees.
+                    </p>
+                    <button
+                      class="btn-primary text-xs"
+                      onClick={() => setShowAddProjectDialog(true)}
+                    >
+                      Add Project <kbd class="ml-1.5 px-1 py-0.5 rounded bg-white/10 text-[10px] font-mono">{'\u2318'}O</kbd>
+                    </button>
+                  </>
+                }
+              >
+                <p class="text-sm text-text-secondary mb-1">Pick a task to get started</p>
+                <p class="text-xs text-text-dim leading-relaxed">
+                  Select a task from the sidebar, or press <kbd class="px-1 py-0.5 rounded bg-surface-3 text-text-muted text-[10px] font-mono">{'\u2318'}N</kbd> to create one.
+                </p>
+              </Show>
             </div>
           </div>
         }
@@ -110,11 +162,18 @@ export const TaskPanel: Component = () => {
                   <span
                     class="text-[11px] text-text-dim truncate block mt-0.5 cursor-pointer hover:text-text-muted transition-colors"
                     onClick={() => ipc.openInFinder(t().worktreePath)}
-                    title="Open in Finder"
+                    title={t().worktreePath}
                   >
-                    {t().worktreePath}
+                    {t().worktreePath.split('/').pop() || t().worktreePath}
                   </span>
                 </div>
+                <button
+                  class="no-drag p-1 rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                  onClick={toggleChanges}
+                  title={showChanges() ? 'Hide changes panel' : 'Show changes panel'}
+                >
+                  {showChanges() ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+                </button>
               </div>
 
               {/* Session tabs — pill style */}
@@ -165,11 +224,13 @@ export const TaskPanel: Component = () => {
                   )}
                 </For>
                 <button
-                  class="p-1 rounded-full text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                  class="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-40"
                   onClick={handleNewSession}
+                  disabled={creatingSession()}
                   title="New Session"
                 >
-                  <Plus size={14} />
+                  <Plus size={12} class={creatingSession() ? 'animate-spin' : ''} />
+                  <span>{creatingSession() ? '...' : 'New'}</span>
                 </button>
               </div>
 
@@ -187,14 +248,16 @@ export const TaskPanel: Component = () => {
               />
             </div>
 
-            {/* Source control panel — full height, narrower */}
-            <div class="w-0 flex-[2] border-l border-border-subtle overflow-hidden">
-              <CodeChanges
-                taskId={t().id}
-                sessionId={selectedSessionId()}
-                isRunning={currentSession()?.status === 'running'}
-              />
-            </div>
+            {/* Source control panel — collapsible */}
+            <Show when={showChanges()}>
+              <div class="w-0 flex-[2] border-l border-border-subtle overflow-hidden">
+                <CodeChanges
+                  taskId={t().id}
+                  sessionId={selectedSessionId()}
+                  isRunning={currentSession()?.status === 'running'}
+                />
+              </div>
+            </Show>
           </>
         )}
       </Show>

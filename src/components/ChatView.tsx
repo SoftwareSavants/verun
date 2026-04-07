@@ -428,7 +428,12 @@ export const ChatView: Component<Props> = (props) => {
 
         <Show when={blocks.length === 0 && props.sessionStatus !== 'error'}>
           <div class="flex-1 flex items-center justify-center pt-20">
-            <p class="text-sm text-text-dim">Send a message to start</p>
+            <div class="text-center max-w-sm">
+              <p class="text-sm text-text-secondary mb-1">New session</p>
+              <p class="text-xs text-text-dim leading-relaxed">
+                Describe what you want Claude to build, fix, or explore in this worktree.
+              </p>
+            </div>
           </div>
         </Show>
       </div>

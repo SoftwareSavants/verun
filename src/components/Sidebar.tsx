@@ -1,4 +1,6 @@
-import { Component, For, Show, createSignal, createMemo, createEffect, on } from 'solid-js'
+import { Component, For, Show, createSignal, createMemo, createEffect, on, onCleanup } from 'solid-js'
+import { createStore, produce } from 'solid-js/store'
+import { listen } from '@tauri-apps/api/event'
 import { projects } from '../store/projects'
 import { tasks, tasksForProject, loadTasks, deleteTask, quickCreateTask } from '../store/tasks'
 import {
@@ -6,27 +8,110 @@ import {
   selectedTaskId, setSelectedTaskId,
   setShowAddProjectDialog,
 } from '../store/ui'
-import { sessions, sessionsForTask } from '../store/sessions'
+import { sessions, sessionsForTask, loadSessions } from '../store/sessions'
 import { deleteProject } from '../store/projects'
 import { ConfirmDialog } from './ConfirmDialog'
-import { Plus, FolderPlus } from 'lucide-solid'
+import {
+  Plus, FolderPlus, Loader2, Circle, AlertCircle,
+  GitPullRequest, GitMerge, CircleX,
+} from 'lucide-solid'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
-import type { SessionStatus } from '../types'
 
-const statusColor: Record<SessionStatus, string> = {
-  running: 'bg-status-running',
-  idle: 'bg-status-idle',
-  done: 'bg-status-done',
-  error: 'bg-status-error',
+// ---------------------------------------------------------------------------
+// Composite task status — richer than just session status
+// ---------------------------------------------------------------------------
+
+type TaskPhase =
+  | 'idle'        // nothing happening
+  | 'running'     // session actively running
+  | 'error'       // session errored
+  | 'pr-open'     // PR created and open
+  | 'ci-failed'   // PR has failing CI checks
+  | 'conflicts'   // PR has merge conflicts
+  | 'pr-merged'   // PR merged
+
+interface TaskGitState {
+  hasChanges: boolean
+  pushed: boolean
+  prState: string | null   // 'OPEN' | 'MERGED' | 'CLOSED' | null
+  mergeable: string | null  // 'MERGEABLE' | 'CONFLICTING' | null
+  ciFailed: boolean
 }
 
-function taskStatus(taskId: string): SessionStatus {
+const [taskGitStates, setTaskGitStates] = createStore<Record<string, TaskGitState>>({})
+
+async function refreshTaskGitState(taskId: string) {
+  try {
+    const [gitStatus, prInfo, branchUrl] = await Promise.all([
+      ipc.getGitStatus(taskId).catch(() => null),
+      ipc.getPullRequest(taskId).catch(() => null),
+      ipc.getBranchUrl(taskId).catch(() => null),
+    ])
+
+    let ciFailed = false
+    if (prInfo) {
+      const checks = await ipc.getCiChecks(taskId).catch(() => [])
+      ciFailed = checks.some(c => c.status === 'FAILURE' || c.status === 'ERROR')
+    }
+
+    setTaskGitStates(produce(s => {
+      s[taskId] = {
+        hasChanges: (gitStatus?.files.length ?? 0) > 0,
+        pushed: !!branchUrl,
+        prState: prInfo?.state ?? null,
+        mergeable: prInfo?.mergeable ?? null,
+        ciFailed,
+      }
+    }))
+  } catch {
+    // Silently fail — git state is supplementary
+  }
+}
+
+function taskPhase(taskId: string): TaskPhase {
+  // Session status takes priority for running/error
   const taskSessions = sessionsForTask(taskId)
-  if (taskSessions.length === 0) return 'idle'
-  const running = taskSessions.find(s => s.status === 'running')
-  if (running) return 'running'
-  return taskSessions[0].status as SessionStatus
+  const hasRunning = taskSessions.some(s => s.status === 'running')
+  if (hasRunning) return 'running'
+
+  const hasError = taskSessions.some(s => s.status === 'error')
+  if (hasError) return 'error'
+
+  // Git/PR state
+  const git = taskGitStates[taskId]
+  if (git) {
+    if (git.mergeable === 'CONFLICTING') return 'conflicts'
+    if (git.ciFailed) return 'ci-failed'
+    if (git.prState === 'MERGED') return 'pr-merged'
+    if (git.prState === 'OPEN') return 'pr-open'
+  }
+
+  return 'idle'
+}
+
+const PHASE_CONFIG: Record<TaskPhase, { color: string; title: string }> = {
+  idle:       { color: 'text-status-idle',    title: 'Idle' },
+  running:    { color: 'text-text-muted',      title: 'Running' },
+  error:      { color: 'text-status-error',   title: 'Error' },
+  'pr-open':  { color: 'text-emerald-400',    title: 'PR open' },
+  'ci-failed':{ color: 'text-red-400',        title: 'CI failing' },
+  conflicts:  { color: 'text-amber-400',      title: 'Merge conflicts' },
+  'pr-merged':{ color: 'text-purple-400',     title: 'Merged' },
+}
+
+const PhaseIcon: Component<{ phase: TaskPhase }> = (props) => {
+  const size = 12
+  switch (props.phase) {
+    case 'running':    return <Loader2 size={size} class="animate-spin" />
+    case 'error':      return <AlertCircle size={size} />
+    case 'pr-open':    return <GitPullRequest size={size} />
+    case 'ci-failed':  return <CircleX size={size} />
+    case 'conflicts':  return <CircleX size={size} />
+    case 'pr-merged':  return <GitMerge size={size} />
+    case 'idle':
+    default:           return <Circle size={size} />
+  }
 }
 
 interface MenuPos { x: number; y: number }
@@ -42,6 +127,22 @@ export const Sidebar: Component = () => {
       loadTasks(p.id)
     }
   }))
+
+  // Load sessions + git state for all tasks on mount and when tasks change
+  createEffect(on(() => tasks.length, () => {
+    for (const t of tasks) {
+      loadSessions(t.id)
+      refreshTaskGitState(t.id)
+    }
+  }))
+
+  // Listen for git-status-changed events to refresh specific tasks
+  createEffect(() => {
+    const unlisten = listen<{ taskId: string }>('git-status-changed', (event) => {
+      refreshTaskGitState(event.payload.taskId)
+    })
+    onCleanup(() => { unlisten.then(fn => fn()) })
+  })
 
   const statusCounts = createMemo(() => {
     const counts = { running: 0, done: 0, error: 0, idle: 0 }
@@ -110,7 +211,7 @@ export const Sidebar: Component = () => {
         </div>
       </Show>
 
-      <div class="h-full bg-surface-1 flex flex-col">
+      <div class="h-full bg-surface-1 flex flex-col overflow-hidden">
         {/* Titlebar drag region */}
         <div class="h-12 shrink-0 drag-region" />
 
@@ -127,13 +228,13 @@ export const Sidebar: Component = () => {
         </div>
 
         {/* Project + task list */}
-        <div class="flex-1 overflow-y-auto px-2 no-drag">
+        <div class="flex-1 overflow-y-auto overflow-x-hidden px-3 no-drag">
           <For each={projects}>
             {(project) => (
               <div class="mb-1">
                 <div
                   class={clsx(
-                    'w-full text-left px-2 py-1.5 rounded-lg transition-colors flex items-center justify-between group cursor-pointer',
+                    'w-full text-left px-2 py-1.5 rounded-lg transition-colors flex items-center justify-between group cursor-pointer min-w-0',
                     'hover:bg-surface-2',
                     selectedProjectId() === project.id && 'bg-surface-2'
                   )}
@@ -142,33 +243,53 @@ export const Sidebar: Component = () => {
                 >
                   <span class="text-sm text-text-primary truncate">{project.name}</span>
                   <button
-                    class="p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-secondary"
+                    class="p-0.5 rounded opacity-60 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-secondary shrink-0"
                     onClick={(e) => { e.stopPropagation(); quickCreateTask(project.id) }}
-                    title="New Task"
+                    title="New Task (⌘N)"
                   >
                     <Plus size={14} />
                   </button>
                 </div>
 
+                <Show when={tasksForProject(project.id).length === 0 && selectedProjectId() === project.id}>
+                  <div class="ml-3.5 border-l border-border-active pl-3 py-0.5">
+                    <button
+                      class="text-[10px] text-text-dim hover:text-text-muted transition-colors cursor-pointer"
+                      onClick={() => quickCreateTask(project.id)}
+                    >
+                      + New task
+                    </button>
+                  </div>
+                </Show>
+
                 <Show when={tasksForProject(project.id).length > 0}>
-                  <div class="ml-2 mt-0.5">
+                  <div class="ml-3.5 border-l border-border-active mt-0.5">
                     <For each={tasksForProject(project.id)}>
                       {(task) => {
-                        const status = () => taskStatus(task.id)
+                        const phase = () => taskPhase(task.id)
+                        const config = () => PHASE_CONFIG[phase()]
                         return (
                           <button
                             class={clsx(
-                              'w-full text-left px-2 py-1 rounded-md transition-colors flex items-center gap-2',
+                              'w-full text-left ml-px pl-3 pr-2 py-1.5 rounded-r-md transition-colors flex items-start gap-2',
                               'hover:bg-surface-2',
                               selectedTaskId() === task.id && 'bg-surface-2'
                             )}
                             onClick={() => setSelectedTaskId(task.id)}
                             onContextMenu={(e) => showTaskMenu(e, task.id)}
+                            title={config().title}
                           >
-                            <div class={clsx('w-1.5 h-1.5 rounded-full shrink-0', statusColor[status()])} />
-                            <span class="text-xs text-text-secondary truncate">
-                              {task.name || 'New task'}
+                            <span class={clsx('shrink-0 mt-0.5', config().color)}>
+                              <PhaseIcon phase={phase()} />
                             </span>
+                            <div class="min-w-0">
+                              <div class="text-xs text-text-secondary truncate">
+                                {task.name || 'New task'}
+                              </div>
+                              <div class="text-[10px] text-text-dim truncate">
+                                {task.branch}
+                              </div>
+                            </div>
                           </button>
                         )
                       }}
@@ -181,13 +302,19 @@ export const Sidebar: Component = () => {
 
           {/* Empty state */}
           <Show when={projects.length === 0}>
-            <div class="px-2 py-8 text-center">
-              <p class="text-sm text-text-muted mb-3">No projects yet</p>
+            <div class="px-3 py-10 flex flex-col items-center">
+              <div class="w-10 h-10 rounded-xl bg-surface-3 flex items-center justify-center mb-4">
+                <FolderPlus size={20} class="text-text-muted" />
+              </div>
+              <p class="text-sm text-text-primary font-medium mb-1">Add a git repo</p>
+              <p class="text-xs text-text-dim text-center leading-relaxed mb-5">
+                Each repo becomes a project. Create tasks to spin up parallel worktrees.
+              </p>
               <button
-                class="btn-primary text-xs"
+                class="btn-primary text-xs px-4 py-1.5"
                 onClick={() => setShowAddProjectDialog(true)}
               >
-                Add a repo
+                Add Project
               </button>
             </div>
           </Show>
