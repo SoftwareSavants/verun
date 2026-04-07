@@ -58,6 +58,11 @@ export async function denyToolUse(requestId: string, sessionId: string) {
   removeApproval(requestId, sessionId)
 }
 
+export async function answerQuestion(requestId: string, sessionId: string, answers: Record<string, string>, originalInput: Record<string, unknown>) {
+  await ipc.respondToApproval(requestId, 'allow', { ...originalInput, answers })
+  removeApproval(requestId, sessionId)
+}
+
 function removeApproval(requestId: string, sessionId: string) {
   setPendingApprovals(produce(store => {
     const list = store[sessionId]

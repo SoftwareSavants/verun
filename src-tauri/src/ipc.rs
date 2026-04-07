@@ -1,6 +1,8 @@
 use crate::db::{
     self, DbWriteTx, OutputLine, Project, Session, Task,
 };
+use crate::git_ops;
+use crate::github;
 use crate::task::{self, ActiveMap, ApprovalResponse, PendingApprovals};
 use crate::worktree;
 use serde::Serialize;
@@ -249,15 +251,17 @@ pub async fn abort_message(
     task::abort_message(active.inner(), &session_id).await
 }
 
-/// Respond to a pending tool approval request
+/// Respond to a pending tool approval request.
+/// For AskUserQuestion, pass `updated_input` with the original questions + answers map.
 #[tauri::command]
 pub async fn respond_to_approval(
     pending: State<'_, PendingApprovals>,
     request_id: String,
     behavior: String,
+    updated_input: Option<serde_json::Value>,
 ) -> Result<(), String> {
     if let Some((_, tx)) = pending.remove(&request_id) {
-        let _ = tx.send(ApprovalResponse { behavior });
+        let _ = tx.send(ApprovalResponse { behavior, updated_input });
         Ok(())
     } else {
         Err(format!("No pending approval with id {request_id}"))
@@ -383,6 +387,290 @@ pub async fn get_repo_info(path: String) -> Result<RepoInfo, String> {
             })
         })
         .await,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Git operations (structured status, diffs, stage, commit, push, pull)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_git_status(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<git_ops::GitStatus, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::get_git_status(&t.worktree_path)).await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_file_diff(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    file_path: String,
+    context_lines: Option<u32>,
+    ignore_whitespace: Option<bool>,
+) -> Result<git_ops::FileDiff, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::get_file_diff(&t.worktree_path, &file_path, context_lines, ignore_whitespace))
+            .await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_file_context(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    file_path: String,
+    start_line: u32,
+    end_line: u32,
+    version: String,
+) -> Result<Vec<String>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            git_ops::get_file_context(&t.worktree_path, &file_path, start_line, end_line, &version)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn git_stage(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            if paths.is_empty() {
+                git_ops::stage_all(&t.worktree_path)
+            } else {
+                git_ops::stage_files(&t.worktree_path, &paths)
+            }
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn git_unstage(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::unstage_files(&t.worktree_path, &paths))
+            .await,
+    )
+}
+
+#[tauri::command]
+pub async fn git_commit(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    message: String,
+) -> Result<String, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::commit(&t.worktree_path, &message)).await,
+    )
+}
+
+#[tauri::command]
+pub async fn git_push(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::push_branch(&t.worktree_path)).await,
+    )
+}
+
+#[tauri::command]
+pub async fn git_pull(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<String, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::pull_branch(&t.worktree_path)).await,
+    )
+}
+
+#[tauri::command]
+pub async fn git_commit_and_push(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    message: String,
+) -> Result<String, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            // Stage all first
+            git_ops::stage_all(&t.worktree_path)?;
+            // Commit
+            let hash = git_ops::commit(&t.worktree_path, &message)?;
+            // Push
+            git_ops::push_branch(&t.worktree_path)?;
+            Ok(hash)
+        })
+        .await,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// GitHub
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn check_github(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<Option<github::GitHubRepo>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::detect_github_repo(&t.worktree_path)).await,
+    )
+}
+
+#[tauri::command]
+pub async fn create_pull_request(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    title: String,
+    body: String,
+    base: String,
+) -> Result<github::PrInfo, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            github::create_pr(&t.worktree_path, &title, &body, &base)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_pull_request(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<Option<github::PrInfo>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::get_pr_for_branch(&t.worktree_path)).await,
+    )
+}
+
+#[tauri::command]
+pub async fn git_ship(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    commit_message: String,
+    pr_title: String,
+    pr_body: String,
+    base: String,
+) -> Result<github::PrInfo, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            // Stage all
+            git_ops::stage_all(&t.worktree_path)?;
+            // Commit (may fail if nothing to commit, that's ok for ship)
+            let _ = git_ops::commit(&t.worktree_path, &commit_message);
+            // Push
+            git_ops::push_branch(&t.worktree_path)?;
+            // Create PR
+            github::create_pr(&t.worktree_path, &pr_title, &pr_body, &base)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_ci_checks(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<Vec<github::CiCheck>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::get_ci_checks(&t.worktree_path)).await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_branch_url(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<Option<String>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::get_branch_url(&t.worktree_path)).await,
+    )
+}
+
+#[tauri::command]
+pub async fn has_conflicts(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<bool, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::has_conflicts(&t.worktree_path)).await,
     )
 }
 

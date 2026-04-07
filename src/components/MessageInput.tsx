@@ -1,10 +1,10 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse } from '../store/sessions'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion } from '../store/sessions'
 import { effectiveModel, setSessionModel, setSelectedSessionId } from '../store/ui'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import type { Command } from '../store/commands'
-import { Send, Square, X, Plus, ShieldAlert } from 'lucide-solid'
+import { Send, Square, X, Plus, ShieldAlert, HelpCircle } from 'lucide-solid'
 import { clsx } from 'clsx'
 import type { Attachment, ModelId } from '../types'
 import { selectedTaskId } from '../store/ui'
@@ -60,6 +60,26 @@ export const MessageInput: Component<Props> = (props) => {
     if (!sid) return 0
     return pendingApprovals[sid]?.length ?? 0
   }
+
+  // AskUserQuestion state
+  const isQuestion = () => currentApproval()?.toolName === 'AskUserQuestion'
+  const questions = () => {
+    const approval = currentApproval()
+    if (!approval || !isQuestion()) return []
+    const qs = approval.toolInput.questions
+    return Array.isArray(qs) ? qs as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean }> : []
+  }
+  const [questionIndex, setQuestionIndex] = createSignal(0)
+  const [questionAnswers, setQuestionAnswers] = createSignal<Record<string, string>>({})
+  const [customAnswer, setCustomAnswer] = createSignal('')
+  const currentQuestion = () => questions()[questionIndex()]
+
+  // Reset question state when approval changes
+  createEffect(on(() => currentApproval()?.requestId, () => {
+    setQuestionIndex(0)
+    setQuestionAnswers({})
+    setCustomAnswer('')
+  }))
 
   // Auto-focus textarea when session changes (e.g. new task created)
   createEffect(on(() => props.sessionId, () => {
@@ -253,13 +273,29 @@ export const MessageInput: Component<Props> = (props) => {
     el.style.height = Math.min(el.scrollHeight, 200) + 'px'
   }
 
-  // Keyboard shortcuts for approval: Enter/y = Allow, Escape/n = Deny
+  // Keyboard shortcuts for approval/question UI
   onMount(() => {
     const approvalKeyHandler = (e: KeyboardEvent) => {
       const approval = currentApproval()
       if (!approval) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
 
+      // AskUserQuestion: number keys select options
+      if (isQuestion()) {
+        const q = currentQuestion()
+        if (!q) return
+        const num = parseInt(e.key)
+        if (num >= 1 && num <= (q.options?.length ?? 0)) {
+          e.preventDefault()
+          selectQuestionOption(q.options![num - 1].label)
+        } else if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault()
+          submitQuestionAnswers()
+        }
+        return
+      }
+
+      // Tool approval: Enter/y = Allow, Escape/n = Deny
       if (e.key === 'Enter' || e.key === 'y') {
         e.preventDefault()
         approveToolUse(approval.requestId, approval.sessionId)
@@ -271,6 +307,35 @@ export const MessageInput: Component<Props> = (props) => {
     window.addEventListener('keydown', approvalKeyHandler)
     onCleanup(() => window.removeEventListener('keydown', approvalKeyHandler))
   })
+
+  const selectQuestionOption = (label: string) => {
+    const q = currentQuestion()
+    if (!q) return
+    setQuestionAnswers(prev => ({ ...prev, [q.question]: label }))
+    setCustomAnswer('')
+    // Auto-advance to next question after short delay
+    const qs = questions()
+    if (questionIndex() < qs.length - 1) {
+      setTimeout(() => setQuestionIndex(i => i + 1), 200)
+    }
+  }
+
+  const submitQuestionAnswers = () => {
+    const approval = currentApproval()
+    if (!approval) return
+    // If there's a custom answer for the current question, use it
+    const custom = customAnswer().trim()
+    const q = currentQuestion()
+    let answers = { ...questionAnswers() }
+    if (custom && q) {
+      answers[q.question] = custom
+    }
+    // Check all questions have answers
+    const qs = questions()
+    const allAnswered = qs.every(q => answers[q.question])
+    if (!allAnswered && qs.length > 0) return
+    answerQuestion(approval.requestId, approval.sessionId, answers, approval.toolInput)
+  }
 
   const formatToolInput = (input: Record<string, unknown>) => {
     const keys = Object.keys(input)
@@ -289,8 +354,97 @@ export const MessageInput: Component<Props> = (props) => {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {/* AskUserQuestion UI */}
+      <Show when={isQuestion() && currentApproval()}>
+        {(_approval) => {
+          const q = () => currentQuestion()
+          const qs = () => questions()
+          return (
+            <div class="bg-surface-1 border border-accent/30 rounded-xl p-3 mb-0">
+              <div class="flex items-center gap-2 mb-2">
+                <HelpCircle size={14} class="text-accent" />
+                <span class="text-xs font-medium text-accent">Question from Claude</span>
+                <Show when={qs().length > 1}>
+                  <span class="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded-full">
+                    {questionIndex() + 1}/{qs().length}
+                  </span>
+                </Show>
+              </div>
+              <Show when={q()}>
+                {(question) => (
+                  <>
+                    <Show when={question().header}>
+                      <div class="text-[11px] text-text-muted mb-0.5">{question().header}</div>
+                    </Show>
+                    <div class="text-sm text-text-primary mb-2">{question().question}</div>
+                    <Show when={question().options && question().options!.length > 0}>
+                      <div class="flex flex-col gap-1 mb-2">
+                        <For each={question().options!}>
+                          {(opt, i) => {
+                            const selected = () => questionAnswers()[question().question] === opt.label
+                            return (
+                              <button
+                                class={clsx(
+                                  'flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs transition-colors',
+                                  selected()
+                                    ? 'bg-accent/15 border border-accent/30 text-accent'
+                                    : 'bg-surface-2 border border-border text-text-secondary hover:border-border-active'
+                                )}
+                                onClick={() => selectQuestionOption(opt.label)}
+                              >
+                                <span class={clsx(
+                                  'w-4 h-4 rounded flex items-center justify-center text-[10px] font-medium shrink-0',
+                                  selected() ? 'bg-accent text-white' : 'bg-surface-3 text-text-dim'
+                                )}>
+                                  {i() + 1}
+                                </span>
+                                <span class="font-medium">{opt.label}</span>
+                                <Show when={opt.description}>
+                                  <span class="text-text-dim">— {opt.description}</span>
+                                </Show>
+                              </button>
+                            )
+                          }}
+                        </For>
+                      </div>
+                    </Show>
+                    <input
+                      type="text"
+                      class="w-full bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 text-xs text-text-primary placeholder-text-dim outline-none focus:border-accent mb-2"
+                      placeholder="Or type a custom answer..."
+                      value={customAnswer()}
+                      onInput={(e) => setCustomAnswer(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); submitQuestionAnswers() }
+                      }}
+                    />
+                  </>
+                )}
+              </Show>
+              <div class="flex gap-2">
+                <Show when={qs().length > 1 && questionIndex() > 0}>
+                  <button
+                    class="px-3 py-1.5 rounded-lg bg-surface-3 text-text-secondary text-xs font-medium hover:bg-surface-4 transition-colors"
+                    onClick={() => setQuestionIndex(i => i - 1)}
+                  >
+                    Back
+                  </button>
+                </Show>
+                <button
+                  class="flex-1 py-1.5 rounded-lg bg-accent/15 text-accent text-xs font-medium hover:bg-accent/25 transition-colors disabled:opacity-30"
+                  onClick={submitQuestionAnswers}
+                  disabled={!questions().every(q => questionAnswers()[q.question] || customAnswer().trim())}
+                >
+                  Submit <span class="text-text-dim ml-1">(Enter)</span>
+                </button>
+              </div>
+            </div>
+          )
+        }}
+      </Show>
+
       {/* Tool approval overlay */}
-      <Show when={currentApproval()}>
+      <Show when={!isQuestion() && currentApproval()}>
         {(approval) => (
           <div class="bg-surface-1 border border-amber-500/30 rounded-xl p-3 mb-0">
             <div class="flex items-center justify-between mb-2">

@@ -70,9 +70,12 @@ pub fn new_active_map() -> ActiveMap {
 // Pending tool approval requests
 // ---------------------------------------------------------------------------
 
-/// Response from the frontend for a tool approval request
+/// Response from the frontend for a tool approval request.
+/// For normal tools: behavior is "allow" or "deny".
+/// For AskUserQuestion: behavior is "allow" and updated_input contains the answers.
 pub struct ApprovalResponse {
     pub behavior: String,
+    pub updated_input: Option<serde_json::Value>,
 }
 
 /// request_id → oneshot sender waiting for user's approval decision
@@ -365,6 +368,7 @@ pub async fn send_message(
     let monitor_app = app.clone();
     let monitor_db_tx = db_tx.clone();
     let monitor_sid = session_id.clone();
+    let monitor_tid = task_id.clone();
     let monitor_active = active.clone();
     let monitor_pending = pending_approvals.clone();
     tokio::spawn(async move {
@@ -420,6 +424,14 @@ pub async fn send_message(
             stream::SessionStatusEvent {
                 session_id: monitor_sid,
                 status: final_status.to_string(),
+            },
+        );
+
+        // Notify frontend that git status may have changed
+        let _ = monitor_app.emit(
+            "git-status-changed",
+            stream::GitStatusChangedEvent {
+                task_id: monitor_tid,
             },
         );
     });

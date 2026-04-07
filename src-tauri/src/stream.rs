@@ -77,6 +77,13 @@ pub struct TaskNameEvent {
     pub name: String,
 }
 
+/// Emitted to frontend when git status may have changed (session ended)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusChangedEvent {
+    pub task_id: String,
+}
+
 /// Emitted to frontend when Claude needs tool approval
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -404,18 +411,19 @@ async fn handle_control_request(
     let (tx, rx) = tokio::sync::oneshot::channel::<ApprovalResponse>();
     pending_approvals.insert(request_id.clone(), tx);
 
-    let behavior = match rx.await {
-        Ok(resp) => resp.behavior,
-        Err(_) => "deny".to_string(), // channel dropped (e.g. abort) → deny
+    let (behavior, updated_input) = match rx.await {
+        Ok(resp) => (resp.behavior, resp.updated_input),
+        Err(_) => ("deny".to_string(), None), // channel dropped (e.g. abort) → deny
     };
 
     pending_approvals.remove(&request_id);
 
     // Build control_response
     let response_inner = if behavior == "allow" {
+        let input = updated_input.unwrap_or(tool_input);
         serde_json::json!({
             "behavior": "allow",
-            "updatedInput": tool_input
+            "updatedInput": input
         })
     } else {
         serde_json::json!({
