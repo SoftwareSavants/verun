@@ -1,6 +1,6 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
 import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast } from '../store/ui'
-import { projects, addProject } from '../store/projects'
+import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { taskById } from '../store/tasks'
 import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines } from '../store/sessions'
@@ -244,111 +244,161 @@ export const TaskPanel: Component = () => {
           </div>
         }
       >
-        {(t) => (
-          <>
-            {/* Chat column */}
-            <div class="flex flex-col w-0 flex-[3] overflow-hidden">
-              {/* Header — drag region for titlebar */}
-              <div class="px-4 pt-10 pb-2 flex items-center justify-between bg-surface-0 drag-region">
-                <h2 class="text-sm font-semibold text-text-primary truncate min-w-0 no-drag">
-                  {t().name || 'New task'}
-                </h2>
-                <div class="flex items-center gap-1 no-drag shrink-0">
-                  <OpenInButton path={t().worktreePath} />
-                  <button
-                    class="h-6 w-6 flex items-center justify-center rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                    onClick={toggleChanges}
-                    title={showChanges() ? 'Hide changes panel' : 'Show changes panel'}
-                  >
-                    {showChanges() ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
-                  </button>
-                </div>
-              </div>
+        {(t) => {
+          const creating = () => isTaskCreating(t().id)
+          const error = () => getTaskError(t().id)
 
-              {/* Session tabs — pill style */}
-              <div class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
-                <For each={taskSessions()}>
-                  {(session) => (
-                    <div
-                      class={clsx(
-                        'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap cursor-pointer',
-                        selectedSessionId() === session.id
-                          ? 'bg-accent-muted text-accent-hover border border-accent/20'
-                          : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
-                      )}
-                      onClick={() => setSelectedSessionId(session.id)}
-                    >
-                      <span>{session.name || 'New session'}</span>
-                      <SessionTime session={session} />
-
-                      <Show when={session.status === 'running'}>
-                        <button
-                          class="ml-0.5 text-status-error hover:text-red-300 transition-colors"
-                          onClick={(e) => { e.stopPropagation(); abortMessage(session.id) }}
-                          title="Stop"
-                        >
-                          <Square size={8} />
-                        </button>
-                      </Show>
-
-                      <Show when={session.status !== 'running'}>
-                        <button
-                          class="ml-0.5 opacity-0 group-hover:opacity-100 text-text-dim hover:text-text-muted transition-all"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            const sessions = taskSessions()
-                            const idx = sessions.findIndex(s => s.id === session.id)
-                            if (selectedSessionId() === session.id) {
-                              const next = sessions[idx + 1] || sessions[idx - 1]
-                              setSelectedSessionId(next?.id ?? null)
-                            }
-                            closeSession(session.id)
-                          }}
-                          title="Close session"
-                        >
-                          <X size={10} />
-                        </button>
-                      </Show>
+          return (
+            <>
+              {/* Chat column */}
+              <div class="flex flex-col w-0 flex-[3] overflow-hidden">
+                {/* Header — drag region for titlebar */}
+                <div class="px-4 pt-10 pb-2 flex items-center justify-between bg-surface-0 drag-region">
+                  <h2 class="text-sm font-semibold text-text-primary truncate min-w-0 no-drag">
+                    {t().name || 'New task'}
+                  </h2>
+                  <Show when={!creating() && !error()}>
+                    <div class="flex items-center gap-1 no-drag shrink-0">
+                      <OpenInButton path={t().worktreePath} />
+                      <button
+                        class="h-6 w-6 flex items-center justify-center rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                        onClick={toggleChanges}
+                        title={showChanges() ? 'Hide changes panel' : 'Show changes panel'}
+                      >
+                        {showChanges() ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+                      </button>
                     </div>
-                  )}
-                </For>
-                <button
-                  class="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-40"
-                  onClick={handleNewSession}
-                  disabled={creatingSession()}
-                  title="New Session"
-                >
-                  <Plus size={12} class={creatingSession() ? 'animate-spin' : ''} />
-                  <span>{creatingSession() ? '...' : 'New'}</span>
-                </button>
+                  </Show>
+                </div>
+
+                {/* Creating state */}
+                <Show when={creating()}>
+                  <div class="flex-1 flex items-center justify-center">
+                    <div class="text-center">
+                      <Loader2 size={24} class="animate-spin text-accent mx-auto mb-3" />
+                      <p class="text-sm text-text-secondary mb-1">Setting up worktree…</p>
+                      <p class="text-xs text-text-dim">Fetching latest and creating branch</p>
+                    </div>
+                  </div>
+                </Show>
+
+                {/* Error state */}
+                <Show when={error()}>
+                  <div class="flex-1 flex items-center justify-center">
+                    <div class="text-center max-w-sm">
+                      <AlertCircle size={24} class="text-status-error mx-auto mb-3" />
+                      <p class="text-sm text-text-secondary mb-2">Task setup failed</p>
+                      <p class="text-xs text-status-error/80 bg-status-error/5 border border-status-error/10 rounded-lg px-3 py-2 mb-4 text-left">
+                        {error()}
+                      </p>
+                      <div class="flex items-center justify-center gap-2">
+                        <button
+                          class="btn-ghost text-xs flex items-center gap-1.5"
+                          onClick={() => removePlaceholderTask(t().id)}
+                        >
+                          <Trash2 size={12} />
+                          Delete
+                        </button>
+                        <button
+                          class="btn-primary text-xs flex items-center gap-1.5"
+                          onClick={() => retryTaskCreation(t().id, t().projectId, projectById(t().projectId)?.baseBranch ?? 'main')}
+                        >
+                          <RotateCcw size={12} />
+                          Retry
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </Show>
+
+                {/* Normal task UI */}
+                <Show when={!creating() && !error()}>
+                  {/* Session tabs — pill style */}
+                  <div class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
+                    <For each={taskSessions()}>
+                      {(session) => (
+                        <div
+                          class={clsx(
+                            'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap cursor-pointer',
+                            selectedSessionId() === session.id
+                              ? 'bg-accent-muted text-accent-hover border border-accent/20'
+                              : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
+                          )}
+                          onClick={() => setSelectedSessionId(session.id)}
+                        >
+                          <span>{session.name || 'New session'}</span>
+                          <SessionTime session={session} />
+
+                          <Show when={session.status === 'running'}>
+                            <button
+                              class="ml-0.5 text-status-error hover:text-red-300 transition-colors"
+                              onClick={(e) => { e.stopPropagation(); abortMessage(session.id) }}
+                              title="Stop"
+                            >
+                              <Square size={8} />
+                            </button>
+                          </Show>
+
+                          <Show when={session.status !== 'running'}>
+                            <button
+                              class="ml-0.5 opacity-0 group-hover:opacity-100 text-text-dim hover:text-text-muted transition-all"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                const sessions = taskSessions()
+                                const idx = sessions.findIndex(s => s.id === session.id)
+                                if (selectedSessionId() === session.id) {
+                                  const next = sessions[idx + 1] || sessions[idx - 1]
+                                  setSelectedSessionId(next?.id ?? null)
+                                }
+                                closeSession(session.id)
+                              }}
+                              title="Close session"
+                            >
+                              <X size={10} />
+                            </button>
+                          </Show>
+                        </div>
+                      )}
+                    </For>
+                    <button
+                      class="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-40"
+                      onClick={handleNewSession}
+                      disabled={creatingSession()}
+                      title="New Session"
+                    >
+                      <Plus size={12} class={creatingSession() ? 'animate-spin' : ''} />
+                      <span>{creatingSession() ? '...' : 'New'}</span>
+                    </button>
+                  </div>
+
+                  {/* Chat */}
+                  <div class="flex-1 overflow-hidden">
+                    <ChatView
+                      output={currentOutput()}
+                      sessionStatus={currentSession()?.status}
+                    />
+                  </div>
+
+                  <MessageInput
+                    sessionId={selectedSessionId()}
+                    isRunning={currentSession()?.status === 'running'}
+                  />
+                </Show>
               </div>
 
-              {/* Chat */}
-              <div class="flex-1 overflow-hidden">
-                <ChatView
-                  output={currentOutput()}
-                  sessionStatus={currentSession()?.status}
-                />
-              </div>
-
-              <MessageInput
-                sessionId={selectedSessionId()}
-                isRunning={currentSession()?.status === 'running'}
-              />
-            </div>
-
-            {/* Source control panel — collapsible */}
-            <Show when={showChanges()}>
-              <div class="w-0 flex-[2] border-l border-border-subtle overflow-hidden">
-                <CodeChanges
-                  taskId={t().id}
-                  sessionId={selectedSessionId()}
-                  isRunning={currentSession()?.status === 'running'}
-                />
-              </div>
-            </Show>
-          </>
-        )}
+              {/* Source control panel — collapsible */}
+              <Show when={showChanges() && !creating() && !error()}>
+                <div class="w-0 flex-[2] border-l border-border-subtle overflow-hidden">
+                  <CodeChanges
+                    taskId={t().id}
+                    sessionId={selectedSessionId()}
+                    isRunning={currentSession()?.status === 'running'}
+                  />
+                </div>
+              </Show>
+            </>
+          )
+        }}
       </Show>
     </div>
   )
