@@ -91,3 +91,69 @@ export interface ToolApprovalRequest {
   toolName: string
   toolInput: Record<string, unknown>
 }
+
+// Git types
+
+export interface FileStatus {
+  path: string
+  status: string
+  staging: string
+  oldPath?: string
+}
+
+export interface FileDiffStats {
+  path: string
+  insertions: number
+  deletions: number
+}
+
+export interface GitStatus {
+  files: FileStatus[]
+  stats: FileDiffStats[]
+  totalInsertions: number
+  totalDeletions: number
+}
+
+export interface DiffLine {
+  kind: string
+  content: string
+  oldLineNumber?: number
+  newLineNumber?: number
+}
+
+export interface DiffHunk {
+  oldStart: number
+  oldCount: number
+  newStart: number
+  newCount: number
+  header: string
+  lines: DiffLine[]
+}
+
+export interface FileDiff {
+  path: string
+  status: string
+  hunks: DiffHunk[]
+  stats: FileDiffStats
+  totalLines: number
+}
+
+export interface GitHubRepo {
+  owner: string
+  name: string
+  url: string
+}
+
+export interface PrInfo {
+  number: number
+  url: string
+  state: string
+  title: string
+  mergeable: string
+}
+
+export interface CiCheck {
+  name: string
+  status: string
+  url: string
+}

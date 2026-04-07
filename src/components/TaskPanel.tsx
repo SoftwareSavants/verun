@@ -2,10 +2,10 @@ import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 
 import { selectedTaskId, selectedSessionId, setSelectedSessionId } from '../store/ui'
 import { taskById } from '../store/tasks'
 import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines } from '../store/sessions'
-import { MergeBar } from './MergeBar'
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
-import { Square, Plus, FolderOpen, X } from 'lucide-solid'
+import { CodeChanges } from './CodeChanges'
+import { Square, Plus, X } from 'lucide-solid'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
@@ -85,7 +85,7 @@ export const TaskPanel: Component = () => {
   }
 
   return (
-    <div class="flex-1 h-full flex flex-col bg-surface-0">
+    <div class="flex-1 h-full flex bg-surface-0">
       <Show
         when={task()}
         fallback={
@@ -99,104 +99,102 @@ export const TaskPanel: Component = () => {
       >
         {(t) => (
           <>
-            {/* Header — drag region for titlebar */}
-            <div class="px-4 pt-10 pb-2 flex items-center justify-between bg-surface-0 drag-region">
-              <div class="min-w-0 no-drag">
-                <h2 class="text-sm font-semibold text-text-primary truncate">
-                  {t().name || 'New task'}
-                </h2>
-                <span class="text-[11px] text-text-dim truncate block mt-0.5">{t().worktreePath}</span>
+            {/* Chat column */}
+            <div class="flex flex-col w-0 flex-[3] overflow-hidden">
+              {/* Header — drag region for titlebar */}
+              <div class="px-4 pt-10 pb-2 flex items-center justify-between bg-surface-0 drag-region">
+                <div class="min-w-0 no-drag">
+                  <h2 class="text-sm font-semibold text-text-primary truncate">
+                    {t().name || 'New task'}
+                  </h2>
+                  <span
+                    class="text-[11px] text-text-dim truncate block mt-0.5 cursor-pointer hover:text-text-muted transition-colors"
+                    onClick={() => ipc.openInFinder(t().worktreePath)}
+                    title="Open in Finder"
+                  >
+                    {t().worktreePath}
+                  </span>
+                </div>
               </div>
-              <div class="flex items-center gap-1 shrink-0 no-drag">
+
+              {/* Session tabs — pill style */}
+              <div class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
+                <For each={taskSessions()}>
+                  {(session) => (
+                    <div
+                      class={clsx(
+                        'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap cursor-pointer',
+                        selectedSessionId() === session.id
+                          ? 'bg-accent-muted text-accent-hover border border-accent/20'
+                          : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
+                      )}
+                      onClick={() => setSelectedSessionId(session.id)}
+                    >
+                      <span>{session.name || 'New session'}</span>
+                      <SessionTime session={session} />
+
+                      <Show when={session.status === 'running'}>
+                        <button
+                          class="ml-0.5 text-status-error hover:text-red-300 transition-colors"
+                          onClick={(e) => { e.stopPropagation(); abortMessage(session.id) }}
+                          title="Stop"
+                        >
+                          <Square size={8} />
+                        </button>
+                      </Show>
+
+                      <Show when={session.status !== 'running'}>
+                        <button
+                          class="ml-0.5 opacity-0 group-hover:opacity-100 text-text-dim hover:text-text-muted transition-all"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            const sessions = taskSessions()
+                            const idx = sessions.findIndex(s => s.id === session.id)
+                            if (selectedSessionId() === session.id) {
+                              const next = sessions[idx + 1] || sessions[idx - 1]
+                              setSelectedSessionId(next?.id ?? null)
+                            }
+                            closeSession(session.id)
+                          }}
+                          title="Close session"
+                        >
+                          <X size={10} />
+                        </button>
+                      </Show>
+                    </div>
+                  )}
+                </For>
                 <button
-                  class="p-1.5 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                  onClick={() => ipc.openInFinder(t().worktreePath)}
-                  title="Open in Finder"
+                  class="p-1 rounded-full text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                  onClick={handleNewSession}
+                  title="New Session"
                 >
-                  <FolderOpen size={14} />
+                  <Plus size={14} />
                 </button>
               </div>
-            </div>
 
-            {/* Session tabs — pill style */}
-            <div class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
-              <For each={taskSessions()}>
-                {(session) => (
-                  <div
-                    class={clsx(
-                      'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap cursor-pointer',
-                      selectedSessionId() === session.id
-                        ? 'bg-accent-muted text-accent-hover border border-accent/20'
-                        : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
-                    )}
-                    onClick={() => setSelectedSessionId(session.id)}
-                  >
-                    <span>{session.name || 'New session'}</span>
-                    <SessionTime session={session} />
+              {/* Chat */}
+              <div class="flex-1 overflow-hidden">
+                <ChatView
+                  output={currentOutput()}
+                  sessionStatus={currentSession()?.status}
+                />
+              </div>
 
-                    <Show when={session.status === 'running'}>
-                      <button
-                        class="ml-0.5 text-status-error hover:text-red-300 transition-colors"
-                        onClick={(e) => { e.stopPropagation(); abortMessage(session.id) }}
-                        title="Stop"
-                      >
-                        <Square size={8} />
-                      </button>
-                    </Show>
-
-                    <Show when={session.status !== 'running'}>
-                      <button
-                        class="ml-0.5 opacity-0 group-hover:opacity-100 text-text-dim hover:text-text-muted transition-all"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          const sessions = taskSessions()
-                          const idx = sessions.findIndex(s => s.id === session.id)
-                          // Select adjacent session before closing
-                          if (selectedSessionId() === session.id) {
-                            const next = sessions[idx + 1] || sessions[idx - 1]
-                            setSelectedSessionId(next?.id ?? null)
-                          }
-                          closeSession(session.id)
-                        }}
-                        title="Close session"
-                      >
-                        <X size={10} />
-                      </button>
-                    </Show>
-                  </div>
-                )}
-              </For>
-              <button
-                class="p-1 rounded-full text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                onClick={handleNewSession}
-                title="New Session"
-              >
-                <Plus size={14} />
-              </button>
-            </div>
-
-            {/* Chat */}
-            <div class="flex-1 overflow-hidden">
-              <ChatView
-                output={currentOutput()}
-                sessionStatus={currentSession()?.status}
+              <MessageInput
+                sessionId={selectedSessionId()}
+                isRunning={currentSession()?.status === 'running'}
               />
             </div>
 
-            {/* Message input */}
-            <MessageInput
-              sessionId={selectedSessionId()}
-              isRunning={currentSession()?.status === 'running'}
-            />
-
-            {/* Merge bar when latest session is done */}
-            <Show when={taskSessions().length > 0 && taskSessions()[0].status === 'done'}>
-              <MergeBar
+            {/* Source control panel — full height, narrower */}
+            <div class="w-0 flex-[2] border-l border-border-subtle overflow-hidden">
+              <CodeChanges
                 taskId={t().id}
-                branch={t().branch}
-                onMerge={(target) => ipc.mergeBranch(t().id, target)}
+                sessionId={selectedSessionId()}
+                isRunning={currentSession()?.status === 'running'}
               />
-            </Show>
+            </div>
           </>
         )}
       </Show>

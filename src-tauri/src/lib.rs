@@ -1,4 +1,6 @@
 mod db;
+mod git_ops;
+mod github;
 mod ipc;
 mod stream;
 mod task;
@@ -72,6 +74,24 @@ pub fn run() {
             ipc::merge_branch,
             ipc::get_branch_status,
             ipc::get_repo_info,
+            // Git operations
+            ipc::get_git_status,
+            ipc::get_file_diff,
+            ipc::get_file_context,
+            ipc::git_stage,
+            ipc::git_unstage,
+            ipc::git_commit,
+            ipc::git_push,
+            ipc::git_pull,
+            ipc::git_commit_and_push,
+            // GitHub
+            ipc::check_github,
+            ipc::create_pull_request,
+            ipc::get_pull_request,
+            ipc::git_ship,
+            ipc::get_ci_checks,
+            ipc::get_branch_url,
+            ipc::has_conflicts,
             // Utility
             ipc::list_claude_skills,
             ipc::check_claude,
