@@ -1,10 +1,12 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts } from '../store/sessions'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionPlanMode, setSessionPlanMode } from '../store/sessions'
 import { effectiveModel, setSessionModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import type { Command } from '../store/commands'
-import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks } from 'lucide-solid'
+import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Minimize2, Maximize2 } from 'lucide-solid'
+import { marked } from 'marked'
+import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
 import type { Attachment, ModelId, TrustLevel } from '../types'
 import * as ipc from '../lib/ipc'
@@ -36,6 +38,9 @@ async function fileToAttachment(file: File): Promise<Attachment | null> {
     reader.readAsDataURL(file)
   })
 }
+
+// Module-level signal — survives re-renders
+const [planExpanded, setPlanExpanded] = createSignal(true)
 
 export const MessageInput: Component<Props> = (props) => {
   let fileInputRef!: HTMLInputElement
@@ -72,17 +77,43 @@ export const MessageInput: Component<Props> = (props) => {
     return sid ? (autoApprovedCounts[sid] || 0) : 0
   }
 
-  // Plan mode
-  const [planMode, setPlanMode] = createSignal(false)
-  const [showPlanResponse, setShowPlanResponse] = createSignal(false)
+  // Plan mode — per-session state, backed by the persisted store
+  const [planResponseSession, setPlanResponseSession] = createSignal<string | null>(null)
   const [planFeedback, setPlanFeedback] = createSignal('')
+
+  const planMode = () => {
+    const sid = props.sessionId
+    return sid ? (sessionPlanMode[sid] ?? false) : false
+  }
+
+  const setPlanMode = (on: boolean) => {
+    const sid = props.sessionId
+    if (!sid) return
+    setSessionPlanMode(sid, on)
+  }
+
+  const showPlanResponse = () => {
+    const sid = props.sessionId
+    return sid !== null && planResponseSession() === sid && !currentApproval()
+  }
+
+  const setShowPlanResponse = (show: boolean) => {
+    if (show) {
+      setPlanResponseSession(props.sessionId)
+    } else {
+      // Only clear if it matches the current session
+      if (planResponseSession() === props.sessionId) {
+        setPlanResponseSession(null)
+      }
+    }
+  }
 
   // Detect when plan response should show: was running → now idle, plan mode on
   createEffect(on(
     () => [props.isRunning, planMode()] as const,
     ([running, plan], prev) => {
-      if (prev && prev[0] && !running && plan) {
-        setShowPlanResponse(true)
+      if (prev && prev[0] && !running && plan && props.sessionId) {
+        setPlanResponseSession(props.sessionId)
       }
     }
   ))
@@ -92,7 +123,7 @@ export const MessageInput: Component<Props> = (props) => {
     if (!sid) return
     setPlanMode(false)
     setShowPlanResponse(false)
-    sendMessage(sid, 'Go ahead and execute the plan', undefined, currentModel(), false)
+    sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
   }
 
   const handlePlanFeedback = () => {
@@ -113,6 +144,40 @@ export const MessageInput: Component<Props> = (props) => {
     const list = pendingApprovals[sid]
     return list && list.length > 0 ? list[0] : null
   }
+
+  const isExitPlanMode = () => currentApproval()?.toolName === 'ExitPlanMode'
+  const [planFileContent, setPlanFileContent] = createSignal<string | null>(null)
+  const [planFilePath, setPlanFilePath] = createSignal<string | null>(null)
+
+  // Load plan file content when ExitPlanMode approval appears
+  createEffect(on(isExitPlanMode, async (is) => {
+    if (!is) { setPlanFileContent(null); setPlanFilePath(null); return }
+    const approval = currentApproval()
+    if (!approval) return
+    // Try to get plan from tool input directly, or read from file
+    const inlinePlan = approval.toolInput.plan as string | undefined
+    const filePath = approval.toolInput.planFilePath as string | undefined
+    setPlanFilePath(filePath || null)
+    if (inlinePlan) {
+      setPlanFileContent(inlinePlan)
+    } else if (filePath) {
+      try {
+        const content = await invoke<string>('read_text_file', { path: filePath })
+        setPlanFileContent(content)
+      } catch {
+        setPlanFileContent('*Could not read plan file.*')
+      }
+    } else {
+      setPlanFileContent(null)
+    }
+  }))
+
+  const planContent = () => {
+    const content = planFileContent()
+    if (!content) return null
+    return { plan: content, filePath: planFilePath() }
+  }
+  const [planChanges, setPlanChanges] = createSignal('')
 
   const pendingCount = () => {
     const sid = props.sessionId
@@ -149,6 +214,7 @@ export const MessageInput: Component<Props> = (props) => {
 
   // Auto-focus textarea and reset height when session changes
   createEffect(on(() => props.sessionId, () => {
+    setPlanFeedback('')
     if (textareaRef) {
       textareaRef.style.height = 'auto'
       if (!textareaRef.disabled) {
@@ -233,6 +299,10 @@ export const MessageInput: Component<Props> = (props) => {
         }
         break
       }
+      case 'plan': {
+        setPlanMode(!planMode())
+        break
+      }
     }
     setMessage('')
     setShowPalette(false)
@@ -288,7 +358,7 @@ export const MessageInput: Component<Props> = (props) => {
       if (msg.startsWith('/')) {
         const cmdName = msg.slice(1).split(/\s+/)[0]
         // Check app commands first
-        const appCmds = ['new-session', 'clear', 'model']
+        const appCmds = ['new-session', 'clear', 'model', 'plan']
         if (appCmds.includes(cmdName)) {
           handleAppCommand({ name: cmdName, description: '', category: 'app' })
           return
@@ -303,6 +373,15 @@ export const MessageInput: Component<Props> = (props) => {
     const val = e.currentTarget.value
     setMessage(val)
     autoResize(e.currentTarget)
+
+    // /plan + space → toggle plan mode and clear
+    if (val === '/plan ') {
+      setPlanMode(!planMode())
+      setMessage('')
+      setShowPalette(false)
+      e.currentTarget.value = ''
+      return
+    }
 
     // Show/hide command palette
     if (val.startsWith('/') && val.indexOf(' ') === -1) {
@@ -357,7 +436,6 @@ export const MessageInput: Component<Props> = (props) => {
         if (e.key === 'Escape') {
           e.preventDefault()
           setShowPlanResponse(false)
-          setPlanMode(false)
           return
         }
         return
@@ -582,6 +660,7 @@ export const MessageInput: Component<Props> = (props) => {
                             ref={(el) => { customAnswerRef = el }}
                             type="text"
                             class="flex-1 min-w-0 bg-transparent outline-none text-xs text-text-primary placeholder-text-dim"
+                            style={{ outline: 'none' }}
                             placeholder="Or type a custom answer..."
                             value={customAnswer()}
                             onInput={(e) => {
@@ -645,8 +724,116 @@ export const MessageInput: Component<Props> = (props) => {
         }}
       </Show>
 
+      {/* ExitPlanMode — full plan viewer */}
+      <Show when={isExitPlanMode() && planContent()}>
+        {(plan) => (
+          <div
+            class={clsx(
+              'bg-surface-0 border border-accent/30 rounded-xl flex flex-col overflow-hidden transition-all',
+              planExpanded() ? 'fixed inset-4 z-50' : 'max-h-[50vh]'
+            )}
+          >
+            {/* Header */}
+            <div class="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+              <div class="flex items-center gap-2">
+                <ListChecks size={16} class="text-accent" />
+                <span class="text-sm font-medium text-text-primary">Plan Review</span>
+                <Show when={plan().filePath}>
+                  <span class="text-[10px] text-text-dim font-mono truncate max-w-60">{plan().filePath}</span>
+                </Show>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <button
+                  class="p-1.5 rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                  onClick={() => setPlanExpanded(!planExpanded())}
+                  title={planExpanded() ? 'Collapse' : 'Expand'}
+                >
+                  {planExpanded() ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                </button>
+              </div>
+            </div>
+
+            {/* Plan content */}
+            <div class="flex-1 overflow-auto px-6 py-4">
+              <div
+                class="prose prose-invert prose-sm max-w-none
+                  [&_h1]:text-lg [&_h1]:font-bold [&_h1]:text-text-primary [&_h1]:mb-3 [&_h1]:mt-6 [&_h1]:first:mt-0
+                  [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-text-primary [&_h2]:mb-2 [&_h2]:mt-5
+                  [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-text-primary [&_h3]:mb-1.5 [&_h3]:mt-4
+                  [&_p]:text-sm [&_p]:text-text-secondary [&_p]:mb-3 [&_p]:leading-relaxed
+                  [&_ul]:text-sm [&_ul]:text-text-secondary [&_ul]:mb-3 [&_ul]:pl-5 [&_ul]:list-disc
+                  [&_ol]:text-sm [&_ol]:text-text-secondary [&_ol]:mb-3 [&_ol]:pl-5 [&_ol]:list-decimal
+                  [&_li]:mb-1
+                  [&_code]:text-xs [&_code]:bg-surface-2 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-accent-hover
+                  [&_pre]:bg-surface-1 [&_pre]:border [&_pre]:border-border [&_pre]:rounded-lg [&_pre]:p-3 [&_pre]:mb-3 [&_pre]:overflow-x-auto
+                  [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-text-secondary
+                  [&_table]:text-sm [&_table]:w-full [&_table]:mb-3
+                  [&_th]:text-left [&_th]:text-text-muted [&_th]:font-medium [&_th]:px-2 [&_th]:py-1.5 [&_th]:border-b [&_th]:border-border
+                  [&_td]:text-text-secondary [&_td]:px-2 [&_td]:py-1.5 [&_td]:border-b [&_td]:border-border/50
+                  [&_strong]:text-text-primary [&_strong]:font-semibold
+                  [&_blockquote]:border-l-2 [&_blockquote]:border-accent/40 [&_blockquote]:pl-4 [&_blockquote]:text-text-muted [&_blockquote]:italic"
+                innerHTML={marked.parse(plan().plan, { async: false }) as string}
+              />
+            </div>
+
+            {/* Footer actions */}
+            <div class="flex items-center gap-3 px-4 py-3 border-t border-border shrink-0">
+              <input
+                class="flex-1 bg-surface-1 border border-border rounded-lg px-3 py-2 text-sm text-text-primary outline-none placeholder-text-dim focus:border-border-active transition-colors"
+                style={{ outline: 'none' }}
+                placeholder="Request changes..."
+                value={planChanges()}
+                onInput={(e) => setPlanChanges(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    if (planChanges().trim()) {
+                      const approval = currentApproval()!
+                      const feedback = planChanges().trim()
+                      setPlanChanges('')
+                      denyToolUse(approval.requestId, approval.sessionId)
+                      const sid = props.sessionId
+                      if (sid) sendMessage(sid, feedback, undefined, currentModel(), true)
+                    } else {
+                      approveToolUse(currentApproval()!.requestId, currentApproval()!.sessionId)
+                    }
+                  }
+                }}
+              />
+              <button
+                class={clsx(
+                  'px-4 py-2 rounded-lg text-sm font-medium transition-colors shrink-0',
+                  planChanges().trim()
+                    ? 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25'
+                    : 'bg-status-running/15 text-status-running hover:bg-status-running/25'
+                )}
+                onClick={() => {
+                  if (planChanges().trim()) {
+                    const approval = currentApproval()!
+                    const feedback = planChanges().trim()
+                    setPlanChanges('')
+                    denyToolUse(approval.requestId, approval.sessionId)
+                    const sid = props.sessionId
+                    if (sid) sendMessage(sid, feedback, undefined, currentModel(), true)
+                  } else {
+                    approveToolUse(currentApproval()!.requestId, currentApproval()!.sessionId)
+                  }
+                }}
+              >
+                {planChanges().trim() ? 'Request Changes' : 'Approve'} <span class="text-text-dim ml-1">(Enter)</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </Show>
+
+      {/* Backdrop for fullscreen plan viewer */}
+      <Show when={isExitPlanMode() && planExpanded()}>
+        <div class="fixed inset-0 bg-black/60 z-40" />
+      </Show>
+
       {/* Tool approval overlay */}
-      <Show when={!isQuestion() && currentApproval()}>
+      <Show when={!isQuestion() && !isExitPlanMode() && currentApproval()}>
         {(approval) => (
           <div class="bg-surface-1 border border-amber-500/30 rounded-xl p-3 mb-0">
             <div class="flex items-center justify-between mb-2">
@@ -694,12 +881,21 @@ export const MessageInput: Component<Props> = (props) => {
               <ListChecks size={14} class="text-accent" />
               <span class="text-xs font-medium text-accent">Plan ready</span>
             </div>
-            <button
-              class="px-3 py-1.5 rounded-lg bg-status-running/15 text-status-running text-xs font-medium hover:bg-status-running/25 transition-colors"
-              onClick={handleApprovePlan}
-            >
-              Approve <span class="text-text-dim ml-1">(Enter)</span>
-            </button>
+            <div class="flex items-center gap-1.5">
+              <button
+                class="p-1 rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                onClick={() => setShowPlanResponse(false)}
+                title="Dismiss (Esc)"
+              >
+                <X size={14} />
+              </button>
+              <button
+                class="px-3 py-1.5 rounded-lg bg-status-running/15 text-status-running text-xs font-medium hover:bg-status-running/25 transition-colors"
+                onClick={handleApprovePlan}
+              >
+                Approve <span class="text-text-dim ml-1">(Enter)</span>
+              </button>
+            </div>
           </div>
           <div class="flex gap-2">
             <input
@@ -740,6 +936,12 @@ export const MessageInput: Component<Props> = (props) => {
             query={message()}
             onSelect={handleCommandSelect}
             onTab={(cmd) => {
+              if (cmd.name === 'plan') {
+                setPlanMode(!planMode())
+                setMessage('')
+                setShowPalette(false)
+                return
+              }
               setMessage(`/${cmd.name} `)
               setShowPalette(false)
             }}
@@ -796,7 +998,7 @@ export const MessageInput: Component<Props> = (props) => {
         <textarea
           ref={textareaRef}
           class="w-full bg-transparent text-sm text-text-primary outline-none resize-none placeholder-text-dim leading-normal px-3.5 pt-3 pb-2"
-          style={{ height: 'auto', 'max-height': '200px', 'overflow-y': 'auto' }}
+          style={{ height: 'auto', 'max-height': '200px', 'overflow-y': 'auto', outline: 'none' }}
           placeholder={
             dragOver()
               ? 'Drop files here...'

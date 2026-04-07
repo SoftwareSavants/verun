@@ -67,6 +67,10 @@ pub fn new_active_map() -> ActiveMap {
     Arc::new(DashMap::new())
 }
 
+pub fn get_active_session_ids(active: &ActiveMap) -> Vec<String> {
+    active.iter().map(|e| e.key().clone()).collect()
+}
+
 // ---------------------------------------------------------------------------
 // Pending tool approval requests
 // ---------------------------------------------------------------------------
@@ -280,6 +284,7 @@ pub async fn send_message(
         "type": "verun_user_message",
         "text": message,
         "attachments": attachment_names,
+        "plan_mode": plan_mode,
     }).to_string();
     let _ = db_tx
         .send(db::DbWrite::InsertOutputLines {
@@ -296,10 +301,9 @@ pub async fn send_message(
         "--verbose",
         "--include-partial-messages",
     ]);
+    cmd.args(["--permission-prompt-tool", "stdio"]);
     if plan_mode {
         cmd.args(["--permission-mode", "plan"]);
-    } else {
-        cmd.args(["--permission-prompt-tool", "stdio"]);
     }
     cmd.stdin(std::process::Stdio::piped());
 

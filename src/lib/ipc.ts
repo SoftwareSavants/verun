@@ -40,6 +40,9 @@ export const clearSession = (sessionId: string) =>
 export const abortMessage = (sessionId: string) =>
   invoke<void>('abort_message', { sessionId })
 
+export const getActiveSessions = () =>
+  invoke<string[]>('get_active_sessions')
+
 export const respondToApproval = (requestId: string, behavior: 'allow' | 'deny', updatedInput?: Record<string, unknown>) =>
   invoke<void>('respond_to_approval', { requestId, behavior, updatedInput })
 
@@ -137,3 +140,6 @@ export const checkClaude = () =>
 
 export const openInFinder = (path: string) =>
   invoke<void>('open_in_finder', { path })
+
+export const openInApp = (path: string, app: string) =>
+  invoke<void>('open_in_app', { path, app })

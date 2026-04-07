@@ -5,7 +5,7 @@ import { TaskPanel } from './TaskPanel'
 import { SettingsPage } from './SettingsPage'
 import { sidebarWidth, setSidebarWidth, addToast, showSettings, setShowSettings } from '../store/ui'
 import { tasks, quickCreateTask } from '../store/tasks'
-import { addProject } from '../store/projects'
+import { addProject, projects } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId } from '../store/ui'
 
 async function pickAndAddProject() {
@@ -60,6 +60,7 @@ export const Layout: Component = () => {
         e.preventDefault()
         const pid = selectedProjectId()
         if (pid) quickCreateTask(pid)
+        else if (projects.length > 0) quickCreateTask(projects[projects.length - 1].id)
         else pickAndAddProject()
       }
       if (e.metaKey && e.key >= '1' && e.key <= '9') {
@@ -67,6 +68,7 @@ export const Layout: Component = () => {
         const idx = parseInt(e.key) - 1
         if (idx < tasks.length) {
           setSelectedTaskId(tasks[idx].id)
+          setSelectedProjectId(tasks[idx].projectId)
           setShowSettings(false)
         }
       }

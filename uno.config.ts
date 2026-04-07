@@ -20,9 +20,9 @@ export default defineConfig({
         4: '#26262e',
       },
       border: {
-        DEFAULT: '#1e1e26',
-        active: '#2e2e3a',
-        subtle: '#16161e',
+        DEFAULT: '#18181f',
+        active: '#22222b',
+        subtle: '#131318',
       },
       accent: {
         DEFAULT: '#2d6e4f',

@@ -10,6 +10,7 @@ export const [sessions, setSessions] = createStore<Session[]>([])
 export const [outputItems, setOutputItems] = createStore<Record<string, OutputItem[]>>({})
 export const [pendingApprovals, setPendingApprovals] = createStore<Record<string, ToolApprovalRequest[]>>({})
 export const [autoApprovedCounts, setAutoApprovedCounts] = createStore<Record<string, number>>({})
+export const [sessionPlanMode, setSessionPlanMode] = createStore<Record<string, boolean>>({})
 
 export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
@@ -43,11 +44,23 @@ export async function sendMessage(sessionId: string, message: string, attachment
       store[sessionId] = [item]
     }
   }))
-  await ipc.sendMessage(sessionId, message, attachments, model, planMode)
+  setSessions(s => s.id === sessionId, 'status', 'running')
+  try {
+    await ipc.sendMessage(sessionId, message, attachments, model, planMode)
+  } catch (e) {
+    setSessions(s => s.id === sessionId, 'status', 'idle')
+    throw e
+  }
 }
 
 export async function abortMessage(sessionId: string) {
-  await ipc.abortMessage(sessionId)
+  setSessions(s => s.id === sessionId, 'status', 'idle')
+  try {
+    await ipc.abortMessage(sessionId)
+  } catch (e) {
+    setSessions(s => s.id === sessionId, 'status', 'running')
+    throw e
+  }
 }
 
 export async function approveToolUse(requestId: string, sessionId: string) {
@@ -88,11 +101,20 @@ export async function closeSession(sessionId: string) {
 export async function loadOutputLines(sessionId: string) {
   const lines = await ipc.getOutputLines(sessionId)
   const items: OutputItem[] = []
+  let lastPlanMode = false
   for (const l of lines) {
+    // Check plan_mode on user messages for persistence
+    try {
+      const v = JSON.parse(l.line)
+      if (v.type === 'verun_user_message' && typeof v.plan_mode === 'boolean') {
+        lastPlanMode = v.plan_mode
+      }
+    } catch { /* ignore */ }
     const parsed = parseNdjsonLine(l.line)
     if (parsed) items.push(...parsed)
   }
   setOutputItems(sessionId, items)
+  setSessionPlanMode(sessionId, lastPlanMode)
 }
 
 /** Re-parse a persisted NDJSON line back into OutputItems (mirrors Rust parse_sdk_event) */
@@ -154,6 +176,17 @@ function parseNdjsonLine(line: string): OutputItem[] | null {
     return items.length > 0 ? items : null
   }
 
+  // Control request (tool approval) — extract tool name for ToolStart
+  if (type === 'control_request') {
+    const request = v.request as Record<string, unknown> | undefined
+    if (request?.subtype === 'can_use_tool') {
+      const toolName = (request.tool_name as string) || 'tool'
+      const input = request.input as Record<string, unknown> | undefined
+      const inputStr = input && Object.keys(input).length > 0 ? JSON.stringify(input, null, 2) : ''
+      return [{ kind: 'toolStart', tool: toolName, input: inputStr }]
+    }
+  }
+
   // Skip system, result, rate_limit_event, etc.
   return null
 }
@@ -172,6 +205,22 @@ export async function clearOutputItems(sessionId: string) {
   await ipc.clearSession(sessionId)
   // Reset the local session's claudeSessionId so next message starts fresh
   setSessions(s => s.id === sessionId, 'claudeSessionId', null)
+}
+
+export async function syncSessionStatuses() {
+  try {
+    const activeIds = await ipc.getActiveSessions()
+    const activeSet = new Set(activeIds)
+    for (const s of sessions) {
+      if (s.status === 'running' && !activeSet.has(s.id)) {
+        setSessions(sess => sess.id === s.id, 'status', 'idle')
+      } else if (s.status !== 'running' && activeSet.has(s.id)) {
+        setSessions(sess => sess.id === s.id, 'status', 'running')
+      }
+    }
+  } catch {
+    // Backend may not be ready yet during startup
+  }
 }
 
 export const sessionsForTask = (taskId: string) =>

@@ -2,7 +2,7 @@ import { Component, Show, createSignal } from 'solid-js'
 import { createTask } from '../store/tasks'
 import { setSessions, setOutputItems } from '../store/sessions'
 import { produce } from 'solid-js/store'
-import { setSelectedTaskId, setSelectedSessionId, addToast } from '../store/ui'
+import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, addToast } from '../store/ui'
 
 interface Props {
   open: boolean
@@ -21,6 +21,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
     try {
       const { task, session } = await createTask(props.projectId)
       setSelectedTaskId(task.id)
+      setSelectedProjectId(props.projectId!)
 
       setSessions(produce(s => s.push(session)))
       setOutputItems(session.id, [])

@@ -265,6 +265,14 @@ pub async fn abort_message(
     task::abort_message(&app, db_tx.inner(), active.inner(), &session_id).await
 }
 
+/// Return session IDs that currently have an active process
+#[tauri::command]
+pub async fn get_active_sessions(
+    active: State<'_, ActiveMap>,
+) -> Result<Vec<String>, String> {
+    Ok(task::get_active_session_ids(active.inner()))
+}
+
 /// Respond to a pending tool approval request.
 /// For AskUserQuestion, pass `updated_input` with the original questions + answers map.
 #[tauri::command]
@@ -801,11 +809,29 @@ pub async fn check_claude() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn read_text_file(path: String) -> Result<String, String> {
+    tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("Failed to read {path}: {e}"))
+}
+
+#[tauri::command]
 pub async fn open_in_finder(path: String) -> Result<(), String> {
     std::process::Command::new("open")
         .arg(&path)
         .spawn()
         .map_err(|e| format!("Failed to open Finder: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_in_app(path: String, app: String) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("-a")
+        .arg(&app)
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("Failed to open {app}: {e}"))?;
     Ok(())
 }
 

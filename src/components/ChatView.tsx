@@ -93,10 +93,20 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         flushText(); flushThinking()
         blocks.push({ type: 'user', text: item.text, images: item.images })
         break
-      case 'toolStart':
+      case 'toolStart': {
         flushText(); flushThinking()
-        blocks.push({ type: 'tool', id: `tool-${toolCounter++}`, tool: item.tool, input: item.input, result: undefined })
+        // Deduplicate: if the last block is an open tool with the same name AND same input,
+        // it's a duplicate from control_request + content_block_start. Merge it.
+        // But if inputs differ, it's a parallel call of the same tool — keep both.
+        const lastBlock = blocks[blocks.length - 1]
+        if (lastBlock && lastBlock.type === 'tool' && !lastBlock.result && lastBlock.tool === item.tool
+            && (!item.input || !lastBlock.input || item.input === lastBlock.input)) {
+          if (item.input && !lastBlock.input) lastBlock.input = item.input
+        } else {
+          blocks.push({ type: 'tool', id: `tool-${toolCounter++}`, tool: item.tool, input: item.input, result: undefined })
+        }
         break
+      }
       case 'toolResult': {
         flushText(); flushThinking()
         const openTool = lastOpenTool()
@@ -221,12 +231,42 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
   const hasResult = () => !!props.result
   const isQuestion = () => props.tool === 'AskUserQuestion'
 
+  /** Strip worktree prefix to get a project-relative path */
+  const relPath = (p: string) => p.replace(/^.*\.verun\/worktrees\/[^/]+\//, '')
+
   const preview = () => {
     if (isQuestion()) {
       const qs = formatQuestions(props.input)
       if (qs) return qs.split('\n')[0].slice(0, 80)
     }
+    if (props.input) {
+      try {
+        const parsed = JSON.parse(props.input)
+        const tool = props.tool
+        if (tool === 'Bash' && parsed.command) return parsed.command.slice(0, 80)
+        if ((tool === 'Read' || tool === 'Write' || tool === 'Edit') && parsed.file_path) return relPath(parsed.file_path)
+        if (tool === 'Grep' && parsed.pattern) return parsed.pattern.slice(0, 60)
+        if (tool === 'Glob' && parsed.pattern) return parsed.pattern.slice(0, 60)
+        if (tool === 'Agent' && parsed.prompt) return parsed.prompt.slice(0, 80)
+      } catch { /* not JSON, fall through */ }
+    }
     return props.input?.split('\n')[0].slice(0, 60) || ''
+  }
+
+  const inputSummary = (): string => {
+    if (!props.input) return ''
+    try {
+      const parsed = JSON.parse(props.input)
+      const tool = props.tool
+      if (tool === 'Bash' && parsed.command) return `$ ${parsed.command}`
+      if (tool === 'Read' && parsed.file_path) return relPath(parsed.file_path)
+      if (tool === 'Write' && parsed.file_path) return relPath(parsed.file_path)
+      if (tool === 'Edit' && parsed.file_path) return relPath(parsed.file_path)
+      if (tool === 'Grep') return `${parsed.pattern || ''}${parsed.path ? ` in ${parsed.path}` : ''}`
+      if (tool === 'Glob' && parsed.pattern) return `${parsed.pattern}${parsed.path ? ` in ${parsed.path}` : ''}`
+      if (tool === 'Agent' && parsed.prompt) return parsed.prompt.slice(0, 120)
+    } catch { /* not JSON */ }
+    return props.input.split('\n')[0].slice(0, 100)
   }
 
   const hasExpandedContent = () => {
@@ -259,19 +299,9 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
               {formatQuestions(props.input)}
             </pre>
           </Show>
-          <Show when={!isQuestion() && props.input}>
-            <pre
-              class="text-[11px] text-text-dim whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto"
-              ref={(el) => {
-                const saved = toolScrollPositions.get(props.id)
-                if (saved) requestAnimationFrame(() => { el.scrollTop = saved.input })
-              }}
-              onScroll={(e) => {
-                const prev = toolScrollPositions.get(props.id) || { input: 0, output: 0 }
-                toolScrollPositions.set(props.id, { ...prev, input: e.currentTarget.scrollTop })
-              }}
-            >
-              {props.input}
+          <Show when={!isQuestion() && inputSummary()}>
+            <pre class="text-[11px] text-text-muted whitespace-pre-wrap font-mono leading-relaxed mb-1">
+              {inputSummary()}
             </pre>
           </Show>
           <Show when={hasResult()}>

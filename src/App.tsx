@@ -1,10 +1,11 @@
 import { Component, onMount, createSignal } from 'solid-js'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Layout } from './components/Layout'
 import { SelectionMenu } from './components/SelectionMenu'
 import { ToastContainer } from './components/ToastContainer'
 import { initTheme } from './lib/theme'
 import { loadProjects } from './store/projects'
-import { initSessionListeners } from './store/sessions'
+import { initSessionListeners, syncSessionStatuses } from './store/sessions'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
 import { addToast } from './store/ui'
@@ -32,8 +33,17 @@ const App: Component = () => {
     // Dismiss on click anywhere
     document.addEventListener('click', () => setSelMenu(null))
 
+    // Double-click on drag regions toggles window maximize (standard macOS behavior)
+    document.addEventListener('dblclick', (e) => {
+      const target = e.target as HTMLElement
+      if (target.closest('.drag-region') && !target.closest('.no-drag')) {
+        getCurrentWindow().toggleMaximize()
+      }
+    })
+
     await initSessionListeners()
     await loadProjects()
+    await syncSessionStatuses()
 
     // Dismiss splash screen, reveal app
     const splash = document.getElementById('splash')

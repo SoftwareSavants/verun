@@ -12,6 +12,7 @@ export const APP_COMMANDS: Command[] = [
   { name: 'new-session', description: 'Create a new session on the current task', category: 'app' },
   { name: 'clear', description: 'Clear the current session output', category: 'app' },
   { name: 'model', description: 'Switch model (opus, sonnet, haiku)', category: 'app' },
+  { name: 'plan', description: 'Toggle plan mode', category: 'app' },
 ]
 
 const [claudeSkills, setClaudeSkills] = createSignal<ClaudeSkill[]>([])

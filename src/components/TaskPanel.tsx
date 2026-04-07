@@ -7,10 +7,14 @@ import { sessionsForTask, outputItems, sessionById, createSession, abortMessage,
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { CodeChanges } from './CodeChanges'
-import { Square, Plus, X, PanelRightClose, PanelRightOpen } from 'lucide-solid'
+import { Square, Plus, X, PanelRightClose, PanelRightOpen, ChevronDown } from 'lucide-solid'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
+import vscodeIcon from '../assets/icons/vscode.svg?raw'
+import cursorIcon from '../assets/icons/cursor.svg?raw'
+import zedIcon from '../assets/icons/zed.svg?raw'
+import finderIcon from '../assets/icons/finder.svg?raw'
 
 function formatDuration(ms: number): string {
   const secs = Math.floor(ms / 1000)
@@ -38,6 +42,86 @@ function SessionTime(props: { session: Session }) {
   }
 
   return <span class="text-text-dim">{elapsed()}</span>
+}
+
+function SvgIcon(props: { svg: string; size?: number }) {
+  const s = props.size ?? 12
+  const sized = props.svg.replace('<svg ', `<svg width="${s}" height="${s}" `)
+  return <span class="inline-flex items-center justify-center shrink-0" innerHTML={sized} />
+}
+
+const EDITORS = [
+  { label: 'VS Code', app: 'Visual Studio Code', svg: vscodeIcon },
+  { label: 'Cursor', app: 'Cursor', svg: cursorIcon },
+  { label: 'Zed', app: 'Zed', svg: zedIcon },
+  { label: 'Finder', app: 'Finder', svg: finderIcon },
+]
+
+function OpenInButton(props: { path: string }) {
+  const [open, setOpen] = createSignal(false)
+  let containerRef: HTMLDivElement | undefined
+
+  const defaultEditor = () => EDITORS[0]
+
+  const handleOpen = (app: string) => {
+    if (app === 'Finder') {
+      ipc.openInFinder(props.path)
+    } else {
+      ipc.openInApp(props.path, app)
+    }
+    setOpen(false)
+  }
+
+  // Close dropdown on outside click
+  const handleClickOutside = (e: MouseEvent) => {
+    if (containerRef && !containerRef.contains(e.target as Node)) {
+      setOpen(false)
+    }
+  }
+
+  createEffect(() => {
+    if (open()) {
+      document.addEventListener('mousedown', handleClickOutside)
+    } else {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+    onCleanup(() => document.removeEventListener('mousedown', handleClickOutside))
+  })
+
+  return (
+    <div ref={containerRef} class="relative flex items-stretch h-6 border-1 border-solid border-border-active rounded-md">
+      <button
+        class="flex items-center gap-1.5 px-2.5 text-xs text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors rounded-l-md"
+        onClick={() => handleOpen(defaultEditor().app)}
+        title={`Open in ${defaultEditor().label}`}
+      >
+        <SvgIcon svg={defaultEditor().svg} size={13} />
+        {defaultEditor().label}
+      </button>
+      <span class="w-px self-stretch bg-border-active" />
+      <button
+        class="flex items-center px-2 text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors rounded-r-md"
+        onClick={() => setOpen(!open())}
+      >
+        <ChevronDown size={11} />
+      </button>
+      <Show when={open()}>
+        <div class="absolute right-0 top-full mt-1 bg-surface-1 border border-border-subtle rounded-lg shadow-lg py-1 z-50 min-w-[120px]">
+          <For each={EDITORS}>
+            {(editor) => (
+              <button
+                class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                onClick={() => handleOpen(editor.app)}
+              >
+                <SvgIcon svg={editor.svg} size={12} />
+                {editor.label}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  )
 }
 
 export const TaskPanel: Component = () => {
@@ -166,25 +250,19 @@ export const TaskPanel: Component = () => {
             <div class="flex flex-col w-0 flex-[3] overflow-hidden">
               {/* Header — drag region for titlebar */}
               <div class="px-4 pt-10 pb-2 flex items-center justify-between bg-surface-0 drag-region">
-                <div class="min-w-0 no-drag">
-                  <h2 class="text-sm font-semibold text-text-primary truncate">
-                    {t().name || 'New task'}
-                  </h2>
-                  <span
-                    class="text-[11px] text-text-dim truncate block mt-0.5 cursor-pointer hover:text-text-muted transition-colors"
-                    onClick={() => ipc.openInFinder(t().worktreePath)}
-                    title={t().worktreePath}
+                <h2 class="text-sm font-semibold text-text-primary truncate min-w-0 no-drag">
+                  {t().name || 'New task'}
+                </h2>
+                <div class="flex items-center gap-1 no-drag shrink-0">
+                  <OpenInButton path={t().worktreePath} />
+                  <button
+                    class="h-6 w-6 flex items-center justify-center rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                    onClick={toggleChanges}
+                    title={showChanges() ? 'Hide changes panel' : 'Show changes panel'}
                   >
-                    {t().worktreePath.split('/').pop() || t().worktreePath}
-                  </span>
+                    {showChanges() ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+                  </button>
                 </div>
-                <button
-                  class="no-drag p-1 rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                  onClick={toggleChanges}
-                  title={showChanges() ? 'Hide changes panel' : 'Show changes panel'}
-                >
-                  {showChanges() ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
-                </button>
               </div>
 
               {/* Session tabs — pill style */}

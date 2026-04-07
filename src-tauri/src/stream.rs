@@ -156,7 +156,13 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // Ignore rate_limit_event, auth_status, etc. silently
         "rate_limit_event" | "auth_status" | "tool_use_summary" => vec![],
 
-        _ => vec![],
+        // Control requests are handled separately in stream_and_capture
+        "control_request" | "control_response" => vec![],
+
+        other => {
+            eprintln!("[verun-debug] unhandled event type: {other} | line: {}", &line[..line.len().min(200)]);
+            vec![]
+        }
     }
 }
 
@@ -220,18 +226,52 @@ fn parse_stream_event(v: &serde_json::Value) -> Vec<OutputItem> {
                         input: input_str,
                     }]
                 }
-                _ => vec![],
+                other => {
+                    eprintln!("[verun-debug] content_block_start unhandled block type: {other}");
+                    vec![]
+                }
             }
         }
-        _ => vec![],
+        "content_block_stop" | "message_start" | "message_delta" | "message_stop" => vec![],
+        other => {
+            eprintln!("[verun-debug] unhandled stream_event type: {other}");
+            vec![]
+        }
     }
 }
 
 /// Parse a full assistant message snapshot.
 /// With --include-partial-messages, stream_event deltas already deliver text/thinking
 /// in real-time, so the snapshot is redundant for those. We skip it to avoid duplication.
-fn parse_assistant_message(_v: &serde_json::Value) -> Vec<OutputItem> {
-    vec![]
+/// However, we DO extract tool_use blocks since content_block_start may not always arrive.
+fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
+    let content = match v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+        Some(c) => c,
+        None => return vec![],
+    };
+
+    let mut items = Vec::new();
+    for block in content {
+        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match block_type {
+            "tool_use" | "server_tool_use" | "mcp_tool_use" => {
+                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                let input = block.get("input").cloned().unwrap_or(serde_json::Value::Object(Default::default()));
+                let input_str = if input.is_object() && input.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                    String::new()
+                } else {
+                    serde_json::to_string_pretty(&input).unwrap_or_default()
+                };
+                eprintln!("[verun-debug] ToolStart from assistant message: {name}");
+                items.push(OutputItem::ToolStart {
+                    tool: name.to_string(),
+                    input: input_str,
+                });
+            }
+            _ => {}
+        }
+    }
+    items
 }
 
 /// Parse user messages (typically tool results)
@@ -321,13 +361,22 @@ pub async fn stream_and_capture(
                         captured.push(line.clone());
 
                         // Intercept control_request for tool approval
-                        if let Some(handled) = handle_control_request(
+                        if let Some(cr) = handle_control_request(
                             &app, &session_id, &task_id, &line, &stdin,
                             &pending_approvals, &pending_approval_meta,
                             &worktree_path, &repo_path,
                             trust_level, &db_tx,
                         ).await {
-                            if handled {
+                            if cr.handled {
+                                // Emit ToolStart so the frontend knows which tool is running
+                                if let Some(tool_start) = cr.tool_start {
+                                    if let OutputItem::ToolStart { ref tool, .. } = tool_start {
+                                        eprintln!("[verun-debug] ToolStart from control_request: {tool}");
+                                    }
+                                    buffer.push(tool_start);
+                                } else {
+                                    eprintln!("[verun-debug] control_request handled but no tool_start");
+                                }
                                 persist_line(&db_tx, &session_id, &line, &mut total_persisted);
                                 continue;
                             }
@@ -339,6 +388,13 @@ pub async fn stream_and_capture(
                         // Emit text/thinking deltas immediately for real-time streaming
                         let mut has_immediate = false;
                         let mut is_turn_end = false;
+                        for item in &items {
+                            match item {
+                                OutputItem::ToolStart { tool, .. } => eprintln!("[verun-debug] ToolStart: {tool}"),
+                                OutputItem::ToolResult { is_error, .. } => eprintln!("[verun-debug] ToolResult (error={is_error})"),
+                                _ => {}
+                            }
+                        }
                         for item in items {
                             match &item {
                                 OutputItem::Text { .. } | OutputItem::Thinking { .. } => {
@@ -397,6 +453,13 @@ pub async fn stream_and_capture(
 /// the user for actions that require approval.
 /// Returns `Some(true)` if handled, `Some(false)` if not a control_request, `None` on parse error.
 #[allow(clippy::too_many_arguments)]
+/// Result from handle_control_request: whether it was handled, plus optional ToolStart to emit
+struct ControlRequestResult {
+    handled: bool,
+    tool_start: Option<OutputItem>,
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn handle_control_request(
     app: &AppHandle,
     session_id: &str,
@@ -409,21 +472,32 @@ async fn handle_control_request(
     repo_path: &str,
     trust_level: TrustLevel,
     db_tx: &DbWriteTx,
-) -> Option<bool> {
+) -> Option<ControlRequestResult> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
 
     if v.get("type").and_then(|t| t.as_str()) != Some("control_request") {
-        return Some(false);
+        return Some(ControlRequestResult { handled: false, tool_start: None });
     }
 
     let request = v.get("request")?;
     if request.get("subtype").and_then(|s| s.as_str()) != Some("can_use_tool") {
-        return Some(false);
+        return Some(ControlRequestResult { handled: false, tool_start: None });
     }
 
     let cli_request_id = v.get("request_id").and_then(|r| r.as_str()).unwrap_or("").to_string();
     let tool_name = request.get("tool_name").and_then(|t| t.as_str()).unwrap_or("unknown").to_string();
     let tool_input = request.get("input").cloned().unwrap_or(serde_json::Value::Null);
+
+    // Build a ToolStart item so the frontend knows which tool is running
+    let input_str = if tool_input.is_null() || (tool_input.is_object() && tool_input.as_object().map(|o| o.is_empty()).unwrap_or(true)) {
+        String::new()
+    } else {
+        serde_json::to_string_pretty(&tool_input).unwrap_or_default()
+    };
+    let tool_start = OutputItem::ToolStart {
+        tool: tool_name.clone(),
+        input: input_str,
+    };
 
     // Evaluate policy
     let result = policy::evaluate(&tool_name, &tool_input, worktree_path, repo_path, trust_level);
@@ -473,7 +547,7 @@ async fn handle_control_request(
                 reason: result.reason,
             });
 
-            Some(true)
+            Some(ControlRequestResult { handled: true, tool_start: Some(tool_start) })
         }
         PolicyDecision::RequireApproval => {
             // Original behavior: emit to frontend, wait for user response
@@ -535,7 +609,7 @@ async fn handle_control_request(
                 let _ = writer.flush().await;
             }
 
-            Some(true)
+            Some(ControlRequestResult { handled: true, tool_start: Some(tool_start) })
         }
     }
 }

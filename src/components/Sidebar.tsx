@@ -2,6 +2,8 @@ import {
   Component,
   For,
   Show,
+  Switch,
+  Match,
   createSignal,
   createEffect,
   on,
@@ -137,23 +139,28 @@ const PHASE_CONFIG: Record<TaskPhase, { color: string; title: string }> = {
 
 const PhaseIcon: Component<{ phase: TaskPhase }> = (props) => {
   const size = 12;
-  switch (props.phase) {
-    case "running":
-      return <Loader2 size={size} class="animate-spin" />;
-    case "error":
-      return <AlertCircle size={size} />;
-    case "pr-open":
-      return <GitPullRequest size={size} />;
-    case "ci-failed":
-      return <CircleX size={size} />;
-    case "conflicts":
-      return <CircleX size={size} />;
-    case "pr-merged":
-      return <GitMerge size={size} />;
-    case "idle":
-    default:
-      return <Circle size={size} />;
-  }
+  return (
+    <Switch fallback={<Circle size={size} />}>
+      <Match when={props.phase === "running"}>
+        <Loader2 size={size} class="animate-spin" />
+      </Match>
+      <Match when={props.phase === "error"}>
+        <AlertCircle size={size} />
+      </Match>
+      <Match when={props.phase === "pr-open"}>
+        <GitPullRequest size={size} />
+      </Match>
+      <Match when={props.phase === "ci-failed"}>
+        <CircleX size={size} />
+      </Match>
+      <Match when={props.phase === "conflicts"}>
+        <CircleX size={size} />
+      </Match>
+      <Match when={props.phase === "pr-merged"}>
+        <GitMerge size={size} />
+      </Match>
+    </Switch>
+  );
 };
 
 interface MenuPos {
@@ -403,7 +410,7 @@ export const Sidebar: Component = () => {
                               "hover:bg-surface-2",
                               selectedTaskId() === task.id && "bg-surface-2",
                             )}
-                            onClick={() => { setSelectedTaskId(task.id); setShowSettings(false) }}
+                            onClick={() => { setSelectedTaskId(task.id); setSelectedProjectId(task.projectId); setShowSettings(false) }}
                             onContextMenu={(e) => showTaskMenu(e, task.id)}
                             title={config().title}
                           >

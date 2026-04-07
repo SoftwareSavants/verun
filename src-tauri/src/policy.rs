@@ -83,6 +83,14 @@ pub fn evaluate(
     repo_path: &str,
     trust_level: TrustLevel,
 ) -> PolicyResult {
+    // ExitPlanMode always requires approval — it's the plan review step
+    if tool_name == "ExitPlanMode" {
+        return PolicyResult {
+            decision: PolicyDecision::RequireApproval,
+            reason: "plan review always requires user approval".into(),
+        };
+    }
+
     // Trust level overrides
     match trust_level {
         TrustLevel::FullAuto => {

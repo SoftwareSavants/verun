@@ -67,6 +67,7 @@ pub fn run() {
             ipc::close_session,
             ipc::clear_session,
             ipc::abort_message,
+            ipc::get_active_sessions,
             ipc::respond_to_approval,
             ipc::get_pending_approvals,
             ipc::list_sessions,
@@ -102,7 +103,9 @@ pub fn run() {
             // Utility
             ipc::list_claude_skills,
             ipc::check_claude,
+            ipc::read_text_file,
             ipc::open_in_finder,
+            ipc::open_in_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Verun");
