@@ -118,7 +118,7 @@ export const GitActions: Component<Props> = (props) => {
 
   // Smart default action based on state
   const primaryAction = (): GitAction => {
-    if (conflicts()) return { icon: Swords, label: 'Resolve conflicts', message: 'resolve all merge conflicts' }
+    if (conflicts()) return { icon: Swords, label: 'Resolve conflicts', message: 'rebase this branch onto the base branch and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue' }
     if (failedChecks().length > 0) return { icon: Wrench, label: 'Fix CI', message: `fix the failing CI checks: ${failedChecks().map(c => c.name).join(', ')}` }
     if (props.fileCount > 0) return { icon: GitCommit, label: 'Commit', message: 'commit all changes with a descriptive message' }
     if (ahead() > 0) return { icon: Upload, label: 'Push', action: doPush }
@@ -267,18 +267,6 @@ export const GitActions: Component<Props> = (props) => {
               )
             }}
           </For>
-
-          {/* Conditional actions */}
-          <Show when={conflicts() && primaryAction().label !== 'Resolve conflicts'}>
-            <div class="border-t border-border-subtle my-1" />
-            <button
-              class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-amber-400 hover:bg-surface-3 transition-colors"
-              onClick={() => send('resolve all merge conflicts')}
-            >
-              <Swords size={13} />
-              <span>Resolve conflicts</span>
-            </button>
-          </Show>
 
           <Show when={failedChecks().length > 0 && primaryAction().label !== 'Fix CI'}>
             <div class="border-t border-border-subtle my-1" />

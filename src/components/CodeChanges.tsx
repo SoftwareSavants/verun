@@ -312,7 +312,7 @@ export const CodeChanges: Component<Props> = (props) => {
                 <div
                   class={`flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs transition-colors ${
                     isOpen()
-                      ? 'bg-accent-muted text-text-primary'
+                      ? 'bg-surface-1 text-text-primary sticky top-0 z-10 border-b border-border-subtle'
                       : 'hover:bg-surface-2 text-text-secondary'
                   }`}
                   onClick={() => toggleFile(file.path)}
