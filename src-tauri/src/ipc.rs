@@ -3,7 +3,7 @@ use crate::db::{
 };
 use crate::git_ops;
 use crate::github;
-use crate::task::{self, ActiveMap, ApprovalResponse, PendingApprovals};
+use crate::task::{self, ActiveMap, ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals};
 use crate::worktree;
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
@@ -79,6 +79,7 @@ pub async fn list_projects(pool: State<'_, SqlitePool>) -> Result<Vec<Project>, 
 
 #[tauri::command]
 pub async fn delete_project(
+    app: AppHandle,
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     active: State<'_, ActiveMap>,
@@ -90,7 +91,7 @@ pub async fn delete_project(
 
     let tasks = db::list_tasks_for_project(pool.inner(), &id).await?;
     for t in &tasks {
-        task::delete_task(db_tx.inner(), active.inner(), &project.repo_path, t).await?;
+        task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, t).await?;
     }
 
     db_tx
@@ -134,6 +135,7 @@ pub async fn get_task(pool: State<'_, SqlitePool>, id: String) -> Result<Option<
 
 #[tauri::command]
 pub async fn delete_task(
+    app: AppHandle,
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     active: State<'_, ActiveMap>,
@@ -147,7 +149,7 @@ pub async fn delete_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
-    task::delete_task(db_tx.inner(), active.inner(), &project.repo_path, &t).await
+    task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, &t).await
 }
 
 // ---------------------------------------------------------------------------
@@ -173,10 +175,12 @@ pub async fn send_message(
     db_tx: State<'_, DbWriteTx>,
     active: State<'_, ActiveMap>,
     pending: State<'_, PendingApprovals>,
+    pending_meta: State<'_, PendingApprovalMeta>,
     session_id: String,
     message: String,
     attachments: Option<Vec<task::Attachment>>,
     model: Option<String>,
+    plan_mode: Option<bool>,
 ) -> Result<(), String> {
     let session = db::get_session(pool.inner(), &session_id)
         .await?
@@ -186,19 +190,27 @@ pub async fn send_message(
         .await?
         .ok_or_else(|| format!("Task {} not found", session.task_id))?;
 
+    let trust_str = db::get_trust_level(pool.inner(), &session.task_id).await?;
+    let trust_level = crate::policy::TrustLevel::from_str(&trust_str);
+    let repo_path = db::get_repo_path_for_task(pool.inner(), &session.task_id).await?;
+
     task::send_message(
         app,
         db_tx.inner(),
         active.inner().clone(),
         pending.inner().clone(),
+        pending_meta.inner().clone(),
         task::SendMessageParams {
             session_id,
             task_id: session.task_id,
             worktree_path: t.worktree_path,
+            repo_path,
+            trust_level,
             message,
             claude_session_id: session.claude_session_id,
             attachments: attachments.unwrap_or_default(),
             model,
+            plan_mode: plan_mode.unwrap_or(false),
         },
     )
     .await
@@ -245,10 +257,12 @@ pub async fn clear_session(
 /// Abort a currently running message
 #[tauri::command]
 pub async fn abort_message(
+    app: AppHandle,
+    db_tx: State<'_, DbWriteTx>,
     active: State<'_, ActiveMap>,
     session_id: String,
 ) -> Result<(), String> {
-    task::abort_message(active.inner(), &session_id).await
+    task::abort_message(&app, db_tx.inner(), active.inner(), &session_id).await
 }
 
 /// Respond to a pending tool approval request.
@@ -266,6 +280,14 @@ pub async fn respond_to_approval(
     } else {
         Err(format!("No pending approval with id {request_id}"))
     }
+}
+
+/// Get all currently pending approval requests (for re-emitting on frontend reload)
+#[tauri::command]
+pub async fn get_pending_approvals(
+    pending_meta: State<'_, PendingApprovalMeta>,
+) -> Result<Vec<PendingApprovalEntry>, String> {
+    Ok(pending_meta.iter().map(|entry| entry.value().clone()).collect())
 }
 
 #[tauri::command]
@@ -290,6 +312,51 @@ pub async fn get_output_lines(
     session_id: String,
 ) -> Result<Vec<OutputLine>, String> {
     db::get_output_lines(pool.inner(), &session_id).await
+}
+
+// ---------------------------------------------------------------------------
+// Policy / Trust levels
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn set_trust_level(
+    db_tx: State<'_, DbWriteTx>,
+    task_id: String,
+    trust_level: String,
+) -> Result<(), String> {
+    // Validate
+    match trust_level.as_str() {
+        "normal" | "full_auto" | "supervised" => {}
+        _ => return Err(format!("Invalid trust level: {trust_level}. Must be normal, full_auto, or supervised")),
+    }
+
+    db_tx
+        .send(db::DbWrite::SetTrustLevel {
+            task_id,
+            trust_level,
+            updated_at: crate::task::epoch_ms(),
+        })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_trust_level(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<String, String> {
+    db::get_trust_level(pool.inner(), &task_id).await
+}
+
+#[tauri::command]
+pub async fn get_audit_log(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    limit: Option<i64>,
+) -> Result<Vec<db::AuditEntry>, String> {
+    db::get_audit_log(pool.inner(), &task_id, limit.unwrap_or(100)).await
 }
 
 // ---------------------------------------------------------------------------

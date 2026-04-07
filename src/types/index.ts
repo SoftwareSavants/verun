@@ -92,6 +92,29 @@ export interface ToolApprovalRequest {
   toolInput: Record<string, unknown>
 }
 
+// Policy types
+
+export type TrustLevel = 'normal' | 'full_auto' | 'supervised'
+
+export interface AuditEntry {
+  id: number
+  sessionId: string
+  taskId: string
+  toolName: string
+  toolInputSummary: string
+  decision: string
+  reason: string
+  createdAt: number
+}
+
+export interface PolicyAutoApprovedEvent {
+  sessionId: string
+  toolName: string
+  toolInputSummary: string
+  decision: string
+  reason: string
+}
+
 // Git types
 
 export interface FileStatus {

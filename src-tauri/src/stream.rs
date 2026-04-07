@@ -1,5 +1,6 @@
 use crate::db::{DbWrite, DbWriteTx};
-use crate::task::{ApprovalResponse, PendingApprovals};
+use crate::policy::{self, PolicyDecision, TrustLevel};
+use crate::task::{ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals};
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -92,6 +93,17 @@ pub struct ToolApprovalEvent {
     pub session_id: String,
     pub tool_name: String,
     pub tool_input: serde_json::Value,
+}
+
+/// Emitted to frontend when a tool call was auto-approved by the policy engine
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyAutoApprovedEvent {
+    pub session_id: String,
+    pub tool_name: String,
+    pub tool_input_summary: String,
+    pub decision: PolicyDecision,
+    pub reason: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -278,13 +290,19 @@ fn extract_text_content(content: Option<&serde_json::Value>) -> String {
 ///
 /// When a `control_request` (tool approval) is detected, we emit it to the
 /// frontend and block until the user responds via `respond_to_approval`.
+#[allow(clippy::too_many_arguments)]
 pub async fn stream_and_capture(
     app: AppHandle,
     session_id: String,
+    task_id: String,
     stdout: ChildStdout,
     stdin: Arc<TokioMutex<Option<ChildStdin>>>,
     pending_approvals: PendingApprovals,
+    pending_approval_meta: PendingApprovalMeta,
     db_tx: DbWriteTx,
+    worktree_path: String,
+    repo_path: String,
+    trust_level: TrustLevel,
 ) -> Vec<String> {
     let mut reader = BufReader::new(stdout).lines();
     let mut buffer: Vec<OutputItem> = Vec::new();
@@ -304,7 +322,10 @@ pub async fn stream_and_capture(
 
                         // Intercept control_request for tool approval
                         if let Some(handled) = handle_control_request(
-                            &app, &session_id, &line, &stdin, &pending_approvals,
+                            &app, &session_id, &task_id, &line, &stdin,
+                            &pending_approvals, &pending_approval_meta,
+                            &worktree_path, &repo_path,
+                            trust_level, &db_tx,
                         ).await {
                             if handled {
                                 persist_line(&db_tx, &session_id, &line, &mut total_persisted);
@@ -372,14 +393,22 @@ pub async fn stream_and_capture(
 }
 
 /// Check if a line is a `control_request` for tool approval.
-/// If so, emit to frontend, block until user responds, write response to stdin.
+/// Evaluates the policy engine first — auto-approves safe actions, only prompts
+/// the user for actions that require approval.
 /// Returns `Some(true)` if handled, `Some(false)` if not a control_request, `None` on parse error.
+#[allow(clippy::too_many_arguments)]
 async fn handle_control_request(
     app: &AppHandle,
     session_id: &str,
+    task_id: &str,
     line: &str,
     stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
     pending_approvals: &PendingApprovals,
+    pending_meta: &PendingApprovalMeta,
+    worktree_path: &str,
+    repo_path: &str,
+    trust_level: TrustLevel,
+    db_tx: &DbWriteTx,
 ) -> Option<bool> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
 
@@ -396,62 +425,119 @@ async fn handle_control_request(
     let tool_name = request.get("tool_name").and_then(|t| t.as_str()).unwrap_or("unknown").to_string();
     let tool_input = request.get("input").cloned().unwrap_or(serde_json::Value::Null);
 
-    // Use a unique ID for the frontend round-trip
-    let request_id = uuid::Uuid::new_v4().to_string();
+    // Evaluate policy
+    let result = policy::evaluate(&tool_name, &tool_input, worktree_path, repo_path, trust_level);
+    let input_summary = policy::summarize_input(&tool_name, &tool_input);
 
-    // Emit approval request to frontend
-    let _ = app.emit("tool-approval-request", ToolApprovalEvent {
-        request_id: request_id.clone(),
+    // Fire-and-forget audit log entry
+    let _ = db_tx.send(DbWrite::InsertAuditEntry {
         session_id: session_id.to_string(),
-        tool_name,
-        tool_input: tool_input.clone(),
-    });
+        task_id: task_id.to_string(),
+        tool_name: tool_name.clone(),
+        tool_input_summary: input_summary.clone(),
+        decision: result.decision.as_str().to_string(),
+        reason: result.reason.clone(),
+        created_at: crate::task::epoch_ms(),
+    }).await;
 
-    // Create oneshot channel and wait for user response
-    let (tx, rx) = tokio::sync::oneshot::channel::<ApprovalResponse>();
-    pending_approvals.insert(request_id.clone(), tx);
+    match result.decision {
+        PolicyDecision::AutoAllow | PolicyDecision::AutoAllowLogged => {
+            // Auto-approve: write allow response directly to stdin
+            let response = serde_json::json!({
+                "type": "control_response",
+                "response": {
+                    "subtype": "success",
+                    "request_id": cli_request_id,
+                    "response": {
+                        "behavior": "allow",
+                        "updatedInput": tool_input,
+                    },
+                }
+            });
 
-    let (behavior, updated_input) = match rx.await {
-        Ok(resp) => (resp.behavior, resp.updated_input),
-        Err(_) => ("deny".to_string(), None), // channel dropped (e.g. abort) → deny
-    };
+            let mut payload = serde_json::to_string(&response).unwrap_or_default();
+            payload.push('\n');
 
-    pending_approvals.remove(&request_id);
+            let mut stdin_guard = stdin.lock().await;
+            if let Some(ref mut writer) = *stdin_guard {
+                let _ = writer.write_all(payload.as_bytes()).await;
+                let _ = writer.flush().await;
+            }
 
-    // Build control_response
-    let response_inner = if behavior == "allow" {
-        let input = updated_input.unwrap_or(tool_input);
-        serde_json::json!({
-            "behavior": "allow",
-            "updatedInput": input
-        })
-    } else {
-        serde_json::json!({
-            "behavior": "deny",
-            "message": "User denied this action",
-            "interrupt": false
-        })
-    };
+            // Notify frontend (lightweight event for UI indicator)
+            let _ = app.emit("policy-auto-approved", PolicyAutoApprovedEvent {
+                session_id: session_id.to_string(),
+                tool_name,
+                tool_input_summary: input_summary,
+                decision: result.decision,
+                reason: result.reason,
+            });
 
-    let control_response = serde_json::json!({
-        "type": "control_response",
-        "response": {
-            "subtype": "success",
-            "request_id": cli_request_id,
-            "response": response_inner,
+            Some(true)
         }
-    });
+        PolicyDecision::RequireApproval => {
+            // Original behavior: emit to frontend, wait for user response
+            let request_id = uuid::Uuid::new_v4().to_string();
 
-    let mut payload = serde_json::to_string(&control_response).unwrap_or_default();
-    payload.push('\n');
+            let _ = app.emit("tool-approval-request", ToolApprovalEvent {
+                request_id: request_id.clone(),
+                session_id: session_id.to_string(),
+                tool_name: tool_name.clone(),
+                tool_input: tool_input.clone(),
+            });
 
-    let mut stdin_guard = stdin.lock().await;
-    if let Some(ref mut writer) = *stdin_guard {
-        let _ = writer.write_all(payload.as_bytes()).await;
-        let _ = writer.flush().await;
+            let (tx, rx) = tokio::sync::oneshot::channel::<ApprovalResponse>();
+            pending_approvals.insert(request_id.clone(), tx);
+            pending_meta.insert(request_id.clone(), PendingApprovalEntry {
+                request_id: request_id.clone(),
+                session_id: session_id.to_string(),
+                tool_name,
+                tool_input: tool_input.clone(),
+            });
+
+            let (behavior, updated_input) = match rx.await {
+                Ok(resp) => (resp.behavior, resp.updated_input),
+                Err(_) => ("deny".to_string(), None),
+            };
+
+            pending_approvals.remove(&request_id);
+            pending_meta.remove(&request_id);
+
+            let response_inner = if behavior == "allow" {
+                let input = updated_input.unwrap_or(tool_input);
+                serde_json::json!({
+                    "behavior": "allow",
+                    "updatedInput": input
+                })
+            } else {
+                serde_json::json!({
+                    "behavior": "deny",
+                    "message": "User denied this action",
+                    "interrupt": false
+                })
+            };
+
+            let control_response = serde_json::json!({
+                "type": "control_response",
+                "response": {
+                    "subtype": "success",
+                    "request_id": cli_request_id,
+                    "response": response_inner,
+                }
+            });
+
+            let mut payload = serde_json::to_string(&control_response).unwrap_or_default();
+            payload.push('\n');
+
+            let mut stdin_guard = stdin.lock().await;
+            if let Some(ref mut writer) = *stdin_guard {
+                let _ = writer.write_all(payload.as_bytes()).await;
+                let _ = writer.flush().await;
+            }
+
+            Some(true)
+        }
     }
-
-    Some(true)
 }
 
 fn emit_item(

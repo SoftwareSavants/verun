@@ -1,9 +1,24 @@
-import { Component, onMount, onCleanup, createSignal } from 'solid-js'
+import { Component, Show, onMount, onCleanup, createSignal } from 'solid-js'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
-import { sidebarWidth, setSidebarWidth } from '../store/ui'
+import { SettingsPage } from './SettingsPage'
+import { sidebarWidth, setSidebarWidth, addToast, showSettings, setShowSettings } from '../store/ui'
 import { tasks, quickCreateTask } from '../store/tasks'
-import { selectedProjectId, setSelectedTaskId, setShowAddProjectDialog } from '../store/ui'
+import { addProject } from '../store/projects'
+import { selectedProjectId, setSelectedProjectId, setSelectedTaskId } from '../store/ui'
+
+async function pickAndAddProject() {
+  const selected = await openDialog({ directory: true, multiple: false })
+  if (!selected) return
+  try {
+    const project = await addProject(selected as string)
+    setSelectedProjectId(project.id)
+    addToast(`Added ${project.name}`, 'success')
+  } catch (e) {
+    addToast(String(e), 'error')
+  }
+}
 
 export const Layout: Component = () => {
   const [dragging, setDragging] = createSignal(false)
@@ -39,20 +54,29 @@ export const Layout: Component = () => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === 'o') {
         e.preventDefault()
-        setShowAddProjectDialog(true)
+        pickAndAddProject()
       }
       if (e.metaKey && e.key === 'n') {
         e.preventDefault()
         const pid = selectedProjectId()
         if (pid) quickCreateTask(pid)
-        else setShowAddProjectDialog(true)
+        else pickAndAddProject()
       }
       if (e.metaKey && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
         const idx = parseInt(e.key) - 1
         if (idx < tasks.length) {
           setSelectedTaskId(tasks[idx].id)
+          setShowSettings(false)
         }
+      }
+      if (e.metaKey && e.key === ',') {
+        e.preventDefault()
+        setShowSettings(!showSettings())
+      }
+      if (e.key === 'Escape' && showSettings()) {
+        e.preventDefault()
+        setShowSettings(false)
       }
     }
     window.addEventListener('keydown', handleKey)
@@ -61,19 +85,23 @@ export const Layout: Component = () => {
 
   return (
     <div class="flex h-screen w-screen bg-surface-0 text-text-primary select-none overflow-hidden">
-      <div style={{ width: `${sidebarWidth()}px` }} class="shrink-0 h-full overflow-hidden">
-        <Sidebar />
-      </div>
+      <Show when={!showSettings()}>
+        <div style={{ width: `${sidebarWidth()}px` }} class="shrink-0 h-full overflow-hidden">
+          <Sidebar />
+        </div>
 
-      {/* Resize handle — visually 1px, grabbable area wider via negative margins */}
-      <div
-        class="w-px cursor-col-resize shrink-0 bg-border-subtle hover:bg-accent/20 transition-colors relative z-10"
-        classList={{ '!bg-accent/40': dragging() }}
-        onMouseDown={startResize}
-        style={{ "margin-left": "-3px", "margin-right": "-3px", padding: "0 3px", "background-clip": "content-box" }}
-      />
+        {/* Resize handle — visually 1px, grabbable area wider via negative margins */}
+        <div
+          class="w-px cursor-col-resize shrink-0 bg-border-subtle hover:bg-accent/20 transition-colors relative z-10"
+          classList={{ '!bg-accent/40': dragging() }}
+          onMouseDown={startResize}
+          style={{ "margin-left": "-3px", "margin-right": "-3px", padding: "0 3px", "background-clip": "content-box" }}
+        />
+      </Show>
 
-      <TaskPanel />
+      <Show when={showSettings()} fallback={<TaskPanel />}>
+        <SettingsPage />
+      </Show>
     </div>
   )
 }

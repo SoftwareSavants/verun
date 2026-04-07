@@ -1,45 +1,76 @@
-import { Component, For, Show, createSignal, createMemo, createEffect, on, onCleanup } from 'solid-js'
-import { createStore, produce } from 'solid-js/store'
-import { listen } from '@tauri-apps/api/event'
-import { projects } from '../store/projects'
-import { tasks, tasksForProject, loadTasks, deleteTask, quickCreateTask } from '../store/tasks'
 import {
-  selectedProjectId, setSelectedProjectId,
-  selectedTaskId, setSelectedTaskId,
-  setShowAddProjectDialog,
-} from '../store/ui'
-import { sessions, sessionsForTask, loadSessions } from '../store/sessions'
-import { deleteProject } from '../store/projects'
-import { ConfirmDialog } from './ConfirmDialog'
+  Component,
+  For,
+  Show,
+  createSignal,
+  createEffect,
+  on,
+  onCleanup,
+} from "solid-js";
+import { createStore, produce } from "solid-js/store";
+import { listen } from "@tauri-apps/api/event";
+import { projects } from "../store/projects";
 import {
-  Plus, FolderPlus, Loader2, Circle, AlertCircle,
-  GitPullRequest, GitMerge, CircleX,
-} from 'lucide-solid'
-import { clsx } from 'clsx'
-import * as ipc from '../lib/ipc'
+  tasks,
+  tasksForProject,
+  loadTasks,
+  deleteTask,
+  quickCreateTask,
+} from "../store/tasks";
+import {
+  selectedProjectId,
+  setSelectedProjectId,
+  selectedTaskId,
+  setSelectedTaskId,
+  showSettings,
+  setShowSettings,
+} from "../store/ui";
+import { sessionsForTask, loadSessions } from "../store/sessions";
+import { deleteProject } from "../store/projects";
+import { ConfirmDialog } from "./ConfirmDialog";
+import {
+  Plus,
+  FolderPlus,
+  Loader2,
+  Circle,
+  AlertCircle,
+  GitPullRequest,
+  GitMerge,
+  CircleX,
+  Archive,
+  Folder,
+  Settings,
+} from "lucide-solid";
+import { clsx } from "clsx";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { addProject } from "../store/projects";
+import { addToast } from "../store/ui";
+import * as ipc from "../lib/ipc";
 
 // ---------------------------------------------------------------------------
 // Composite task status — richer than just session status
 // ---------------------------------------------------------------------------
 
 type TaskPhase =
-  | 'idle'        // nothing happening
-  | 'running'     // session actively running
-  | 'error'       // session errored
-  | 'pr-open'     // PR created and open
-  | 'ci-failed'   // PR has failing CI checks
-  | 'conflicts'   // PR has merge conflicts
-  | 'pr-merged'   // PR merged
+  | "idle" // nothing happening
+  | "running" // session actively running
+  | "error" // session errored
+  | "pr-open" // PR created and open
+  | "ci-failed" // PR has failing CI checks
+  | "conflicts" // PR has merge conflicts
+  | "pr-merged"; // PR merged
 
 interface TaskGitState {
-  hasChanges: boolean
-  pushed: boolean
-  prState: string | null   // 'OPEN' | 'MERGED' | 'CLOSED' | null
-  mergeable: string | null  // 'MERGEABLE' | 'CONFLICTING' | null
-  ciFailed: boolean
+  hasChanges: boolean;
+  pushed: boolean;
+  prState: string | null; // 'OPEN' | 'MERGED' | 'CLOSED' | null
+  mergeable: string | null; // 'MERGEABLE' | 'CONFLICTING' | null
+  ciFailed: boolean;
 }
 
-const [taskGitStates, setTaskGitStates] = createStore<Record<string, TaskGitState>>({})
+const [taskGitStates, setTaskGitStates] = createStore<
+  Record<string, TaskGitState>
+>({});
 
 async function refreshTaskGitState(taskId: string) {
   try {
@@ -47,23 +78,27 @@ async function refreshTaskGitState(taskId: string) {
       ipc.getGitStatus(taskId).catch(() => null),
       ipc.getPullRequest(taskId).catch(() => null),
       ipc.getBranchUrl(taskId).catch(() => null),
-    ])
+    ]);
 
-    let ciFailed = false
+    let ciFailed = false;
     if (prInfo) {
-      const checks = await ipc.getCiChecks(taskId).catch(() => [])
-      ciFailed = checks.some(c => c.status === 'FAILURE' || c.status === 'ERROR')
+      const checks = await ipc.getCiChecks(taskId).catch(() => []);
+      ciFailed = checks.some(
+        (c) => c.status === "FAILURE" || c.status === "ERROR",
+      );
     }
 
-    setTaskGitStates(produce(s => {
-      s[taskId] = {
-        hasChanges: (gitStatus?.files.length ?? 0) > 0,
-        pushed: !!branchUrl,
-        prState: prInfo?.state ?? null,
-        mergeable: prInfo?.mergeable ?? null,
-        ciFailed,
-      }
-    }))
+    setTaskGitStates(
+      produce((s) => {
+        s[taskId] = {
+          hasChanges: (gitStatus?.files.length ?? 0) > 0,
+          pushed: !!branchUrl,
+          prState: prInfo?.state ?? null,
+          mergeable: prInfo?.mergeable ?? null,
+          ciFailed,
+        };
+      }),
+    );
   } catch {
     // Silently fail — git state is supplementary
   }
@@ -71,138 +106,206 @@ async function refreshTaskGitState(taskId: string) {
 
 function taskPhase(taskId: string): TaskPhase {
   // Session status takes priority for running/error
-  const taskSessions = sessionsForTask(taskId)
-  const hasRunning = taskSessions.some(s => s.status === 'running')
-  if (hasRunning) return 'running'
+  const taskSessions = sessionsForTask(taskId);
+  const hasRunning = taskSessions.some((s) => s.status === "running");
+  if (hasRunning) return "running";
 
-  const hasError = taskSessions.some(s => s.status === 'error')
-  if (hasError) return 'error'
+  const hasError = taskSessions.some((s) => s.status === "error");
+  if (hasError) return "error";
 
   // Git/PR state
-  const git = taskGitStates[taskId]
+  const git = taskGitStates[taskId];
   if (git) {
-    if (git.mergeable === 'CONFLICTING') return 'conflicts'
-    if (git.ciFailed) return 'ci-failed'
-    if (git.prState === 'MERGED') return 'pr-merged'
-    if (git.prState === 'OPEN') return 'pr-open'
+    if (git.mergeable === "CONFLICTING") return "conflicts";
+    if (git.ciFailed) return "ci-failed";
+    if (git.prState === "MERGED") return "pr-merged";
+    if (git.prState === "OPEN") return "pr-open";
   }
 
-  return 'idle'
+  return "idle";
 }
 
 const PHASE_CONFIG: Record<TaskPhase, { color: string; title: string }> = {
-  idle:       { color: 'text-status-idle',    title: 'Idle' },
-  running:    { color: 'text-text-muted',      title: 'Running' },
-  error:      { color: 'text-status-error',   title: 'Error' },
-  'pr-open':  { color: 'text-emerald-400',    title: 'PR open' },
-  'ci-failed':{ color: 'text-red-400',        title: 'CI failing' },
-  conflicts:  { color: 'text-amber-400',      title: 'Merge conflicts' },
-  'pr-merged':{ color: 'text-purple-400',     title: 'Merged' },
-}
+  idle: { color: "text-status-idle", title: "Idle" },
+  running: { color: "text-text-muted", title: "Running" },
+  error: { color: "text-status-error", title: "Error" },
+  "pr-open": { color: "text-emerald-400", title: "PR open" },
+  "ci-failed": { color: "text-red-400", title: "CI failing" },
+  conflicts: { color: "text-amber-400", title: "Merge conflicts" },
+  "pr-merged": { color: "text-purple-400", title: "Merged" },
+};
 
 const PhaseIcon: Component<{ phase: TaskPhase }> = (props) => {
-  const size = 12
+  const size = 12;
   switch (props.phase) {
-    case 'running':    return <Loader2 size={size} class="animate-spin" />
-    case 'error':      return <AlertCircle size={size} />
-    case 'pr-open':    return <GitPullRequest size={size} />
-    case 'ci-failed':  return <CircleX size={size} />
-    case 'conflicts':  return <CircleX size={size} />
-    case 'pr-merged':  return <GitMerge size={size} />
-    case 'idle':
-    default:           return <Circle size={size} />
+    case "running":
+      return <Loader2 size={size} class="animate-spin" />;
+    case "error":
+      return <AlertCircle size={size} />;
+    case "pr-open":
+      return <GitPullRequest size={size} />;
+    case "ci-failed":
+      return <CircleX size={size} />;
+    case "conflicts":
+      return <CircleX size={size} />;
+    case "pr-merged":
+      return <GitMerge size={size} />;
+    case "idle":
+    default:
+      return <Circle size={size} />;
   }
+};
+
+interface MenuPos {
+  x: number;
+  y: number;
+}
+interface MenuAction {
+  label: string;
+  action: () => void;
+  danger?: boolean;
 }
 
-interface MenuPos { x: number; y: number }
-interface MenuAction { label: string; action: () => void; danger?: boolean }
-
 export const Sidebar: Component = () => {
-  const [contextMenu, setContextMenu] = createSignal<{ pos: MenuPos; items: MenuAction[] } | null>(null)
-  const [confirmAction, setConfirmAction] = createSignal<{ title: string; message: string; action: () => void } | null>(null)
+  const [contextMenu, setContextMenu] = createSignal<{
+    pos: MenuPos;
+    items: MenuAction[];
+  } | null>(null);
+  const [confirmAction, setConfirmAction] = createSignal<{
+    title: string;
+    message: string;
+    action: () => void;
+  } | null>(null);
 
   // Load tasks for all projects on mount / when projects change
-  createEffect(on(() => projects.length, () => {
-    for (const p of projects) {
-      loadTasks(p.id)
-    }
-  }))
+  createEffect(
+    on(
+      () => projects.length,
+      () => {
+        for (const p of projects) {
+          loadTasks(p.id);
+        }
+      },
+    ),
+  );
 
   // Load sessions + git state for all tasks on mount and when tasks change
-  createEffect(on(() => tasks.length, () => {
-    for (const t of tasks) {
-      loadSessions(t.id)
-      refreshTaskGitState(t.id)
-    }
-  }))
+  createEffect(
+    on(
+      () => tasks.length,
+      () => {
+        for (const t of tasks) {
+          loadSessions(t.id);
+          refreshTaskGitState(t.id);
+        }
+      },
+    ),
+  );
 
   // Listen for git-status-changed events to refresh specific tasks
   createEffect(() => {
-    const unlisten = listen<{ taskId: string }>('git-status-changed', (event) => {
-      refreshTaskGitState(event.payload.taskId)
-    })
-    onCleanup(() => { unlisten.then(fn => fn()) })
-  })
+    const unlisten = listen<{ taskId: string }>(
+      "git-status-changed",
+      (event) => {
+        refreshTaskGitState(event.payload.taskId);
+      },
+    );
+    onCleanup(() => {
+      unlisten.then((fn) => fn());
+    });
+  });
 
-  const statusCounts = createMemo(() => {
-    const counts = { running: 0, done: 0, error: 0, idle: 0 }
-    for (const s of sessions) {
-      if (s.status in counts) counts[s.status as keyof typeof counts]++
-    }
-    return counts
-  })
 
   const handleSelectProject = (id: string) => {
-    setSelectedProjectId(id)
-  }
+    setSelectedProjectId(id);
+  };
 
   const showProjectMenu = (e: MouseEvent, projectId: string) => {
-    e.preventDefault()
-    const project = projects.find(p => p.id === projectId)
-    if (!project) return
+    e.preventDefault();
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
     setContextMenu({
       pos: { x: e.clientX, y: e.clientY },
       items: [
-        { label: 'Open in Finder', action: () => ipc.openInFinder(project.repoPath) },
-        { label: 'Delete Project', action: () => setConfirmAction({ title: 'Delete Project', message: 'This will delete all tasks, sessions, and worktrees for this project.', action: () => deleteProject(projectId) }), danger: true },
+        {
+          label: "Open in Finder",
+          action: () => ipc.openInFinder(project.repoPath),
+        },
+        {
+          label: "Delete Project",
+          action: () =>
+            setConfirmAction({
+              title: "Delete Project",
+              message:
+                "This will delete all tasks, sessions, and worktrees for this project.",
+              action: () => deleteProject(projectId),
+            }),
+          danger: true,
+        },
       ],
-    })
-  }
+    });
+  };
 
   const showTaskMenu = (e: MouseEvent, taskId: string) => {
-    e.preventDefault()
-    const task = tasks.find(t => t.id === taskId)
-    if (!task) return
+    e.preventDefault();
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
     setContextMenu({
       pos: { x: e.clientX, y: e.clientY },
       items: [
-        { label: 'Open in Finder', action: () => ipc.openInFinder(task.worktreePath) },
-        { label: 'Delete Task', action: () => setConfirmAction({ title: 'Delete Task', message: 'This will delete all sessions and the worktree for this task.', action: () => deleteTask(taskId) }), danger: true },
+        {
+          label: "Open in Finder",
+          action: () => ipc.openInFinder(task.worktreePath),
+        },
+        {
+          label: "Delete Task",
+          action: () =>
+            setConfirmAction({
+              title: "Delete Task",
+              message:
+                "This will delete all sessions and the worktree for this task.",
+              action: () => deleteTask(taskId),
+            }),
+          danger: true,
+        },
       ],
-    })
-  }
+    });
+  };
 
-  const closeMenu = () => setContextMenu(null)
+  const closeMenu = () => setContextMenu(null);
 
   return (
     <>
       {/* Context menu overlay */}
       <Show when={contextMenu()}>
-        <div class="fixed inset-0 z-40" onClick={closeMenu} onContextMenu={(e) => { e.preventDefault(); closeMenu() }} />
+        <div
+          class="fixed inset-0 z-40"
+          onClick={closeMenu}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            closeMenu();
+          }}
+        />
         <div
           class="fixed z-50 bg-surface-3 border border-border-active rounded-lg shadow-xl py-1 min-w-40 animate-in"
-          style={{ left: `${contextMenu()!.pos.x}px`, top: `${contextMenu()!.pos.y}px` }}
+          style={{
+            left: `${contextMenu()!.pos.x}px`,
+            top: `${contextMenu()!.pos.y}px`,
+          }}
         >
           <For each={contextMenu()!.items}>
             {(item) => (
               <button
                 class={clsx(
-                  'w-full text-left px-3 py-1.5 text-xs transition-colors',
+                  "w-full text-left px-3 py-1.5 text-xs transition-colors",
                   item.danger
-                    ? 'text-status-error hover:bg-status-error/10'
-                    : 'text-text-secondary hover:bg-surface-4 hover:text-text-primary'
+                    ? "text-status-error hover:bg-status-error/10"
+                    : "text-text-secondary hover:bg-surface-4 hover:text-text-primary",
                 )}
-                onClick={() => { item.action(); closeMenu() }}
+                onClick={() => {
+                  item.action();
+                  closeMenu();
+                }}
               >
                 {item.label}
               </button>
@@ -217,11 +320,23 @@ export const Sidebar: Component = () => {
 
         {/* Header */}
         <div class="px-4 pb-2 flex items-center justify-between no-drag">
-          <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Projects</span>
+          <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
+            Projects
+          </span>
           <button
             class="p-1 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
-            onClick={() => setShowAddProjectDialog(true)}
-            title="Add Project"
+            onClick={async () => {
+              const selected = await openDialog({ directory: true, multiple: false });
+              if (!selected) return;
+              try {
+                const project = await addProject(selected as string);
+                setSelectedProjectId(project.id);
+                addToast(`Added ${project.name}`, "success");
+              } catch (e) {
+                addToast(String(e), "error");
+              }
+            }}
+            title="Add Project (⌘O)"
           >
             <FolderPlus size={14} />
           </button>
@@ -233,26 +348,36 @@ export const Sidebar: Component = () => {
             {(project) => (
               <div class="mb-1">
                 <div
-                  class={clsx(
-                    'w-full text-left px-2 py-1.5 rounded-lg transition-colors flex items-center justify-between group cursor-pointer min-w-0',
-                    'hover:bg-surface-2',
-                    selectedProjectId() === project.id && 'bg-surface-2'
-                  )}
+                  class="w-full text-left px-2 py-1.5 rounded-lg transition-colors flex items-center justify-between group cursor-pointer min-w-0"
                   onClick={() => handleSelectProject(project.id)}
                   onContextMenu={(e) => showProjectMenu(e, project.id)}
                 >
-                  <span class="text-sm text-text-primary truncate">{project.name}</span>
+                  <span class="text-sm text-text-primary truncate flex items-center gap-1.5">
+                    <Folder size={13} class="shrink-0 text-text-dim" />
+                    {project.name}
+                  </span>
                   <button
                     class="p-0.5 rounded opacity-60 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-secondary shrink-0"
-                    onClick={(e) => { e.stopPropagation(); quickCreateTask(project.id) }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      quickCreateTask(project.id);
+                    }}
                     title="New Task (⌘N)"
                   >
                     <Plus size={14} />
                   </button>
                 </div>
 
-                <Show when={tasksForProject(project.id).length === 0 && selectedProjectId() === project.id}>
-                  <div class="ml-3.5 border-l border-border-active pl-3 py-0.5">
+                <Show
+                  when={
+                    tasksForProject(project.id).length === 0 &&
+                    selectedProjectId() === project.id
+                  }
+                >
+                  <div
+                    class="ml-2.5 pl-4 py-0.5"
+                    style={{ "border-left": "1px solid #3a3a48" }}
+                  >
                     <button
                       class="text-[10px] text-text-dim hover:text-text-muted transition-colors cursor-pointer"
                       onClick={() => quickCreateTask(project.id)}
@@ -263,35 +388,55 @@ export const Sidebar: Component = () => {
                 </Show>
 
                 <Show when={tasksForProject(project.id).length > 0}>
-                  <div class="ml-3.5 border-l border-border-active mt-0.5">
+                  <div
+                    class="ml-2.5 mt-0.5 pl-2 flex flex-col gap-0.5"
+                    style={{ "border-left": "1px solid #3a3a48" }}
+                  >
                     <For each={tasksForProject(project.id)}>
                       {(task) => {
-                        const phase = () => taskPhase(task.id)
-                        const config = () => PHASE_CONFIG[phase()]
+                        const phase = () => taskPhase(task.id);
+                        const config = () => PHASE_CONFIG[phase()];
                         return (
-                          <button
+                          <div
                             class={clsx(
-                              'w-full text-left ml-px pl-3 pr-2 py-1.5 rounded-r-md transition-colors flex items-start gap-2',
-                              'hover:bg-surface-2',
-                              selectedTaskId() === task.id && 'bg-surface-2'
+                              "group/task pl-2 pr-2 py-1.5 rounded-md transition-colors flex items-start gap-2 cursor-pointer",
+                              "hover:bg-surface-2",
+                              selectedTaskId() === task.id && "bg-surface-2",
                             )}
-                            onClick={() => setSelectedTaskId(task.id)}
+                            onClick={() => { setSelectedTaskId(task.id); setShowSettings(false) }}
                             onContextMenu={(e) => showTaskMenu(e, task.id)}
                             title={config().title}
                           >
-                            <span class={clsx('shrink-0 mt-0.5', config().color)}>
+                            <span
+                              class={clsx("shrink-0 mt-0.5", config().color)}
+                            >
                               <PhaseIcon phase={phase()} />
                             </span>
-                            <div class="min-w-0">
+                            <div class="flex-1 min-w-0">
                               <div class="text-xs text-text-secondary truncate">
-                                {task.name || 'New task'}
+                                {task.name || "New task"}
                               </div>
                               <div class="text-[10px] text-text-dim truncate">
                                 {task.branch}
                               </div>
                             </div>
-                          </button>
-                        )
+                            <button
+                              class="shrink-0 p-0.5 rounded opacity-0 group-hover/task:opacity-60 hover:!opacity-100 text-text-dim hover:text-status-error transition-all"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setConfirmAction({
+                                  title: "Delete Task",
+                                  message:
+                                    "This will delete all sessions and the worktree for this task.",
+                                  action: () => deleteTask(task.id),
+                                });
+                              }}
+                              title="Delete task"
+                            >
+                              <Archive size={12} />
+                            </button>
+                          </div>
+                        );
                       }}
                     </For>
                   </div>
@@ -306,13 +451,26 @@ export const Sidebar: Component = () => {
               <div class="w-10 h-10 rounded-xl bg-surface-3 flex items-center justify-center mb-4">
                 <FolderPlus size={20} class="text-text-muted" />
               </div>
-              <p class="text-sm text-text-primary font-medium mb-1">Add a git repo</p>
+              <p class="text-sm text-text-primary font-medium mb-1">
+                Add a git repo
+              </p>
               <p class="text-xs text-text-dim text-center leading-relaxed mb-5">
-                Each repo becomes a project. Create tasks to spin up parallel worktrees.
+                Each repo becomes a project. Create tasks to spin up parallel
+                worktrees.
               </p>
               <button
                 class="btn-primary text-xs px-4 py-1.5"
-                onClick={() => setShowAddProjectDialog(true)}
+                onClick={async () => {
+                  const selected = await openDialog({ directory: true, multiple: false });
+                  if (!selected) return;
+                  try {
+                    const project = await addProject(selected as string);
+                    setSelectedProjectId(project.id);
+                    addToast(`Added ${project.name}`, "success");
+                  } catch (e) {
+                    addToast(String(e), "error");
+                  }
+                }}
               >
                 Add Project
               </button>
@@ -320,34 +478,30 @@ export const Sidebar: Component = () => {
           </Show>
         </div>
 
-        {/* Footer */}
-        <div class="px-4 py-3 border-t border-border-subtle no-drag">
-          <div class="text-[11px] flex gap-3">
-            <Show when={statusCounts().running > 0}>
-              <span class="text-status-running">{statusCounts().running} running</span>
-            </Show>
-            <Show when={statusCounts().done > 0}>
-              <span class="text-status-done">{statusCounts().done} done</span>
-            </Show>
-            <Show when={statusCounts().error > 0}>
-              <span class="text-status-error">{statusCounts().error} error</span>
-            </Show>
-            <Show when={statusCounts().running === 0 && statusCounts().done === 0 && statusCounts().error === 0}>
-              <span class="text-text-dim">No active sessions</span>
-            </Show>
-          </div>
-        </div>
+        {/* Settings footer */}
+        <button
+          class={`w-full px-4 py-3 border-t border-border-subtle flex items-center gap-2 transition-colors no-drag ${
+            showSettings() ? 'text-text-secondary' : 'text-text-dim hover:text-text-muted'
+          }`}
+          onClick={() => setShowSettings(!showSettings())}
+        >
+          <Settings size={13} />
+          <span class="text-[11px]">Settings</span>
+        </button>
       </div>
 
       <ConfirmDialog
         open={!!confirmAction()}
-        title={confirmAction()?.title || ''}
-        message={confirmAction()?.message || ''}
+        title={confirmAction()?.title || ""}
+        message={confirmAction()?.message || ""}
         confirmLabel="Delete"
         danger
-        onConfirm={() => { confirmAction()?.action(); setConfirmAction(null) }}
+        onConfirm={() => {
+          confirmAction()?.action();
+          setConfirmAction(null);
+        }}
         onCancel={() => setConfirmAction(null)}
       />
     </>
-  )
-}
+  );
+};

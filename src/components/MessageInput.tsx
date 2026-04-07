@@ -1,13 +1,13 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion } from '../store/sessions'
-import { effectiveModel, setSessionModel, setSelectedSessionId } from '../store/ui'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts } from '../store/sessions'
+import { effectiveModel, setSessionModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import type { Command } from '../store/commands'
-import { Send, Square, X, Plus, ShieldAlert, HelpCircle } from 'lucide-solid'
+import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks } from 'lucide-solid'
 import { clsx } from 'clsx'
-import type { Attachment, ModelId } from '../types'
-import { selectedTaskId } from '../store/ui'
+import type { Attachment, ModelId, TrustLevel } from '../types'
+import * as ipc from '../lib/ipc'
 
 interface Props {
   sessionId: string | null
@@ -46,6 +46,64 @@ export const MessageInput: Component<Props> = (props) => {
   const [attachments, setAttachments] = createSignal<Attachment[]>([])
   const [dragOver, setDragOver] = createSignal(false)
   const [showPalette, setShowPalette] = createSignal(false)
+  const [trustLevel, setTrustLevelLocal] = createSignal<TrustLevel>('normal')
+  const [showTrustMenu, setShowTrustMenu] = createSignal(false)
+
+  // Load trust level when task changes
+  createEffect(on(selectedTaskId, async (taskId) => {
+    if (taskId) {
+      try {
+        const level = await ipc.getTrustLevel(taskId) as TrustLevel
+        setTrustLevelLocal(level)
+      } catch { /* default to normal */ }
+    }
+  }))
+
+  const handleTrustChange = async (level: TrustLevel) => {
+    const taskId = selectedTaskId()
+    if (!taskId) return
+    await ipc.setTrustLevel(taskId, level)
+    setTrustLevelLocal(level)
+    setShowTrustMenu(false)
+  }
+
+  const autoApprovedCount = () => {
+    const sid = props.sessionId
+    return sid ? (autoApprovedCounts[sid] || 0) : 0
+  }
+
+  // Plan mode
+  const [planMode, setPlanMode] = createSignal(false)
+  const [showPlanResponse, setShowPlanResponse] = createSignal(false)
+  const [planFeedback, setPlanFeedback] = createSignal('')
+
+  // Detect when plan response should show: was running → now idle, plan mode on
+  createEffect(on(
+    () => [props.isRunning, planMode()] as const,
+    ([running, plan], prev) => {
+      if (prev && prev[0] && !running && plan) {
+        setShowPlanResponse(true)
+      }
+    }
+  ))
+
+  const handleApprovePlan = () => {
+    const sid = props.sessionId
+    if (!sid) return
+    setPlanMode(false)
+    setShowPlanResponse(false)
+    sendMessage(sid, 'Go ahead and execute the plan', undefined, currentModel(), false)
+  }
+
+  const handlePlanFeedback = () => {
+    const text = planFeedback().trim()
+    if (!text) return
+    const sid = props.sessionId
+    if (!sid) return
+    setShowPlanResponse(false)
+    setPlanFeedback('')
+    sendMessage(sid, text, undefined, currentModel(), true)
+  }
 
   const currentModel = () => effectiveModel(props.sessionId)
 
@@ -138,7 +196,7 @@ export const MessageInput: Component<Props> = (props) => {
     setAttachments([])
     setShowPalette(false)
     try {
-      await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel())
+      await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode())
     } catch (e) {
       console.error('Failed to send message:', e)
     } finally {
@@ -287,12 +345,35 @@ export const MessageInput: Component<Props> = (props) => {
   // Keyboard shortcuts for approval/question UI
   onMount(() => {
     const approvalKeyHandler = (e: KeyboardEvent) => {
+      // Plan response: Enter to approve (only when feedback input isn't focused)
+      if (showPlanResponse() && !currentApproval()) {
+        const active = document.activeElement
+        const isInputFocused = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')
+        if (e.key === 'Enter' && !e.shiftKey && !isInputFocused) {
+          e.preventDefault()
+          handleApprovePlan()
+          return
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          setShowPlanResponse(false)
+          setPlanMode(false)
+          return
+        }
+        return
+      }
+
       const approval = currentApproval()
       if (!approval) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
 
-      // AskUserQuestion: number keys select options
+      // AskUserQuestion: number keys select options, Escape to skip
       if (isQuestion()) {
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          denyToolUse(approval.requestId, approval.sessionId)
+          return
+        }
         const q = currentQuestion()
         if (!q) return
         const num = parseInt(e.key)
@@ -331,12 +412,28 @@ export const MessageInput: Component<Props> = (props) => {
   const selectQuestionOption = (label: string) => {
     const q = currentQuestion()
     if (!q) return
-    setQuestionAnswers(prev => ({ ...prev, [q.question]: label }))
     setIsCustomSelected(prev => ({ ...prev, [q.question]: false }))
-    // Auto-advance to next question after short delay
-    const qs = questions()
-    if (questionIndex() < qs.length - 1) {
-      setTimeout(() => setQuestionIndex(i => i + 1), 200)
+
+    if (q.multiSelect) {
+      // Toggle selection in comma-separated list
+      setQuestionAnswers(prev => {
+        const current = prev[q.question] || ''
+        const selected = current ? current.split(', ') : []
+        const idx = selected.indexOf(label)
+        if (idx >= 0) {
+          selected.splice(idx, 1)
+        } else {
+          selected.push(label)
+        }
+        return { ...prev, [q.question]: selected.join(', ') }
+      })
+    } else {
+      setQuestionAnswers(prev => ({ ...prev, [q.question]: label }))
+      // Auto-advance to next question after short delay
+      const qs = questions()
+      if (questionIndex() < qs.length - 1) {
+        setTimeout(() => setQuestionIndex(i => i + 1), 200)
+      }
     }
   }
 
@@ -399,14 +496,23 @@ export const MessageInput: Component<Props> = (props) => {
           const qs = () => questions()
           return (
             <div class="bg-surface-1 border border-accent/30 rounded-xl p-3 mb-0 min-w-0 overflow-hidden">
-              <div class="flex items-center gap-2 mb-2">
-                <HelpCircle size={14} class="text-accent" />
-                <span class="text-xs font-medium text-accent">Question from Claude</span>
-                <Show when={qs().length > 1}>
-                  <span class="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded-full">
-                    {questionIndex() + 1}/{qs().length}
-                  </span>
-                </Show>
+              <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center gap-2">
+                  <HelpCircle size={14} class="text-accent" />
+                  <span class="text-xs font-medium text-accent">Question from Claude</span>
+                  <Show when={qs().length > 1}>
+                    <span class="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded-full">
+                      {questionIndex() + 1}/{qs().length}
+                    </span>
+                  </Show>
+                </div>
+                <button
+                  class="p-1 rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                  onClick={() => denyToolUse(currentApproval()!.requestId, currentApproval()!.sessionId)}
+                  title="Skip (Esc)"
+                >
+                  <X size={14} />
+                </button>
               </div>
               <Show when={q()}>
                 {(question) => (
@@ -419,7 +525,13 @@ export const MessageInput: Component<Props> = (props) => {
                       <div class="flex flex-col gap-1 mb-2">
                         <For each={question().options!}>
                           {(opt, i) => {
-                            const selected = () => questionAnswers()[question().question] === opt.label
+                            const selected = () => {
+                              const val = questionAnswers()[question().question] || ''
+                              if (question().multiSelect) {
+                                return val.split(', ').includes(opt.label)
+                              }
+                              return val === opt.label
+                            }
                             return (
                               <button
                                 class={clsx(
@@ -453,7 +565,7 @@ export const MessageInput: Component<Props> = (props) => {
                       return (
                         <div
                           class={clsx(
-                            'flex items-start gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs transition-colors min-w-0 cursor-text',
+                            'flex items-start gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs transition-colors min-w-0 cursor-text mb-2',
                             customActive()
                               ? 'bg-accent/15 border border-accent/30 text-accent'
                               : 'bg-surface-2 border border-border text-text-secondary hover:border-border-active'
@@ -574,12 +686,53 @@ export const MessageInput: Component<Props> = (props) => {
         )}
       </Show>
 
+      {/* Plan response panel */}
+      <Show when={showPlanResponse() && !currentApproval()}>
+        <div class="bg-surface-1 border border-accent/30 rounded-xl p-3 mb-0">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <ListChecks size={14} class="text-accent" />
+              <span class="text-xs font-medium text-accent">Plan ready</span>
+            </div>
+            <button
+              class="px-3 py-1.5 rounded-lg bg-status-running/15 text-status-running text-xs font-medium hover:bg-status-running/25 transition-colors"
+              onClick={handleApprovePlan}
+            >
+              Approve <span class="text-text-dim ml-1">(Enter)</span>
+            </button>
+          </div>
+          <div class="flex gap-2">
+            <input
+              class="flex-1 bg-surface-2 border border-border rounded-lg px-3 py-1.5 text-xs text-text-primary outline-none placeholder-text-dim focus:border-border-active transition-colors"
+              placeholder="Ask for changes..."
+              value={planFeedback()}
+              onInput={(e) => setPlanFeedback(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  handlePlanFeedback()
+                }
+              }}
+            />
+            <button
+              class="px-3 py-1.5 rounded-lg bg-surface-3 text-text-secondary text-xs font-medium hover:bg-surface-4 transition-colors disabled:opacity-30"
+              onClick={handlePlanFeedback}
+              disabled={!planFeedback().trim()}
+            >
+              Send
+            </button>
+          </div>
+        </div>
+      </Show>
+
       <div class={clsx(
-        'relative bg-surface-1 border rounded-xl transition-all focus-within:border-accent focus-within:shadow-[0_0_0_3px_rgba(59,130,246,0.25)]',
-        currentApproval() ? 'hidden' : '',
-        dragOver()
-          ? 'border-accent/50 bg-accent/5'
-          : 'border-border'
+        'relative bg-surface-1 rounded-xl transition-all outline-none',
+        currentApproval() || showPlanResponse() ? 'hidden' : '',
+        planMode()
+          ? 'border border-accent/40 shadow-[0_0_0_2px_rgba(59,130,246,0.15)]'
+          : dragOver()
+            ? 'border border-accent/50 bg-accent/5'
+            : ''
       )}>
         {/* Command palette */}
         <Show when={showPalette()}>
@@ -626,77 +779,174 @@ export const MessageInput: Component<Props> = (props) => {
           </div>
         </Show>
 
-        {/* Input row */}
-        <div class="flex items-center gap-2 px-3 py-1.5">
-          <input
-            type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp"
-            multiple
-            class="hidden"
-            ref={(el) => { fileInputRef = el }}
-            onChange={(e) => {
-              const files = e.currentTarget.files
-              if (files) addFiles(files)
-              e.currentTarget.value = ''
-            }}
-          />
-          <button
-            class="w-8 h-8 flex items-center justify-center rounded-lg text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors shrink-0 disabled:opacity-30"
-            onClick={() => fileInputRef?.click()}
-            disabled={!props.sessionId || props.isRunning}
-            title="Attach image"
-          >
-            <Plus size={16} />
-          </button>
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          class="hidden"
+          ref={(el) => { fileInputRef = el }}
+          onChange={(e) => {
+            const files = e.currentTarget.files
+            if (files) addFiles(files)
+            e.currentTarget.value = ''
+          }}
+        />
 
-          <textarea
-            ref={textareaRef}
-            class="flex-1 bg-transparent text-sm text-text-primary outline-none resize-none placeholder-text-dim leading-normal"
-            style={{ height: 'auto', 'max-height': '200px', 'overflow-y': 'auto' }}
-            placeholder={
-              dragOver()
-                ? 'Drop files here...'
-                : props.sessionId
-                  ? 'Message Claude... (type / for commands)'
-                  : 'Select a session first'
-            }
-            value={message()}
-            onInput={handleInput}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            disabled={!props.sessionId || props.isRunning}
-            rows={1}
-          />
+        {/* Textarea */}
+        <textarea
+          ref={textareaRef}
+          class="w-full bg-transparent text-sm text-text-primary outline-none resize-none placeholder-text-dim leading-normal px-3.5 pt-3 pb-2"
+          style={{ height: 'auto', 'max-height': '200px', 'overflow-y': 'auto' }}
+          placeholder={
+            dragOver()
+              ? 'Drop files here...'
+              : props.sessionId
+                ? 'Ask for changes, @reference files, use /skills'
+                : 'Select a session first'
+          }
+          value={message()}
+          onInput={handleInput}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+          disabled={!props.sessionId || props.isRunning}
+          rows={3}
+        />
 
-          <ModelSelector
-            model={currentModel()}
-            onChange={(m) => {
-              if (props.sessionId) setSessionModel(props.sessionId, m)
-            }}
-            disabled={!props.sessionId || props.isRunning}
-          />
+        {/* Bottom toolbar */}
+        <div class="flex items-center justify-between px-2 pb-2 pt-0.5">
+          <div class="flex items-center gap-0.5">
+            {/* Model selector */}
+            <ModelSelector
+              model={currentModel()}
+              onChange={(m) => {
+                if (props.sessionId) setSessionModel(props.sessionId, m)
+              }}
+              disabled={!props.sessionId || props.isRunning}
+            />
 
-          <Show
-            when={props.isRunning}
-            fallback={
-              <button
-                class="w-8 h-8 flex items-center justify-center rounded-lg text-text-muted hover:text-accent hover:bg-accent-muted transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-text-muted"
-                onClick={handleSend}
-                disabled={(!message().trim() && attachments().length === 0) || !props.sessionId || sending()}
-                title="Send (Enter)"
-              >
-                <Send size={16} />
-              </button>
-            }
-          >
+            {/* Plan mode toggle */}
             <button
-              class="w-8 h-8 flex items-center justify-center rounded-lg bg-status-error/10 text-status-error hover:bg-status-error/20 transition-colors"
-              onClick={handleAbort}
-              title="Stop session"
+              class={clsx(
+                'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+                planMode()
+                  ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
+                'disabled:opacity-30'
+              )}
+              onClick={() => {
+                setPlanMode(!planMode())
+                if (!planMode()) setShowPlanResponse(false)
+              }}
+              disabled={!props.sessionId || props.isRunning}
+              title="Plan mode — Claude will plan before acting"
             >
-              <Square size={14} />
+              <ListChecks size={13} />
+              <span>Plan</span>
             </button>
-          </Show>
+
+            {/* Trust level selector */}
+            <div class="relative">
+              <button
+                class={clsx(
+                  'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+                  trustLevel() === 'full_auto'
+                    ? 'text-status-running bg-status-running/10 hover:bg-status-running/15'
+                    : trustLevel() === 'supervised'
+                      ? 'text-amber-400 bg-amber-400/10 hover:bg-amber-400/15'
+                      : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
+                  'disabled:opacity-30'
+                )}
+                onClick={() => setShowTrustMenu(!showTrustMenu())}
+                disabled={!props.sessionId}
+                title={`Trust: ${trustLevel()}`}
+              >
+                {trustLevel() === 'full_auto' ? <ShieldCheck size={13} /> :
+                 trustLevel() === 'supervised' ? <ShieldAlert size={13} /> :
+                 <Shield size={13} />}
+                <span>
+                  {trustLevel() === 'full_auto' ? 'Auto' :
+                   trustLevel() === 'supervised' ? 'Supervised' :
+                   'Normal'}
+                </span>
+              </button>
+              <Show when={showTrustMenu()}>
+                <div class="fixed inset-0 z-40" onClick={() => setShowTrustMenu(false)} />
+                <div class="absolute bottom-full left-0 mb-1 z-50 bg-surface-3 border border-border-active rounded-lg shadow-xl py-1 min-w-44">
+                  <button
+                    class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'normal' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
+                    onClick={() => handleTrustChange('normal')}
+                  >
+                    <div class="font-medium">Normal</div>
+                    <div class="text-[10px] text-text-dim mt-0.5">Auto-approve safe actions</div>
+                  </button>
+                  <button
+                    class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'full_auto' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
+                    onClick={() => handleTrustChange('full_auto')}
+                  >
+                    <div class="font-medium">Full Auto</div>
+                    <div class="text-[10px] text-text-dim mt-0.5">Auto-approve everything</div>
+                  </button>
+                  <button
+                    class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'supervised' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
+                    onClick={() => handleTrustChange('supervised')}
+                  >
+                    <div class="font-medium">Supervised</div>
+                    <div class="text-[10px] text-text-dim mt-0.5">Approve every action</div>
+                  </button>
+                </div>
+              </Show>
+            </div>
+
+            {/* Auto-approved count */}
+            <Show when={autoApprovedCount() > 0}>
+              <span
+                class="text-[10px] text-status-running/70 px-1.5 py-0.5 rounded-full"
+                title={`${autoApprovedCount()} tool calls auto-approved this session`}
+              >
+                {autoApprovedCount()} auto-approved
+              </span>
+            </Show>
+          </div>
+
+          <div class="flex items-center gap-1">
+            {/* Attach button */}
+            <button
+              class="w-7 h-7 flex items-center justify-center rounded-lg text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors shrink-0 disabled:opacity-30"
+              onClick={() => fileInputRef?.click()}
+              disabled={!props.sessionId || props.isRunning}
+              title="Attach image"
+            >
+              <Plus size={16} />
+            </button>
+
+            {/* Send / Stop button */}
+            <Show
+              when={props.isRunning}
+              fallback={
+                <button
+                  class={clsx(
+                    'w-7 h-7 flex items-center justify-center rounded-lg transition-colors',
+                    (!message().trim() && attachments().length === 0) || !props.sessionId || sending()
+                      ? 'text-text-dim/30 border border-border'
+                      : 'text-text-primary bg-surface-3 border border-border-active hover:bg-surface-4'
+                  )}
+                  onClick={handleSend}
+                  disabled={(!message().trim() && attachments().length === 0) || !props.sessionId || sending()}
+                  title="Send (Enter)"
+                >
+                  <ArrowUp size={16} />
+                </button>
+              }
+            >
+              <button
+                class="w-7 h-7 flex items-center justify-center rounded-lg bg-status-error/10 text-status-error hover:bg-status-error/20 transition-colors"
+                onClick={handleAbort}
+                title="Stop session"
+              >
+                <Square size={14} />
+              </button>
+            </Show>
+          </div>
         </div>
       </div>
     </div>

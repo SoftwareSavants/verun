@@ -51,6 +51,32 @@ pub fn migrations() -> Vec<Migration> {
             CREATE INDEX IF NOT EXISTS idx_output_session ON output_lines(session_id);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 2,
+        description: "add trust levels and policy audit log",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS task_trust_levels (
+                task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+                trust_level TEXT NOT NULL DEFAULT 'normal',
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS policy_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                tool_input_summary TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_audit_session ON policy_audit_log(session_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_task ON policy_audit_log(task_id);
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -99,6 +125,19 @@ pub struct OutputLine {
     pub emitted_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditEntry {
+    pub id: i64,
+    pub session_id: String,
+    pub task_id: String,
+    pub tool_name: String,
+    pub tool_input_summary: String,
+    pub decision: String,
+    pub reason: String,
+    pub created_at: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Async write queue
 // ---------------------------------------------------------------------------
@@ -125,6 +164,18 @@ pub enum DbWrite {
     // Output
     InsertOutputLines { session_id: String, lines: Vec<(String, i64)> },
     DeleteOutputLines { session_id: String },
+
+    // Policy
+    SetTrustLevel { task_id: String, trust_level: String, updated_at: i64 },
+    InsertAuditEntry {
+        session_id: String,
+        task_id: String,
+        tool_name: String,
+        tool_input_summary: String,
+        decision: String,
+        reason: String,
+        created_at: i64,
+    },
 
     // Startup recovery
     ResetRunningSessions,
@@ -160,7 +211,17 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .await?;
         }
         DbWrite::DeleteProject { id } => {
-            // Cascade: output_lines → sessions → tasks → project
+            // Cascade: audit_log → trust_levels → output_lines → sessions → tasks → project
+            sqlx::query(
+                "DELETE FROM policy_audit_log WHERE task_id IN \
+                 (SELECT id FROM tasks WHERE project_id = ?)",
+            )
+            .bind(&id).execute(pool).await?;
+            sqlx::query(
+                "DELETE FROM task_trust_levels WHERE task_id IN \
+                 (SELECT id FROM tasks WHERE project_id = ?)",
+            )
+            .bind(&id).execute(pool).await?;
             sqlx::query(
                 "DELETE FROM output_lines WHERE session_id IN \
                  (SELECT s.id FROM sessions s JOIN tasks t ON s.task_id = t.id WHERE t.project_id = ?)",
@@ -200,6 +261,10 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .await?;
         }
         DbWrite::DeleteTask { id } => {
+            sqlx::query("DELETE FROM policy_audit_log WHERE task_id = ?")
+                .bind(&id).execute(pool).await?;
+            sqlx::query("DELETE FROM task_trust_levels WHERE task_id = ?")
+                .bind(&id).execute(pool).await?;
             sqlx::query(
                 "DELETE FROM output_lines WHERE session_id IN \
                  (SELECT id FROM sessions WHERE task_id = ?)",
@@ -284,6 +349,35 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .bind(&session_id)
                 .execute(pool)
                 .await?;
+        }
+
+        // -- Policy --
+        DbWrite::SetTrustLevel { task_id, trust_level, updated_at } => {
+            sqlx::query(
+                "INSERT INTO task_trust_levels (task_id, trust_level, updated_at) \
+                 VALUES (?, ?, ?) \
+                 ON CONFLICT(task_id) DO UPDATE SET trust_level = excluded.trust_level, updated_at = excluded.updated_at",
+            )
+            .bind(&task_id)
+            .bind(&trust_level)
+            .bind(updated_at)
+            .execute(pool)
+            .await?;
+        }
+        DbWrite::InsertAuditEntry { session_id, task_id, tool_name, tool_input_summary, decision, reason, created_at } => {
+            sqlx::query(
+                "INSERT INTO policy_audit_log (session_id, task_id, tool_name, tool_input_summary, decision, reason, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&session_id)
+            .bind(&task_id)
+            .bind(&tool_name)
+            .bind(&tool_input_summary)
+            .bind(&decision)
+            .bind(&reason)
+            .bind(created_at)
+            .execute(pool)
+            .await?;
         }
 
         // -- Startup recovery --
@@ -378,6 +472,50 @@ pub async fn get_output_lines(
     .map_err(|e| e.to_string())
 }
 
+// Policy
+
+pub async fn get_trust_level(pool: &SqlitePool, task_id: &str) -> Result<String, String> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT trust_level FROM task_trust_levels WHERE task_id = ?",
+    )
+    .bind(task_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(row.map(|(tl,)| tl).unwrap_or_else(|| "normal".into()))
+}
+
+pub async fn get_repo_path_for_task(pool: &SqlitePool, task_id: &str) -> Result<String, String> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT p.repo_path FROM projects p \
+         JOIN tasks t ON t.project_id = p.id \
+         WHERE t.id = ?",
+    )
+    .bind(task_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    row.map(|(rp,)| rp)
+        .ok_or_else(|| format!("no project found for task {task_id}"))
+}
+
+pub async fn get_audit_log(
+    pool: &SqlitePool,
+    task_id: &str,
+    limit: i64,
+) -> Result<Vec<AuditEntry>, String> {
+    sqlx::query_as::<_, AuditEntry>(
+        "SELECT * FROM policy_audit_log WHERE task_id = ? ORDER BY created_at DESC LIMIT ?",
+    )
+    .bind(task_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Pool constructor
 // ---------------------------------------------------------------------------
@@ -407,10 +545,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_one_migration_at_version_1() {
+    fn has_two_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 1);
+        assert_eq!(m.len(), 2);
         assert_eq!(m[0].version, 1);
+        assert_eq!(m[1].version, 2);
     }
 
     #[test]
@@ -421,10 +560,9 @@ mod tests {
 
     async fn test_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query(migrations()[0].sql)
-            .execute(&pool)
-            .await
-            .unwrap();
+        for m in migrations() {
+            sqlx::query(m.sql).execute(&pool).await.unwrap();
+        }
         pool
     }
 

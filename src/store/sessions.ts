@@ -1,6 +1,6 @@
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment, ToolApprovalRequest } from '../types'
+import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment, ToolApprovalRequest, PolicyAutoApprovedEvent } from '../types'
 import { setTasks } from './tasks'
 import * as ipc from '../lib/ipc'
 
@@ -9,6 +9,7 @@ const MAX_ITEMS_IN_MEMORY = 50_000
 export const [sessions, setSessions] = createStore<Session[]>([])
 export const [outputItems, setOutputItems] = createStore<Record<string, OutputItem[]>>({})
 export const [pendingApprovals, setPendingApprovals] = createStore<Record<string, ToolApprovalRequest[]>>({})
+export const [autoApprovedCounts, setAutoApprovedCounts] = createStore<Record<string, number>>({})
 
 export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
@@ -23,7 +24,7 @@ export async function createSession(taskId: string): Promise<Session> {
   return session
 }
 
-export async function sendMessage(sessionId: string, message: string, attachments?: Attachment[], model?: string) {
+export async function sendMessage(sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean) {
   const images = attachments
     ?.filter(a => a.mimeType.startsWith('image/'))
     .map(a => ({ mimeType: a.mimeType, dataBase64: a.dataBase64 }))
@@ -42,7 +43,7 @@ export async function sendMessage(sessionId: string, message: string, attachment
       store[sessionId] = [item]
     }
   }))
-  await ipc.sendMessage(sessionId, message, attachments, model)
+  await ipc.sendMessage(sessionId, message, attachments, model, planMode)
 }
 
 export async function abortMessage(sessionId: string) {
@@ -232,4 +233,30 @@ export async function initSessionListeners() {
     const { taskId, name } = event.payload
     setTasks(t => t.id === taskId, 'name', name)
   })
+
+  await listen<PolicyAutoApprovedEvent>('policy-auto-approved', (event) => {
+    const { sessionId } = event.payload
+    setAutoApprovedCounts(produce(store => {
+      store[sessionId] = (store[sessionId] || 0) + 1
+    }))
+  })
+
+  // Re-fetch any pending approvals that survived a frontend reload
+  try {
+    const pending = await ipc.getPendingApprovals()
+    for (const req of pending) {
+      setPendingApprovals(produce(store => {
+        const existing = store[req.sessionId]
+        if (existing) {
+          if (!existing.some(e => e.requestId === req.requestId)) {
+            existing.push(req)
+          }
+        } else {
+          store[req.sessionId] = [req]
+        }
+      }))
+    }
+  } catch {
+    // getPendingApprovals may not be available yet during startup
+  }
 }

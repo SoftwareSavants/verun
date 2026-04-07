@@ -1,21 +1,19 @@
 import { Component, onMount, createSignal } from 'solid-js'
 import { Layout } from './components/Layout'
 import { SelectionMenu } from './components/SelectionMenu'
-import { AddProjectDialog } from './components/AddProjectDialog'
 import { ToastContainer } from './components/ToastContainer'
+import { initTheme } from './lib/theme'
 import { loadProjects } from './store/projects'
 import { initSessionListeners } from './store/sessions'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
-import {
-  showAddProjectDialog, setShowAddProjectDialog,
-  addToast,
-} from './store/ui'
+import { addToast } from './store/ui'
 
 const App: Component = () => {
   const [selMenu, setSelMenu] = createSignal<{ x: number; y: number; text: string } | null>(null)
 
   onMount(async () => {
+    initTheme()
     // Replace default context menu with custom selection menu
     document.addEventListener('contextmenu', (e) => {
       // Allow our Sidebar's custom context menu
@@ -58,10 +56,6 @@ const App: Component = () => {
   return (
     <>
       <Layout />
-      <AddProjectDialog
-        open={showAddProjectDialog()}
-        onClose={() => setShowAddProjectDialog(false)}
-      />
       <ToastContainer />
       <SelectionMenu
         pos={selMenu()}

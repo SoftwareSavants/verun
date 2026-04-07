@@ -2,6 +2,7 @@ mod db;
 mod git_ops;
 mod github;
 mod ipc;
+mod policy;
 mod stream;
 mod task;
 mod worktree;
@@ -23,6 +24,7 @@ pub fn run() {
         )
         .manage(task::new_active_map())
         .manage(task::new_pending_approvals())
+        .manage(task::new_pending_approval_meta())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
                 std::io::Error::other(format!("Failed to get app data dir: {e}"))
@@ -66,9 +68,14 @@ pub fn run() {
             ipc::clear_session,
             ipc::abort_message,
             ipc::respond_to_approval,
+            ipc::get_pending_approvals,
             ipc::list_sessions,
             ipc::get_session,
             ipc::get_output_lines,
+            // Policy / Trust levels
+            ipc::set_trust_level,
+            ipc::get_trust_level,
+            ipc::get_audit_log,
             // Git / Worktree
             ipc::get_diff,
             ipc::merge_branch,

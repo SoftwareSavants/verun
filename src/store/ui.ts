@@ -30,6 +30,7 @@ export function effectiveModel(sessionId: string | null): ModelId {
   return globalModel()
 }
 export const [showAddProjectDialog, setShowAddProjectDialog] = createSignal(false)
+export const [showSettings, setShowSettings] = createSignal(false)
 
 export interface Toast {
   id: string

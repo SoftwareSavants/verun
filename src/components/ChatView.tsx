@@ -4,7 +4,7 @@ import { clsx } from 'clsx'
 import { marked } from 'marked'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import type { OutputItem, SessionStatus } from '../types'
-import { ChevronDown, ChevronRight, Terminal, AlertCircle, CheckCircle, AlertTriangle, Copy, Check } from 'lucide-solid'
+import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check } from 'lucide-solid'
 
 marked.setOptions({ breaks: true, gfm: true })
 
@@ -198,6 +198,19 @@ const thinkingScrollPositions = new Map<string, number>()
 const expandedTools = new Map<string, boolean>()
 const toolScrollPositions = new Map<string, { input: number; output: number }>()
 
+/** Format AskUserQuestion input as readable question list */
+function formatQuestions(input: string): string | null {
+  try {
+    const parsed = JSON.parse(input)
+    const qs = parsed?.questions
+    if (!Array.isArray(qs)) return null
+    return qs.map((q: { question: string; options?: Array<{ label: string }> }, i: number) => {
+      const opts = q.options?.map((o: { label: string }) => o.label).join(', ')
+      return `${i + 1}. ${q.question}${opts ? ` [${opts}]` : ''}`
+    }).join('\n')
+  } catch { return null }
+}
+
 const ToolBlockView: Component<{ id: string; tool: string; input: string; result?: { text: string; isError: boolean } }> = (props) => {
   const [expanded, setExpanded] = createSignal(expandedTools.get(props.id) ?? false)
   const toggle = () => {
@@ -206,86 +219,81 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
     expandedTools.set(props.id, next)
   }
   const hasResult = () => !!props.result
-  const isLongResult = () => (props.result?.text.split('\n').length || 0) > 8
+  const isQuestion = () => props.tool === 'AskUserQuestion'
 
-  const statusIcon = () => {
-    if (!hasResult()) return <div class="w-3 h-3 rounded-full border-2 border-accent/40 animate-pulse" />
-    if (props.result!.isError) return <AlertCircle size={13} class="text-status-error" />
-    return <CheckCircle size={13} class="text-status-running" />
+  const preview = () => {
+    if (isQuestion()) {
+      const qs = formatQuestions(props.input)
+      if (qs) return qs.split('\n')[0].slice(0, 80)
+    }
+    return props.input?.split('\n')[0].slice(0, 60) || ''
+  }
+
+  const hasExpandedContent = () => {
+    if (isQuestion() && formatQuestions(props.input)) return true
+    if (props.input) return true
+    if (hasResult()) return true
+    return false
   }
 
   return (
-    <div class="px-5 py-1">
-      <div class="flex-1 min-w-0 border border-border rounded-lg overflow-hidden bg-surface-1">
-        <button
-          class="w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-surface-2"
-          onClick={toggle}
-        >
-          <Show when={expanded()} fallback={<ChevronRight size={11} class="text-text-dim" />}>
-            <ChevronDown size={11} class="text-text-dim" />
+    <div class="px-5 py-0.5">
+      <button
+        class="flex items-center gap-1.5 text-xs text-text-dim hover:text-text-muted transition-colors"
+        onClick={toggle}
+      >
+        <Show when={expanded()} fallback={<ChevronRight size={11} />}>
+          <ChevronDown size={11} />
+        </Show>
+        <span>{props.tool}</span>
+        <Show when={!expanded() && preview()}>
+          <span class="text-text-dim/60 truncate max-w-md font-mono text-[11px]">
+            — {preview()}
+          </span>
+        </Show>
+      </button>
+      <Show when={expanded() && hasExpandedContent()}>
+        <div class="pl-4 mt-1 border-l border-border-subtle">
+          <Show when={isQuestion() && formatQuestions(props.input)}>
+            <pre class="text-xs text-text-muted whitespace-pre-wrap font-mono leading-relaxed mb-1 max-h-40 overflow-y-auto">
+              {formatQuestions(props.input)}
+            </pre>
           </Show>
-          <Terminal size={11} class="text-accent" />
-          <span class="font-medium text-accent">{props.tool}</span>
-          <Show when={props.input && !expanded()}>
-            <span class="text-text-dim truncate max-w-md font-mono text-[11px]">
-              {props.input.split('\n')[0].slice(0, 60)}
-            </span>
-          </Show>
-          <div class="ml-auto shrink-0">{statusIcon()}</div>
-        </button>
-
-        <Show when={expanded()}>
-          <Show when={props.input}>
-            <div class="border-t border-border">
-              <pre
-                class="text-[11px] text-text-muted whitespace-pre-wrap font-mono p-3 max-h-40 overflow-y-auto"
-                ref={(el) => {
-                  const saved = toolScrollPositions.get(props.id)
-                  if (saved) requestAnimationFrame(() => { el.scrollTop = saved.input })
-                }}
-                onScroll={(e) => {
-                  const prev = toolScrollPositions.get(props.id) || { input: 0, output: 0 }
-                  toolScrollPositions.set(props.id, { ...prev, input: e.currentTarget.scrollTop })
-                }}
-              >
-                {props.input}
-              </pre>
-            </div>
+          <Show when={!isQuestion() && props.input}>
+            <pre
+              class="text-[11px] text-text-dim whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto"
+              ref={(el) => {
+                const saved = toolScrollPositions.get(props.id)
+                if (saved) requestAnimationFrame(() => { el.scrollTop = saved.input })
+              }}
+              onScroll={(e) => {
+                const prev = toolScrollPositions.get(props.id) || { input: 0, output: 0 }
+                toolScrollPositions.set(props.id, { ...prev, input: e.currentTarget.scrollTop })
+              }}
+            >
+              {props.input}
+            </pre>
           </Show>
           <Show when={hasResult()}>
-            <div class="border-t border-border">
-              <pre
-                class={clsx(
-                  'text-[11px] whitespace-pre-wrap break-all font-mono p-3 max-w-full overflow-x-auto',
-                  props.result!.isError ? 'text-status-error/80' : 'text-text-muted',
-                  !isLongResult() ? '' : 'max-h-48 overflow-y-auto'
-                )}
-                ref={(el) => {
-                  const saved = toolScrollPositions.get(props.id)
-                  if (saved) requestAnimationFrame(() => { el.scrollTop = saved.output })
-                }}
-                onScroll={(e) => {
-                  const prev = toolScrollPositions.get(props.id) || { input: 0, output: 0 }
-                  toolScrollPositions.set(props.id, { ...prev, output: e.currentTarget.scrollTop })
-                }}
-              >
-                {props.result!.text}
-              </pre>
-            </div>
-          </Show>
-        </Show>
-
-        <Show when={!expanded() && hasResult()}>
-          <div class="border-t border-border px-3 py-1.5">
-            <pre class={clsx(
-              'text-[11px] whitespace-pre-wrap break-all font-mono max-h-16 overflow-hidden truncate',
-              props.result!.isError ? 'text-status-error/60' : 'text-text-dim'
-            )}>
-              {props.result!.text.split('\n').slice(0, 2).join('\n')}
+            <pre
+              class={clsx(
+                'text-[11px] whitespace-pre-wrap break-all font-mono leading-relaxed max-h-48 overflow-y-auto',
+                props.result!.isError ? 'text-status-error/80' : 'text-text-dim'
+              )}
+              ref={(el) => {
+                const saved = toolScrollPositions.get(props.id)
+                if (saved) requestAnimationFrame(() => { el.scrollTop = saved.output })
+              }}
+              onScroll={(e) => {
+                const prev = toolScrollPositions.get(props.id) || { input: 0, output: 0 }
+                toolScrollPositions.set(props.id, { ...prev, output: e.currentTarget.scrollTop })
+              }}
+            >
+              {props.result!.text}
             </pre>
-          </div>
-        </Show>
-      </div>
+          </Show>
+        </div>
+      </Show>
     </div>
   )
 }

@@ -223,7 +223,7 @@ export const CodeChanges: Component<Props> = (props) => {
       {/* Drag region for titlebar */}
       <div class="h-10 shrink-0 drag-region" />
 
-      {/* Toolbar */}
+      {/* Header row: title + stats + git action */}
       <div class="flex items-center justify-between px-3 py-2 border-b border-border-subtle bg-surface-1">
         <div class="flex items-center gap-2 text-xs text-text-muted">
           <span class="font-medium text-text-secondary">Changes</span>
@@ -240,39 +240,45 @@ export const CodeChanges: Component<Props> = (props) => {
           </Show>
         </div>
 
-        <div class="flex items-center gap-1">
-          <button
-            class={`p-1 rounded transition-colors ${wordWrap() ? 'text-accent bg-accent-muted' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3'}`}
-            onClick={() => setWordWrap(!wordWrap())}
-            title="Word wrap"
-          >
-            <WrapText size={12} />
-          </button>
-          <button
-            class={`p-1 rounded transition-colors ${hideWhitespace() ? 'text-accent bg-accent-muted' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3'}`}
-            onClick={() => setHideWhitespace(!hideWhitespace())}
-            title="Hide whitespace changes"
-          >
-            <EyeOff size={12} />
-          </button>
-          <button
-            class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 transition-colors"
-            onClick={refresh}
-            disabled={loading()}
-            title="Refresh"
-          >
-            <RefreshCw size={12} class={loading() ? 'animate-spin' : ''} />
-          </button>
-        </div>
+        {(() => {
+          const s = status()
+          if (!s || s.files.length === 0) return null
+          return (
+            <GitActions
+              taskId={props.taskId}
+              sessionId={props.sessionId}
+              isRunning={props.isRunning}
+              fileCount={s.files.length}
+            />
+          )
+        })()}
       </div>
 
-      {/* Git actions split button */}
-      <GitActions
-        taskId={props.taskId}
-        sessionId={props.sessionId}
-        isRunning={props.isRunning}
-        fileCount={status()?.files.length ?? 0}
-      />
+      {/* Formatting toolbar */}
+      <div class="flex items-center justify-end gap-1 px-3 py-1 border-b border-border-subtle">
+        <button
+          class={`p-1 rounded transition-colors ${wordWrap() ? 'text-accent bg-accent-muted' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3'}`}
+          onClick={() => setWordWrap(!wordWrap())}
+          title="Word wrap"
+        >
+          <WrapText size={12} />
+        </button>
+        <button
+          class={`p-1 rounded transition-colors ${hideWhitespace() ? 'text-accent bg-accent-muted' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3'}`}
+          onClick={() => setHideWhitespace(!hideWhitespace())}
+          title="Hide whitespace changes"
+        >
+          <EyeOff size={12} />
+        </button>
+        <button
+          class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 transition-colors"
+          onClick={refresh}
+          disabled={loading()}
+          title="Refresh"
+        >
+          <RefreshCw size={12} class={loading() ? 'animate-spin' : ''} />
+        </button>
+      </div>
 
       {/* Error */}
       <Show when={error()}>

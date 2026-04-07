@@ -160,9 +160,7 @@ export const GitActions: Component<Props> = (props) => {
   }
 
   return (
-    <div class="relative" ref={containerRef}>
-      {/* Split button + status row */}
-      <div class="flex items-center gap-2 px-3 py-2 border-b border-border-subtle bg-surface-1">
+    <div class="relative flex items-center gap-2" ref={containerRef}>
         {/* Split button */}
         <div class="flex items-center">
           <button
@@ -241,11 +239,10 @@ export const GitActions: Component<Props> = (props) => {
             <ExternalLink size={11} />
           </button>
         </Show>
-      </div>
 
       {/* Dropdown */}
       <Show when={open()}>
-        <div class="absolute left-3 top-full mt-1 z-50 w-52 bg-surface-2 border border-border-active rounded-lg shadow-xl py-1 animate-in">
+        <div class="absolute right-0 top-full mt-1 z-50 w-52 bg-surface-2 border border-border-active rounded-lg shadow-xl py-1 animate-in">
           <For each={secondaryActions()}>
             {(action) => {
               const Icon = action.icon

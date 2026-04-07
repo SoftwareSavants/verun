@@ -1,4 +1,5 @@
 use crate::db::{self, DbWriteTx, Session, Task};
+use crate::policy::TrustLevel;
 use crate::stream;
 use crate::worktree;
 use dashmap::DashMap;
@@ -78,10 +79,26 @@ pub struct ApprovalResponse {
     pub updated_input: Option<serde_json::Value>,
 }
 
+/// Stored metadata for a pending approval so it can be re-emitted on frontend reload
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingApprovalEntry {
+    pub request_id: String,
+    pub session_id: String,
+    pub tool_name: String,
+    pub tool_input: serde_json::Value,
+}
+
 /// request_id → oneshot sender waiting for user's approval decision
 pub type PendingApprovals = Arc<DashMap<String, oneshot::Sender<ApprovalResponse>>>;
+/// request_id → metadata for re-emitting on frontend reload
+pub type PendingApprovalMeta = Arc<DashMap<String, PendingApprovalEntry>>;
 
 pub fn new_pending_approvals() -> PendingApprovals {
+    Arc::new(DashMap::new())
+}
+
+pub fn new_pending_approval_meta() -> PendingApprovalMeta {
     Arc::new(DashMap::new())
 }
 
@@ -127,6 +144,7 @@ pub async fn create_task(
 }
 
 pub async fn delete_task(
+    app: &AppHandle,
     db_tx: &DbWriteTx,
     active: &ActiveMap,
     repo_path: &str,
@@ -135,7 +153,7 @@ pub async fn delete_task(
     // Kill any active processes for this task's sessions
     let keys: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
     for sid in keys {
-        abort_message(active, &sid).await?;
+        abort_message(app, db_tx, active, &sid).await?;
     }
 
     let rp = repo_path.to_string();
@@ -188,10 +206,13 @@ pub struct SendMessageParams {
     pub session_id: String,
     pub task_id: String,
     pub worktree_path: String,
+    pub repo_path: String,
+    pub trust_level: TrustLevel,
     pub message: String,
     pub claude_session_id: Option<String>,
     pub attachments: Vec<Attachment>,
     pub model: Option<String>,
+    pub plan_mode: bool,
 }
 
 /// Send a message to Claude in this session's worktree.
@@ -202,9 +223,10 @@ pub async fn send_message(
     db_tx: &DbWriteTx,
     active: ActiveMap,
     pending_approvals: PendingApprovals,
+    pending_approval_meta: PendingApprovalMeta,
     params: SendMessageParams,
 ) -> Result<(), String> {
-    let SendMessageParams { session_id, task_id, worktree_path, message, claude_session_id, attachments, model } = params;
+    let SendMessageParams { session_id, task_id, worktree_path, repo_path, trust_level, message, claude_session_id, attachments, model, plan_mode } = params;
     // Don't allow concurrent messages on the same session
     if active.contains_key(&session_id) {
         return Err("Session is already processing a message".to_string());
@@ -273,8 +295,12 @@ pub async fn send_message(
         "--input-format", "stream-json",
         "--verbose",
         "--include-partial-messages",
-        "--permission-prompt-tool", "stdio",
     ]);
+    if plan_mode {
+        cmd.args(["--permission-mode", "plan"]);
+    } else {
+        cmd.args(["--permission-prompt-tool", "stdio"]);
+    }
     cmd.stdin(std::process::Stdio::piped());
 
     if let Some(ref rid) = claude_session_id {
@@ -371,15 +397,24 @@ pub async fn send_message(
     let monitor_tid = task_id.clone();
     let monitor_active = active.clone();
     let monitor_pending = pending_approvals.clone();
+    let monitor_pending_meta = pending_approval_meta.clone();
+    let monitor_wt = worktree_path.clone();
+    let monitor_repo = repo_path;
+    let monitor_trust = trust_level;
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let captured = stream::stream_and_capture(
             monitor_app.clone(),
             monitor_sid.clone(),
+            monitor_tid.clone(),
             stdout,
             stdin,
             monitor_pending,
+            monitor_pending_meta,
             monitor_db_tx.clone(),
+            monitor_wt,
+            monitor_repo,
+            monitor_trust,
         )
         .await;
 
@@ -444,9 +479,30 @@ pub async fn send_message(
 }
 
 /// Abort a currently running message
-pub async fn abort_message(active: &ActiveMap, session_id: &str) -> Result<(), String> {
+pub async fn abort_message(
+    app: &AppHandle,
+    db_tx: &DbWriteTx,
+    active: &ActiveMap,
+    session_id: &str,
+) -> Result<(), String> {
     if let Some((_, mut proc)) = active.remove(session_id) {
         let _ = proc.child.kill().await;
+
+        // Update session status so the UI reflects the abort
+        let _ = db_tx
+            .send(db::DbWrite::UpdateSessionStatus {
+                id: session_id.to_string(),
+                status: "idle".to_string(),
+            })
+            .await;
+
+        let _ = app.emit(
+            "session-status",
+            stream::SessionStatusEvent {
+                session_id: session_id.to_string(),
+                status: "idle".to_string(),
+            },
+        );
     }
     Ok(())
 }
@@ -507,7 +563,7 @@ fn extract_claude_session_id(lines: &[String]) -> Option<String> {
     None
 }
 
-fn epoch_ms() -> i64 {
+pub fn epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

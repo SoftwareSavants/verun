@@ -1,6 +1,7 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionId, setShowAddProjectDialog } from '../store/ui'
-import { projects } from '../store/projects'
+import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast } from '../store/ui'
+import { projects, addProject } from '../store/projects'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { taskById } from '../store/tasks'
 import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines } from '../store/sessions'
 import { MessageInput } from './MessageInput'
@@ -133,7 +134,17 @@ export const TaskPanel: Component = () => {
                     </p>
                     <button
                       class="btn-primary text-xs"
-                      onClick={() => setShowAddProjectDialog(true)}
+                      onClick={async () => {
+                        const selected = await openDialog({ directory: true, multiple: false })
+                        if (!selected) return
+                        try {
+                          const project = await addProject(selected as string)
+                          setSelectedProjectId(project.id)
+                          addToast(`Added ${project.name}`, 'success')
+                        } catch (e) {
+                          addToast(String(e), 'error')
+                        }
+                      }}
                     >
                       Add Project <kbd class="ml-1.5 px-1 py-0.5 rounded bg-white/10 text-[10px] font-mono">{'\u2318'}O</kbd>
                     </button>

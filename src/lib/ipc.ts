@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, GitHubRepo, PrInfo, CiCheck } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry } from '../types'
 
 // Projects
 export const addProject = (repoPath: string) =>
@@ -28,8 +28,8 @@ export const deleteTask = (id: string) =>
 export const createSession = (taskId: string) =>
   invoke<Session>('create_session', { taskId })
 
-export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string) =>
-  invoke<void>('send_message', { sessionId, message, attachments, model })
+export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean) =>
+  invoke<void>('send_message', { sessionId, message, attachments, model, planMode })
 
 export const closeSession = (sessionId: string) =>
   invoke<void>('close_session', { sessionId })
@@ -43,6 +43,9 @@ export const abortMessage = (sessionId: string) =>
 export const respondToApproval = (requestId: string, behavior: 'allow' | 'deny', updatedInput?: Record<string, unknown>) =>
   invoke<void>('respond_to_approval', { requestId, behavior, updatedInput })
 
+export const getPendingApprovals = () =>
+  invoke<ToolApprovalRequest[]>('get_pending_approvals')
+
 export const listSessions = (taskId: string) =>
   invoke<Session[]>('list_sessions', { taskId })
 
@@ -51,6 +54,16 @@ export const getSession = (id: string) =>
 
 export const getOutputLines = (sessionId: string) =>
   invoke<OutputLine[]>('get_output_lines', { sessionId })
+
+// Policy / Trust levels
+export const setTrustLevel = (taskId: string, trustLevel: TrustLevel) =>
+  invoke<void>('set_trust_level', { taskId, trustLevel })
+
+export const getTrustLevel = (taskId: string) =>
+  invoke<string>('get_trust_level', { taskId })
+
+export const getAuditLog = (taskId: string, limit?: number) =>
+  invoke<AuditEntry[]>('get_audit_log', { taskId, limit })
 
 // Git / Worktree
 export const getDiff = (taskId: string) =>
