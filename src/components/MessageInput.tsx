@@ -185,6 +185,8 @@ export const MessageInput: Component<Props> = (props) => {
 
   // Whether to show the full plan viewer (live approval OR persisted plan file)
   const showPlanViewer = () => {
+    // Never show while session is running (implementing)
+    if (props.isRunning && !isExitPlanMode()) return false
     if (isExitPlanMode()) return true
     // No live approval, but plan mode on + idle + have plan file → show viewer
     const sid = props.sessionId

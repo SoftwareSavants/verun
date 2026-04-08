@@ -116,24 +116,29 @@ export const GitActions: Component<Props> = (props) => {
     return null
   }
 
+  const commitAction = (): GitAction => ({ icon: GitCommit, label: 'Commit', message: 'commit all changes with a descriptive message' })
+  const pushAction = (): GitAction => ({ icon: Upload, label: 'Push', action: doPush })
+  const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: 'create a pull request with an appropriate title and description' })
+  const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', message: 'merge the pull request for this branch' })
+
   // Smart default action based on state
   const primaryAction = (): GitAction => {
     if (conflicts()) return { icon: Swords, label: 'Resolve conflicts', message: 'rebase this branch onto the base branch and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue' }
     if (failedChecks().length > 0) return { icon: Wrench, label: 'Fix CI', message: `fix the failing CI checks: ${failedChecks().map(c => c.name).join(', ')}` }
-    if (props.fileCount > 0) return { icon: GitCommit, label: 'Commit', message: 'commit all changes with a descriptive message' }
-    if (ahead() > 0) return { icon: Upload, label: 'Push', action: doPush }
-    if (!pr() && branchUrl()) return { icon: GitPullRequest, label: 'Create PR', message: 'create a pull request with an appropriate title and description' }
-    if (pr()?.state === 'OPEN') return { icon: GitMerge, label: 'Merge PR', message: 'merge the pull request for this branch' }
-    return { icon: GitCommit, label: 'Commit', message: 'commit all changes with a descriptive message' }
+    if (props.fileCount > 0) return commitAction()
+    if (ahead() > 0) return pushAction()
+    if (!pr() && branchUrl()) return createPrAction()
+    if (pr()?.state === 'OPEN') return mergePrAction()
+    return commitAction()
   }
 
   const secondaryActions = () => {
     const primary = primaryAction()
     const all: GitAction[] = [
-      { icon: GitCommit, label: 'Commit', message: 'commit all changes with a descriptive message' },
-      { icon: Upload, label: 'Push', action: doPush },
-      { icon: GitPullRequest, label: 'Create PR', message: 'create a pull request with an appropriate title and description' },
-      { icon: GitMerge, label: 'Merge PR', message: 'merge the pull request for this branch' },
+      commitAction(),
+      pushAction(),
+      createPrAction(),
+      mergePrAction(),
     ]
     if (hasReviewSkill()) {
       all.push({ icon: Search, label: 'Review', message: '/review' })

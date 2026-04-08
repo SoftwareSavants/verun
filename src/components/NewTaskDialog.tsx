@@ -1,8 +1,6 @@
 import { Component, Show, For, createSignal, createEffect } from 'solid-js'
-import { createTask } from '../store/tasks'
-import { setSessions, setOutputItems } from '../store/sessions'
-import { produce } from 'solid-js/store'
-import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, addToast } from '../store/ui'
+import { startTaskCreation } from '../store/tasks'
+import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionId } from '../store/ui'
 import { projectById } from '../store/projects'
 import * as ipc from '../lib/ipc'
 import { GitBranch } from 'lucide-solid'
@@ -14,8 +12,6 @@ interface Props {
 }
 
 export const NewTaskDialog: Component<Props> = (props) => {
-  const [loading, setLoading] = createSignal(false)
-  const [error, setError] = createSignal<string | null>(null)
   const [baseBranch, setBaseBranch] = createSignal('main')
   const [branches, setBranches] = createSignal<string[]>([])
 
@@ -27,44 +23,30 @@ export const NewTaskDialog: Component<Props> = (props) => {
         setBaseBranch(defaultBranch)
         setBranches([])
         ipc.getRepoInfo(project.repoPath).then(info => {
-          // Put the default base branch first so the <select> doesn't reset to a random branch
           const sorted = [
             ...info.branches.filter(b => b === defaultBranch),
             ...info.branches.filter(b => b !== defaultBranch),
           ]
           setBranches(sorted)
-          // Re-assert after DOM update so Solid picks it up
           setBaseBranch(defaultBranch)
         }).catch(() => {})
       }
     }
   })
 
-  const handleCreate = async () => {
+  const handleCreate = () => {
     if (!props.projectId) return
-    setLoading(true)
-    setError(null)
-    try {
-      const { task, session } = await createTask(props.projectId, baseBranch())
-      setSelectedTaskId(task.id)
-      setSelectedProjectId(props.projectId!)
 
-      setSessions(produce(s => s.push(session)))
-      setOutputItems(session.id, [])
-      setSelectedSessionId(session.id)
-
-      addToast(`Created task on branch ${task.branch}`, 'success')
-      props.onClose()
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setLoading(false)
-    }
+    const placeholderId = startTaskCreation(props.projectId, baseBranch())
+    setSelectedTaskId(placeholderId)
+    setSelectedProjectId(props.projectId)
+    setSelectedSessionId(null)
+    props.onClose()
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') props.onClose()
-    if (e.key === 'Enter' && !loading()) handleCreate()
+    if (e.key === 'Enter') handleCreate()
   }
 
   return (
@@ -101,18 +83,14 @@ export const NewTaskDialog: Component<Props> = (props) => {
             </div>
           </div>
 
-          <Show when={error()}>
-            <div class="text-xs text-status-error mb-3 bg-status-error/5 border border-status-error/10 rounded-lg px-3 py-2">{error()}</div>
-          </Show>
-
           <div class="flex justify-end gap-2">
             <button class="btn-ghost" onClick={props.onClose}>Cancel</button>
             <button
               class="btn-primary"
               onClick={handleCreate}
-              disabled={loading() || !props.projectId}
+              disabled={!props.projectId}
             >
-              {loading() ? 'Creating...' : 'Create Task'}
+              Create Task
             </button>
           </div>
         </div>

@@ -17,6 +17,8 @@ import {
   tasksForProject,
   loadTasks,
   deleteTask,
+  isTaskCreating,
+  getTaskError,
 } from "../store/tasks";
 import {
   selectedProjectId,
@@ -419,6 +421,8 @@ export const Sidebar: Component = () => {
                       {(task) => {
                         const phase = () => taskPhase(task.id);
                         const config = () => PHASE_CONFIG[phase()];
+                        const creating = () => isTaskCreating(task.id);
+                        const hasError = () => !!getTaskError(task.id);
                         return (
                           <div
                             class={clsx(
@@ -427,13 +431,13 @@ export const Sidebar: Component = () => {
                               selectedTaskId() === task.id && "bg-surface-2",
                             )}
                             onClick={() => { setSelectedTaskId(task.id); setSelectedProjectId(task.projectId); setShowSettings(false) }}
-                            onContextMenu={(e) => showTaskMenu(e, task.id)}
-                            title={config().title}
+                            onContextMenu={(e) => { if (!creating() && !hasError()) showTaskMenu(e, task.id) }}
+                            title={creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
                           >
                             <span
-                              class={clsx("shrink-0 mt-0.5", config().color)}
+                              class={clsx("shrink-0 mt-0.5", creating() ? 'text-accent' : hasError() ? 'text-status-error' : config().color)}
                             >
-                              <PhaseIcon phase={phase()} />
+                              {creating() ? <Loader2 size={12} class="animate-spin" /> : hasError() ? <AlertCircle size={12} /> : <PhaseIcon phase={phase()} />}
                             </span>
                             <div class="flex-1 min-w-0">
                               <div class="text-xs text-text-secondary truncate">
