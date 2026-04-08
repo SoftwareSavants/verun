@@ -1,87 +1,118 @@
 # Verun Roadmap
 
-## Tool Interactions
+Parallel Claude Code session orchestrator for macOS. Open source at [github.com/softwaresavants/verun](https://github.com/softwaresavants/verun).
 
-- [X] Tool approval
-- [X] Agent questions
-- [X] Auto accepting safe tool calls/commands
+---
 
-## GitHub Integration
+## Shipped
 
-- [X] GitHub integration
-- [X] Changes viewer
-- [ ] Code review comments
+Everything below is already in the current release (v0.2.0).
 
-## UX & Interactions
+### Core
+- Project management with git repo integration
+- Task system with isolated git worktrees and auto-generated branch names
+- Resumable Claude Code CLI sessions (multiple per task)
+- Real-time streaming output with stdout/stderr buffering
+- Integrated terminal with PTY backend and per-task shell sessions
 
-- [X] Remove the outline from the other option's input when answering agent
-- [X] Clicking on links navigates to them
-- [ ] Conflicts resolving should use rebase not merge
-- [ ] Persists the last selected model per project
-- [ ] Double click now is on the main div but not the top header bar
-- [ ] Deleting a task should have a switch to delete the branch with it or not
-- [-] Creatign a new task should always start from freshly pulled based branch (e.g. main)
-- [X] Interrupt not working
-- [-] Keep state of tasks when switching between them
-- [ ] Need an unread/attention required indicator on tasks in sidebar
-- [ ] Time of turn/run
-- [ ] Fork task/session
-- [ ] Mention files
-- [ ] Deleting/archiving a task needs aloading
-- [ ] Keybindings
-- [ ] Micro animations
+### Chat & AI
+- Full chat UI with Claude Agent SDK streaming
+- Model selection (Opus, Sonnet, Haiku) scoped per task
+- Thinking and fast mode toggles
+- Plan mode for reviewing and approving implementation plans
+- Tool approval with configurable trust levels (Normal, Supervised, Full Auto)
+- Interactive question handling (AskUserQuestion)
+- Slash command support forwarded to Claude CLI
 
-## Session Modes
+### Code & Git
+- Git status with inline unified diffs and syntax highlighting
+- Expandable diff context (load above/below)
+- Word wrap and hide-whitespace toggles (configurable defaults)
+- Sticky file headers when scrolling through diffs
+- Smart git actions: Commit, Push, Create PR, Merge PR, Review
+- Branch commits panel with individual commit diffs
+- GitHub PR status, CI checks display, and direct links
+- Conflict resolution via rebase
+- PR caching and commit count awareness
 
-- [X] Support plan mode
-- [ ] Support fast, thinking mode toggles
-- [ ] Steer & queue interaction modes
+### UI & Design
+- Native macOS app with transparent titlebar
+- Customizable accent color themes
+- Resizable sidebar with project/task tree
+- Status-aware sidebar icons (PR status, task state)
+- New project via folder picker dropdown
+- Collapsible tool calls (styled like thinking blocks)
+- "Open in" button (VS Code, Cursor, Zed, Finder)
+- Toast notifications and splash screen
+- Links open in system browser
 
-## Subagents
+### Infrastructure
+- Tauri v2 with Rust backend
+- SQLite persistence with async write queue
+- Automated GitHub release workflow (macOS ARM)
+- Pre-commit hooks with full test suite (110 Rust tests, 18 frontend tests)
 
+---
+
+## Papercuts
+
+Small UX issues noticed in daily use. No schedule — fix when you have a spare hour.
+
+- [X] Loading indicator when creating a task (worktree creation can be slow)
+- [ ] Branch commits pane is empty after PR merge (commits moved to base branch, nothing to show)
+- [ ] Persist last selected model per project
+- [ ] Delete task option to also delete the branch
+- [ ] Loading state when deleting / archiving a task
+- [ ] Timestamp on each turn / run
+- [ ] Interrupting turn causes a scroll movement
+
+---
+
+## Next Up — Apr 14 – Apr 27
+
+High-impact features that engineers are asking for most.
+
+### Session & Workflow
 - [ ] Subagent / nested thread visualization
+- [ ] Fork task or session (branch a conversation into a new direction)
+- [ ] Steer & queue interaction modes (send follow-ups while the agent is working)
+- [ ] Unread / attention-required indicator on tasks in sidebar
+- [ ] OS notifications for task completion and approval prompts
 
-## Design
+### Code Tools
+- [ ] File tree viewer
+- [ ] Code editor / viewer
+- [ ] Mention files in chat (@ references)
+- [ ] Code review comments on diffs
 
-- [X] Overall design pass
-    - [X] Sidebar has a horizontal scroll issue
-    - [X] Sidebar item icons should change depending on status instead of always being a colored circle (e.g. PR icon with color for PR status)
-    - [X] New project should be a dropdown instead of modal, with just an "open folder" option
-    - [X] Tool calls are too noticeable — should be collapsed like thinking
-    - [X] Remove path under task name; replace with an "open in" button (default: VS Code, dropdown: Cursor, Zed, Finder) that shows before the right sidebar toggle
-- [ ] Error recovery (still P2): Error messages in toasts are still technical strings. No guided recovery for git failures.
-- [ ] Help & docs (still P2): No formal help panel or keyboard shortcut overlay. Empty states help first-run, but returning users have no reference.
-- [ ] Sidebar task creation: No loading indicator when quickCreateTask runs (worktree creation can be slow).
-- [ ] Session tab overflow: No visual scroll affordance when many sessions overflow the tab bar.
-- [ ] Accessibility: No ARIA labels, no explicit tab order management.
-
-## Settings
-
-- [X] Wrap lines in code changes by default
-- [X] Hide whitespace by default
-
-## Code Tools
-
-- [ ] File tree
-- [ ] Code editor/viewer
-- [ ] Code linting/server
-- [X] Integrated terminal
-
-## Usage & Billing
-
-- [ ] Tokens and subscription usage
-
-## Claude CLI Parity
-
+### CLI Parity
 - [ ] Full Claude CLI parity (skills, slash commands, CLAUDE.md/AGENTS.md, memory)
-- [ ] OS notifications for task completion & approval prompts
+- [ ] Tokens and subscription usage display
 
-## Provider Flexibility
+---
 
-- [ ] Multi-provider support (Copilot, OpenCode, Gemini, etc.)
+## Later — Apr 28 – May 11
+
+Important but not blocking daily use.
+
+### UX Polish
+- [ ] Keybindings (customizable keyboard shortcuts)
+- [ ] Micro animations and transitions
+- [ ] Scroll affordance when session tabs overflow
+
+### Quality & Accessibility
+- [ ] Error recovery with guided messages (replace raw technical strings)
+- [ ] Help panel and keyboard shortcut overlay
+- [ ] ARIA labels and tab order management
+- [ ] Accessibility audit
+
+---
 
 ## Future
 
-- [ ] Mobile app
-- [ ] Status pages tracking
-- [ ] Project icons/favicons
+Bigger bets, not yet scheduled.
+
+- [ ] Multi-provider support (Copilot, OpenCode, Gemini CLI, etc.)
+- [ ] Mobile companion app
+- [ ] Status page tracking
+- [ ] Project icons / favicons
