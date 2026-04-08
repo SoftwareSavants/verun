@@ -1,5 +1,6 @@
 import { Component, Show, createSignal } from 'solid-js'
 import { Copy, Check } from 'lucide-solid'
+import { Popover } from './Popover'
 
 interface Props {
   pos: { x: number; y: number; text: string } | null
@@ -20,22 +21,15 @@ export const SelectionMenu: Component<Props> = (props) => {
   }
 
   return (
-    <Show when={props.pos}>
-      {(pos) => (
-        <div
-          class="fixed z-50 bg-surface-3 border border-border-active rounded-lg shadow-xl animate-in"
-          style={{ left: `${pos().x}px`, top: `${pos().y}px` }}
-        >
-          <button
-            class="flex items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-4 transition-colors rounded-lg"
-            onClick={handleCopy}
-          >
-            <Show when={copied()} fallback={<><Copy size={13} /> Copy</>}>
-              <Check size={13} class="text-status-running" /> Copied
-            </Show>
-          </button>
-        </div>
-      )}
-    </Show>
+    <Popover open={!!props.pos} onClose={props.onClose} pos={props.pos || undefined}>
+      <button
+        class="flex items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-4 transition-colors rounded-lg"
+        onClick={handleCopy}
+      >
+        <Show when={copied()} fallback={<><Copy size={13} /> Copy</>}>
+          <Check size={13} class="text-status-running" /> Copied
+        </Show>
+      </button>
+    </Popover>
   )
 }

@@ -1,7 +1,8 @@
-import { Component, createSignal, For, Show } from 'solid-js'
+import { Component, createSignal, For } from 'solid-js'
 import { ChevronDown, X } from 'lucide-solid'
 import { ACCENT_THEMES, getActiveTheme, setActiveTheme, type AccentTheme } from '../lib/theme'
 import { setShowSettings, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist } from '../store/ui'
+import { Popover } from './Popover'
 
 export const SettingsPage: Component = () => {
   const [activeTheme, setActiveThemeSignal] = createSignal(getActiveTheme().name)
@@ -57,32 +58,26 @@ export const SettingsPage: Component = () => {
                 <ChevronDown size={12} class="text-text-dim" />
               </button>
 
-              <Show when={dropdownOpen()}>
-                <div class="fixed inset-0 z-40" onClick={() => setDropdownOpen(false)} />
-                <div
-                  class="absolute right-0 top-full mt-1 z-50 rounded-lg shadow-xl py-1 max-h-64 overflow-y-auto w-48 animate-in"
-                  style={{ background: "#17171c", border: "1px solid #2e2e3a" }}
-                >
-                  <For each={ACCENT_THEMES}>
-                    {(t) => (
-                      <button
-                        class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3"
-                        style={{
-                          color: activeTheme() === t.name ? t.accent : "#a1a1aa",
-                          background: activeTheme() === t.name ? t.muted : undefined,
-                        }}
-                        onClick={() => pickTheme(t)}
-                      >
-                        <div
-                          class="w-3 h-3 rounded-full shrink-0"
-                          style={{ background: t.accent }}
-                        />
-                        <span>{t.name}</span>
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </Show>
+              <Popover open={dropdownOpen()} onClose={() => setDropdownOpen(false)} class="py-1 max-h-64 overflow-y-auto w-48 absolute right-0 top-full mt-1 bg-surface-2 border-border-active">
+                <For each={ACCENT_THEMES}>
+                  {(t) => (
+                    <button
+                      class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3"
+                      style={{
+                        color: activeTheme() === t.name ? t.accent : "#a1a1aa",
+                        background: activeTheme() === t.name ? t.muted : undefined,
+                      }}
+                      onClick={() => pickTheme(t)}
+                    >
+                      <div
+                        class="w-3 h-3 rounded-full shrink-0"
+                        style={{ background: t.accent }}
+                      />
+                      <span>{t.name}</span>
+                    </button>
+                  )}
+                </For>
+              </Popover>
             </div>
           </div>
         </div>

@@ -1,4 +1,5 @@
-import { Component, Show, createEffect, onCleanup } from 'solid-js'
+import { Component } from 'solid-js'
+import { Dialog } from './Dialog'
 
 interface Props {
   open: boolean
@@ -11,37 +12,20 @@ interface Props {
 }
 
 export const ConfirmDialog: Component<Props> = (props) => {
-  createEffect(() => {
-    if (!props.open) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') props.onCancel()
-      if (e.key === 'Enter') { e.preventDefault(); props.onConfirm() }
-    }
-    window.addEventListener('keydown', handler)
-    onCleanup(() => window.removeEventListener('keydown', handler))
-  })
-
   return (
-    <Show when={props.open}>
-      <div
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-        onClick={(e) => { if (e.target === e.currentTarget) props.onCancel() }}
-      >
-        <div class="bg-surface-2 border border-border rounded-xl shadow-2xl w-80 p-5 animate-in">
-          <h2 class="text-base font-semibold text-text-primary mb-2">{props.title}</h2>
-          <p class="text-sm text-text-muted mb-4">{props.message}</p>
+    <Dialog open={props.open} onClose={props.onCancel} onConfirm={props.onConfirm}>
+      <h2 class="text-base font-semibold text-text-primary mb-2">{props.title}</h2>
+      <p class="text-sm text-text-muted mb-4">{props.message}</p>
 
-          <div class="flex justify-end gap-2">
-            <button class="btn-ghost" onClick={props.onCancel}>Cancel</button>
-            <button
-              class={props.danger ? 'btn-danger border border-status-error/20' : 'btn-primary'}
-              onClick={props.onConfirm}
-            >
-              {props.confirmLabel || 'Confirm'}
-            </button>
-          </div>
-        </div>
+      <div class="flex justify-end gap-2">
+        <button class="btn-ghost" onClick={props.onCancel}>Cancel</button>
+        <button
+          class={props.danger ? 'btn-danger border border-status-error/20' : 'btn-primary'}
+          onClick={props.onConfirm}
+        >
+          {props.confirmLabel || 'Confirm'}
+        </button>
       </div>
-    </Show>
+    </Dialog>
   )
 }

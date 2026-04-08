@@ -32,6 +32,8 @@ import { sessionsForTask, loadSessions } from "../store/sessions";
 import { deleteProject, updateBaseBranch } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NewTaskDialog } from "./NewTaskDialog";
+import { Dialog } from "./Dialog";
+import { Popover } from "./Popover";
 import {
   Plus,
   FolderPlus,
@@ -301,43 +303,27 @@ export const Sidebar: Component = () => {
 
   return (
     <>
-      {/* Context menu overlay */}
-      <Show when={contextMenu()}>
-        <div
-          class="fixed inset-0 z-40"
-          onClick={closeMenu}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            closeMenu();
-          }}
-        />
-        <div
-          class="fixed z-50 bg-surface-3 border border-border-active rounded-lg shadow-xl py-1 min-w-40 animate-in"
-          style={{
-            left: `${contextMenu()!.pos.x}px`,
-            top: `${contextMenu()!.pos.y}px`,
-          }}
-        >
-          <For each={contextMenu()!.items}>
-            {(item) => (
-              <button
-                class={clsx(
-                  "w-full text-left px-3 py-1.5 text-xs transition-colors",
-                  item.danger
-                    ? "text-status-error hover:bg-status-error/10"
-                    : "text-text-secondary hover:bg-surface-4 hover:text-text-primary",
-                )}
-                onClick={() => {
-                  item.action();
-                  closeMenu();
-                }}
-              >
-                {item.label}
-              </button>
-            )}
-          </For>
-        </div>
-      </Show>
+      {/* Context menu */}
+      <Popover open={!!contextMenu()} onClose={closeMenu} pos={contextMenu()?.pos} class="py-1 min-w-40">
+        <For each={contextMenu()?.items || []}>
+          {(item) => (
+            <button
+              class={clsx(
+                "w-full text-left px-3 py-1.5 text-xs transition-colors",
+                item.danger
+                  ? "text-status-error hover:bg-status-error/10"
+                  : "text-text-secondary hover:bg-surface-4 hover:text-text-primary",
+              )}
+              onClick={() => {
+                item.action();
+                closeMenu();
+              }}
+            >
+              {item.label}
+            </button>
+          )}
+        </For>
+      </Popover>
 
       <div class="h-full bg-surface-1 flex flex-col overflow-hidden">
         {/* Titlebar drag region */}
@@ -536,47 +522,39 @@ export const Sidebar: Component = () => {
         onClose={() => setNewTaskProjectId(null)}
       />
 
-      <Show when={baseBranchProject()}>
-        <div
-          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-          onClick={(e) => { if (e.target === e.currentTarget) setBaseBranchProject(null) }}
-          onKeyDown={(e) => { if (e.key === 'Escape') setBaseBranchProject(null) }}
-        >
-          <div class="bg-surface-2 border border-border rounded-xl shadow-2xl w-72 p-5 animate-in">
-            <h2 class="text-base font-semibold text-text-primary mb-3">Base Branch</h2>
-            <div class="flex flex-col gap-1 max-h-48 overflow-y-auto">
-              <For each={branchOptions()}>
-                {(branch) => {
-                  const project = () => projects.find(p => p.id === baseBranchProject());
-                  const isActive = () => project()?.baseBranch === branch;
-                  return (
-                    <button
-                      class={clsx(
-                        "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-left transition-colors",
-                        isActive() ? "bg-accent/15 text-accent" : "text-text-secondary hover:bg-surface-3"
-                      )}
-                      onClick={async () => {
-                        const pid = baseBranchProject();
-                        if (pid) {
-                          await updateBaseBranch(pid, branch);
-                          addToast(`Base branch set to ${branch}`, 'success');
-                        }
-                        setBaseBranchProject(null);
-                      }}
-                    >
-                      <GitBranch size={13} class="shrink-0" />
-                      {branch}
-                    </button>
-                  );
-                }}
-              </For>
-            </div>
-            <div class="flex justify-end mt-3">
-              <button class="btn-ghost text-xs" onClick={() => setBaseBranchProject(null)}>Cancel</button>
-            </div>
-          </div>
+      <Dialog open={!!baseBranchProject()} onClose={() => setBaseBranchProject(null)} width="18rem">
+        <h2 class="text-base font-semibold text-text-primary mb-3">Base Branch</h2>
+        <div class="flex flex-col gap-1 max-h-48 overflow-y-auto">
+          <For each={branchOptions()}>
+            {(branch) => {
+              const project = () => projects.find(p => p.id === baseBranchProject());
+              const isActive = () => project()?.baseBranch === branch;
+              return (
+                <button
+                  class={clsx(
+                    "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-left transition-colors",
+                    isActive() ? "bg-accent/15 text-accent" : "text-text-secondary hover:bg-surface-3"
+                  )}
+                  onClick={async () => {
+                    const pid = baseBranchProject();
+                    if (pid) {
+                      await updateBaseBranch(pid, branch);
+                      addToast(`Base branch set to ${branch}`, 'success');
+                    }
+                    setBaseBranchProject(null);
+                  }}
+                >
+                  <GitBranch size={13} class="shrink-0" />
+                  {branch}
+                </button>
+              );
+            }}
+          </For>
         </div>
-      </Show>
+        <div class="flex justify-end mt-3">
+          <button class="btn-ghost text-xs" onClick={() => setBaseBranchProject(null)}>Cancel</button>
+        </div>
+      </Dialog>
     </>
   );
 };

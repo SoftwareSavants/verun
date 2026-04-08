@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
 import type { Attachment, ModelId, TrustLevel } from '../types'
 import * as ipc from '../lib/ipc'
+import { Popover } from './Popover'
 
 interface Props {
   sessionId: string | null
@@ -1206,32 +1207,29 @@ export const MessageInput: Component<Props> = (props) => {
                    'Normal'}
                 </span>
               </button>
-              <Show when={showTrustMenu()}>
-                <div class="fixed inset-0 z-40" onClick={() => setShowTrustMenu(false)} />
-                <div class="absolute bottom-full left-0 mb-1 z-50 bg-surface-3 border border-border-active rounded-lg shadow-xl py-1 min-w-44">
-                  <button
-                    class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'normal' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
-                    onClick={() => handleTrustChange('normal')}
-                  >
-                    <div class="font-medium">Normal</div>
-                    <div class="text-[10px] text-text-dim mt-0.5">Auto-approve safe actions</div>
-                  </button>
-                  <button
-                    class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'full_auto' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
-                    onClick={() => handleTrustChange('full_auto')}
-                  >
-                    <div class="font-medium">Full Auto</div>
-                    <div class="text-[10px] text-text-dim mt-0.5">Auto-approve everything</div>
-                  </button>
-                  <button
-                    class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'supervised' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
-                    onClick={() => handleTrustChange('supervised')}
-                  >
-                    <div class="font-medium">Supervised</div>
-                    <div class="text-[10px] text-text-dim mt-0.5">Approve every action</div>
-                  </button>
-                </div>
-              </Show>
+              <Popover open={showTrustMenu()} onClose={() => setShowTrustMenu(false)} class="py-1 min-w-44 absolute bottom-full left-0 mb-1">
+                <button
+                  class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'normal' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
+                  onClick={() => handleTrustChange('normal')}
+                >
+                  <div class="font-medium">Normal</div>
+                  <div class="text-[10px] text-text-dim mt-0.5">Auto-approve safe actions</div>
+                </button>
+                <button
+                  class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'full_auto' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
+                  onClick={() => handleTrustChange('full_auto')}
+                >
+                  <div class="font-medium">Full Auto</div>
+                  <div class="text-[10px] text-text-dim mt-0.5">Auto-approve everything</div>
+                </button>
+                <button
+                  class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'supervised' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
+                  onClick={() => handleTrustChange('supervised')}
+                >
+                  <div class="font-medium">Supervised</div>
+                  <div class="text-[10px] text-text-dim mt-0.5">Approve every action</div>
+                </button>
+              </Popover>
             </div>
 
             {/* Auto-approved count */}
