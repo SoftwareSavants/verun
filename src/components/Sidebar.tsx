@@ -7,10 +7,8 @@ import {
   createSignal,
   createEffect,
   on,
-  onCleanup,
 } from "solid-js";
-import { createStore, produce } from "solid-js/store";
-import { listen } from "@tauri-apps/api/event";
+import { taskGit, refreshTaskGit } from "../store/git";
 import { projects } from "../store/projects";
 import {
   tasks,
@@ -67,50 +65,6 @@ type TaskPhase =
   | "conflicts" // PR has merge conflicts
   | "pr-merged"; // PR merged
 
-interface TaskGitState {
-  hasChanges: boolean;
-  pushed: boolean;
-  prState: string | null; // 'OPEN' | 'MERGED' | 'CLOSED' | null
-  mergeable: string | null; // 'MERGEABLE' | 'CONFLICTING' | null
-  ciFailed: boolean;
-}
-
-const [taskGitStates, setTaskGitStates] = createStore<
-  Record<string, TaskGitState>
->({});
-
-async function refreshTaskGitState(taskId: string) {
-  try {
-    const [gitStatus, prInfo, branchUrl] = await Promise.all([
-      ipc.getGitStatus(taskId).catch(() => null),
-      ipc.getPullRequest(taskId).catch(() => null),
-      ipc.getBranchUrl(taskId).catch(() => null),
-    ]);
-
-    let ciFailed = false;
-    if (prInfo) {
-      const checks = await ipc.getCiChecks(taskId).catch(() => []);
-      ciFailed = checks.some(
-        (c) => c.status === "FAILURE" || c.status === "ERROR",
-      );
-    }
-
-    setTaskGitStates(
-      produce((s) => {
-        s[taskId] = {
-          hasChanges: (gitStatus?.files.length ?? 0) > 0,
-          pushed: !!branchUrl,
-          prState: prInfo?.state ?? null,
-          mergeable: prInfo?.mergeable ?? null,
-          ciFailed,
-        };
-      }),
-    );
-  } catch {
-    // Silently fail — git state is supplementary
-  }
-}
-
 function taskPhase(taskId: string): TaskPhase {
   // Session status takes priority for running/error
   const taskSessions = sessionsForTask(taskId);
@@ -120,13 +74,13 @@ function taskPhase(taskId: string): TaskPhase {
   const hasError = taskSessions.some((s) => s.status === "error");
   if (hasError) return "error";
 
-  // Git/PR state
-  const git = taskGitStates[taskId];
-  if (git) {
-    if (git.mergeable === "CONFLICTING") return "conflicts";
-    if (git.ciFailed) return "ci-failed";
-    if (git.prState === "MERGED") return "pr-merged";
-    if (git.prState === "OPEN") return "pr-open";
+  // Git/PR state from centralized store
+  const git = taskGit(taskId);
+  if (git.pr) {
+    if (git.pr.mergeable === "CONFLICTING") return "conflicts";
+    if (git.checks.some(c => c.status === "FAILURE" || c.status === "ERROR")) return "ci-failed";
+    if (git.pr.state === "MERGED") return "pr-merged";
+    if (git.pr.state === "OPEN") return "pr-open";
   }
 
   return "idle";
@@ -211,24 +165,11 @@ export const Sidebar: Component = () => {
       () => {
         for (const t of tasks) {
           loadSessions(t.id);
-          refreshTaskGitState(t.id);
+          refreshTaskGit(t.id);
         }
       },
     ),
   );
-
-  // Listen for git-status-changed events to refresh specific tasks
-  createEffect(() => {
-    const unlisten = listen<{ taskId: string }>(
-      "git-status-changed",
-      (event) => {
-        refreshTaskGitState(event.payload.taskId);
-      },
-    );
-    onCleanup(() => {
-      unlisten.then((fn) => fn());
-    });
-  });
 
 
   const handleSelectProject = (id: string) => {

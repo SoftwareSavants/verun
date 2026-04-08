@@ -1,12 +1,11 @@
 import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
-import { listen } from '@tauri-apps/api/event'
 import { Upload, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import * as ipc from '../lib/ipc'
 import { claudeSkills } from '../store/commands'
 import { sendMessage } from '../store/sessions'
 import { addToast } from '../store/ui'
-import type { PrInfo, CiCheck } from '../types'
+import { taskGit, refreshTaskGit, invalidateRemote } from '../store/git'
 
 interface GitAction {
   icon: Component<{ size: number }>
@@ -19,85 +18,27 @@ interface Props {
   taskId: string
   sessionId: string | null
   isRunning?: boolean
-  fileCount: number
-  commitCount: number
 }
-
-// Per-task PR cache: serve instantly on switch, refresh in background
-const prCache = new Map<string, { pr: PrInfo | null; checks: CiCheck[]; at: number }>()
-const PR_CACHE_TTL = 30_000 // 30s — background refresh if older
 
 export const GitActions: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
-  const [pr, setPr] = createSignal<PrInfo | null>(null)
-  const [checks, setChecks] = createSignal<CiCheck[]>([])
-  const [behind, setBehind] = createSignal(0)
-  const [unpushed, setUnpushed] = createSignal(0)
   const [confirming, setConfirming] = createSignal<string | null>(null)
   const [actionLoading, setActionLoading] = createSignal(false)
 
-  const fetchPrAndChecks = async (taskId: string) => {
-    const prInfo = await ipc.getPullRequest(taskId).catch(() => null)
-    const ciChecks = prInfo
-      ? await ipc.getCiChecks(taskId).catch(() => [])
-      : []
-    prCache.set(taskId, { pr: prInfo, checks: ciChecks, at: Date.now() })
-    // Only apply if still viewing this task
-    if (props.taskId === taskId) {
-      setPr(prInfo)
-      setChecks(ciChecks)
-    }
-  }
-
-  const refresh = async (forcePrRefresh = false) => {
-    const taskId = props.taskId
-
-    // Restore cached PR data instantly, fetch fresh in background
-    const cached = prCache.get(taskId)
-    if (cached && !forcePrRefresh) {
-      setPr(cached.pr)
-      setChecks(cached.checks)
-    }
-
-    // Fast local calls — always await
-    const [, branchStatus] = await Promise.all([
-      ipc.checkGithub(taskId).catch(() => null),
-      ipc.getBranchStatus(taskId).catch(() => [0, 0, 0] as [number, number, number]),
-    ])
-    setBehind(branchStatus?.[1] ?? 0)
-    setUnpushed(branchStatus?.[2] ?? 0)
-
-    // Slow gh CLI call — await if forced (after actions), background otherwise
-    if (forcePrRefresh || !cached || Date.now() - cached.at > PR_CACHE_TTL) {
-      if (forcePrRefresh) {
-        await fetchPrAndChecks(taskId)
-      } else {
-        fetchPrAndChecks(taskId)
-      }
-    }
-  }
+  // Read all git state from the centralized store
+  const git = () => taskGit(props.taskId)
+  const pr = () => git().pr
+  const checks = () => git().checks
+  const behind = () => git().branchStatus.behind
+  const unpushed = () => git().branchStatus.unpushed
+  const fileCount = () => git().status?.files.length ?? 0
+  const commitCount = () => git().commits.length
 
   createEffect(on(() => props.taskId, () => {
-    // Restore from cache or clear
-    const cached = prCache.get(props.taskId)
-    setPr(cached?.pr ?? null)
-    setChecks(cached?.checks ?? [])
-    setBehind(0)
-    setUnpushed(0)
     setOpen(false)
     setConfirming(null)
-    refresh()
+    refreshTaskGit(props.taskId)
   }))
-
-  createEffect(() => {
-    const unlisten = listen<{ taskId: string }>('git-status-changed', (event) => {
-      if (event.payload.taskId === props.taskId) {
-        prCache.delete(props.taskId) // invalidate so PR state is re-fetched
-        refresh()
-      }
-    })
-    onCleanup(() => { unlisten.then(fn => fn()) })
-  })
 
   const send = (message: string) => {
     const sid = props.sessionId
@@ -121,7 +62,6 @@ export const GitActions: Component<Props> = (props) => {
       if (a.action) {
         await a.action()
         setOpen(false)
-        refresh()
       } else if (a.message) {
         send(a.message)
       }
@@ -134,8 +74,8 @@ export const GitActions: Component<Props> = (props) => {
     try {
       await ipc.gitPush(props.taskId)
       addToast('Pushed to remote', 'success')
-      prCache.delete(props.taskId)
-      await refresh(true)
+      invalidateRemote(props.taskId)
+      await refreshTaskGit(props.taskId, { force: true })
     } catch (e: any) {
       send(`push to remote. The error was: ${e}`)
     }
@@ -145,8 +85,8 @@ export const GitActions: Component<Props> = (props) => {
     try {
       await ipc.mergePullRequest(props.taskId)
       addToast('PR merged', 'success')
-      prCache.delete(props.taskId)
-      await refresh(true)
+      invalidateRemote(props.taskId)
+      await refreshTaskGit(props.taskId, { force: true })
     } catch (e: any) {
       addToast(`Merge failed: ${e}`, 'error')
     }
@@ -156,8 +96,8 @@ export const GitActions: Component<Props> = (props) => {
     try {
       await ipc.markPrReady(props.taskId)
       addToast('PR marked as ready for review', 'success')
-      prCache.delete(props.taskId)
-      await refresh(true)
+      invalidateRemote(props.taskId)
+      await refreshTaskGit(props.taskId, { force: true })
     } catch (e: any) {
       addToast(`Failed to mark PR ready: ${e}`, 'error')
     }
@@ -179,11 +119,11 @@ export const GitActions: Component<Props> = (props) => {
     return null
   }
 
-  const hasLocalChanges = () => props.fileCount > 0 || unpushed() > 0
+  const hasLocalChanges = () => fileCount() > 0 || unpushed() > 0
   const localClean = () => !hasLocalChanges()
 
   const pushAction = (): GitAction =>
-    props.fileCount > 0
+    fileCount() > 0
       ? { icon: Upload, label: 'Commit & Push', message: 'commit all changes and push to remote' }
       : { icon: Upload, label: 'Push', action: doPush }
   const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: 'create a pull request with an appropriate title and description' })
@@ -252,7 +192,7 @@ export const GitActions: Component<Props> = (props) => {
 
   const hasOpenPr = () => pr()?.state === 'OPEN'
   const prDone = () => pr() && !hasOpenPr()
-  const hasAnything = () => hasOpenPr() || (!prDone() && (props.commitCount > 0 || isBehind())) || props.fileCount > 0
+  const hasAnything = () => hasOpenPr() || (!prDone() && (commitCount() > 0 || isBehind())) || fileCount() > 0
 
   const PrimaryIcon = () => {
     const Icon = primaryAction().icon

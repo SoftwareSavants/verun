@@ -1,11 +1,11 @@
-import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
-import { listen } from '@tauri-apps/api/event'
+import { Component, createSignal, createEffect, on, Show, For } from 'solid-js'
 import { ChevronDown, ChevronRight, FileText, FilePlus, FileX, FileEdit, RefreshCw, X, WrapText, EyeOff, GitCommit, Circle } from 'lucide-solid'
 import { defaultWrapLines, defaultHideWhitespace } from '../store/ui'
+import { taskGit, refreshTaskGit } from '../store/git'
 import * as ipc from '../lib/ipc'
 import { highlightLine, langFromPath, type HighlightToken } from '../lib/highlighter'
 import { GitActions } from './GitActions'
-import type { GitStatus, BranchCommit, FileDiff, DiffLine } from '../types'
+import type { GitStatus, FileDiff, DiffLine } from '../types'
 
 interface Props {
   taskId: string
@@ -30,38 +30,27 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 export const CodeChanges: Component<Props> = (props) => {
-  const [status, setStatus] = createSignal<GitStatus | null>(null)
   const [openFiles, setOpenFiles] = createSignal<Set<string>>(new Set())
   const [fileDiffs, setFileDiffs] = createSignal<Map<string, FileDiff>>(new Map())
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
 
-  // Commit history
-  const [commits, setCommits] = createSignal<BranchCommit[]>([])
-  // null = uncommitted changes, string = commit hash
+  // null = uncommitted changes (read from store), string = commit hash (local)
   const [selectedCommit, setSelectedCommit] = createSignal<string | null>(null)
+  const [commitStatus, setCommitStatus] = createSignal<GitStatus | null>(null)
   const [commitsOpen, setCommitsOpen] = createSignal(
     localStorage.getItem('verun:commitsOpen') !== 'false'
   )
 
-  const [uncommittedCount, setUncommittedCount] = createSignal(0)
+  // Reactive accessors that branch on selectedCommit
+  const status = () => selectedCommit() ? commitStatus() : taskGit(props.taskId).status
+  const commits = () => taskGit(props.taskId).commits
+  const uncommittedCount = () => taskGit(props.taskId).status?.files.length ?? 0
 
-  const refreshUncommitted = async () => {
-    const s = await ipc.getGitStatus(props.taskId)
-    setUncommittedCount(s.files.length)
-    if (selectedCommit() === null) {
-      setStatus(s)
-      pruneOpenFiles(s)
-    }
-    return s
-  }
-
-  const refreshCommits = async () => {
-    const c = await ipc.getBranchCommits(props.taskId).catch(() => [])
-    setCommits(c)
-  }
-
-  const pruneOpenFiles = (s: GitStatus) => {
+  // Prune open files when store status changes (uncommitted view only)
+  createEffect(() => {
+    const s = taskGit(props.taskId).status
+    if (!s || selectedCommit()) return
     const paths = new Set(s.files.map(f => f.path))
     const current = openFiles()
     const stillValid = new Set([...current].filter(p => paths.has(p)))
@@ -73,13 +62,13 @@ export const CodeChanges: Component<Props> = (props) => {
       }
       setFileDiffs(diffs)
     }
-  }
+  })
 
   const refresh = async () => {
     try {
       setLoading(true)
       setError(null)
-      await Promise.all([refreshUncommitted(), refreshCommits()])
+      await refreshTaskGit(props.taskId, { force: true })
     } catch (e: any) {
       setError(e?.toString() || 'Failed to load status')
     } finally {
@@ -93,34 +82,22 @@ export const CodeChanges: Component<Props> = (props) => {
     setFileDiffs(new Map<string, FileDiff>())
 
     if (hash === null) {
-      // Switch back to uncommitted — re-fetch
-      try {
-        const s = await ipc.getGitStatus(props.taskId)
-        setStatus(s)
-      } catch {}
+      setCommitStatus(null) // will read from store
     } else {
       try {
         const s = await ipc.getCommitFiles(props.taskId, hash)
-        setStatus(s)
+        setCommitStatus(s)
       } catch {}
     }
   }
 
   createEffect(on(() => props.taskId, () => {
     setSelectedCommit(null)
-    setCommits([])
-    setStatus(null)
+    setCommitStatus(null)
     setOpenFiles(new Set<string>())
     setFileDiffs(new Map<string, FileDiff>())
-    refresh()
+    refreshTaskGit(props.taskId)
   }))
-
-  createEffect(() => {
-    const unlisten = listen<{ taskId: string }>('git-status-changed', (event) => {
-      if (event.payload.taskId === props.taskId) refresh()
-    })
-    onCleanup(() => { unlisten.then(fn => fn()) })
-  })
 
   const [wordWrap, setWordWrap] = createSignal(defaultWrapLines())
   const [hideWhitespace, setHideWhitespace] = createSignal(defaultHideWhitespace())
@@ -325,8 +302,6 @@ export const CodeChanges: Component<Props> = (props) => {
           taskId={props.taskId}
           sessionId={props.sessionId}
           isRunning={props.isRunning}
-          fileCount={uncommittedCount()}
-          commitCount={commits().length}
         />
       </div>
 

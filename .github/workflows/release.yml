@@ -91,6 +91,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: "Developer ID Application: Software Savants LLC (5Y6UKMM68W)"
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
         run: pnpm tauri build --target aarch64-apple-darwin
 
       - name: Zip app bundle
