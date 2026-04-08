@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2 — 2026-04-08
+
+### Changes
+
+- Fix release workflow changelog extraction
+
 ## 0.1.1 — 2026-04-08
 
 ### Changes
