@@ -151,19 +151,13 @@ export const MessageInput: Component<Props> = (props) => {
   createEffect(on(
     () => [props.isRunning, planMode(), props.sessionId] as const,
     ([running, plan, sid], prev) => {
-      console.log('[plan-effect] fired', { running, plan, sid, prev, planResponseSession: planResponseSession(), showPlanViewerVal: showPlanViewer() })
-      if (!plan || !sid) {
-        console.log('[plan-effect] early return: plan or sid falsy')
-        return
-      }
+      if (!plan || !sid) return
       // Was running, now idle → show plan response
       if (prev && prev[0] && !running) {
-        console.log('[plan-effect] condition 1: running→idle, setting planResponseSession')
         setPlanResponseSession(sid)
       }
       // Session just selected, already idle, plan mode on → show plan response
       if (!running && (!prev || prev[2] !== sid)) {
-        console.log('[plan-effect] condition 2: session changed or no prev, setting planResponseSession')
         setPlanResponseSession(sid)
       }
     }

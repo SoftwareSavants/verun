@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 — 2026-04-08
+
+### Changes
+
+- Fix scroll jump when interrupting a turn
+- Resolve user's login shell PATH at startup so bundled .app can find claude, git, etc.
+- Cross-platform support for Windows, Linux, and macOS
+- Platform-specific tauri config with macOS overlay titlebar override
+- Keyboard shortcuts use Ctrl on Windows/Linux, Cmd on macOS
+- Platform-adaptive clipboard, file manager, and shell commands
+- Cross-platform terminal fonts and xterm options
+- Conditional drag regions for macOS overlay titlebar
+
 ## 0.2.1 — 2026-04-08
 
 ### Changes
