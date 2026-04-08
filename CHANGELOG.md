@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — 2026-04-08
+
+### Changes
+
+- macOS code signing and notarization for GitHub releases
+
 ## 0.2.0 — 2026-04-08
 
 ### Changes
