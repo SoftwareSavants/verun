@@ -2,7 +2,7 @@
 
 Run multiple Claude Code sessions in parallel, each in its own isolated git worktree. Native macOS app.
 
-![Verun screenshot](screenshot.png)
+![Verun screenshot](screenshot.jpg)
 
 ## Features
 
