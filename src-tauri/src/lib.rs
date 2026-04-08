@@ -29,6 +29,23 @@ pub fn run() {
         .manage(task::new_pending_approval_meta())
         .manage(pty::new_active_pty_map())
         .setup(|app| {
+            // Fix PATH for bundled macOS .app — the app inherits a minimal
+            // system PATH that doesn't include Homebrew, nvm, etc.
+            // Spawn a login shell to resolve the user's real PATH.
+            if let Ok(shell) = std::env::var("SHELL").or_else(|_| Ok::<_, std::env::VarError>("/bin/zsh".to_string())) {
+                if let Ok(output) = std::process::Command::new(&shell)
+                    .args(["-lc", "echo $PATH"])
+                    .output()
+                {
+                    if output.status.success() {
+                        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !path.is_empty() {
+                            std::env::set_var("PATH", &path);
+                        }
+                    }
+                }
+            }
+
             // Custom macOS menu — replaces default so we control Quit behavior
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Verun")
                 .accelerator("CmdOrCtrl+Q")
