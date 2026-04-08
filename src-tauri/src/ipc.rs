@@ -3,6 +3,7 @@ use crate::db::{
 };
 use crate::git_ops;
 use crate::github;
+use crate::pty::{self, ActivePtyMap};
 use crate::task::{self, ActiveMap, ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals};
 use crate::worktree;
 use serde::Serialize;
@@ -669,6 +670,67 @@ pub async fn git_commit_and_push(
 }
 
 // ---------------------------------------------------------------------------
+// Branch commits
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_branch_commits(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<Vec<git_ops::BranchCommit>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    let project = db::get_project(pool.inner(), &t.project_id)
+        .await?
+        .ok_or_else(|| format!("Project {} not found", t.project_id))?;
+
+    let base = project.base_branch;
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::get_branch_commits(&t.worktree_path, &base))
+            .await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_commit_files(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    commit_hash: String,
+) -> Result<git_ops::GitStatus, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::get_commit_files(&t.worktree_path, &commit_hash))
+            .await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_commit_file_diff(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    commit_hash: String,
+    file_path: String,
+    context_lines: Option<u32>,
+    ignore_whitespace: Option<bool>,
+) -> Result<git_ops::FileDiff, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            git_ops::get_commit_file_diff(&t.worktree_path, &commit_hash, &file_path, context_lines, ignore_whitespace)
+        })
+            .await,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // GitHub
 // ---------------------------------------------------------------------------
 
@@ -788,6 +850,82 @@ pub async fn has_conflicts(
     flatten_join(
         tokio::task::spawn_blocking(move || github::has_conflicts(&t.worktree_path)).await,
     )
+}
+
+// ---------------------------------------------------------------------------
+// PTY / Terminal
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn pty_spawn(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    pty_map: State<'_, ActivePtyMap>,
+    task_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<pty::SpawnResult, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    let map = pty_map.inner().clone();
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            pty::spawn_pty(app, map, task_id, t.worktree_path, rows, cols)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn pty_write(
+    pty_map: State<'_, ActivePtyMap>,
+    terminal_id: String,
+    data: String,
+) -> Result<(), String> {
+    let map = pty_map.inner().clone();
+    flatten_join(
+        tokio::task::spawn_blocking(move || pty::write_pty(&map, &terminal_id, data.as_bytes()))
+            .await,
+    )
+}
+
+#[tauri::command]
+pub async fn pty_resize(
+    pty_map: State<'_, ActivePtyMap>,
+    terminal_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    let map = pty_map.inner().clone();
+    flatten_join(
+        tokio::task::spawn_blocking(move || pty::resize_pty(&map, &terminal_id, rows, cols))
+            .await,
+    )
+}
+
+#[tauri::command]
+pub async fn pty_close(
+    pty_map: State<'_, ActivePtyMap>,
+    terminal_id: String,
+) -> Result<(), String> {
+    let map = pty_map.inner().clone();
+    flatten_join(
+        tokio::task::spawn_blocking(move || pty::close_pty(&map, &terminal_id)).await,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Clipboard
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn read_clipboard() -> Result<String, String> {
+    let output = std::process::Command::new("pbpaste")
+        .output()
+        .map_err(|e| format!("Failed to read clipboard: {e}"))?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 // ---------------------------------------------------------------------------

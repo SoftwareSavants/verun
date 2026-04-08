@@ -162,6 +162,17 @@ export interface FileDiff {
   totalLines: number
 }
 
+export interface BranchCommit {
+  hash: string
+  shortHash: string
+  message: string
+  author: string
+  timestamp: number
+  filesChanged: number
+  insertions: number
+  deletions: number
+}
+
 export interface GitHubRepo {
   owner: string
   name: string
@@ -180,4 +191,26 @@ export interface CiCheck {
   name: string
   status: string
   url: string
+}
+
+// Terminal / PTY types
+
+export interface TerminalInstance {
+  id: string
+  taskId: string
+  name: string
+}
+
+export interface PtySpawnResult {
+  terminalId: string
+  shellName: string
+}
+
+export interface PtyOutputEvent {
+  terminalId: string
+  data: string
+}
+
+export interface PtyExitedEvent {
+  terminalId: string
 }

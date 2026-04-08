@@ -1,6 +1,6 @@
 import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
-import { GitCommit, Upload, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2 } from 'lucide-solid'
+import { Upload, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2 } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import * as ipc from '../lib/ipc'
 import { claudeSkills } from '../store/commands'
@@ -25,21 +25,18 @@ export const GitActions: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [pr, setPr] = createSignal<PrInfo | null>(null)
   const [checks, setChecks] = createSignal<CiCheck[]>([])
-  const [branchUrl, setBranchUrl] = createSignal<string | null>(null)
   const [ahead, setAhead] = createSignal(0)
   const [confirming, setConfirming] = createSignal<string | null>(null)
   const [actionLoading, setActionLoading] = createSignal(false)
 
   const refresh = async () => {
-    const [, prInfo, brUrl, branchStatus] = await Promise.all([
+    const [, prInfo, branchStatus] = await Promise.all([
       ipc.checkGithub(props.taskId).catch(() => null),
       ipc.getPullRequest(props.taskId).catch(() => null),
-      ipc.getBranchUrl(props.taskId).catch(() => null),
       ipc.getBranchStatus(props.taskId).catch(() => [0, 0] as [number, number]),
     ])
 
     setPr(prInfo)
-    setBranchUrl(brUrl)
     setAhead(branchStatus?.[0] ?? 0)
 
     if (prInfo) {
@@ -67,7 +64,7 @@ export const GitActions: Component<Props> = (props) => {
   }
 
   const needsConfirmation = (label: string) =>
-    label === 'Push' || label === 'Merge PR'
+    label === 'Push' || label === 'Commit & Push' || label === 'Merge PR'
 
   const runAction = async (a: GitAction) => {
     if (needsConfirmation(a.label) && confirming() !== a.label) {
@@ -116,40 +113,46 @@ export const GitActions: Component<Props> = (props) => {
     return null
   }
 
-  const commitAction = (): GitAction => ({ icon: GitCommit, label: 'Commit', message: 'commit all changes with a descriptive message' })
-  const pushAction = (): GitAction => ({ icon: Upload, label: 'Push', action: doPush })
+  const hasLocalChanges = () => props.fileCount > 0 || ahead() > 0
+  const localClean = () => !hasLocalChanges()
+
+  const pushAction = (): GitAction =>
+    props.fileCount > 0
+      ? { icon: Upload, label: 'Commit & Push', message: 'commit all changes with a descriptive message and push to remote' }
+      : { icon: Upload, label: 'Push', action: doPush }
   const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: 'create a pull request with an appropriate title and description' })
+  const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: 'create a draft pull request with an appropriate title and description' })
+  const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: 'rebase this branch onto the base branch and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue' })
   const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', message: 'merge the pull request for this branch' })
 
   // Smart default action based on state
+  // Flow: Create PR → Push (updates existing PR) → Resolve conflicts → Merge
   const primaryAction = (): GitAction => {
-    if (conflicts()) return { icon: Swords, label: 'Resolve conflicts', message: 'rebase this branch onto the base branch and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue' }
     if (failedChecks().length > 0) return { icon: Wrench, label: 'Fix CI', message: `fix the failing CI checks: ${failedChecks().map(c => c.name).join(', ')}` }
-    if (props.fileCount > 0) return commitAction()
-    if (ahead() > 0) return pushAction()
-    if (!pr() && branchUrl()) return createPrAction()
-    if (pr()?.state === 'OPEN') return mergePrAction()
-    return commitAction()
+    if (pr() && hasLocalChanges()) return pushAction()
+    if (!pr()) return createPrAction()
+    if (conflicts() && localClean()) return resolveConflictsAction()
+    if (pr()?.state === 'OPEN' && localClean()) return mergePrAction()
+    return createPrAction()
   }
 
   const secondaryActions = () => {
     const primary = primaryAction()
+    const hasPr = !!pr()
     const all: GitAction[] = [
-      commitAction(),
-      pushAction(),
       createPrAction(),
+      draftPrAction(),
+      pushAction(),
       mergePrAction(),
     ]
     if (hasReviewSkill()) {
       all.push({ icon: Search, label: 'Review', message: '/review' })
     }
-    const hasPr = !!pr()
-    const hasPushed = !!branchUrl()
     return all.filter(a => {
       if (a.label === primary.label) return false
-      if (a.label === 'Push' && ahead() === 0) return false
-      if (a.label === 'Create PR' && !hasPushed) return false
-      if (a.label === 'Merge PR' && !hasPr) return false
+      if ((a.label === 'Push' || a.label === 'Commit & Push') && (!hasPr || !hasLocalChanges())) return false
+      if ((a.label === 'Create PR' || a.label === 'Draft PR') && hasPr) return false
+      if (a.label === 'Merge PR' && (!hasPr || conflicts())) return false
       if (a.label === 'Review' && !hasPr) return false
       return true
     })
@@ -179,7 +182,9 @@ export const GitActions: Component<Props> = (props) => {
         {/* Split button */}
         <div class="flex items-center">
           <button
-            class={`flex items-center gap-1.5 text-[11px] rounded-r-none pr-2 ${
+            class={`flex items-center gap-1.5 text-[11px] pr-2 ${
+              secondaryActions().length > 0 ? 'rounded-r-none' : ''
+            } ${
               confirming() === primaryAction().label
                 ? 'btn-primary bg-amber-600 hover:bg-amber-500'
                 : 'btn-primary'
@@ -196,13 +201,15 @@ export const GitActions: Component<Props> = (props) => {
                 : primaryAction().label}
             </span>
           </button>
-          <button
-            class="btn-primary rounded-l-none border-l border-white/15 px-1.5"
-            onClick={() => { setConfirming(null); setOpen(!open()) }}
-            disabled={props.isRunning || actionLoading()}
-          >
-            <ChevronDown size={11} />
-          </button>
+          <Show when={secondaryActions().length > 0}>
+            <button
+              class="btn-primary rounded-l-none border-l border-white/15 px-1.5"
+              onClick={() => { setConfirming(null); setOpen(!open()) }}
+              disabled={props.isRunning || actionLoading()}
+            >
+              <ChevronDown size={11} />
+            </button>
+          </Show>
         </div>
 
         {/* Status badges */}
@@ -235,21 +242,12 @@ export const GitActions: Component<Props> = (props) => {
           </Show>
         </div>
 
-        {/* GitHub link */}
+        {/* PR link */}
         <Show when={pr()}>
           <button
             class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 transition-colors"
             onClick={() => openUrl(pr()!.url)}
             title="Open PR"
-          >
-            <ExternalLink size={11} />
-          </button>
-        </Show>
-        <Show when={!pr() && branchUrl()}>
-          <button
-            class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 transition-colors"
-            onClick={() => openUrl(branchUrl()!)}
-            title="Open on GitHub"
           >
             <ExternalLink size={11} />
           </button>
@@ -285,26 +283,15 @@ export const GitActions: Component<Props> = (props) => {
           </Show>
 
           {/* Links */}
-          <Show when={pr() || branchUrl()}>
+          <Show when={pr()}>
             <div class="border-t border-border-subtle my-1" />
-            <Show when={pr()}>
-              <button
-                class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors"
-                onClick={() => { openUrl(pr()!.url); setOpen(false) }}
-              >
-                <ExternalLink size={13} />
-                <span>Open PR #{pr()!.number}</span>
-              </button>
-            </Show>
-            <Show when={branchUrl()}>
-              <button
-                class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors"
-                onClick={() => { openUrl(branchUrl()!); setOpen(false) }}
-              >
-                <ExternalLink size={13} />
-                <span>Open on GitHub</span>
-              </button>
-            </Show>
+            <button
+              class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors"
+              onClick={() => { openUrl(pr()!.url); setOpen(false) }}
+            >
+              <ExternalLink size={13} />
+              <span>Open PR #{pr()!.number}</span>
+            </button>
           </Show>
 
           {/* CI check details */}

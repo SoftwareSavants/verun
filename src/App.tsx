@@ -6,6 +6,7 @@ import { ToastContainer } from './components/ToastContainer'
 import { initTheme } from './lib/theme'
 import { loadProjects } from './store/projects'
 import { initSessionListeners, syncSessionStatuses } from './store/sessions'
+import { initTerminalListeners } from './store/terminals'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
 import { addToast } from './store/ui'
@@ -42,6 +43,7 @@ const App: Component = () => {
     })
 
     await initSessionListeners()
+    await initTerminalListeners()
     await loadProjects()
     await syncSessionStatuses()
 

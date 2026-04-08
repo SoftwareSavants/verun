@@ -1,5 +1,6 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast } from '../store/ui'
+import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, toggleTerminal, terminalHeight, setTerminalHeightAndPersist } from '../store/ui'
+import { refitActiveTerminal } from '../store/terminals'
 import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask } from '../store/tasks'
@@ -7,7 +8,8 @@ import { sessionsForTask, outputItems, sessionById, createSession, abortMessage,
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { CodeChanges } from './CodeChanges'
-import { Square, Plus, X, PanelRightClose, PanelRightOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
+import { TerminalPanel } from './TerminalPanel'
+import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
@@ -262,6 +264,13 @@ export const TaskPanel: Component = () => {
                       <OpenInButton path={t().worktreePath} />
                       <button
                         class="h-6 w-6 flex items-center justify-center rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                        onClick={toggleTerminal}
+                        title={showTerminal() ? 'Hide terminal' : 'Show terminal'}
+                      >
+                        {showTerminal() ? <PanelBottomClose size={14} /> : <PanelBottomOpen size={14} />}
+                      </button>
+                      <button
+                        class="h-6 w-6 flex items-center justify-center rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
                         onClick={toggleChanges}
                         title={showChanges() ? 'Hide changes panel' : 'Show changes panel'}
                       >
@@ -383,6 +392,36 @@ export const TaskPanel: Component = () => {
                     sessionId={selectedSessionId()}
                     isRunning={currentSession()?.status === 'running'}
                   />
+
+                  {/* Terminal panel — resizable bottom section, kept in DOM to preserve xterm state */}
+                  <div
+                    class="h-1 cursor-row-resize bg-border-subtle hover:bg-accent/50 transition-colors shrink-0"
+                    style={{ display: showTerminal() ? 'block' : 'none' }}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      const startY = e.clientY
+                      const startH = terminalHeight()
+                      const onMove = (ev: MouseEvent) => {
+                        const delta = startY - ev.clientY
+                        setTerminalHeightAndPersist(Math.max(100, Math.min(600, startH + delta)))
+                      }
+                      const onUp = () => {
+                        document.removeEventListener('mousemove', onMove)
+                        document.removeEventListener('mouseup', onUp)
+                        // Refit after resize completes
+                        const tid = selectedTaskId()
+                        if (tid) refitActiveTerminal(tid)
+                      }
+                      document.addEventListener('mousemove', onMove)
+                      document.addEventListener('mouseup', onUp)
+                    }}
+                  />
+                  <div
+                    style={{ height: `${terminalHeight()}px`, display: showTerminal() ? 'block' : 'none' }}
+                    class="shrink-0 overflow-hidden"
+                  >
+                    <TerminalPanel taskId={t().id} />
+                  </div>
                 </Show>
               </div>
 

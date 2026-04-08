@@ -4,10 +4,11 @@ import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage } from './SettingsPage'
 import { NewTaskDialog } from './NewTaskDialog'
-import { sidebarWidth, setSidebarWidth, addToast, showSettings, setShowSettings } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, addToast, showSettings, setShowSettings, toggleTerminal, showTerminal, setShowTerminal } from '../store/ui'
+import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask } from '../store/terminals'
 import { tasks } from '../store/tasks'
 import { addProject, projects } from '../store/projects'
-import { selectedProjectId, setSelectedProjectId, setSelectedTaskId } from '../store/ui'
+import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
 
 async function pickAndAddProject() {
   const selected = await openDialog({ directory: true, multiple: false })
@@ -81,6 +82,65 @@ export const Layout: Component = () => {
       if (e.key === 'Escape' && showSettings()) {
         e.preventDefault()
         setShowSettings(false)
+      }
+      // Ctrl+` — toggle terminal panel (focus terminal when opening)
+      if (e.ctrlKey && !e.shiftKey && e.key === '`') {
+        e.preventDefault()
+        toggleTerminal()
+        const tid = selectedTaskId()
+        if (tid && showTerminal()) {
+          // Double-rAF: first lets display:block apply, second lets xterm measure
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => focusActiveTerminal(tid))
+          })
+        }
+      }
+      // Ctrl+Shift+` — new terminal in current task (Shift+` produces ~ on macOS)
+      if (e.ctrlKey && e.shiftKey && (e.key === '`' || e.key === '~')) {
+        e.preventDefault()
+        const tid = selectedTaskId()
+        if (tid) {
+          if (!showTerminal()) setShowTerminal(true)
+          spawnTerminal(tid, 24, 80)
+        }
+      }
+      // Cmd+\ — focus terminal (when open)
+      if (e.metaKey && e.key === '\\') {
+        e.preventDefault()
+        const tid = selectedTaskId()
+        if (tid && showTerminal()) {
+          focusActiveTerminal(tid)
+        }
+      }
+      // Ctrl+Tab / Ctrl+Shift+Tab — switch terminal tabs
+      if (e.ctrlKey && e.key === 'Tab') {
+        const tid = selectedTaskId()
+        if (tid && showTerminal()) {
+          e.preventDefault()
+          const terms = terminalsForTask(tid)
+          if (terms.length > 1) {
+            const currentId = activeTerminalId(tid)
+            const idx = terms.findIndex(t => t.id === currentId)
+            const next = e.shiftKey
+              ? (idx - 1 + terms.length) % terms.length
+              : (idx + 1) % terms.length
+            setActiveTerminalForTask(tid, terms[next].id)
+            requestAnimationFrame(() => focusActiveTerminal(tid))
+          }
+        }
+      }
+      // Ctrl+Number — switch to terminal tab by index
+      if (e.ctrlKey && !e.metaKey && !e.shiftKey && e.key >= '1' && e.key <= '9') {
+        const tid = selectedTaskId()
+        if (tid && showTerminal()) {
+          e.preventDefault()
+          const terms = terminalsForTask(tid)
+          const idx = parseInt(e.key) - 1
+          if (idx < terms.length) {
+            setActiveTerminalForTask(tid, terms[idx].id)
+            requestAnimationFrame(() => focusActiveTerminal(tid))
+          }
+        }
       }
     }
     window.addEventListener('keydown', handleKey)

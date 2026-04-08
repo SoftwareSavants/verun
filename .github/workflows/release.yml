@@ -93,7 +93,7 @@ jobs:
           version="${{ needs.check-version.outputs.version }}"
           escaped=$(echo "$version" | sed 's/\./\\./g')
           # Extract the section for this version from CHANGELOG.md
-          awk "/^## ${escaped}( |$)/,/^## [0-9]/" CHANGELOG.md | sed '$d' | tail -n +2 > /tmp/release_notes.md
+          awk "/^## ${escaped}( |\$)/{found=1; next} found && /^## [0-9]/{exit} found" CHANGELOG.md > /tmp/release_notes.md
           # If nothing was extracted, use a default
           if [ ! -s /tmp/release_notes.md ]; then
             echo "Release v${version}" > /tmp/release_notes.md

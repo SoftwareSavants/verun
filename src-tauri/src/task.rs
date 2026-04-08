@@ -5,7 +5,7 @@ use crate::worktree;
 use dashmap::DashMap;
 use serde::Deserialize;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
@@ -160,6 +160,16 @@ pub async fn delete_task(
     let keys: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
     for sid in keys {
         abort_message(app, db_tx, active, &sid).await?;
+    }
+
+    // Close any PTY terminals for this task
+    if let Some(pty_map) = app.try_state::<crate::pty::ActivePtyMap>() {
+        let task_id = task.id.clone();
+        let map = pty_map.inner().clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::pty::close_all_for_task(&map, &task_id);
+        })
+        .await;
     }
 
     let rp = repo_path.to_string();

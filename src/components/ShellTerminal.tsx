@@ -1,0 +1,170 @@
+import { Component, onMount, onCleanup } from 'solid-js'
+import { Terminal as XTerm } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import { WebLinksAddon } from '@xterm/addon-web-links'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
+import { WebglAddon } from '@xterm/addon-webgl'
+import { registerXterm, getXtermEntry } from '../store/terminals'
+import type { XtermEntry } from '../store/terminals'
+import * as ipc from '../lib/ipc'
+import '@xterm/xterm/css/xterm.css'
+
+const THEME = {
+  background: '#0a0a0a',
+  foreground: '#e5e5e5',
+  cursor: '#e5e5e5',
+  selectionBackground: '#6366f140',
+  black: '#0a0a0a',
+  red: '#ef4444',
+  green: '#22c55e',
+  yellow: '#eab308',
+  blue: '#3b82f6',
+  magenta: '#a855f7',
+  cyan: '#06b6d4',
+  white: '#e5e5e5',
+  brightBlack: '#525252',
+  brightRed: '#f87171',
+  brightGreen: '#4ade80',
+  brightYellow: '#facc15',
+  brightBlue: '#60a5fa',
+  brightMagenta: '#c084fc',
+  brightCyan: '#22d3ee',
+  brightWhite: '#fafafa',
+}
+
+/** Capture-phase keydown on the container — fires before xterm's textarea gets it */
+function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string) {
+  container.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.metaKey && e.key === 'c') {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      const selection = term.getSelection()
+      if (selection) navigator.clipboard.writeText(selection)
+      return
+    }
+    if (e.metaKey && e.key === 'v') {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      ipc.readClipboard().then(text => { if (text) ipc.ptyWrite(terminalId, text) })
+      return
+    }
+    if (e.metaKey && e.key === 'a') { e.preventDefault(); term.selectAll(); return }
+    if (e.metaKey && e.key === 'k') { e.preventDefault(); term.clear(); return }
+    if (e.metaKey && e.key === 'ArrowLeft') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x01'); return }
+    if (e.metaKey && e.key === 'ArrowRight') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x05'); return }
+    if (e.metaKey && e.key === 'Backspace') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x15'); return }
+    if (e.metaKey && e.key === 'ArrowUp') { e.preventDefault(); term.scrollToTop(); return }
+    if (e.metaKey && e.key === 'ArrowDown') { e.preventDefault(); term.scrollToBottom(); return }
+    if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x1bb'); return }
+    if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x1bf'); return }
+    if (e.altKey && e.key === 'Backspace') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x17'); return }
+  }, true)
+}
+
+function setupXtermPassthrough(term: XTerm) {
+  term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+    if (e.type !== 'keydown') return true
+    if (e.ctrlKey && (e.key === '`' || e.key === '~' || e.key === 'Tab')) return false
+    if (e.ctrlKey && e.key >= '1' && e.key <= '9') return false
+    if (e.metaKey) return false
+    return true
+  })
+}
+
+function attachResizeObserver(container: HTMLElement, entry: XtermEntry, terminalId: string): ResizeObserver {
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined
+  const observer = new ResizeObserver(() => {
+    if (container.clientWidth < 10 || container.clientHeight < 10) return
+    clearTimeout(resizeTimer)
+    resizeTimer = setTimeout(() => {
+      entry.fitAddon.fit()
+      ipc.ptyResize(terminalId, entry.term.rows, entry.term.cols)
+    }, 100)
+  })
+  observer.observe(container)
+  return observer
+}
+
+function initialFit(entry: XtermEntry, terminalId: string) {
+  requestAnimationFrame(() => {
+    entry.fitAddon.fit()
+    entry.term.refresh(0, entry.term.rows - 1)
+    ipc.ptyResize(terminalId, entry.term.rows, entry.term.cols)
+    entry.term.focus()
+  })
+}
+
+interface Props {
+  terminalId: string
+}
+
+export const ShellTerminal: Component<Props> = (props) => {
+  let containerRef: HTMLDivElement | undefined
+  let resizeObserver: ResizeObserver | undefined
+
+  onMount(() => {
+    if (!containerRef) return
+
+    const existing = getXtermEntry(props.terminalId)
+
+    if (existing) {
+      // Reparent the existing xterm DOM into this new container (task switch)
+      const el = existing.term.element
+      if (el) containerRef.appendChild(el)
+      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId)
+      initialFit(existing, props.terminalId)
+      resizeObserver = attachResizeObserver(containerRef, existing, props.terminalId)
+      return
+    }
+
+    const term = new XTerm({
+      theme: THEME,
+      fontFamily: "'SF Mono', Menlo, Monaco, 'Courier New', monospace, 'Apple Color Emoji', 'Segoe UI Emoji'",
+      fontSize: 13,
+      lineHeight: 1.0,
+      cursorBlink: true,
+      cursorStyle: 'block',
+      scrollback: 10000,
+      allowProposedApi: true,
+      macOptionIsMeta: true,
+      customGlyphs: true,
+      rescaleOverlappingGlyphs: true,
+      drawBoldTextInBrightColors: false,
+    })
+
+    const fitAddon = new FitAddon()
+    term.loadAddon(fitAddon)
+    term.loadAddon(new WebLinksAddon())
+    const unicode11 = new Unicode11Addon()
+    term.loadAddon(unicode11)
+    term.unicode.activeVersion = '11'
+    setupXtermPassthrough(term)
+    setupCaptureKeyHandler(containerRef, term, props.terminalId)
+    term.onData((data) => ipc.ptyWrite(props.terminalId, data))
+    registerXterm(props.terminalId, term, fitAddon)
+
+    term.open(containerRef)
+
+    try {
+      term.loadAddon(new WebglAddon())
+    } catch {
+      // WebGL not available — fall back to canvas renderer
+    }
+
+    const entry = { term, fitAddon }
+    initialFit(entry, props.terminalId)
+    resizeObserver = attachResizeObserver(containerRef, entry, props.terminalId)
+  })
+
+  onCleanup(() => {
+    resizeObserver?.disconnect()
+  })
+
+  return (
+    <div
+      ref={containerRef}
+      class="w-full h-full shell-terminal"
+      style={{ "background-color": "#0a0a0a", cursor: "default" }}
+    />
+  )
+}

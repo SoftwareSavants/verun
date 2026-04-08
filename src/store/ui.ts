@@ -32,6 +32,31 @@ export function effectiveModel(sessionId: string | null): ModelId {
 export const [showAddProjectDialog, setShowAddProjectDialog] = createSignal(false)
 export const [showSettings, setShowSettings] = createSignal(false)
 
+// Terminal panel — per-task visibility
+const [taskTerminalOpen, setTaskTerminalOpen] = createSignal<Record<string, boolean>>({})
+
+export function showTerminal(): boolean {
+  const tid = selectedTaskId()
+  return tid ? (taskTerminalOpen()[tid] ?? false) : false
+}
+
+export function setShowTerminal(v: boolean) {
+  const tid = selectedTaskId()
+  if (tid) setTaskTerminalOpen(prev => ({ ...prev, [tid]: v }))
+}
+
+export function toggleTerminal() {
+  setShowTerminal(!showTerminal())
+}
+
+const savedTerminalHeight = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:terminalHeight') : null
+export const [terminalHeight, setTerminalHeight] = createSignal(savedTerminalHeight ? parseInt(savedTerminalHeight, 10) : 250)
+
+export function setTerminalHeightAndPersist(h: number) {
+  setTerminalHeight(h)
+  localStorage.setItem('verun:terminalHeight', String(h))
+}
+
 // Code changes defaults
 const savedWrapDefault = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:defaultWrapLines') : null
 export const [defaultWrapLines, setDefaultWrapLines] = createSignal(savedWrapDefault !== null ? savedWrapDefault === 'true' : true)

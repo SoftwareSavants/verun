@@ -465,6 +465,264 @@ fn parse_range(s: &str) -> (u32, u32) {
 }
 
 // ---------------------------------------------------------------------------
+// Branch commits
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchCommit {
+    pub hash: String,
+    pub short_hash: String,
+    pub message: String,
+    pub author: String,
+    pub timestamp: i64,
+    pub files_changed: u32,
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
+/// List commits on the current branch that are not on the base branch.
+pub fn get_branch_commits(worktree_path: &str, base_branch: &str) -> Result<Vec<BranchCommit>, String> {
+    // Use merge-base to find the fork point
+    let base_output = git(worktree_path)
+        .args(["merge-base", base_branch, "HEAD"])
+        .output()
+        .map_err(|e| format!("Failed to find merge base: {e}"))?;
+
+    if !base_output.status.success() {
+        // No common ancestor — return all commits
+        return get_all_commits(worktree_path);
+    }
+
+    let merge_base = String::from_utf8_lossy(&base_output.stdout).trim().to_string();
+
+    let output = git(worktree_path)
+        .args([
+            "log",
+            &format!("{merge_base}..HEAD"),
+            "--format=%H%n%h%n%s%n%an%n%at",
+            "--shortstat",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to get branch commits: {e}"))?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    parse_log_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Get files changed in a specific commit (as a GitStatus-like structure).
+pub fn get_commit_files(worktree_path: &str, commit_hash: &str) -> Result<GitStatus, String> {
+    // Get file list with status
+    let output = git(worktree_path)
+        .args(["diff-tree", "--no-commit-id", "-r", "--name-status", commit_hash])
+        .output()
+        .map_err(|e| format!("Failed to get commit files: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut files = Vec::new();
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.splitn(2, '\t').collect();
+        if parts.len() != 2 { continue; }
+        let status_char = parts[0].chars().next().unwrap_or('M');
+        let status = match status_char {
+            'A' => "A",
+            'D' => "D",
+            'R' => "R",
+            _ => "M",
+        };
+        files.push(FileStatus {
+            path: parts[1].to_string(),
+            status: status.to_string(),
+            staging: "committed".to_string(),
+            old_path: None,
+        });
+    }
+
+    // Get stats
+    let stat_output = git(worktree_path)
+        .args(["diff-tree", "--no-commit-id", "-r", "--numstat", commit_hash])
+        .output()
+        .map_err(|e| format!("Failed to get commit stats: {e}"))?;
+
+    let stat_stdout = String::from_utf8_lossy(&stat_output.stdout);
+    let mut stats = Vec::new();
+    let mut total_ins: u32 = 0;
+    let mut total_del: u32 = 0;
+
+    for line in stat_stdout.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() != 3 { continue; }
+        let ins = parts[0].parse::<u32>().unwrap_or(0);
+        let del = parts[1].parse::<u32>().unwrap_or(0);
+        total_ins += ins;
+        total_del += del;
+        stats.push(FileDiffStats {
+            path: parts[2].to_string(),
+            insertions: ins,
+            deletions: del,
+        });
+    }
+
+    Ok(GitStatus {
+        files,
+        stats,
+        total_insertions: total_ins,
+        total_deletions: total_del,
+    })
+}
+
+/// Get the diff for a specific file in a specific commit.
+pub fn get_commit_file_diff(
+    worktree_path: &str,
+    commit_hash: &str,
+    file_path: &str,
+    context_lines: Option<u32>,
+    ignore_whitespace: Option<bool>,
+) -> Result<FileDiff, String> {
+    let ctx_flag = format!("-U{}", context_lines.unwrap_or(3));
+
+    let mut args = vec!["diff-tree", "-p", "--no-commit-id", &ctx_flag];
+    if ignore_whitespace.unwrap_or(false) {
+        args.push("-w");
+    }
+    args.extend([commit_hash, "--", file_path]);
+
+    let output = git(worktree_path)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("Failed to get commit file diff: {e}"))?;
+
+    let raw_diff = String::from_utf8_lossy(&output.stdout).to_string();
+    let hunks = parse_unified_diff(&raw_diff);
+
+    let mut insertions: u32 = 0;
+    let mut deletions: u32 = 0;
+    for hunk in &hunks {
+        for line in &hunk.lines {
+            match line.kind.as_str() {
+                "add" => insertions += 1,
+                "delete" => deletions += 1,
+                _ => {}
+            }
+        }
+    }
+
+    let status = if raw_diff.contains("new file mode") {
+        "A"
+    } else if raw_diff.contains("deleted file mode") {
+        "D"
+    } else {
+        "M"
+    };
+
+    // For commit diffs, total_lines is less meaningful but we can approximate
+    let full_path = std::path::Path::new(worktree_path).join(file_path);
+    let total_lines = if full_path.exists() {
+        std::fs::read_to_string(&full_path)
+            .map(|c| c.lines().count() as u32)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    Ok(FileDiff {
+        path: file_path.to_string(),
+        status: status.to_string(),
+        hunks,
+        stats: FileDiffStats {
+            path: file_path.to_string(),
+            insertions,
+            deletions,
+        },
+        total_lines,
+    })
+}
+
+fn get_all_commits(worktree_path: &str) -> Result<Vec<BranchCommit>, String> {
+    let output = git(worktree_path)
+        .args(["log", "--format=%H%n%h%n%s%n%an%n%at", "--shortstat"])
+        .output()
+        .map_err(|e| format!("Failed to get commits: {e}"))?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    parse_log_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_log_output(text: &str) -> Result<Vec<BranchCommit>, String> {
+    let mut commits = Vec::new();
+    let mut lines = text.lines().peekable();
+
+    while lines.peek().is_some() {
+        // Skip blank lines between entries
+        while lines.peek().is_some_and(|l| l.is_empty()) {
+            lines.next();
+        }
+
+        let hash = match lines.next() {
+            Some(h) if !h.is_empty() => h.to_string(),
+            _ => break,
+        };
+        let short_hash = lines.next().unwrap_or("").to_string();
+        let message = lines.next().unwrap_or("").to_string();
+        let author = lines.next().unwrap_or("").to_string();
+        let timestamp: i64 = lines.next().unwrap_or("0").parse().unwrap_or(0);
+
+        // Next line might be a blank line, then the shortstat, or just a blank line
+        let mut files_changed: u32 = 0;
+        let mut insertions: u32 = 0;
+        let mut deletions: u32 = 0;
+
+        // Skip blank lines and look for the stat line
+        while lines.peek().is_some_and(|l| l.is_empty()) {
+            lines.next();
+        }
+
+        if let Some(stat_line) = lines.peek() {
+            if stat_line.contains("file") && stat_line.contains("changed") {
+                let stat = lines.next().unwrap();
+                // Parse "N file(s) changed, N insertion(s)(+), N deletion(s)(-)"
+                for part in stat.split(',') {
+                    let part = part.trim();
+                    if part.contains("changed") {
+                        files_changed = part.split_whitespace().next()
+                            .and_then(|n| n.parse().ok())
+                            .unwrap_or(0);
+                    } else if part.contains("insertion") {
+                        insertions = part.split_whitespace().next()
+                            .and_then(|n| n.parse().ok())
+                            .unwrap_or(0);
+                    } else if part.contains("deletion") {
+                        deletions = part.split_whitespace().next()
+                            .and_then(|n| n.parse().ok())
+                            .unwrap_or(0);
+                    }
+                }
+            }
+        }
+
+        commits.push(BranchCommit {
+            hash,
+            short_hash,
+            message,
+            author,
+            timestamp,
+            files_changed,
+            insertions,
+            deletions,
+        });
+    }
+
+    Ok(commits)
+}
+
+// ---------------------------------------------------------------------------
 // Git actions (Phase 2)
 // ---------------------------------------------------------------------------
 

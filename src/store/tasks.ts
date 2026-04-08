@@ -2,6 +2,7 @@ import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import type { Task, Session } from '../types'
 import * as ipc from '../lib/ipc'
+import { closeTerminalsForTask } from './terminals'
 
 export const [tasks, setTasks] = createStore<Task[]>([])
 
@@ -119,6 +120,7 @@ export function removePlaceholderTask(id: string) {
 }
 
 export async function deleteTask(id: string) {
+  closeTerminalsForTask(id)
   await ipc.deleteTask(id)
   setTasks(prev => prev.filter(t => t.id !== id))
 }

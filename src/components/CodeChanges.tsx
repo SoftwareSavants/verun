@@ -1,11 +1,11 @@
-import { Component, createSignal, createEffect, on, Show, For } from 'solid-js'
+import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
-import { ChevronDown, ChevronRight, FileText, FilePlus, FileX, FileEdit, RefreshCw, X, WrapText, EyeOff } from 'lucide-solid'
+import { ChevronDown, ChevronRight, FileText, FilePlus, FileX, FileEdit, RefreshCw, X, WrapText, EyeOff, GitCommit, Circle } from 'lucide-solid'
 import { defaultWrapLines, defaultHideWhitespace } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { highlightLine, langFromPath, type HighlightToken } from '../lib/highlighter'
 import { GitActions } from './GitActions'
-import type { GitStatus, FileDiff, DiffLine } from '../types'
+import type { GitStatus, BranchCommit, FileDiff, DiffLine } from '../types'
 
 interface Props {
   taskId: string
@@ -36,25 +36,50 @@ export const CodeChanges: Component<Props> = (props) => {
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
 
+  // Commit history
+  const [commits, setCommits] = createSignal<BranchCommit[]>([])
+  // null = uncommitted changes, string = commit hash
+  const [selectedCommit, setSelectedCommit] = createSignal<string | null>(null)
+  const [commitsOpen, setCommitsOpen] = createSignal(
+    localStorage.getItem('verun:commitsOpen') !== 'false'
+  )
+
+  const [uncommittedCount, setUncommittedCount] = createSignal(0)
+
+  const refreshUncommitted = async () => {
+    const s = await ipc.getGitStatus(props.taskId)
+    setUncommittedCount(s.files.length)
+    if (selectedCommit() === null) {
+      setStatus(s)
+      pruneOpenFiles(s)
+    }
+    return s
+  }
+
+  const refreshCommits = async () => {
+    const c = await ipc.getBranchCommits(props.taskId).catch(() => [])
+    setCommits(c)
+  }
+
+  const pruneOpenFiles = (s: GitStatus) => {
+    const paths = new Set(s.files.map(f => f.path))
+    const current = openFiles()
+    const stillValid = new Set([...current].filter(p => paths.has(p)))
+    if (stillValid.size !== current.size) {
+      setOpenFiles(stillValid)
+      const diffs = new Map(fileDiffs())
+      for (const p of current) {
+        if (!stillValid.has(p)) diffs.delete(p)
+      }
+      setFileDiffs(diffs)
+    }
+  }
+
   const refresh = async () => {
     try {
       setLoading(true)
       setError(null)
-      const s = await ipc.getGitStatus(props.taskId)
-      setStatus(s)
-
-      // Remove open files that no longer exist
-      const paths = new Set(s.files.map(f => f.path))
-      const current = openFiles()
-      const stillValid = new Set([...current].filter(p => paths.has(p)))
-      if (stillValid.size !== current.size) {
-        setOpenFiles(stillValid)
-        const diffs = new Map(fileDiffs())
-        for (const p of current) {
-          if (!stillValid.has(p)) diffs.delete(p)
-        }
-        setFileDiffs(diffs)
-      }
+      await Promise.all([refreshUncommitted(), refreshCommits()])
     } catch (e: any) {
       setError(e?.toString() || 'Failed to load status')
     } finally {
@@ -62,13 +87,35 @@ export const CodeChanges: Component<Props> = (props) => {
     }
   }
 
-  createEffect(on(() => props.taskId, () => { refresh() }))
+  const selectCommit = async (hash: string | null) => {
+    setSelectedCommit(hash)
+    setOpenFiles(new Set<string>())
+    setFileDiffs(new Map<string, FileDiff>())
+
+    if (hash === null) {
+      // Switch back to uncommitted — re-fetch
+      try {
+        const s = await ipc.getGitStatus(props.taskId)
+        setStatus(s)
+      } catch {}
+    } else {
+      try {
+        const s = await ipc.getCommitFiles(props.taskId, hash)
+        setStatus(s)
+      } catch {}
+    }
+  }
+
+  createEffect(on(() => props.taskId, () => {
+    setSelectedCommit(null)
+    refresh()
+  }))
 
   createEffect(() => {
     const unlisten = listen<{ taskId: string }>('git-status-changed', (event) => {
       if (event.payload.taskId === props.taskId) refresh()
     })
-    return () => { unlisten.then(fn => fn()) }
+    onCleanup(() => { unlisten.then(fn => fn()) })
   })
 
   const [wordWrap, setWordWrap] = createSignal(defaultWrapLines())
@@ -115,7 +162,10 @@ export const CodeChanges: Component<Props> = (props) => {
     current.add(path)
     setOpenFiles(current)
     try {
-      const diff = await ipc.getFileDiff(props.taskId, path, undefined, hideWhitespace() || undefined)
+      const commit = selectedCommit()
+      const diff = commit
+        ? await ipc.getCommitFileDiff(props.taskId, commit, path, undefined, hideWhitespace() || undefined)
+        : await ipc.getFileDiff(props.taskId, path, undefined, hideWhitespace() || undefined)
       const diffs = new Map(fileDiffs())
       diffs.set(path, diff)
       setFileDiffs(diffs)
@@ -127,10 +177,13 @@ export const CodeChanges: Component<Props> = (props) => {
   createEffect(on(hideWhitespace, async (hw) => {
     const paths = [...openFiles()]
     if (paths.length === 0) return
+    const commit = selectedCommit()
     const diffs = new Map(fileDiffs())
     for (const path of paths) {
       try {
-        const diff = await ipc.getFileDiff(props.taskId, path, undefined, hw || undefined)
+        const diff = commit
+          ? await ipc.getCommitFileDiff(props.taskId, commit, path, undefined, hw || undefined)
+          : await ipc.getFileDiff(props.taskId, path, undefined, hw || undefined)
         diffs.set(path, diff)
         highlightDiff(diff, path)
       } catch {}
@@ -219,6 +272,24 @@ export const CodeChanges: Component<Props> = (props) => {
     return status()?.stats.find(s => s.path === path)
   }
 
+  const toggleCommitsPanel = () => {
+    const next = !commitsOpen()
+    setCommitsOpen(next)
+    localStorage.setItem('verun:commitsOpen', String(next))
+  }
+
+  const selectedCommitInfo = () => commits().find(c => c.hash === selectedCommit())
+
+  const formatTime = (ts: number) => {
+    const d = new Date(ts * 1000)
+    const now = Date.now()
+    const diff = now - d.getTime()
+    if (diff < 60_000) return 'just now'
+    if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`
+    if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h ago`
+    return `${Math.floor(diff / 86400_000)}d ago`
+  }
+
   return (
     <div class="flex flex-col h-full overflow-hidden min-w-0">
       {/* Drag region for titlebar */}
@@ -226,33 +297,32 @@ export const CodeChanges: Component<Props> = (props) => {
 
       {/* Header row: title + stats + git action */}
       <div class="flex items-center justify-between px-3 py-2 border-b border-border-subtle bg-surface-1">
-        <div class="flex items-center gap-2 text-xs text-text-muted">
-          <span class="font-medium text-text-secondary">Changes</span>
+        <div class="flex items-center gap-2 text-xs text-text-muted min-w-0">
+          <span class="font-medium text-text-secondary shrink-0">
+            {selectedCommit() ? 'Commit' : 'Changes'}
+          </span>
+          <Show when={selectedCommit() && selectedCommitInfo()}>
+            <span class="font-mono text-text-dim truncate">{selectedCommitInfo()!.shortHash}</span>
+          </Show>
           <Show when={status()}>
-            <span class="px-1.5 py-0.5 rounded bg-surface-3 text-text-dim">
+            <span class="px-1.5 py-0.5 rounded bg-surface-3 text-text-dim shrink-0">
               {status()!.files.length} file{status()!.files.length !== 1 ? 's' : ''}
             </span>
             <Show when={status()!.totalInsertions > 0}>
-              <span class="text-emerald-400">+{status()!.totalInsertions}</span>
+              <span class="text-emerald-400 shrink-0">+{status()!.totalInsertions}</span>
             </Show>
             <Show when={status()!.totalDeletions > 0}>
-              <span class="text-red-400">-{status()!.totalDeletions}</span>
+              <span class="text-red-400 shrink-0">-{status()!.totalDeletions}</span>
             </Show>
           </Show>
         </div>
 
-        {(() => {
-          const s = status()
-          if (!s || s.files.length === 0) return null
-          return (
-            <GitActions
-              taskId={props.taskId}
-              sessionId={props.sessionId}
-              isRunning={props.isRunning}
-              fileCount={s.files.length}
-            />
-          )
-        })()}
+        <GitActions
+          taskId={props.taskId}
+          sessionId={props.sessionId}
+          isRunning={props.isRunning}
+          fileCount={uncommittedCount()}
+        />
       </div>
 
       {/* Formatting toolbar */}
@@ -293,8 +363,12 @@ export const CodeChanges: Component<Props> = (props) => {
       <div class="flex-1 overflow-auto">
         <Show when={status()?.files.length === 0 && !loading()}>
           <div class="px-4 py-10 text-center">
-            <p class="text-sm text-text-muted mb-1">No changes yet</p>
-            <p class="text-xs text-text-dim">File modifications will appear here as Claude works.</p>
+            <p class="text-sm text-text-muted mb-1">
+              {selectedCommit() ? 'No files in this commit' : 'No changes yet'}
+            </p>
+            <Show when={!selectedCommit()}>
+              <p class="text-xs text-text-dim">File modifications will appear here as Claude works.</p>
+            </Show>
           </div>
         </Show>
 
@@ -359,6 +433,70 @@ export const CodeChanges: Component<Props> = (props) => {
             )
           }}
         </For>
+      </div>
+
+      {/* Commits panel — collapsible, bottom-aligned like VS Code */}
+      <div class="shrink-0 border-t border-border-subtle">
+        {/* Commits header — always visible */}
+        <button
+          class="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-surface-2 transition-colors"
+          onClick={toggleCommitsPanel}
+        >
+          <span class="text-text-dim shrink-0">
+            {commitsOpen() ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </span>
+          <GitCommit size={12} class="text-text-dim shrink-0" />
+          <span class="font-medium text-text-secondary">Commits</span>
+          <Show when={commits().length > 0}>
+            <span class="px-1.5 py-0.5 rounded bg-surface-3 text-text-dim text-[10px]">
+              {commits().length}
+            </span>
+          </Show>
+        </button>
+
+        {/* Commits list */}
+        <Show when={commitsOpen()}>
+          <div class="max-h-48 overflow-auto">
+            {/* Uncommitted changes tile */}
+            <button
+              class={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors ${
+                selectedCommit() === null
+                  ? 'bg-accent-muted text-accent-hover'
+                  : 'hover:bg-surface-2 text-text-secondary'
+              }`}
+              onClick={() => selectCommit(null)}
+            >
+              <Circle size={11} class={`shrink-0 ${uncommittedCount() > 0 ? 'text-amber-400' : 'text-text-dim'}`} />
+              <span class="truncate flex-1 text-left">Uncommitted changes</span>
+              <Show when={uncommittedCount() > 0}>
+                <span class="text-[10px] text-text-dim shrink-0">{uncommittedCount()} file{uncommittedCount() !== 1 ? 's' : ''}</span>
+              </Show>
+            </button>
+
+            <For each={commits()}>
+              {(commit) => (
+                <button
+                  class={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors ${
+                    selectedCommit() === commit.hash
+                      ? 'bg-accent-muted text-accent-hover'
+                      : 'hover:bg-surface-2 text-text-secondary'
+                  }`}
+                  onClick={() => selectCommit(commit.hash)}
+                >
+                  <span class="font-mono text-text-dim text-[10px] shrink-0">{commit.shortHash}</span>
+                  <span class="truncate flex-1 text-left">{commit.message}</span>
+                  <span class="text-[10px] text-text-dim shrink-0">{formatTime(commit.timestamp)}</span>
+                </button>
+              )}
+            </For>
+
+            <Show when={commits().length === 0 && !loading()}>
+              <div class="px-3 py-3 text-[11px] text-text-dim text-center">
+                No commits on this branch yet
+              </div>
+            </Show>
+          </div>
+        </Show>
       </div>
     </div>
   )

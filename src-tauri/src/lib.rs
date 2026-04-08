@@ -3,6 +3,7 @@ mod git_ops;
 mod github;
 mod ipc;
 mod policy;
+mod pty;
 mod stream;
 mod task;
 mod worktree;
@@ -25,6 +26,7 @@ pub fn run() {
         .manage(task::new_active_map())
         .manage(task::new_pending_approvals())
         .manage(task::new_pending_approval_meta())
+        .manage(pty::new_active_pty_map())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
                 std::io::Error::other(format!("Failed to get app data dir: {e}"))
@@ -93,6 +95,10 @@ pub fn run() {
             ipc::git_push,
             ipc::git_pull,
             ipc::git_commit_and_push,
+            // Branch commits
+            ipc::get_branch_commits,
+            ipc::get_commit_files,
+            ipc::get_commit_file_diff,
             // GitHub
             ipc::check_github,
             ipc::create_pull_request,
@@ -101,6 +107,13 @@ pub fn run() {
             ipc::get_ci_checks,
             ipc::get_branch_url,
             ipc::has_conflicts,
+            // PTY / Terminal
+            ipc::pty_spawn,
+            ipc::pty_write,
+            ipc::pty_resize,
+            ipc::pty_close,
+            // Clipboard
+            ipc::read_clipboard,
             // Utility
             ipc::list_claude_skills,
             ipc::check_claude,

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult } from '../types'
 
 // Projects
 export const addProject = (repoPath: string) =>
@@ -94,6 +94,15 @@ export const getFileDiff = (taskId: string, filePath: string, contextLines?: num
 export const getFileContext = (taskId: string, filePath: string, startLine: number, endLine: number, version: 'old' | 'new') =>
   invoke<string[]>('get_file_context', { taskId, filePath, startLine, endLine, version })
 
+export const getBranchCommits = (taskId: string) =>
+  invoke<BranchCommit[]>('get_branch_commits', { taskId })
+
+export const getCommitFiles = (taskId: string, commitHash: string) =>
+  invoke<GitStatus>('get_commit_files', { taskId, commitHash })
+
+export const getCommitFileDiff = (taskId: string, commitHash: string, filePath: string, contextLines?: number, ignoreWhitespace?: boolean) =>
+  invoke<FileDiff>('get_commit_file_diff', { taskId, commitHash, filePath, contextLines, ignoreWhitespace })
+
 export const gitStage = (taskId: string, paths: string[]) =>
   invoke<void>('git_stage', { taskId, paths })
 
@@ -146,3 +155,20 @@ export const openInFinder = (path: string) =>
 
 export const openInApp = (path: string, app: string) =>
   invoke<void>('open_in_app', { path, app })
+
+// PTY / Terminal
+export const ptySpawn = (taskId: string, rows: number, cols: number) =>
+  invoke<PtySpawnResult>('pty_spawn', { taskId, rows, cols })
+
+export const ptyWrite = (terminalId: string, data: string) =>
+  invoke<void>('pty_write', { terminalId, data })
+
+export const ptyResize = (terminalId: string, rows: number, cols: number) =>
+  invoke<void>('pty_resize', { terminalId, rows, cols })
+
+export const ptyClose = (terminalId: string) =>
+  invoke<void>('pty_close', { terminalId })
+
+// Clipboard
+export const readClipboard = () =>
+  invoke<string>('read_clipboard')
