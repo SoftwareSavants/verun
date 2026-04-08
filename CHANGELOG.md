@@ -4,6 +4,11 @@
 
 ### Changes
 
+- Integrated terminal with PTY backend and per-task shell sessions
+- Branch commits panel — view and diff individual commits
+- Git actions overhaul with PR caching and commit count awareness
+- Thinking and fast mode toggles, per-task input state
+- Model selection scoped per task instead of per session
 - Fix release workflow changelog extraction
 
 ## 0.1.1 — 2026-04-08
