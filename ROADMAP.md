@@ -24,7 +24,10 @@
 - [X] Interrupt not working
 - [-] Keep state of tasks when switching between them
 - [ ] Need an unread/attention required indicator on tasks in sidebar
+- [ ] Time of turn/run
+- [ ] Fork task/session
 - [ ] Mention files
+- [ ] Deleting/archiving a task needs aloading
 - [ ] Keybindings
 - [ ] Micro animations
 
@@ -54,15 +57,15 @@
 
 ## Settings
 
-- [ ] Wrap lines in code changes by default
-- [ ] Hide whitespace by default
+- [X] Wrap lines in code changes by default
+- [X] Hide whitespace by default
 
 ## Code Tools
 
 - [ ] File tree
 - [ ] Code editor/viewer
 - [ ] Code linting/server
-- [ ] Integrated terminal
+- [X] Integrated terminal
 
 ## Usage & Billing
 
