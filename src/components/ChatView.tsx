@@ -437,11 +437,12 @@ export const ChatView: Component<Props> = (props) => {
                       class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
                       innerHTML={renderMarkdown(block.text)}
                     />
-                    <Show when={props.sessionStatus !== 'running'}>
-                      <div class="opacity-0 group-hover:opacity-100 transition-opacity mt-0.5">
-                        <CopyButton text={block.text} />
-                      </div>
-                    </Show>
+                    <div
+                      class="opacity-0 transition-opacity mt-0.5"
+                      classList={{ 'group-hover:opacity-100': props.sessionStatus !== 'running' }}
+                    >
+                      <CopyButton text={block.text} />
+                    </div>
                   </div>
                 )
               case 'thinking':
