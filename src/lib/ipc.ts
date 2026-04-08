@@ -79,7 +79,7 @@ export const mergeBranch = (taskId: string, targetBranch: string) =>
   invoke<void>('merge_branch', { taskId, targetBranch })
 
 export const getBranchStatus = (taskId: string) =>
-  invoke<[number, number]>('get_branch_status', { taskId })
+  invoke<[number, number, number]>('get_branch_status', { taskId })
 
 export const getRepoInfo = (path: string) =>
   invoke<RepoInfo>('get_repo_info', { path })
@@ -178,3 +178,7 @@ export const ptyClose = (terminalId: string) =>
 // Clipboard
 export const readClipboard = () =>
   invoke<string>('read_clipboard')
+
+// App lifecycle
+export const quitApp = () =>
+  invoke<void>('quit_app')

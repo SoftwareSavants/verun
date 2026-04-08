@@ -481,33 +481,47 @@ pub struct BranchCommit {
     pub deletions: u32,
 }
 
+/// Compute the merge-base SHA between HEAD and the base branch.
+/// Prefers `origin/<base>`, falls back to local `<base>`.
+/// Returns `None` if no merge-base can be found.
+pub fn find_merge_base(worktree_path: &str, base_branch: &str) -> Option<String> {
+    let remote = format!("origin/{base_branch}");
+    let remote_out = git(worktree_path)
+        .args(["merge-base", &remote, "HEAD"])
+        .output()
+        .ok()?;
+
+    if remote_out.status.success() {
+        return Some(String::from_utf8_lossy(&remote_out.stdout).trim().to_string());
+    }
+
+    let local = git(worktree_path)
+        .args(["merge-base", base_branch, "HEAD"])
+        .output()
+        .ok()?;
+
+    if local.status.success() {
+        Some(String::from_utf8_lossy(&local.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
 /// List commits on the current branch that are not on the base branch.
-pub fn get_branch_commits(worktree_path: &str, base_branch: &str) -> Result<Vec<BranchCommit>, String> {
-    // Prefer origin/<base> (most up-to-date), fall back to local branch name
-    let base_ref = {
-        let remote = format!("origin/{base_branch}");
-        let remote_out = git(worktree_path)
-            .args(["merge-base", &remote, "HEAD"])
-            .output()
-            .map_err(|e| format!("Failed to find merge base: {e}"))?;
-
-        if remote_out.status.success() {
-            String::from_utf8_lossy(&remote_out.stdout).trim().to_string()
-        } else {
-            let local = git(worktree_path)
-                .args(["merge-base", base_branch, "HEAD"])
-                .output()
-                .map_err(|e| format!("Failed to find merge base: {e}"))?;
-
-            if local.status.success() {
-                String::from_utf8_lossy(&local.stdout).trim().to_string()
-            } else {
-                return get_all_commits(worktree_path);
-            }
-        }
+/// If `cached_merge_base` is provided, uses that instead of recomputing
+/// (important for merged branches where the live merge-base shifts to HEAD).
+pub fn get_branch_commits(
+    worktree_path: &str,
+    base_branch: &str,
+    cached_merge_base: Option<&str>,
+) -> Result<Vec<BranchCommit>, String> {
+    let merge_base = match cached_merge_base {
+        Some(sha) => sha.to_string(),
+        None => match find_merge_base(worktree_path, base_branch) {
+            Some(sha) => sha,
+            None => return get_all_commits(worktree_path),
+        },
     };
-
-    let merge_base = base_ref;
 
     let output = git(worktree_path)
         .args([

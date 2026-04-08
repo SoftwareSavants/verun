@@ -225,16 +225,27 @@ pub fn merge_branch(repo_path: &str, source_branch: &str, target_branch: &str) -
     Ok(())
 }
 
-/// Get ahead/behind counts for a worktree branch relative to its upstream or main.
-/// Returns (ahead, behind).
-/// Returns (ahead, behind) where both are relative to the base branch (origin/main):
-/// - ahead = commits on this branch not in the base — used for push/PR indicators
-/// - behind = commits on the base not in this branch — needs rebase/pull before PR
-pub fn get_branch_status(worktree_path: &str) -> Result<(u32, u32), String> {
+/// Get ahead/behind counts for a worktree branch.
+/// Returns (ahead_of_base, behind_base, unpushed):
+/// - ahead_of_base = commits on this branch not in origin/main — for PR indicators
+/// - behind_base = commits on origin/main not in this branch — needs rebase
+/// - unpushed = commits on this branch not pushed to origin/<branch> — for push button
+pub fn get_branch_status(worktree_path: &str) -> Result<(u32, u32, u32), String> {
     let current = get_current_branch(worktree_path)?;
     let base_ref = find_compare_ref(worktree_path, &current)?;
     let (behind, ahead) = rev_list_left_right(worktree_path, &base_ref, &current);
-    Ok((ahead, behind))
+
+    // Check unpushed commits against origin/<branch>
+    let tracking = format!("origin/{current}");
+    let unpushed = if ref_exists(worktree_path, &tracking) {
+        let (_, u) = rev_list_left_right(worktree_path, &tracking, &current);
+        u
+    } else {
+        // No remote tracking branch yet — everything is unpushed
+        ahead
+    };
+
+    Ok((ahead, behind, unpushed))
 }
 
 fn get_current_branch(worktree_path: &str) -> Result<String, String> {
@@ -458,7 +469,7 @@ mod tests {
         let (_dir, repo_path) = init_test_repo();
         let wt_path = create_worktree(&repo_path, "status-test", "main").unwrap();
 
-        let (ahead, behind) = get_branch_status(&wt_path).unwrap();
+        let (ahead, behind, _unpushed) = get_branch_status(&wt_path).unwrap();
         assert_eq!(ahead, 0);
         assert_eq!(behind, 0);
     }
@@ -472,7 +483,7 @@ mod tests {
         git(&wt_path).args(["add", "."]).output().unwrap();
         git(&wt_path).args(["commit", "-m", "ahead"]).output().unwrap();
 
-        let (ahead, behind) = get_branch_status(&wt_path).unwrap();
+        let (ahead, behind, _unpushed) = get_branch_status(&wt_path).unwrap();
         assert_eq!(ahead, 1);
         assert_eq!(behind, 0);
     }
@@ -488,7 +499,7 @@ mod tests {
         git(&repo_path).args(["add", "."]).output().unwrap();
         git(&repo_path).args(["commit", "-m", "main change"]).output().unwrap();
 
-        let (ahead, behind) = get_branch_status(&wt_path).unwrap();
+        let (ahead, behind, _unpushed) = get_branch_status(&wt_path).unwrap();
         assert_eq!(behind, 1, "should be 1 behind main");
         assert_eq!(ahead, 0);
     }
@@ -552,7 +563,7 @@ mod tests {
         // Fetch in original clone so it sees the new origin/main
         git(&clone_path).args(["fetch"]).output().unwrap();
 
-        let (ahead, behind) = get_branch_status(&clone_path).unwrap();
+        let (ahead, behind, _unpushed) = get_branch_status(&clone_path).unwrap();
         assert_eq!(ahead, 1, "should be 1 ahead of origin/main");
         assert_eq!(behind, 1, "should be 1 behind origin/main");
     }
@@ -567,7 +578,7 @@ mod tests {
         git(&clone_path).args(["add", "."]).output().unwrap();
         git(&clone_path).args(["commit", "-m", "commit"]).output().unwrap();
 
-        let (ahead, behind) = get_branch_status(&clone_path).unwrap();
+        let (ahead, behind, _unpushed) = get_branch_status(&clone_path).unwrap();
         assert_eq!(ahead, 1, "should be 1 ahead of origin/main");
         assert_eq!(behind, 0, "should not be behind when main hasn't changed");
     }

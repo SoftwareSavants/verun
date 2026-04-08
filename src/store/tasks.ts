@@ -53,6 +53,7 @@ export function startTaskCreation(projectId: string, baseBranch: string): string
     worktreePath: '',
     branch: 'setting up…',
     createdAt: now,
+    mergeBaseSha: null,
   }
 
   setTasks(produce(t => t.unshift(placeholder)))

@@ -15,6 +15,7 @@ export interface Task {
   worktreePath: string
   branch: string
   createdAt: number
+  mergeBaseSha: string | null
 }
 
 export interface Session {

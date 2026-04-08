@@ -136,6 +136,7 @@ pub async fn create_task(
         worktree_path,
         branch,
         created_at: now,
+        merge_base_sha: None,
     };
 
     db_tx

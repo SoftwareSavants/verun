@@ -83,6 +83,12 @@ pub fn migrations() -> Vec<Migration> {
         description: "add base_branch to projects",
         sql: "ALTER TABLE projects ADD COLUMN base_branch TEXT NOT NULL DEFAULT 'main';",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 4,
+        description: "add merge_base_sha to tasks",
+        sql: "ALTER TABLE tasks ADD COLUMN merge_base_sha TEXT;",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -109,6 +115,7 @@ pub struct Task {
     pub worktree_path: String,
     pub branch: String,
     pub created_at: i64,
+    pub merge_base_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -159,6 +166,7 @@ pub enum DbWrite {
     // Tasks
     InsertTask(Task),
     UpdateTaskName { id: String, name: String },
+    SetMergeBaseSha { id: String, sha: String },
     DeleteTask { id: String },
 
     // Sessions
@@ -272,6 +280,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         DbWrite::UpdateTaskName { id, name } => {
             sqlx::query("UPDATE tasks SET name = ? WHERE id = ?")
                 .bind(&name)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        DbWrite::SetMergeBaseSha { id, sha } => {
+            sqlx::query("UPDATE tasks SET merge_base_sha = ? WHERE id = ?")
+                .bind(&sha)
                 .bind(&id)
                 .execute(pool)
                 .await?;
@@ -561,12 +576,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_three_migrations() {
+    fn has_four_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 3);
+        assert_eq!(m.len(), 4);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
+        assert_eq!(m[3].version, 4);
     }
 
     #[test]
@@ -601,6 +617,7 @@ mod tests {
             worktree_path: "/tmp/myapp/../.verun/worktrees/silly-penguin".into(),
             branch: "silly-penguin".into(),
             created_at: 2000,
+            merge_base_sha: None,
         }
     }
 

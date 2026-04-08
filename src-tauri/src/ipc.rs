@@ -436,7 +436,7 @@ pub async fn merge_branch(
 pub async fn get_branch_status(
     pool: State<'_, SqlitePool>,
     task_id: String,
-) -> Result<(u32, u32), String> {
+) -> Result<(u32, u32, u32), String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
@@ -680,6 +680,7 @@ pub async fn git_commit_and_push(
 #[tauri::command]
 pub async fn get_branch_commits(
     pool: State<'_, SqlitePool>,
+    db_tx: State<'_, db::DbWriteTx>,
     task_id: String,
 ) -> Result<Vec<git_ops::BranchCommit>, String> {
     let t = db::get_task(pool.inner(), &task_id)
@@ -690,10 +691,34 @@ pub async fn get_branch_commits(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
-    let base = project.base_branch;
+    let base = project.base_branch.clone();
+    let cached = t.merge_base_sha.clone();
+    let wt = t.worktree_path.clone();
+    let tid = t.id.clone();
+    let tx = db_tx.inner().clone();
+
     flatten_join(
-        tokio::task::spawn_blocking(move || git_ops::get_branch_commits(&t.worktree_path, &base))
-            .await,
+        tokio::task::spawn_blocking(move || {
+            // Compute + cache merge base on first call so it survives PR merges
+            let merge_base = match cached {
+                Some(ref sha) => sha.clone(),
+                None => {
+                    let sha = git_ops::find_merge_base(&wt, &base)
+                        .unwrap_or_default();
+                    if !sha.is_empty() {
+                        let _ = tx.try_send(db::DbWrite::SetMergeBaseSha {
+                            id: tid,
+                            sha: sha.clone(),
+                        });
+                    }
+                    sha
+                }
+            };
+
+            let cached_ref = if merge_base.is_empty() { None } else { Some(merge_base.as_str()) };
+            git_ops::get_branch_commits(&wt, &base, cached_ref)
+        })
+        .await,
     )
 }
 
@@ -1044,6 +1069,11 @@ pub async fn open_in_app(path: String, app: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Failed to open {app}: {e}"))?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn quit_app() {
+    std::process::exit(0);
 }
 
 #[cfg(test)]

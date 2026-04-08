@@ -31,8 +31,8 @@ export const GitActions: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [pr, setPr] = createSignal<PrInfo | null>(null)
   const [checks, setChecks] = createSignal<CiCheck[]>([])
-  const [ahead, setAhead] = createSignal(0)
   const [behind, setBehind] = createSignal(0)
+  const [unpushed, setUnpushed] = createSignal(0)
   const [confirming, setConfirming] = createSignal<string | null>(null)
   const [actionLoading, setActionLoading] = createSignal(false)
 
@@ -62,10 +62,10 @@ export const GitActions: Component<Props> = (props) => {
     // Fast local calls — always await
     const [, branchStatus] = await Promise.all([
       ipc.checkGithub(taskId).catch(() => null),
-      ipc.getBranchStatus(taskId).catch(() => [0, 0] as [number, number]),
+      ipc.getBranchStatus(taskId).catch(() => [0, 0, 0] as [number, number, number]),
     ])
-    setAhead(branchStatus?.[0] ?? 0)
     setBehind(branchStatus?.[1] ?? 0)
+    setUnpushed(branchStatus?.[2] ?? 0)
 
     // Slow gh CLI call — await if forced (after actions), background otherwise
     if (forcePrRefresh || !cached || Date.now() - cached.at > PR_CACHE_TTL) {
@@ -82,8 +82,8 @@ export const GitActions: Component<Props> = (props) => {
     const cached = prCache.get(props.taskId)
     setPr(cached?.pr ?? null)
     setChecks(cached?.checks ?? [])
-    setAhead(0)
     setBehind(0)
+    setUnpushed(0)
     setOpen(false)
     setConfirming(null)
     refresh()
@@ -179,7 +179,7 @@ export const GitActions: Component<Props> = (props) => {
     return null
   }
 
-  const hasLocalChanges = () => props.fileCount > 0 || ahead() > 0
+  const hasLocalChanges = () => props.fileCount > 0 || unpushed() > 0
   const localClean = () => !hasLocalChanges()
 
   const pushAction = (): GitAction =>

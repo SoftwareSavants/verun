@@ -1,7 +1,9 @@
 import { Component, onMount, createSignal } from 'solid-js'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { listen } from '@tauri-apps/api/event'
 import { Layout } from './components/Layout'
 import { SelectionMenu } from './components/SelectionMenu'
+import { ConfirmDialog } from './components/ConfirmDialog'
 import { ToastContainer } from './components/ToastContainer'
 import { initTheme } from './lib/theme'
 import { loadProjects } from './store/projects'
@@ -13,8 +15,11 @@ import { addToast } from './store/ui'
 
 const App: Component = () => {
   const [selMenu, setSelMenu] = createSignal<{ x: number; y: number; text: string } | null>(null)
+  const [showQuitConfirm, setShowQuitConfirm] = createSignal(false)
 
   onMount(async () => {
+    // Listen for quit confirmation request from backend (CMD+Q)
+    listen('confirm-quit', () => setShowQuitConfirm(true))
     initTheme()
     // Replace default context menu with custom selection menu
     document.addEventListener('contextmenu', (e) => {
@@ -72,6 +77,15 @@ const App: Component = () => {
       <SelectionMenu
         pos={selMenu()}
         onClose={() => setSelMenu(null)}
+      />
+      <ConfirmDialog
+        open={showQuitConfirm()}
+        title="Quit Verun?"
+        message="Any running sessions will be stopped."
+        confirmLabel="Quit"
+        danger
+        onConfirm={() => ipc.quitApp()}
+        onCancel={() => setShowQuitConfirm(false)}
       />
     </>
   )

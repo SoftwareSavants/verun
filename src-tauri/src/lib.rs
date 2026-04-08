@@ -8,7 +8,8 @@ mod stream;
 mod task;
 mod worktree;
 
-use tauri::Manager;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_sql::Builder as SqlBuilder;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -28,6 +29,41 @@ pub fn run() {
         .manage(task::new_pending_approval_meta())
         .manage(pty::new_active_pty_map())
         .setup(|app| {
+            // Custom macOS menu — replaces default so we control Quit behavior
+            let quit_item = MenuItemBuilder::with_id("quit", "Quit Verun")
+                .accelerator("CmdOrCtrl+Q")
+                .build(app)?;
+            let app_menu = SubmenuBuilder::new(app, "Verun")
+                .item(&PredefinedMenuItem::about(app, Some("About Verun"), None)?)
+                .separator()
+                .item(&PredefinedMenuItem::services(app, None)?)
+                .separator()
+                .item(&PredefinedMenuItem::hide(app, None)?)
+                .item(&PredefinedMenuItem::hide_others(app, None)?)
+                .item(&PredefinedMenuItem::show_all(app, None)?)
+                .separator()
+                .item(&quit_item)
+                .build()?;
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .undo()
+                .redo()
+                .separator()
+                .cut()
+                .copy()
+                .paste()
+                .select_all()
+                .build()?;
+            let window_menu = SubmenuBuilder::new(app, "Window")
+                .minimize()
+                .item(&PredefinedMenuItem::fullscreen(app, None)?)
+                .build()?;
+            let menu = MenuBuilder::new(app)
+                .item(&app_menu)
+                .item(&edit_menu)
+                .item(&window_menu)
+                .build()?;
+            app.set_menu(menu)?;
+
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
                 std::io::Error::other(format!("Failed to get app data dir: {e}"))
             })?;
@@ -52,6 +88,18 @@ pub fn run() {
             });
 
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == "quit" {
+                let _ = app.emit("confirm-quit", ());
+            }
+        })
+        .on_window_event(|window, event| {
+            // CMD+W: hide the window instead of closing the app
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             // Projects
@@ -122,7 +170,23 @@ pub fn run() {
             ipc::read_text_file,
             ipc::open_in_finder,
             ipc::open_in_app,
+            ipc::quit_app,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Verun");
+        .build(tauri::generate_context!())
+        .expect("error while building Verun")
+        .run(|app_handle, event| match event {
+            // Dock icon click: show the hidden window
+            RunEvent::Reopen { .. } => {
+                if let Some(w) = app_handle.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            // CMD+Q: intercept and ask frontend for confirmation
+            RunEvent::ExitRequested { api, .. } => {
+                api.prevent_exit();
+                let _ = app_handle.emit("confirm-quit", ());
+            }
+            _ => {}
+        });
 }
