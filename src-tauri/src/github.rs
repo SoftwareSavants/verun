@@ -21,6 +21,7 @@ pub struct PrInfo {
     pub state: String,
     pub title: String,
     pub mergeable: String,
+    pub is_draft: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +108,7 @@ fn parse_github_url(url: &str) -> Result<Option<GitHubRepo>, String> {
 /// Get the PR for the current branch (if one exists).
 pub fn get_pr_for_branch(worktree_path: &str) -> Result<Option<PrInfo>, String> {
     let output = gh(worktree_path)
-        .args(["pr", "view", "--json", "number,url,state,title,mergeable"])
+        .args(["pr", "view", "--json", "number,url,state,title,mergeable,isDraft"])
         .output()
         .map_err(|e| format!("Failed to check PR: {e}"))?;
 
@@ -129,6 +130,7 @@ pub fn get_pr_for_branch(worktree_path: &str) -> Result<Option<PrInfo>, String> 
         state: json["state"].as_str().unwrap_or("").to_string(),
         title: json["title"].as_str().unwrap_or("").to_string(),
         mergeable: json["mergeable"].as_str().unwrap_or("UNKNOWN").to_string(),
+        is_draft: json["isDraft"].as_bool().unwrap_or(false),
     }))
 }
 
@@ -181,7 +183,42 @@ pub fn create_pr(
         state: "OPEN".to_string(),
         title: title.to_string(),
         mergeable: "UNKNOWN".to_string(),
+        is_draft: false,
     })
+}
+
+/// Mark a draft PR as ready for review.
+pub fn mark_pr_ready(worktree_path: &str) -> Result<(), String> {
+    check_gh_installed()?;
+
+    let output = gh(worktree_path)
+        .args(["pr", "ready"])
+        .output()
+        .map_err(|e| format!("Failed to mark PR ready: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh pr ready failed: {stderr}"));
+    }
+
+    Ok(())
+}
+
+/// Merge the PR for the current branch.
+pub fn merge_pr(worktree_path: &str) -> Result<(), String> {
+    check_gh_installed()?;
+
+    let output = gh(worktree_path)
+        .args(["pr", "merge", "--merge", "--delete-branch"])
+        .output()
+        .map_err(|e| format!("Failed to merge PR: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh pr merge failed: {stderr}"));
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

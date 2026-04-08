@@ -102,6 +102,8 @@ pub fn run() {
             // GitHub
             ipc::check_github,
             ipc::create_pull_request,
+            ipc::mark_pr_ready,
+            ipc::merge_pull_request,
             ipc::get_pull_request,
             ipc::git_ship,
             ipc::get_ci_checks,

@@ -483,18 +483,31 @@ pub struct BranchCommit {
 
 /// List commits on the current branch that are not on the base branch.
 pub fn get_branch_commits(worktree_path: &str, base_branch: &str) -> Result<Vec<BranchCommit>, String> {
-    // Use merge-base to find the fork point
-    let base_output = git(worktree_path)
-        .args(["merge-base", base_branch, "HEAD"])
-        .output()
-        .map_err(|e| format!("Failed to find merge base: {e}"))?;
+    // Prefer origin/<base> (most up-to-date), fall back to local branch name
+    let base_ref = {
+        let remote = format!("origin/{base_branch}");
+        let remote_out = git(worktree_path)
+            .args(["merge-base", &remote, "HEAD"])
+            .output()
+            .map_err(|e| format!("Failed to find merge base: {e}"))?;
 
-    if !base_output.status.success() {
-        // No common ancestor — return all commits
-        return get_all_commits(worktree_path);
-    }
+        if remote_out.status.success() {
+            String::from_utf8_lossy(&remote_out.stdout).trim().to_string()
+        } else {
+            let local = git(worktree_path)
+                .args(["merge-base", base_branch, "HEAD"])
+                .output()
+                .map_err(|e| format!("Failed to find merge base: {e}"))?;
 
-    let merge_base = String::from_utf8_lossy(&base_output.stdout).trim().to_string();
+            if local.status.success() {
+                String::from_utf8_lossy(&local.stdout).trim().to_string()
+            } else {
+                return get_all_commits(worktree_path);
+            }
+        }
+    };
+
+    let merge_base = base_ref;
 
     let output = git(worktree_path)
         .args([

@@ -227,8 +227,17 @@ pub fn merge_branch(repo_path: &str, source_branch: &str, target_branch: &str) -
 
 /// Get ahead/behind counts for a worktree branch relative to its upstream or main.
 /// Returns (ahead, behind).
+/// Returns (ahead, behind) where both are relative to the base branch (origin/main):
+/// - ahead = commits on this branch not in the base — used for push/PR indicators
+/// - behind = commits on the base not in this branch — needs rebase/pull before PR
 pub fn get_branch_status(worktree_path: &str) -> Result<(u32, u32), String> {
-    // Figure out the current branch
+    let current = get_current_branch(worktree_path)?;
+    let base_ref = find_compare_ref(worktree_path, &current)?;
+    let (behind, ahead) = rev_list_left_right(worktree_path, &base_ref, &current);
+    Ok((ahead, behind))
+}
+
+fn get_current_branch(worktree_path: &str) -> Result<String, String> {
     let output = git(worktree_path)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
@@ -238,62 +247,50 @@ pub fn get_branch_status(worktree_path: &str) -> Result<(u32, u32), String> {
         return Err("Not on a branch".to_string());
     }
 
-    let current = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
 
-    // Try upstream first, fall back to main/master
-    let compare_ref = find_compare_ref(worktree_path, &current)?;
-
-    let output = git(worktree_path)
-        .args(["rev-list", "--left-right", "--count", &format!("{compare_ref}...{current}")])
+fn ref_exists(worktree_path: &str, refname: &str) -> bool {
+    git(worktree_path)
+        .args(["rev-parse", "--verify", "--quiet", refname])
         .output()
-        .map_err(|e| format!("Failed to get branch status: {e}"))?;
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
 
-    if !output.status.success() {
-        return Ok((0, 0)); // Can't compare, likely no common ancestor
-    }
+/// Returns (left_count, right_count) from `git rev-list --left-right --count left...right`
+fn rev_list_left_right(worktree_path: &str, left: &str, right: &str) -> (u32, u32) {
+    let output = git(worktree_path)
+        .args(["rev-list", "--left-right", "--count", &format!("{left}...{right}")])
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return (0, 0),
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parts: Vec<&str> = stdout.trim().split('\t').collect();
     if parts.len() != 2 {
-        return Ok((0, 0));
+        return (0, 0);
     }
 
-    let behind = parts[0].parse::<u32>().unwrap_or(0);
-    let ahead = parts[1].parse::<u32>().unwrap_or(0);
-
-    Ok((ahead, behind))
+    (
+        parts[0].parse().unwrap_or(0),
+        parts[1].parse().unwrap_or(0),
+    )
 }
 
-/// Find the best ref to compare against: upstream tracking branch, or main/master.
-fn find_compare_ref(worktree_path: &str, current_branch: &str) -> Result<String, String> {
-    // Check for upstream tracking branch
-    let output = git(worktree_path)
-        .args(["config", &format!("branch.{current_branch}.merge")])
-        .output();
-
-    if let Ok(out) = output {
-        if out.status.success() {
-            let upstream = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !upstream.is_empty() {
-                return Ok(upstream);
-            }
+/// Find the base branch (main/master) to compare ahead count against.
+fn find_compare_ref(worktree_path: &str, _current_branch: &str) -> Result<String, String> {
+    // Try origin/main, origin/master first (most up-to-date)
+    for candidate in ["origin/main", "origin/master", "main", "master"] {
+        if ref_exists(worktree_path, candidate) {
+            return Ok(candidate.to_string());
         }
     }
 
-    // Fall back to main or master
-    for candidate in ["main", "master"] {
-        let output = git(worktree_path)
-            .args(["rev-parse", "--verify", candidate])
-            .output();
-
-        if let Ok(out) = output {
-            if out.status.success() {
-                return Ok(candidate.to_string());
-            }
-        }
-    }
-
-    Err("No upstream or main/master branch found".to_string())
+    Err("No main/master branch found".to_string())
 }
 
 #[cfg(test)]
@@ -478,5 +475,100 @@ mod tests {
         let (ahead, behind) = get_branch_status(&wt_path).unwrap();
         assert_eq!(ahead, 1);
         assert_eq!(behind, 0);
+    }
+
+    #[test]
+    fn branch_status_behind_when_main_has_new_commits() {
+        // When main advances, the branch should report as behind
+        let (_dir, repo_path) = init_test_repo();
+        let wt_path = create_worktree(&repo_path, "behind-main-test", "main").unwrap();
+
+        // Make a commit on main
+        fs::write(format!("{repo_path}/main-change.txt"), "main").unwrap();
+        git(&repo_path).args(["add", "."]).output().unwrap();
+        git(&repo_path).args(["commit", "-m", "main change"]).output().unwrap();
+
+        let (ahead, behind) = get_branch_status(&wt_path).unwrap();
+        assert_eq!(behind, 1, "should be 1 behind main");
+        assert_eq!(ahead, 0);
+    }
+
+    /// Helper: create a bare "remote" repo, clone it, and return (tempdir, clone_path)
+    fn init_test_repo_with_remote() -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create bare remote
+        let bare_path = dir.path().join("remote.git");
+        fs::create_dir(&bare_path).unwrap();
+        git(bare_path.to_str().unwrap()).args(["init", "--bare"]).output().unwrap();
+
+        // Clone it
+        let clone_path = dir.path().join("clone");
+        std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["clone", bare_path.to_str().unwrap(), clone_path.to_str().unwrap()])
+            .output()
+            .unwrap();
+
+        let cp = clone_path.to_str().unwrap();
+        git(cp).args(["config", "user.email", "test@test.com"]).output().unwrap();
+        git(cp).args(["config", "user.name", "Test"]).output().unwrap();
+
+        // Initial commit + push
+        fs::write(clone_path.join("README.md"), "# test").unwrap();
+        git(cp).args(["add", "."]).output().unwrap();
+        git(cp).args(["commit", "-m", "init"]).output().unwrap();
+        git(cp).args(["push", "-u", "origin", "main"]).output().unwrap();
+
+        let bp = bare_path.to_str().unwrap().to_string();
+        (dir, cp.to_string(), bp)
+    }
+
+    #[test]
+    fn branch_status_behind_origin_main() {
+        let (_dir, clone_path, bare_path) = init_test_repo_with_remote();
+
+        // Create a feature branch
+        git(&clone_path).args(["checkout", "-b", "feature"]).output().unwrap();
+        fs::write(format!("{clone_path}/feature.txt"), "feat").unwrap();
+        git(&clone_path).args(["add", "."]).output().unwrap();
+        git(&clone_path).args(["commit", "-m", "feature commit"]).output().unwrap();
+
+        // Simulate someone else pushing to origin/main
+        let other_clone = _dir.path().join("other");
+        std::process::Command::new("git")
+            .current_dir(_dir.path())
+            .args(["clone", &bare_path, other_clone.to_str().unwrap()])
+            .output()
+            .unwrap();
+        let oc = other_clone.to_str().unwrap();
+        git(oc).args(["config", "user.email", "other@test.com"]).output().unwrap();
+        git(oc).args(["config", "user.name", "Other"]).output().unwrap();
+        fs::write(format!("{oc}/other.txt"), "other").unwrap();
+        git(oc).args(["add", "."]).output().unwrap();
+        git(oc).args(["commit", "-m", "main advance"]).output().unwrap();
+        git(oc).args(["push"]).output().unwrap();
+
+        // Fetch in original clone so it sees the new origin/main
+        git(&clone_path).args(["fetch"]).output().unwrap();
+
+        let (ahead, behind) = get_branch_status(&clone_path).unwrap();
+        assert_eq!(ahead, 1, "should be 1 ahead of origin/main");
+        assert_eq!(behind, 1, "should be 1 behind origin/main");
+    }
+
+    #[test]
+    fn branch_status_not_behind_when_main_unchanged() {
+        let (_dir, clone_path, _bare_path) = init_test_repo_with_remote();
+
+        // Create a branch — main hasn't changed so behind should be 0
+        git(&clone_path).args(["checkout", "-b", "up-to-date"]).output().unwrap();
+        fs::write(format!("{clone_path}/file.txt"), "content").unwrap();
+        git(&clone_path).args(["add", "."]).output().unwrap();
+        git(&clone_path).args(["commit", "-m", "commit"]).output().unwrap();
+
+        let (ahead, behind) = get_branch_status(&clone_path).unwrap();
+        assert_eq!(ahead, 1, "should be 1 ahead of origin/main");
+        assert_eq!(behind, 0, "should not be behind when main hasn't changed");
     }
 }

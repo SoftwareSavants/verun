@@ -201,6 +201,8 @@ pub async fn send_message(
     attachments: Option<Vec<task::Attachment>>,
     model: Option<String>,
     plan_mode: Option<bool>,
+    thinking_mode: Option<bool>,
+    fast_mode: Option<bool>,
 ) -> Result<(), String> {
     let session = db::get_session(pool.inner(), &session_id)
         .await?
@@ -231,6 +233,8 @@ pub async fn send_message(
             attachments: attachments.unwrap_or_default(),
             model,
             plan_mode: plan_mode.unwrap_or(false),
+            thinking_mode: thinking_mode.unwrap_or(false),
+            fast_mode: fast_mode.unwrap_or(false),
         },
     )
     .await
@@ -765,6 +769,34 @@ pub async fn create_pull_request(
             github::create_pr(&t.worktree_path, &title, &body, &base)
         })
         .await,
+    )
+}
+
+#[tauri::command]
+pub async fn mark_pr_ready(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::mark_pr_ready(&t.worktree_path)).await,
+    )
+}
+
+#[tauri::command]
+pub async fn merge_pull_request(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::merge_pr(&t.worktree_path)).await,
     )
 }
 

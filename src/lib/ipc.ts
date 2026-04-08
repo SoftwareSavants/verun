@@ -31,8 +31,8 @@ export const deleteTask = (id: string) =>
 export const createSession = (taskId: string) =>
   invoke<Session>('create_session', { taskId })
 
-export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean) =>
-  invoke<void>('send_message', { sessionId, message, attachments, model, planMode })
+export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) =>
+  invoke<void>('send_message', { sessionId, message, attachments, model, planMode, thinkingMode, fastMode })
 
 export const closeSession = (sessionId: string) =>
   invoke<void>('close_session', { sessionId })
@@ -130,6 +130,12 @@ export const createPullRequest = (taskId: string, title: string, body: string, b
 
 export const getPullRequest = (taskId: string) =>
   invoke<PrInfo | null>('get_pull_request', { taskId })
+
+export const markPrReady = (taskId: string) =>
+  invoke<void>('mark_pr_ready', { taskId })
+
+export const mergePullRequest = (taskId: string) =>
+  invoke<void>('merge_pull_request', { taskId })
 
 export const gitShip = (taskId: string, commitMessage: string, prTitle: string, prBody: string, base: string) =>
   invoke<PrInfo>('git_ship', { taskId, commitMessage, prTitle, prBody, base })

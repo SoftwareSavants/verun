@@ -55,6 +55,8 @@ export const NewTaskDialog: Component<Props> = (props) => {
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
         onClick={(e) => { if (e.target === e.currentTarget) props.onClose() }}
         onKeyDown={handleKeyDown}
+        tabIndex={-1}
+        ref={(el) => requestAnimationFrame(() => el.focus())}
       >
         <div class="bg-surface-2 border border-border rounded-xl shadow-2xl w-80 p-5 animate-in">
           <h2 class="text-base font-semibold text-text-primary mb-2">New Task</h2>

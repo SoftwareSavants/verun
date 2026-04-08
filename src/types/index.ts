@@ -185,6 +185,7 @@ export interface PrInfo {
   state: string
   title: string
   mergeable: string
+  isDraft: boolean
 }
 
 export interface CiCheck {
