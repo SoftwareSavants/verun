@@ -229,6 +229,8 @@ pub struct SendMessageParams {
     pub attachments: Vec<Attachment>,
     pub model: Option<String>,
     pub plan_mode: bool,
+    pub thinking_mode: bool,
+    pub fast_mode: bool,
 }
 
 /// Send a message to Claude in this session's worktree.
@@ -242,7 +244,7 @@ pub async fn send_message(
     pending_approval_meta: PendingApprovalMeta,
     params: SendMessageParams,
 ) -> Result<(), String> {
-    let SendMessageParams { session_id, task_id, worktree_path, repo_path, trust_level, message, claude_session_id, attachments, model, plan_mode } = params;
+    let SendMessageParams { session_id, task_id, worktree_path, repo_path, trust_level, message, claude_session_id, attachments, model, plan_mode, thinking_mode, fast_mode } = params;
     // Don't allow concurrent messages on the same session
     if active.contains_key(&session_id) {
         return Err("Session is already processing a message".to_string());
@@ -297,6 +299,8 @@ pub async fn send_message(
         "text": message,
         "attachments": attachment_names,
         "plan_mode": plan_mode,
+        "thinking_mode": thinking_mode,
+        "fast_mode": fast_mode,
     }).to_string();
     let _ = db_tx
         .send(db::DbWrite::InsertOutputLines {
@@ -326,6 +330,12 @@ pub async fn send_message(
     }
     if let Some(ref m) = model {
         cmd.args(["--model", m]);
+    }
+    if thinking_mode {
+        cmd.args(["--effort", "max"]);
+    }
+    if fast_mode {
+        cmd.args(["--effort", "low"]);
     }
     cmd.current_dir(&worktree_path)
         .stdout(std::process::Stdio::piped())

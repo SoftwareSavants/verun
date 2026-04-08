@@ -141,7 +141,8 @@ export const TaskPanel: Component = () => {
 
   createEffect(on(selectedSessionId, async (sessionId) => {
     if (sessionId) {
-      await loadOutputLines(sessionId)
+      const tid = selectedTaskId()
+      await loadOutputLines(sessionId, tid ?? sessionId)
     }
   }))
 

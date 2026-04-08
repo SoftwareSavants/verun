@@ -1,10 +1,10 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionPlanMode, setSessionPlanMode, sessionPlanFilePath, setSessionPlanFilePath } from '../store/sessions'
-import { effectiveModel, setSessionModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath } from '../store/sessions'
+import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import type { Command } from '../store/commands'
-import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Minimize2, Maximize2 } from 'lucide-solid'
+import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2 } from 'lucide-solid'
 import { marked } from 'marked'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
@@ -46,9 +46,17 @@ export const MessageInput: Component<Props> = (props) => {
   let fileInputRef!: HTMLInputElement
   let textareaRef!: HTMLTextAreaElement
   let customAnswerRef!: HTMLInputElement
-  const [message, setMessage] = createSignal('')
+  const [taskMessages, setTaskMessages] = createSignal<Record<string, string>>({})
+  const [taskAttachments, setTaskAttachments] = createSignal<Record<string, Attachment[]>>({})
+  const message = () => taskMessages()[selectedTaskId() ?? ''] ?? ''
+  const setMessage = (v: string) => { const tid = selectedTaskId(); if (tid) setTaskMessages(prev => ({ ...prev, [tid]: v })) }
+  const attachments = () => taskAttachments()[selectedTaskId() ?? ''] ?? []
+  const setAttachments = (v: Attachment[] | ((prev: Attachment[]) => Attachment[])) => {
+    const tid = selectedTaskId()
+    if (!tid) return
+    setTaskAttachments(prev => ({ ...prev, [tid]: typeof v === 'function' ? v(prev[tid] ?? []) : v }))
+  }
   const [sending, setSending] = createSignal(false)
-  const [attachments, setAttachments] = createSignal<Attachment[]>([])
   const [dragOver, setDragOver] = createSignal(false)
   const [showPalette, setShowPalette] = createSignal(false)
   const [trustLevel, setTrustLevelLocal] = createSignal<TrustLevel>('normal')
@@ -82,21 +90,47 @@ export const MessageInput: Component<Props> = (props) => {
   const [planFeedback, setPlanFeedback] = createSignal('')
 
   const planMode = () => {
-    const sid = props.sessionId
-    return sid ? (sessionPlanMode[sid] ?? false) : false
+    const tid = selectedTaskId()
+    return tid ? (taskPlanMode[tid] ?? false) : false
   }
 
   const setPlanMode = (on: boolean) => {
-    const sid = props.sessionId
-    if (!sid) return
-    setSessionPlanMode(sid, on)
+    const tid = selectedTaskId()
+    if (!tid) return
+    setTaskPlanMode(tid, on)
+  }
+
+  const thinkingMode = () => {
+    const tid = selectedTaskId()
+    return tid ? (taskThinkingMode[tid] ?? true) : true
+  }
+
+  const setThinking = (on: boolean) => {
+    const tid = selectedTaskId()
+    if (!tid) return
+    setTaskThinkingMode(tid, on)
+  }
+
+  const fastMode = () => {
+    const tid = selectedTaskId()
+    return tid ? (taskFastMode[tid] ?? false) : false
+  }
+
+  const setFast = (on: boolean) => {
+    const tid = selectedTaskId()
+    if (!tid) return
+    setTaskFastMode(tid, on)
   }
 
   const showPlanResponse = () => {
     const sid = props.sessionId
     // Don't show the simple panel when the full plan viewer is active
     if (showPlanViewer() && planContent()) return false
-    return sid !== null && planResponseSession() === sid && !currentApproval()
+    const result = sid !== null && planResponseSession() === sid && !currentApproval()
+    if (result) {
+      console.log('[showPlanResponse] returning true', { sid, planResponseSession: planResponseSession(), currentApproval: currentApproval() })
+    }
+    return result
   }
 
   const setShowPlanResponse = (show: boolean) => {
@@ -116,13 +150,19 @@ export const MessageInput: Component<Props> = (props) => {
   createEffect(on(
     () => [props.isRunning, planMode(), props.sessionId] as const,
     ([running, plan, sid], prev) => {
-      if (!plan || !sid) return
+      console.log('[plan-effect] fired', { running, plan, sid, prev, planResponseSession: planResponseSession(), showPlanViewerVal: showPlanViewer() })
+      if (!plan || !sid) {
+        console.log('[plan-effect] early return: plan or sid falsy')
+        return
+      }
       // Was running, now idle → show plan response
       if (prev && prev[0] && !running) {
+        console.log('[plan-effect] condition 1: running→idle, setting planResponseSession')
         setPlanResponseSession(sid)
       }
       // Session just selected, already idle, plan mode on → show plan response
       if (!running && (!prev || prev[2] !== sid)) {
+        console.log('[plan-effect] condition 2: session changed or no prev, setting planResponseSession')
         setPlanResponseSession(sid)
       }
     }
@@ -151,7 +191,8 @@ export const MessageInput: Component<Props> = (props) => {
     } else {
       // Approve — always send a message so plan_mode: false gets persisted
       setPlanMode(false)
-      setSessionPlanFilePath(sid, null)
+      const tid = selectedTaskId()
+      if (tid) setTaskPlanFilePath(tid, null)
       if (approval && isExitPlanMode()) {
         approveToolUse(approval.requestId, approval.sessionId)
       }
@@ -170,7 +211,7 @@ export const MessageInput: Component<Props> = (props) => {
     sendMessage(sid, text, undefined, currentModel(), true)
   }
 
-  const currentModel = () => effectiveModel(props.sessionId)
+  const currentModel = () => effectiveModel(selectedTaskId())
 
   const currentApproval = () => {
     const sid = props.sessionId
@@ -189,15 +230,15 @@ export const MessageInput: Component<Props> = (props) => {
     if (props.isRunning && !isExitPlanMode()) return false
     if (isExitPlanMode()) return true
     // No live approval, but plan mode on + idle + have plan file → show viewer
-    const sid = props.sessionId
-    if (sid && planMode() && !props.isRunning && sessionPlanFilePath[sid] && planFileContent()) return true
+    const tid = selectedTaskId()
+    if (tid && planMode() && !props.isRunning && taskPlanFilePath[tid] && planFileContent()) return true
     return false
   }
 
   // Load plan file content — from live approval or persisted path
   createEffect(on(
     () => [isExitPlanMode(), props.sessionId, planMode()] as const,
-    async ([isExit, sid]) => {
+    async ([isExit, _sid]) => {
       // From live ExitPlanMode approval
       if (isExit) {
         const approval = currentApproval()
@@ -218,8 +259,9 @@ export const MessageInput: Component<Props> = (props) => {
         return
       }
       // From persisted plan file path (e.g. after restart)
-      if (sid && planMode()) {
-        const filePath = sessionPlanFilePath[sid]
+      const tid = selectedTaskId()
+      if (tid && planMode()) {
+        const filePath = taskPlanFilePath[tid]
         if (filePath) {
           setPlanFilePathSignal(filePath)
           try {
@@ -326,7 +368,7 @@ export const MessageInput: Component<Props> = (props) => {
     setAttachments([])
     setShowPalette(false)
     try {
-      await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode())
+      await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
     } catch (e) {
       console.error('Failed to send message:', e)
     } finally {
@@ -358,8 +400,9 @@ export const MessageInput: Component<Props> = (props) => {
         // Extract model from remaining text, e.g. "/model opus"
         const parts = message().trim().split(/\s+/)
         const modelArg = parts[1] as ModelId | undefined
-        if (modelArg && ['opus', 'sonnet', 'haiku'].includes(modelArg) && props.sessionId) {
-          setSessionModel(props.sessionId, modelArg)
+        const modelTaskId = selectedTaskId()
+        if (modelArg && ['opus', 'sonnet', 'haiku'].includes(modelArg) && modelTaskId) {
+          setTaskModel(modelTaskId, modelArg)
         }
         break
       }
@@ -1078,7 +1121,8 @@ export const MessageInput: Component<Props> = (props) => {
             <ModelSelector
               model={currentModel()}
               onChange={(m) => {
-                if (props.sessionId) setSessionModel(props.sessionId, m)
+                const tid = selectedTaskId()
+                if (tid) setTaskModel(tid, m)
               }}
               disabled={!props.sessionId || props.isRunning}
             />
@@ -1101,6 +1145,40 @@ export const MessageInput: Component<Props> = (props) => {
             >
               <ListChecks size={13} />
               <span>Plan</span>
+            </button>
+
+            {/* Thinking mode toggle */}
+            <button
+              class={clsx(
+                'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+                thinkingMode()
+                  ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
+                'disabled:opacity-30'
+              )}
+              onClick={() => setThinking(!thinkingMode())}
+              disabled={!props.sessionId || props.isRunning}
+              title="Thinking mode — extended thinking for complex tasks"
+            >
+              <Brain size={13} />
+              <span>Think</span>
+            </button>
+
+            {/* Fast mode toggle */}
+            <button
+              class={clsx(
+                'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+                fastMode()
+                  ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
+                'disabled:opacity-30'
+              )}
+              onClick={() => setFast(!fastMode())}
+              disabled={!props.sessionId || props.isRunning}
+              title="Fast mode — less thinking, quicker responses"
+            >
+              <Zap size={13} />
+              <span>Fast</span>
             </button>
 
             {/* Trust level selector */}
@@ -1159,7 +1237,7 @@ export const MessageInput: Component<Props> = (props) => {
             {/* Auto-approved count */}
             <Show when={autoApprovedCount() > 0}>
               <span
-                class="text-[10px] text-status-running/70 px-1.5 py-0.5 rounded-full"
+                class="text-[10px] text-status-running/70 px-1.5 py-0.5 rounded-full flex items-center"
                 title={`${autoApprovedCount()} tool calls auto-approved this session`}
               >
                 {autoApprovedCount()} auto-approved

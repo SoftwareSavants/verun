@@ -11,20 +11,20 @@ export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
 // Model selection
 const savedModel = (typeof localStorage !== 'undefined' ? localStorage.getItem('verun:model') : null) as ModelId | null
 export const [globalModel, setGlobalModel] = createSignal<ModelId>(savedModel || 'sonnet')
-export const [sessionModelOverrides, setSessionModelOverrides] = createSignal<Record<string, ModelId>>({})
+export const [taskModelOverrides, setTaskModelOverrides] = createSignal<Record<string, ModelId>>({})
 
 export function setGlobalModelAndPersist(model: ModelId) {
   setGlobalModel(model)
   localStorage.setItem('verun:model', model)
 }
 
-export function setSessionModel(sessionId: string, model: ModelId) {
-  setSessionModelOverrides(prev => ({ ...prev, [sessionId]: model }))
+export function setTaskModel(taskId: string, model: ModelId) {
+  setTaskModelOverrides(prev => ({ ...prev, [taskId]: model }))
 }
 
-export function effectiveModel(sessionId: string | null): ModelId {
-  if (sessionId) {
-    const override = sessionModelOverrides()[sessionId]
+export function effectiveModel(taskId: string | null): ModelId {
+  if (taskId) {
+    const override = taskModelOverrides()[taskId]
     if (override) return override
   }
   return globalModel()

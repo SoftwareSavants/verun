@@ -10,8 +10,10 @@ export const [sessions, setSessions] = createStore<Session[]>([])
 export const [outputItems, setOutputItems] = createStore<Record<string, OutputItem[]>>({})
 export const [pendingApprovals, setPendingApprovals] = createStore<Record<string, ToolApprovalRequest[]>>({})
 export const [autoApprovedCounts, setAutoApprovedCounts] = createStore<Record<string, number>>({})
-export const [sessionPlanMode, setSessionPlanMode] = createStore<Record<string, boolean>>({})
-export const [sessionPlanFilePath, setSessionPlanFilePath] = createStore<Record<string, string | null>>({})
+export const [taskPlanMode, setTaskPlanMode] = createStore<Record<string, boolean>>({})
+export const [taskThinkingMode, setTaskThinkingMode] = createStore<Record<string, boolean>>({})
+export const [taskFastMode, setTaskFastMode] = createStore<Record<string, boolean>>({})
+export const [taskPlanFilePath, setTaskPlanFilePath] = createStore<Record<string, string | null>>({})
 
 export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
@@ -26,7 +28,7 @@ export async function createSession(taskId: string): Promise<Session> {
   return session
 }
 
-export async function sendMessage(sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean) {
+export async function sendMessage(sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) {
   const images = attachments
     ?.filter(a => a.mimeType.startsWith('image/'))
     .map(a => ({ mimeType: a.mimeType, dataBase64: a.dataBase64 }))
@@ -47,7 +49,7 @@ export async function sendMessage(sessionId: string, message: string, attachment
   }))
   setSessions(s => s.id === sessionId, 'status', 'running')
   try {
-    await ipc.sendMessage(sessionId, message, attachments, model, planMode)
+    await ipc.sendMessage(sessionId, message, attachments, model, planMode, thinkingMode, fastMode)
   } catch (e) {
     setSessions(s => s.id === sessionId, 'status', 'idle')
     throw e
@@ -99,10 +101,12 @@ export async function closeSession(sessionId: string) {
   await ipc.closeSession(sessionId)
 }
 
-export async function loadOutputLines(sessionId: string) {
+export async function loadOutputLines(sessionId: string, taskId: string) {
   const lines = await ipc.getOutputLines(sessionId)
   const items: OutputItem[] = []
   let lastPlanMode = false
+  let lastThinkingMode = true
+  let lastFastMode = false
   let planFilePath: string | null = null
   for (const l of lines) {
     try {
@@ -110,6 +114,12 @@ export async function loadOutputLines(sessionId: string) {
       // Check plan_mode on user messages for persistence
       if (v.type === 'verun_user_message' && typeof v.plan_mode === 'boolean') {
         lastPlanMode = v.plan_mode
+      }
+      if (v.type === 'verun_user_message' && typeof v.thinking_mode === 'boolean') {
+        lastThinkingMode = v.thinking_mode
+      }
+      if (v.type === 'verun_user_message' && typeof v.fast_mode === 'boolean') {
+        lastFastMode = v.fast_mode
       }
       // Extract plan file path from ExitPlanMode control_request
       if (v.type === 'control_request') {
@@ -126,8 +136,10 @@ export async function loadOutputLines(sessionId: string) {
     if (parsed) items.push(...parsed)
   }
   setOutputItems(sessionId, items)
-  setSessionPlanMode(sessionId, lastPlanMode)
-  setSessionPlanFilePath(sessionId, planFilePath)
+  setTaskPlanMode(taskId, lastPlanMode)
+  setTaskThinkingMode(taskId, lastThinkingMode)
+  setTaskFastMode(taskId, lastFastMode)
+  setTaskPlanFilePath(taskId, planFilePath)
 }
 
 /** Re-parse a persisted NDJSON line back into OutputItems (mirrors Rust parse_sdk_event) */
