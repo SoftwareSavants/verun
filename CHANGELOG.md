@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1 — 2026-04-08
+
+### Changes
+
+- Automated GitHub release workflow — builds macOS ARM on push when VERSION changes
+- `/bump-version` command to update version across all project files
+- Settings: configurable defaults for word wrap and hide whitespace in diffs
+- Sticky file headers when scrolling through expanded diffs
+- Smart git action buttons — hide Push, Create PR, Merge PR, Review based on actual state
+- Filter out directories from file changes list
+- Conflict resolution uses rebase instead of merge
+
 ## 0.1.0 — 2026-04-07
 
 Initial release of Verun — parallel Claude Code session orchestrator for macOS.

@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare VERSION to latest tag
+        id: check
+        run: |
+          version=$(cat VERSION | tr -d '[:space:]')
+          latest_tag=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$latest_tag" ]; then
+            echo "No tags found — releasing v$version"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          elif [ "$latest_tag" = "v$version" ]; then
+            echo "v$version already released — skipping"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version v$version (latest tag: $latest_tag)"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-macos:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri app
+        run: pnpm tauri build --target aarch64-apple-darwin
+
+      - name: Zip app bundle
+        run: |
+          cd src-tauri/target/aarch64-apple-darwin/release/bundle/macos
+          zip -r Verun_${{ needs.check-version.outputs.version }}_macos_aarch64.zip Verun.app
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-aarch64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Verun_*.zip
+
+  release:
+    needs: [check-version, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-aarch64
+          path: artifacts
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          version="${{ needs.check-version.outputs.version }}"
+          # Extract the section for this version from CHANGELOG.md
+          awk "/^## ${version}/,/^## [0-9]/" CHANGELOG.md | sed '$d' | tail -n +2 > /tmp/release_notes.md
+          # If nothing was extracted, use a default
+          if [ ! -s /tmp/release_notes.md ]; then
+            echo "Release v${version}" > /tmp/release_notes.md
+          fi
+
+      - name: Create tag
+        run: |
+          git tag "v${{ needs.check-version.outputs.version }}"
+          git push origin "v${{ needs.check-version.outputs.version }}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ needs.check-version.outputs.version }}" \
+            artifacts/* \
+            --title "v${{ needs.check-version.outputs.version }}" \
+            --notes-file /tmp/release_notes.md
