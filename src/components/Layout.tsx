@@ -9,6 +9,7 @@ import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId,
 import { tasks } from '../store/tasks'
 import { addProject, projects } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
+import { modPressed } from '../lib/platform'
 
 async function pickAndAddProject() {
   const selected = await openDialog({ directory: true, multiple: false })
@@ -55,18 +56,18 @@ export const Layout: Component = () => {
   // Keyboard shortcuts
   onMount(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.metaKey && e.key === 'o') {
+      if (modPressed(e) && e.key === 'o') {
         e.preventDefault()
         pickAndAddProject()
       }
-      if (e.metaKey && e.key === 'n') {
+      if (modPressed(e) && e.key === 'n') {
         e.preventDefault()
         const pid = selectedProjectId()
         if (pid) setNewTaskProjectId(pid)
         else if (projects.length > 0) setNewTaskProjectId(projects[projects.length - 1].id)
         else pickAndAddProject()
       }
-      if (e.metaKey && e.key >= '1' && e.key <= '9') {
+      if (modPressed(e) && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
         const idx = parseInt(e.key) - 1
         if (idx < tasks.length) {
@@ -75,7 +76,7 @@ export const Layout: Component = () => {
           setShowSettings(false)
         }
       }
-      if (e.metaKey && e.key === ',') {
+      if (modPressed(e) && e.key === ',') {
         e.preventDefault()
         setShowSettings(!showSettings())
       }
@@ -104,8 +105,8 @@ export const Layout: Component = () => {
           spawnTerminal(tid, 24, 80)
         }
       }
-      // Cmd+\ — focus terminal (when open)
-      if (e.metaKey && e.key === '\\') {
+      // Mod+\ — focus terminal (when open)
+      if (modPressed(e) && e.key === '\\') {
         e.preventDefault()
         const tid = selectedTaskId()
         if (tid && showTerminal()) {

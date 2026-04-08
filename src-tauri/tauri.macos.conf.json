@@ -1,0 +1,22 @@
+{
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "Verun",
+        "width": 1600,
+        "height": 1000,
+        "minWidth": 900,
+        "minHeight": 600,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "transparent": false
+      }
+    ]
+  },
+  "bundle": {
+    "macOS": {
+      "signingIdentity": "Developer ID Application: Software Savants LLC (5Y6UKMM68W)"
+    }
+  }
+}

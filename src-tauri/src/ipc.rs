@@ -979,9 +979,14 @@ pub async fn pty_close(
 
 #[tauri::command]
 pub async fn read_clipboard() -> Result<String, String> {
-    let output = std::process::Command::new("pbpaste")
-        .output()
-        .map_err(|e| format!("Failed to read clipboard: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let output = std::process::Command::new("pbpaste").output();
+    #[cfg(target_os = "linux")]
+    let output = std::process::Command::new("xclip").args(["-selection", "clipboard", "-o"]).output();
+    #[cfg(target_os = "windows")]
+    let output = std::process::Command::new("powershell").args(["-command", "Get-Clipboard"]).output();
+
+    let output = output.map_err(|e| format!("Failed to read clipboard: {e}"))?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
@@ -1053,21 +1058,25 @@ pub async fn read_text_file(path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn open_in_finder(path: String) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg(&path)
-        .spawn()
-        .map_err(|e| format!("Failed to open Finder: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(&path).spawn();
+    #[cfg(target_os = "linux")]
+    let result = std::process::Command::new("xdg-open").arg(&path).spawn();
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("explorer").arg(&path).spawn();
+
+    result.map_err(|e| format!("Failed to open file manager: {e}"))?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn open_in_app(path: String, app: String) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg("-a")
-        .arg(&app)
-        .arg(&path)
-        .spawn()
-        .map_err(|e| format!("Failed to open {app}: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg("-a").arg(&app).arg(&path).spawn();
+    #[cfg(not(target_os = "macos"))]
+    let result = std::process::Command::new(&app).arg(&path).spawn();
+
+    result.map_err(|e| format!("Failed to open {app}: {e}"))?;
     Ok(())
 }
 

@@ -74,12 +74,17 @@ pub fn spawn_pty(
         .map_err(|e| format!("Failed to open PTY: {e}"))?;
 
     // Determine the user's shell
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    #[cfg(not(target_os = "windows"))]
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    #[cfg(target_os = "windows")]
+    let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".to_string());
+
     let shell_name = std::path::Path::new(&shell)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "shell".to_string());
     let mut cmd = CommandBuilder::new(&shell);
+    #[cfg(not(target_os = "windows"))]
     cmd.arg("-l"); // login shell for $PATH, aliases, etc.
     cmd.cwd(&cwd);
     cmd.env("TERM", "xterm-256color");

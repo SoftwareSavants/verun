@@ -51,6 +51,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { addProject } from "../store/projects";
 import { addToast } from "../store/ui";
 import * as ipc from "../lib/ipc";
+import { hasOverlayTitlebar } from "../lib/platform";
 
 // ---------------------------------------------------------------------------
 // Composite task status — richer than just session status
@@ -267,8 +268,8 @@ export const Sidebar: Component = () => {
       </Popover>
 
       <div class="h-full bg-surface-1 flex flex-col overflow-hidden">
-        {/* Titlebar drag region */}
-        <div class="h-12 shrink-0 drag-region" />
+        {/* Titlebar drag region (macOS overlay titlebar) */}
+        {hasOverlayTitlebar && <div class="h-12 shrink-0 drag-region" />}
 
         {/* Header */}
         <div class="px-4 pb-2 flex items-center justify-between no-drag">

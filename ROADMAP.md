@@ -60,7 +60,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 
 - [X] Loading indicator when creating a task (worktree creation can be slow)
 - [X] Branch commits pane is empty after PR merge (commits moved to base branch, nothing to show)
-- [ ] Persist last selected model per project
+- [X] Persist last selected model per project
 - [ ] Delete task option to also delete the branch
 - [ ] Loading state when deleting / archiving a task
 - [ ] Timestamp on each turn / run
@@ -73,7 +73,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 High-impact features that engineers are asking for most.
 
 ### Session & Workflow
-- [ ] Refresh the state (github...) on app resume
+- [X] Refresh the state (github...) on app resume
 - [ ] Subagent / nested thread visualization
 - [ ] Fork task or session (branch a conversation into a new direction)
 - [ ] Steer & queue interaction modes (send follow-ups while the agent is working)

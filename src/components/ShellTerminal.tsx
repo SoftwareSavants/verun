@@ -7,6 +7,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { registerXterm, getXtermEntry } from '../store/terminals'
 import type { XtermEntry } from '../store/terminals'
 import * as ipc from '../lib/ipc'
+import { isMac, modPressed } from '../lib/platform'
 import '@xterm/xterm/css/xterm.css'
 
 const THEME = {
@@ -35,26 +36,27 @@ const THEME = {
 /** Capture-phase keydown on the container — fires before xterm's textarea gets it */
 function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string) {
   container.addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.metaKey && e.key === 'c') {
+    const mod = modPressed(e)
+    if (mod && e.key === 'c') {
       e.preventDefault()
       e.stopImmediatePropagation()
       const selection = term.getSelection()
       if (selection) navigator.clipboard.writeText(selection)
       return
     }
-    if (e.metaKey && e.key === 'v') {
+    if (mod && e.key === 'v') {
       e.preventDefault()
       e.stopImmediatePropagation()
       ipc.readClipboard().then(text => { if (text) ipc.ptyWrite(terminalId, text) })
       return
     }
-    if (e.metaKey && e.key === 'a') { e.preventDefault(); term.selectAll(); return }
-    if (e.metaKey && e.key === 'k') { e.preventDefault(); term.clear(); return }
-    if (e.metaKey && e.key === 'ArrowLeft') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x01'); return }
-    if (e.metaKey && e.key === 'ArrowRight') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x05'); return }
-    if (e.metaKey && e.key === 'Backspace') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x15'); return }
-    if (e.metaKey && e.key === 'ArrowUp') { e.preventDefault(); term.scrollToTop(); return }
-    if (e.metaKey && e.key === 'ArrowDown') { e.preventDefault(); term.scrollToBottom(); return }
+    if (mod && e.key === 'a') { e.preventDefault(); term.selectAll(); return }
+    if (mod && e.key === 'k') { e.preventDefault(); term.clear(); return }
+    if (mod && e.key === 'ArrowLeft') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x01'); return }
+    if (mod && e.key === 'ArrowRight') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x05'); return }
+    if (mod && e.key === 'Backspace') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x15'); return }
+    if (mod && e.key === 'ArrowUp') { e.preventDefault(); term.scrollToTop(); return }
+    if (mod && e.key === 'ArrowDown') { e.preventDefault(); term.scrollToBottom(); return }
     if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x1bb'); return }
     if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x1bf'); return }
     if (e.altKey && e.key === 'Backspace') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x17'); return }
@@ -66,7 +68,7 @@ function setupXtermPassthrough(term: XTerm) {
     if (e.type !== 'keydown') return true
     if (e.ctrlKey && (e.key === '`' || e.key === '~' || e.key === 'Tab')) return false
     if (e.ctrlKey && e.key >= '1' && e.key <= '9') return false
-    if (e.metaKey) return false
+    if (modPressed(e)) return false
     return true
   })
 }
@@ -119,14 +121,16 @@ export const ShellTerminal: Component<Props> = (props) => {
 
     const term = new XTerm({
       theme: THEME,
-      fontFamily: "'SF Mono', Menlo, Monaco, 'Courier New', monospace, 'Apple Color Emoji', 'Segoe UI Emoji'",
+      fontFamily: isMac
+        ? "'SF Mono', Menlo, Monaco, 'Courier New', monospace, 'Apple Color Emoji', 'Segoe UI Emoji'"
+        : "'Cascadia Code', 'Consolas', 'Courier New', monospace, 'Segoe UI Emoji'",
       fontSize: 13,
       lineHeight: 1.0,
       cursorBlink: true,
       cursorStyle: 'block',
       scrollback: 10000,
       allowProposedApi: true,
-      macOptionIsMeta: true,
+      macOptionIsMeta: isMac,
       customGlyphs: true,
       rescaleOverlappingGlyphs: true,
       drawBoldTextInBrightColors: false,

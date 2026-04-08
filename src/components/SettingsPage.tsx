@@ -3,6 +3,7 @@ import { ChevronDown, X } from 'lucide-solid'
 import { ACCENT_THEMES, getActiveTheme, setActiveTheme, type AccentTheme } from '../lib/theme'
 import { setShowSettings, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist } from '../store/ui'
 import { Popover } from './Popover'
+import { hasOverlayTitlebar } from '../lib/platform'
 import { Toggle } from './Toggle'
 
 export const SettingsPage: Component = () => {
@@ -19,8 +20,8 @@ export const SettingsPage: Component = () => {
 
   return (
     <div class="flex-1 h-full bg-surface-0 overflow-y-auto">
-      {/* Drag region */}
-      <div class="h-10 shrink-0 drag-region" />
+      {/* Drag region (macOS overlay) */}
+      {hasOverlayTitlebar && <div class="h-10 shrink-0 drag-region" />}
 
       <div class="max-w-lg mx-auto px-6 py-4">
         <div class="flex items-center justify-between mb-6">

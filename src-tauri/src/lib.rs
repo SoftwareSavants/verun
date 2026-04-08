@@ -29,10 +29,10 @@ pub fn run() {
         .manage(task::new_pending_approval_meta())
         .manage(pty::new_active_pty_map())
         .setup(|app| {
-            // Fix PATH for bundled macOS .app — the app inherits a minimal
+            // Fix PATH for bundled .app / AppImage — the app inherits a minimal
             // system PATH that doesn't include Homebrew, nvm, etc.
-            // Spawn a login shell to resolve the user's real PATH.
-            if let Ok(shell) = std::env::var("SHELL").or_else(|_| Ok::<_, std::env::VarError>("/bin/zsh".to_string())) {
+            #[cfg(not(target_os = "windows"))]
+            if let Ok(shell) = std::env::var("SHELL").or_else(|_| Ok::<_, std::env::VarError>("/bin/sh".to_string())) {
                 if let Ok(output) = std::process::Command::new(&shell)
                     .args(["-lc", "echo $PATH"])
                     .output()
@@ -46,40 +46,43 @@ pub fn run() {
                 }
             }
 
-            // Custom macOS menu — replaces default so we control Quit behavior
-            let quit_item = MenuItemBuilder::with_id("quit", "Quit Verun")
-                .accelerator("CmdOrCtrl+Q")
-                .build(app)?;
-            let app_menu = SubmenuBuilder::new(app, "Verun")
-                .item(&PredefinedMenuItem::about(app, Some("About Verun"), None)?)
-                .separator()
-                .item(&PredefinedMenuItem::services(app, None)?)
-                .separator()
-                .item(&PredefinedMenuItem::hide(app, None)?)
-                .item(&PredefinedMenuItem::hide_others(app, None)?)
-                .item(&PredefinedMenuItem::show_all(app, None)?)
-                .separator()
-                .item(&quit_item)
-                .build()?;
-            let edit_menu = SubmenuBuilder::new(app, "Edit")
-                .undo()
-                .redo()
-                .separator()
-                .cut()
-                .copy()
-                .paste()
-                .select_all()
-                .build()?;
-            let window_menu = SubmenuBuilder::new(app, "Window")
-                .minimize()
-                .item(&PredefinedMenuItem::fullscreen(app, None)?)
-                .build()?;
-            let menu = MenuBuilder::new(app)
-                .item(&app_menu)
-                .item(&edit_menu)
-                .item(&window_menu)
-                .build()?;
-            app.set_menu(menu)?;
+            // Menu setup
+            #[cfg(target_os = "macos")]
+            {
+                let quit_item = MenuItemBuilder::with_id("quit", "Quit Verun")
+                    .accelerator("CmdOrCtrl+Q")
+                    .build(app)?;
+                let app_menu = SubmenuBuilder::new(app, "Verun")
+                    .item(&PredefinedMenuItem::about(app, Some("About Verun"), None)?)
+                    .separator()
+                    .item(&PredefinedMenuItem::services(app, None)?)
+                    .separator()
+                    .item(&PredefinedMenuItem::hide(app, None)?)
+                    .item(&PredefinedMenuItem::hide_others(app, None)?)
+                    .item(&PredefinedMenuItem::show_all(app, None)?)
+                    .separator()
+                    .item(&quit_item)
+                    .build()?;
+                let edit_menu = SubmenuBuilder::new(app, "Edit")
+                    .undo()
+                    .redo()
+                    .separator()
+                    .cut()
+                    .copy()
+                    .paste()
+                    .select_all()
+                    .build()?;
+                let window_menu = SubmenuBuilder::new(app, "Window")
+                    .minimize()
+                    .item(&PredefinedMenuItem::fullscreen(app, None)?)
+                    .build()?;
+                let menu = MenuBuilder::new(app)
+                    .item(&app_menu)
+                    .item(&edit_menu)
+                    .item(&window_menu)
+                    .build()?;
+                app.set_menu(menu)?;
+            }
 
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
                 std::io::Error::other(format!("Failed to get app data dir: {e}"))
@@ -112,10 +115,18 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
-            // CMD+W: hide the window instead of closing the app
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                #[cfg(target_os = "macos")]
+                {
+                    // CMD+W: hide the window instead of closing the app
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = window.emit("confirm-quit", ());
+                    api.prevent_close();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -192,15 +203,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Verun")
         .run(|app_handle, event| match event {
-            // Dock icon click: show the hidden window
             RunEvent::Reopen { .. } => {
+                // macOS dock icon click: show the hidden window
                 if let Some(w) = app_handle.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
             }
-            // CMD+Q: intercept and ask frontend for confirmation
             RunEvent::ExitRequested { api, .. } => {
+                // Intercept quit and ask frontend for confirmation
                 api.prevent_exit();
                 let _ = app_handle.emit("confirm-quit", ());
             }

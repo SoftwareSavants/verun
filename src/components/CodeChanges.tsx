@@ -1,6 +1,7 @@
 import { Component, createSignal, createEffect, on, Show, For } from 'solid-js'
 import { ChevronDown, ChevronRight, FileText, FilePlus, FileX, FileEdit, RefreshCw, X, WrapText, EyeOff, GitCommit, Circle } from 'lucide-solid'
 import { defaultWrapLines, defaultHideWhitespace } from '../store/ui'
+import { hasOverlayTitlebar } from '../lib/platform'
 import { taskGit, refreshTaskGit } from '../store/git'
 import * as ipc from '../lib/ipc'
 import { highlightLine, langFromPath, type HighlightToken } from '../lib/highlighter'
@@ -273,8 +274,8 @@ export const CodeChanges: Component<Props> = (props) => {
 
   return (
     <div class="flex flex-col h-full overflow-hidden min-w-0">
-      {/* Drag region for titlebar */}
-      <div class="h-10 shrink-0 drag-region" />
+      {/* Drag region for titlebar (macOS overlay) */}
+      {hasOverlayTitlebar && <div class="h-10 shrink-0 drag-region" />}
 
       {/* Header row: title + stats + git action — fixed height */}
       <div class="flex items-center justify-between px-3 h-9 border-b border-border-subtle bg-surface-1">

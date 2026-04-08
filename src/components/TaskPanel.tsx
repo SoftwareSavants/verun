@@ -17,6 +17,7 @@ import vscodeIcon from '../assets/icons/vscode.svg?raw'
 import cursorIcon from '../assets/icons/cursor.svg?raw'
 import zedIcon from '../assets/icons/zed.svg?raw'
 import finderIcon from '../assets/icons/finder.svg?raw'
+import { fileManagerName, hasOverlayTitlebar } from '../lib/platform'
 
 function formatDuration(ms: number): string {
   const secs = Math.floor(ms / 1000)
@@ -56,7 +57,7 @@ const EDITORS = [
   { label: 'VS Code', app: 'Visual Studio Code', svg: vscodeIcon },
   { label: 'Cursor', app: 'Cursor', svg: cursorIcon },
   { label: 'Zed', app: 'Zed', svg: zedIcon },
-  { label: 'Finder', app: 'Finder', svg: finderIcon },
+  { label: fileManagerName, app: fileManagerName, svg: finderIcon },
 ]
 
 function OpenInButton(props: { path: string }) {
@@ -66,7 +67,7 @@ function OpenInButton(props: { path: string }) {
   const defaultEditor = () => EDITORS[0]
 
   const handleOpen = (app: string) => {
-    if (app === 'Finder') {
+    if (app === fileManagerName) {
       ipc.openInFinder(props.path)
     } else {
       ipc.openInApp(props.path, app)
@@ -256,7 +257,7 @@ export const TaskPanel: Component = () => {
               {/* Chat column */}
               <div class="flex flex-col w-0 flex-[3] overflow-hidden">
                 {/* Header — drag region for titlebar */}
-                <div class="px-4 pt-10 pb-2 flex items-center justify-between bg-surface-0 drag-region">
+                <div class={`px-4 ${hasOverlayTitlebar ? 'pt-10' : 'pt-2'} pb-2 flex items-center justify-between bg-surface-0 drag-region`}>
                   <h2 class="text-sm font-semibold text-text-primary truncate min-w-0 no-drag">
                     {t().name || 'New task'}
                   </h2>

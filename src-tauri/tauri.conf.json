@@ -10,17 +10,13 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Verun",
-        "width": 1200,
-        "height": 800,
+        "width": 1600,
+        "height": 1000,
         "minWidth": 900,
-        "minHeight": 600,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
-        "transparent": false
+        "minHeight": 600
       }
     ],
     "security": {
@@ -36,10 +32,7 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "macOS": {
-      "signingIdentity": "Developer ID Application: Software Savants LLC (5Y6UKMM68W)"
-    }
+    ]
   },
   "plugins": {
     "shell": {
