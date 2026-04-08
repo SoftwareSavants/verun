@@ -8,26 +8,30 @@ export const [selectedSessionId, setSelectedSessionId] = createSignal<string | n
 export const [sidebarWidth, setSidebarWidth] = createSignal(280)
 export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
 
-// Model selection
-const savedModel = (typeof localStorage !== 'undefined' ? localStorage.getItem('verun:model') : null) as ModelId | null
-export const [globalModel, setGlobalModel] = createSignal<ModelId>(savedModel || 'sonnet')
-export const [taskModelOverrides, setTaskModelOverrides] = createSignal<Record<string, ModelId>>({})
-
-export function setGlobalModelAndPersist(model: ModelId) {
-  setGlobalModel(model)
-  localStorage.setItem('verun:model', model)
-}
+// Model selection — per task, persisted per project as the default for new tasks
+const [taskModels, setTaskModels] = createSignal<Record<string, ModelId>>({})
 
 export function setTaskModel(taskId: string, model: ModelId) {
-  setTaskModelOverrides(prev => ({ ...prev, [taskId]: model }))
+  setTaskModels(prev => ({ ...prev, [taskId]: model }))
+  localStorage.setItem(`verun:task-model:${taskId}`, model)
+  const pid = selectedProjectId()
+  if (pid) localStorage.setItem(`verun:model:${pid}`, model)
 }
 
 export function effectiveModel(taskId: string | null): ModelId {
   if (taskId) {
-    const override = taskModelOverrides()[taskId]
-    if (override) return override
+    let m = taskModels()[taskId]
+    if (m) return m
+    // Restore from storage on first access
+    const saved = localStorage.getItem(`verun:task-model:${taskId}`) as ModelId | null
+    if (saved) {
+      setTaskModels(prev => ({ ...prev, [taskId]: saved }))
+      return saved
+    }
   }
-  return globalModel()
+  const pid = selectedProjectId()
+  if (pid) return (localStorage.getItem(`verun:model:${pid}`) as ModelId | null) || 'sonnet'
+  return 'sonnet'
 }
 export const [showAddProjectDialog, setShowAddProjectDialog] = createSignal(false)
 export const [showSettings, setShowSettings] = createSignal(false)
