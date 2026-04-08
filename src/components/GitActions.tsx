@@ -336,7 +336,7 @@ export const GitActions: Component<Props> = (props) => {
               const Icon = action.icon
               return (
                 <button
-                  class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors"
+                  class="menu-item"
                   onClick={() => runAction(action)}
                 >
                   <Icon size={13} />
@@ -349,7 +349,7 @@ export const GitActions: Component<Props> = (props) => {
           <Show when={failedChecks().length > 0 && primaryAction().label !== 'Fix CI'}>
             <div class="border-t border-border-subtle my-1" />
             <button
-              class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-amber-400 hover:bg-surface-3 transition-colors"
+              class="menu-item !text-amber-400"
               onClick={() => send(`fix the failing CI checks: ${failedChecks().map(c => c.name).join(', ')}`)}
             >
               <Wrench size={13} />
@@ -361,7 +361,7 @@ export const GitActions: Component<Props> = (props) => {
           <Show when={pr()}>
             <div class="border-t border-border-subtle my-1" />
             <button
-              class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors"
+              class="menu-item"
               onClick={() => { openUrl(pr()!.url); setOpen(false) }}
             >
               <ExternalLink size={13} />

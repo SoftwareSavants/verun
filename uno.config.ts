@@ -44,7 +44,7 @@ export default defineConfig({
     },
   },
   safelist: [
-    'btn', 'btn-primary', 'btn-ghost', 'btn-danger',
+    'btn', 'btn-primary', 'btn-ghost', 'btn-danger', 'menu-item', 'input-base', 'section-title',
     // Sidebar task phase icons — dynamically applied
     'text-status-idle', 'text-status-running', 'text-status-done', 'text-status-error',
     'text-text-muted', 'text-amber-400', 'text-emerald-400', 'text-purple-400', 'text-red-400',
@@ -55,6 +55,9 @@ export default defineConfig({
     ['btn-primary', 'btn bg-accent text-white hover:bg-accent-hover active:scale-98 disabled:opacity-40 disabled:cursor-not-allowed'],
     ['btn-ghost', 'btn text-text-secondary hover:text-text-primary hover:bg-surface-3'],
     ['btn-danger', 'btn text-status-error hover:bg-status-error/10'],
+    ['menu-item', 'w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors'],
+    ['input-base', 'w-full bg-surface-1 border border-border rounded-lg px-3 py-2 text-sm text-text-primary outline-none focus:border-accent/40 transition-colors'],
+    ['section-title', 'text-xs font-medium text-text-muted uppercase tracking-wider'],
   ],
   preflights: [
     {

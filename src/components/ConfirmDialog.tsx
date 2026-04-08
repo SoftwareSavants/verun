@@ -1,5 +1,6 @@
 import { Component } from 'solid-js'
 import { Dialog } from './Dialog'
+import { DialogFooter } from './DialogFooter'
 
 interface Props {
   open: boolean
@@ -17,15 +18,12 @@ export const ConfirmDialog: Component<Props> = (props) => {
       <h2 class="text-base font-semibold text-text-primary mb-2">{props.title}</h2>
       <p class="text-sm text-text-muted mb-4">{props.message}</p>
 
-      <div class="flex justify-end gap-2">
-        <button class="btn-ghost" onClick={props.onCancel}>Cancel</button>
-        <button
-          class={props.danger ? 'btn-danger border border-status-error/20' : 'btn-primary'}
-          onClick={props.onConfirm}
-        >
-          {props.confirmLabel || 'Confirm'}
-        </button>
-      </div>
+      <DialogFooter
+        onCancel={props.onCancel}
+        onConfirm={props.onConfirm}
+        confirmLabel={props.confirmLabel}
+        confirmClass={props.danger ? 'btn-danger border border-status-error/20' : undefined}
+      />
     </Dialog>
   )
 }

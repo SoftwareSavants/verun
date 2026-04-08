@@ -5,6 +5,7 @@ import { projectById } from '../store/projects'
 import * as ipc from '../lib/ipc'
 import { GitBranch } from 'lucide-solid'
 import { Dialog } from './Dialog'
+import { DialogFooter } from './DialogFooter'
 
 interface Props {
   open: boolean
@@ -57,7 +58,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
         <div class="relative">
           <GitBranch size={14} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-dim pointer-events-none" />
           <select
-            class="w-full bg-surface-1 border border-border rounded-lg pl-8 pr-3 py-2 text-sm text-text-primary outline-none focus:border-border-active transition-colors appearance-none cursor-pointer"
+            class="input-base pl-8 pr-3 appearance-none cursor-pointer"
             style={{ outline: 'none' }}
             value={baseBranch()}
             onChange={(e) => setBaseBranch(e.currentTarget.value)}
@@ -73,16 +74,12 @@ export const NewTaskDialog: Component<Props> = (props) => {
         </div>
       </div>
 
-      <div class="flex justify-end gap-2">
-        <button class="btn-ghost" onClick={props.onClose}>Cancel</button>
-        <button
-          class="btn-primary"
-          onClick={handleCreate}
-          disabled={!props.projectId}
-        >
-          Create Task
-        </button>
-      </div>
+      <DialogFooter
+        onCancel={props.onClose}
+        onConfirm={handleCreate}
+        confirmLabel="Create Task"
+        disabled={!props.projectId}
+      />
     </Dialog>
   )
 }
