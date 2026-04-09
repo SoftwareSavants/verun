@@ -66,6 +66,25 @@ main.rs     — entry point only, no logic
 - Never store derived state — compute from signals
 - Never block the tokio runtime with sync I/O — use spawn_blocking
 
+## Documentation Maintenance
+
+After making changes, update the following as needed:
+
+### CHANGELOG.md
+- Add a bullet under the `## Unreleased` section describing what changed
+- If no `## Unreleased` section exists, create one at the top (above the latest versioned section)
+- Do NOT bump the version number or create a new versioned section — only add to Unreleased
+- Keep bullets concise: one line, start with what changed, not "Added" or "Fixed"
+
+### ROADMAP.md
+- Check off items (`[X]`) that are now complete
+- Move newly shipped features into the Shipped section if appropriate
+- Do not add new roadmap items unless asked
+
+### README.md
+- Update the Features list if a user-facing capability was added or significantly changed
+- Do not rewrite sections that are still accurate
+
 ## Definition of Done
 
 A task is only complete when:
@@ -75,3 +94,4 @@ A task is only complete when:
 3. No TypeScript errors
 4. The feature works end-to-end in `pnpm tauri dev`
 5. Changes are committed
+6. CHANGELOG.md, ROADMAP.md, and README.md updated if applicable
