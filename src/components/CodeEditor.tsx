@@ -5,7 +5,9 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit } from '@codemirror/language'
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search'
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete'
+import { jumpToDefinition, jumpToDefinitionKeymap, findReferencesKeymap, renameKeymap, formatKeymap } from '@codemirror/lsp-client'
 import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark'
+import { createSearchPanel, searchPanelTheme } from './SearchPanel'
 import { tags } from '@lezer/highlight'
 import { javascript } from '@codemirror/lang-javascript'
 import { python } from '@codemirror/lang-python'
@@ -125,49 +127,7 @@ const verunTheme = EditorView.theme({
   '.cm-nonmatchingBracket': {
     color: '#e06c75 !important',
   },
-  '.cm-searchMatch': {
-    backgroundColor: 'rgba(234, 179, 8, 0.3)',
-    borderRadius: '2px',
-    outline: '1px solid rgba(234, 179, 8, 0.5)',
-  },
-  '.cm-searchMatch.cm-searchMatch-selected': {
-    backgroundColor: 'rgba(234, 179, 8, 0.5)',
-  },
-  '.cm-panels': {
-    backgroundColor: '#21252b',
-    color: '#abb2bf',
-    borderBottom: '1px solid #181a1f',
-  },
-  '.cm-panels.cm-panels-top': {
-    borderBottom: '1px solid #181a1f',
-  },
-  '.cm-panel input, .cm-panel textarea': {
-    backgroundColor: '#1b1d23',
-    color: '#abb2bf',
-    border: '1px solid #3e4452',
-    borderRadius: '4px',
-    padding: '3px 8px',
-    fontSize: '12px',
-    outline: 'none',
-  },
-  '.cm-panel input:focus': {
-    borderColor: '#528bff',
-  },
-  '.cm-panel button': {
-    backgroundColor: '#3e4452',
-    color: '#abb2bf',
-    border: 'none',
-    borderRadius: '4px',
-    padding: '3px 10px',
-    fontSize: '11px',
-    cursor: 'pointer',
-  },
-  '.cm-panel button:hover': {
-    backgroundColor: '#4b5263',
-  },
-  '.cm-panel label': {
-    fontSize: '12px',
-  },
+  // Search match highlighting (panel CSS is in SearchPanel.ts)
   '.cm-tooltip': {
     backgroundColor: '#21252b',
     border: '1px solid #181a1f',
@@ -256,6 +216,7 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
   const exts: Extension[] = [
     // Theme & highlighting
     verunTheme,
+    searchPanelTheme,
     syntaxHighlighting(verunHighlightStyle),
     syntaxHighlighting(oneDarkHighlightStyle, { fallback: true }),
 
@@ -274,7 +235,7 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
     closeBrackets(),
     autocompletion(),
     history(),
-    search(),
+    search({ top: true, createPanel: createSearchPanel }),
     highlightSelectionMatches(),
     EditorView.lineWrapping,
 
@@ -292,9 +253,29 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
       ...historyKeymap,
       ...foldKeymap,
       ...completionKeymap,
+      ...jumpToDefinitionKeymap,
+      ...findReferencesKeymap,
+      ...renameKeymap,
+      ...formatKeymap,
       indentWithTab,
       { key: 'Mod-s', run: () => { onSave(); return true } },
     ]),
+
+    // Cmd+Click → go to definition
+    EditorView.domEventHandlers({
+      click: (event, view) => {
+        if (event.metaKey || event.ctrlKey) {
+          event.preventDefault()
+          const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+          if (pos != null) {
+            view.dispatch({ selection: { anchor: pos } })
+            jumpToDefinition(view)
+          }
+          return true
+        }
+        return false
+      },
+    }),
 
     // Doc change listener
     EditorView.updateListener.of((update) => {
@@ -445,6 +426,25 @@ export const CodeEditor: Component<Props> = (props) => {
     setContextMenu(null)
   }
 
+  const handleGoToDefinition = () => {
+    if (editorView) jumpToDefinition(editorView)
+    setContextMenu(null)
+  }
+
+  const handleFindReferences = () => {
+    if (editorView) {
+      import('@codemirror/lsp-client').then(({ findReferences }) => findReferences(editorView!))
+    }
+    setContextMenu(null)
+  }
+
+  const handleRenameSymbol = () => {
+    if (editorView) {
+      import('@codemirror/lsp-client').then(({ renameSymbol }) => renameSymbol(editorView!))
+    }
+    setContextMenu(null)
+  }
+
   const handleCopyPath = () => {
     navigator.clipboard.writeText(props.relativePath)
     setContextMenu(null)
@@ -506,6 +506,10 @@ export const CodeEditor: Component<Props> = (props) => {
             }}
             onMouseDown={(e) => e.stopPropagation()}
           >
+            <ContextMenuItem label="Go to Definition" shortcut="F12" onClick={handleGoToDefinition} />
+            <ContextMenuItem label="Find References" shortcut="Shift+F12" onClick={handleFindReferences} />
+            <ContextMenuItem label="Rename Symbol" shortcut="F2" onClick={handleRenameSymbol} />
+            <ContextMenuSep />
             <ContextMenuItem label="Cut" shortcut={'\u2318X'} onClick={handleCut} disabled={!hasSelection()} />
             <ContextMenuItem label="Copy" shortcut={'\u2318C'} onClick={handleCopy} disabled={!hasSelection()} />
             <ContextMenuItem label="Paste" shortcut={'\u2318V'} onClick={handlePaste} />
