@@ -6,6 +6,7 @@ mod policy;
 mod pty;
 mod stream;
 mod task;
+mod watcher;
 mod worktree;
 
 #[cfg(target_os = "macos")]
@@ -29,6 +30,7 @@ pub fn run() {
         .manage(task::new_pending_approvals())
         .manage(task::new_pending_approval_meta())
         .manage(pty::new_active_pty_map())
+        .manage(watcher::new_file_watcher_map())
         .setup(|app| {
             // Fix PATH for bundled .app / AppImage — the app inherits a minimal
             // system PATH that doesn't include Homebrew, nvm, etc.
@@ -201,6 +203,11 @@ pub fn run() {
             ipc::open_in_finder,
             ipc::open_in_app,
             ipc::quit_app,
+            // File tree
+            ipc::list_directory,
+            ipc::write_text_file,
+            ipc::watch_worktree,
+            ipc::unwatch_worktree,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

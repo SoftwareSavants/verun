@@ -5,6 +5,7 @@ use crate::git_ops;
 use crate::github;
 use crate::pty::{self, ActivePtyMap};
 use crate::task::{self, ActiveMap, ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals};
+use crate::watcher::FileWatcherMap;
 use crate::worktree;
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
@@ -1113,6 +1114,127 @@ pub async fn open_in_app(path: String, app: String) -> Result<(), String> {
     let result = std::process::Command::new(&app).arg(&path).spawn();
 
     result.map_err(|e| format!("Failed to open {app}: {e}"))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// File tree
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntry {
+    pub name: String,
+    pub relative_path: String,
+    pub is_dir: bool,
+    pub is_symlink: bool,
+    pub size: Option<u64>,
+}
+
+#[tauri::command]
+pub async fn list_directory(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    relative_path: String,
+) -> Result<Vec<FileEntry>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            use ignore::WalkBuilder;
+
+            let base = std::path::Path::new(&t.worktree_path).join(&relative_path);
+            if !base.exists() {
+                return Err(format!("Directory not found: {relative_path}"));
+            }
+
+            let mut entries = Vec::new();
+            for result in WalkBuilder::new(&base).max_depth(Some(1)).hidden(false).build() {
+                let entry = result.map_err(|e| format!("Walk error: {e}"))?;
+                // Skip the root directory itself
+                if entry.path() == base {
+                    continue;
+                }
+                let meta = entry.metadata().map_err(|e| format!("Metadata error: {e}"))?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                let rel = entry
+                    .path()
+                    .strip_prefix(&t.worktree_path)
+                    .unwrap_or(entry.path())
+                    .to_string_lossy()
+                    .to_string();
+
+                entries.push(FileEntry {
+                    name,
+                    relative_path: rel,
+                    is_dir: meta.is_dir(),
+                    is_symlink: meta.is_symlink(),
+                    size: if meta.is_file() { Some(meta.len()) } else { None },
+                });
+            }
+
+            // Sort: directories first, then alphabetical (case-insensitive)
+            entries.sort_by(|a, b| {
+                b.is_dir.cmp(&a.is_dir).then_with(|| {
+                    a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                })
+            });
+
+            Ok(entries)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn write_text_file(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    relative_path: String,
+    content: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    let full_path = std::path::Path::new(&t.worktree_path).join(&relative_path);
+
+    // Safety: ensure the resolved path is within the worktree
+    let canonical_base = std::fs::canonicalize(&t.worktree_path)
+        .map_err(|e| format!("Cannot resolve worktree: {e}"))?;
+    if let Ok(canonical_file) = std::fs::canonicalize(full_path.parent().unwrap_or(&full_path)) {
+        if !canonical_file.starts_with(&canonical_base) {
+            return Err("Path escapes worktree boundary".into());
+        }
+    }
+
+    tokio::fs::write(&full_path, &content)
+        .await
+        .map_err(|e| format!("Failed to write {relative_path}: {e}"))
+}
+
+#[tauri::command]
+pub async fn watch_worktree(
+    pool: State<'_, SqlitePool>,
+    watchers: State<'_, FileWatcherMap>,
+    app: AppHandle,
+    task_id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    crate::watcher::start_watching(&watchers, app, task_id, t.worktree_path)
+}
+
+#[tauri::command]
+pub async fn unwatch_worktree(
+    watchers: State<'_, FileWatcherMap>,
+    task_id: String,
+) -> Result<(), String> {
+    watchers.remove(&task_id);
     Ok(())
 }
 

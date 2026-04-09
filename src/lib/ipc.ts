@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry } from '../types'
 
 // Projects
 export const addProject = (repoPath: string) =>
@@ -182,6 +182,22 @@ export const ptyClose = (terminalId: string) =>
 // Clipboard
 export const readClipboard = () =>
   invoke<string>('read_clipboard')
+
+export const readTextFile = (path: string) =>
+  invoke<string>('read_text_file', { path })
+
+// File tree
+export const listDirectory = (taskId: string, relativePath: string) =>
+  invoke<FileEntry[]>('list_directory', { taskId, relativePath })
+
+export const writeTextFile = (taskId: string, relativePath: string, content: string) =>
+  invoke<void>('write_text_file', { taskId, relativePath, content })
+
+export const watchWorktree = (taskId: string) =>
+  invoke<void>('watch_worktree', { taskId })
+
+export const unwatchWorktree = (taskId: string) =>
+  invoke<void>('unwatch_worktree', { taskId })
 
 // App lifecycle
 export const quitApp = () =>

@@ -216,3 +216,18 @@ export interface PtyOutputEvent {
 export interface PtyExitedEvent {
   terminalId: string
 }
+
+// File tree types
+
+export interface FileEntry {
+  name: string
+  relativePath: string
+  isDir: boolean
+  isSymlink: boolean
+  size: number | null
+}
+
+export interface FileTreeChangedEvent {
+  taskId: string
+  path: string
+}

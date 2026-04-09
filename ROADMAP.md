@@ -65,6 +65,8 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [ ] Loading state when deleting / archiving a task
 - [ ] Timestamp on each turn / run
 - [ ] Interrupting turn causes a scroll movement
+- [ ] Option + arrow to move in terminal command isn't working
+- [ ] Worktrees should be under the app folder not desktop
 
 ---
 
@@ -80,11 +82,14 @@ High-impact features that engineers are asking for most.
 - [ ] Unread / attention-required indicator on tasks in sidebar
 - [ ] OS notifications for task completion and approval prompts
 - [ ] Multi window support
+- [ ] Setup script: Option/script to auto-copy .env and other files
+- [ ] Auto-update
 
 ### Code Tools
 - [ ] File tree viewer
 - [ ] Code editor / viewer
-- [ ] Mention files in chat (@ references)
+- [ ] TS support
+- [X] Mention files in chat (@ references)
 - [ ] Code review comments on diffs
 
 ### CLI Parity

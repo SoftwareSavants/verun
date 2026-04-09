@@ -7,7 +7,7 @@ import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceh
 import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines } from '../store/sessions'
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
-import { CodeChanges } from './CodeChanges'
+import { RightPanel } from './RightPanel'
 import { TerminalPanel } from './TerminalPanel'
 import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
 import { clsx } from 'clsx'
@@ -427,10 +427,10 @@ export const TaskPanel: Component = () => {
                 </Show>
               </div>
 
-              {/* Source control panel — collapsible */}
+              {/* Right panel — collapsible, contains Changes + Files tabs */}
               <Show when={showChanges() && !creating() && !error()}>
                 <div class="w-0 flex-[2] border-l border-border-subtle overflow-hidden">
-                  <CodeChanges
+                  <RightPanel
                     taskId={t().id}
                     sessionId={selectedSessionId()}
                     isRunning={currentSession()?.status === 'running'}

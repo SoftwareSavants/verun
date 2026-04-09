@@ -27,6 +27,9 @@ dashmap = "5"
 libc = "0.2"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 portable-pty = "0.8"
+ignore = "0.4"
+notify = "7"
+notify-debouncer-mini = "0.5"
 
 [dev-dependencies]
 rstest = "0.18"

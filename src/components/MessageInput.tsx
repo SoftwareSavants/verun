@@ -335,9 +335,10 @@ export const MessageInput: Component<Props> = (props) => {
   // Auto-focus textarea when user starts typing anywhere
   onMount(() => {
     const handler = (e: KeyboardEvent) => {
-      // Skip if already focused on an input, or modifier keys, or special keys
+      // Skip if already focused on an input, editor, or modifier keys, or special keys
       const active = document.activeElement
       if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return
+      if (active && ((active as HTMLElement).isContentEditable || active.closest('.cm-editor'))) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
       if (e.key.length !== 1) return // non-printable
       if (!textareaRef || textareaRef.disabled) return
