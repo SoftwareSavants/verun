@@ -1050,6 +1050,42 @@ pub async fn check_claude() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn list_worktree_files(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<Vec<String>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            let output = std::process::Command::new("git")
+                .current_dir(&t.worktree_path)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_WORK_TREE")
+                .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+                .output()
+                .map_err(|e| format!("Failed to list files: {e}"))?;
+
+            if !output.status.success() {
+                return Err(format!(
+                    "git ls-files failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|l| l.to_string())
+                .collect())
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
 pub async fn read_text_file(path: String) -> Result<String, String> {
     tokio::fs::read_to_string(&path)
         .await

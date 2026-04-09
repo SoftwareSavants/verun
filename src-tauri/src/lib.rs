@@ -196,6 +196,7 @@ pub fn run() {
             // Utility
             ipc::list_claude_skills,
             ipc::check_claude,
+            ipc::list_worktree_files,
             ipc::read_text_file,
             ipc::open_in_finder,
             ipc::open_in_app,

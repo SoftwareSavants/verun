@@ -149,6 +149,10 @@ export const getBranchUrl = (taskId: string) =>
 export const hasConflicts = (taskId: string) =>
   invoke<boolean>('has_conflicts', { taskId })
 
+// File listing
+export const listWorktreeFiles = (taskId: string) =>
+  invoke<string[]>('list_worktree_files', { taskId })
+
 // Utility
 export const listClaudeSkills = () =>
   invoke<ClaudeSkill[]>('list_claude_skills')

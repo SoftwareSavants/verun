@@ -3,6 +3,7 @@ import { sendMessage, abortMessage, createSession, clearOutputItems, pendingAppr
 import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
+import { FileMention } from './FileMention'
 import type { Command } from '../store/commands'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2 } from 'lucide-solid'
 import { marked } from 'marked'
@@ -60,11 +61,18 @@ export const MessageInput: Component<Props> = (props) => {
   const [sending, setSending] = createSignal(false)
   const [dragOver, setDragOver] = createSignal(false)
   const [showPalette, setShowPalette] = createSignal(false)
+  const [showFileMention, setShowFileMention] = createSignal(false)
+  const [fileMentionQuery, setFileMentionQuery] = createSignal('')
+  const [mentionStartPos, setMentionStartPos] = createSignal(0)
+  const [worktreeFiles, setWorktreeFiles] = createSignal<string[]>([])
+  const [filesLoaded, setFilesLoaded] = createSignal<string | null>(null)
   const [trustLevel, setTrustLevelLocal] = createSignal<TrustLevel>('normal')
   const [showTrustMenu, setShowTrustMenu] = createSignal(false)
 
-  // Load trust level when task changes
+  // Load trust level when task changes + reset file cache
   createEffect(on(selectedTaskId, async (taskId) => {
+    setFilesLoaded(null)
+    setWorktreeFiles([])
     if (taskId) {
       try {
         const level = await ipc.getTrustLevel(taskId) as TrustLevel
@@ -439,7 +447,42 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
 
+  const handleFileMentionSelect = (filePath: string) => {
+    const msg = message()
+    const start = mentionStartPos()
+    const cursorPos = textareaRef?.selectionStart ?? msg.length
+    // Replace @query with @filePath
+    const before = msg.slice(0, start)
+    const after = msg.slice(cursorPos)
+    const newMsg = `${before}@${filePath} ${after}`
+    setMessage(newMsg)
+    setShowFileMention(false)
+    // Set cursor position after inserted text
+    requestAnimationFrame(() => {
+      if (textareaRef) {
+        const pos = start + filePath.length + 2 // @ + path + space
+        textareaRef.selectionStart = pos
+        textareaRef.selectionEnd = pos
+        textareaRef.focus()
+        autoResize(textareaRef)
+      }
+    })
+  }
+
   const handleKeyDown = (e: KeyboardEvent) => {
+    // Forward to file mention if open
+    if (showFileMention()) {
+      const handler = (window as any).__fileMentionKeyDown
+      if (handler && ['ArrowDown', 'ArrowUp', 'Tab', 'Escape'].includes(e.key)) {
+        handler(e)
+        return
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        handler?.(e)
+        return
+      }
+    }
+
     // Forward to command palette if open
     if (showPalette()) {
       const handler = (window as any).__commandPaletteKeyDown
@@ -490,6 +533,28 @@ export const MessageInput: Component<Props> = (props) => {
       setShowPalette(true)
     } else {
       setShowPalette(false)
+    }
+
+    // Detect @ file mentions
+    const cursorPos = e.currentTarget.selectionStart ?? val.length
+    const textBeforeCursor = val.slice(0, cursorPos)
+    // Find the last @ that's either at start or after a space
+    const atMatch = textBeforeCursor.match(/(?:^|[\s])@([^\s]*)$/)
+    if (atMatch) {
+      const query = atMatch[1]
+      const atPos = textBeforeCursor.length - atMatch[0].length + (atMatch[0].startsWith('@') ? 0 : 1)
+      setMentionStartPos(atPos)
+      setFileMentionQuery(query)
+      setShowFileMention(true)
+
+      // Load files lazily on first @
+      const tid = selectedTaskId()
+      if (tid && filesLoaded() !== tid) {
+        setFilesLoaded(tid)
+        ipc.listWorktreeFiles(tid).then(setWorktreeFiles).catch(() => {})
+      }
+    } else {
+      setShowFileMention(false)
     }
   }
 
@@ -1041,6 +1106,16 @@ export const MessageInput: Component<Props> = (props) => {
               setShowPalette(false)
             }}
             onDismiss={() => setShowPalette(false)}
+          />
+        </Show>
+
+        {/* File mention palette */}
+        <Show when={showFileMention()}>
+          <FileMention
+            query={fileMentionQuery()}
+            files={worktreeFiles()}
+            onSelect={handleFileMentionSelect}
+            onDismiss={() => setShowFileMention(false)}
           />
         </Show>
 
