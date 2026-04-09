@@ -9,8 +9,10 @@ Run multiple Claude Code sessions in parallel, each in its own isolated git work
 - **Parallel sessions** — run as many Claude Code agents as you want, simultaneously
 - **Isolated worktrees** — each task gets its own git worktree and branch, no conflicts
 - **Lifecycle hooks** — auto-copy `.env` files, install deps, and start dev servers per task
+- **Non-blocking setup** — setup hooks run in the background so you can start typing immediately
 - **Port isolation** — 10 unique ports per task (`VERUN_PORT_0`–`9`), no collisions between parallel tasks
 - **Auto-detect** — Claude analyzes your project and configures hooks, ports, and env files automatically
+- **Quick Open** — CMD+P to fuzzy-find and jump to any file in the worktree
 - **Inline diffs** — see exactly what Claude changed with syntax-highlighted diffs
 - **Git actions** — commit, push, create PR, merge — all without leaving the app
 - **Plan mode** — review implementation plans before Claude starts coding

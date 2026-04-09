@@ -67,6 +67,13 @@ pub fn new_active_map() -> ActiveMap {
     Arc::new(DashMap::new())
 }
 
+/// task_id → true while the setup hook is still running in the background
+pub type SetupInProgress = Arc<DashMap<String, bool>>;
+
+pub fn new_setup_in_progress() -> SetupInProgress {
+    Arc::new(DashMap::new())
+}
+
 pub fn get_active_session_ids(active: &ActiveMap) -> Vec<String> {
     active.iter().map(|e| e.key().clone()).collect()
 }
@@ -110,32 +117,32 @@ pub fn new_pending_approval_meta() -> PendingApprovalMeta {
 // Task lifecycle
 // ---------------------------------------------------------------------------
 
+pub struct CreateTaskParams {
+    pub project_id: String,
+    pub repo_path: String,
+    pub base_branch: String,
+    pub setup_hook: String,
+    pub port_offset: i64,
+}
+
 pub async fn create_task(
+    app: &AppHandle,
     db_tx: &DbWriteTx,
-    project_id: String,
-    repo_path: String,
-    base_branch: String,
-    setup_hook: String,
-    port_offset: i64,
+    setup_in_progress: &SetupInProgress,
+    params: CreateTaskParams,
 ) -> Result<(Task, Session), String> {
+    let CreateTaskParams { project_id, repo_path, base_branch, setup_hook, port_offset } = params;
     let id = Uuid::new_v4().to_string();
     let branch = funny_branch_name();
     let now = epoch_ms();
 
+    // Phase 1: Create worktree only (fast — git ops)
     let worktree_path = {
         let rp = repo_path.clone();
         let br = branch.clone();
         let bb = base_branch;
-        let hook = setup_hook;
-        let env_vars = worktree::verun_env_vars(port_offset, &rp);
         tokio::task::spawn_blocking(move || {
-            let wt = worktree::create_worktree(&rp, &br, &bb)?;
-            if !hook.is_empty() {
-                if let Err(e) = worktree::run_hook(&wt, &hook, &env_vars) {
-                    eprintln!("[verun] setup hook failed: {e}");
-                }
-            }
-            Ok::<String, String>(wt)
+            worktree::create_worktree(&rp, &br, &bb)
         })
             .await
             .map_err(|e| format!("Join error: {e}"))?
@@ -145,7 +152,7 @@ pub async fn create_task(
         id,
         project_id,
         name: None,
-        worktree_path,
+        worktree_path: worktree_path.clone(),
         branch,
         created_at: now,
         merge_base_sha: None,
@@ -159,6 +166,52 @@ pub async fn create_task(
 
     // Auto-create the first session
     let session = create_session(db_tx, task.id.clone()).await?;
+
+    // Phase 2: Run setup hook in background (if non-empty)
+    if !setup_hook.is_empty() {
+        setup_in_progress.insert(task.id.clone(), true);
+        let _ = app.emit(
+            "setup-hook",
+            crate::stream::SetupHookEvent {
+                task_id: task.id.clone(),
+                status: "running".to_string(),
+                error: None,
+            },
+        );
+
+        let bg_app = app.clone();
+        let bg_task_id = task.id.clone();
+        let bg_wt = worktree_path;
+        let bg_env = worktree::verun_env_vars(port_offset, &repo_path);
+        let bg_sip = setup_in_progress.clone();
+
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                worktree::run_hook(&bg_wt, &setup_hook, &bg_env)
+            })
+            .await;
+
+            bg_sip.remove(&bg_task_id);
+
+            let (status, error) = match result {
+                Ok(Ok(())) => ("completed".to_string(), None),
+                Ok(Err(e)) => {
+                    eprintln!("[verun] setup hook failed: {e}");
+                    ("failed".to_string(), Some(e))
+                }
+                Err(e) => ("failed".to_string(), Some(format!("Join error: {e}"))),
+            };
+
+            let _ = bg_app.emit(
+                "setup-hook",
+                crate::stream::SetupHookEvent {
+                    task_id: bg_task_id,
+                    status,
+                    error,
+                },
+            );
+        });
+    }
 
     Ok((task, session))
 }

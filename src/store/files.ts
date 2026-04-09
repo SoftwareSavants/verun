@@ -172,6 +172,10 @@ export function setActiveTab(relativePath: string) {
   setActiveTabPath(relativePath)
 }
 
+// Quick open overlay
+const [showQuickOpen, setShowQuickOpen] = createSignal(false)
+export { showQuickOpen, setShowQuickOpen }
+
 /** Switch to next tab. */
 export function nextTab() {
   const tabs = openTabs()

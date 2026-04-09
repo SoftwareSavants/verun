@@ -4,10 +4,12 @@ import { refitActiveTerminal } from '../store/terminals'
 import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask } from '../store/tasks'
+import { isSetupRunning, setupFailed, setupError } from '../store/setup'
 import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines } from '../store/sessions'
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { RightPanel } from './RightPanel'
+import { QuickOpen } from './QuickOpen'
 import { TerminalPanel } from './TerminalPanel'
 import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
 import { clsx } from 'clsx'
@@ -324,6 +326,20 @@ export const TaskPanel: Component = () => {
 
                 {/* Normal task UI */}
                 <Show when={!creating() && !error()}>
+                  {/* Setup hook progress banner */}
+                  <Show when={isSetupRunning(t().id)}>
+                    <div class="flex items-center gap-2 px-4 py-2 bg-accent-muted/30 border-b border-accent/10 text-xs text-text-secondary">
+                      <Loader2 size={12} class="animate-spin text-accent shrink-0" />
+                      <span>Running setup hook…</span>
+                    </div>
+                  </Show>
+                  <Show when={setupFailed(t().id)}>
+                    <div class="flex items-center gap-2 px-4 py-2 bg-status-error/10 border-b border-status-error/10 text-xs text-status-error/80">
+                      <AlertCircle size={12} class="shrink-0" />
+                      <span>Setup hook failed{setupError(t().id) ? `: ${setupError(t().id)}` : ''}</span>
+                    </div>
+                  </Show>
+
                   {/* Session tabs — pill style */}
                   <div class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
                     <For each={taskSessions()}>
@@ -441,6 +457,7 @@ export const TaskPanel: Component = () => {
           )
         }}
       </Show>
+      <QuickOpen />
     </div>
   )
 }

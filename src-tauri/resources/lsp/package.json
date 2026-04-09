@@ -1,0 +1,8 @@
+{
+  "name": "verun-lsp",
+  "private": true,
+  "dependencies": {
+    "typescript-language-server": "^4",
+    "typescript": "^5"
+  }
+}

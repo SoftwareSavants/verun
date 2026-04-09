@@ -1,4 +1,5 @@
 import { Component, Show, onMount, onCleanup, createSignal } from 'solid-js'
+import { listen } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
@@ -10,7 +11,7 @@ import { tasks } from '../store/tasks'
 import { addProject, projects } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
-import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, rightPanelTab, setRightPanelTab } from '../store/files'
+import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/files'
 
 async function pickAndAddProject() {
   const selected = await openDialog({ directory: true, multiple: false })
@@ -100,6 +101,11 @@ export const Layout: Component = () => {
       if (e.key === 'Escape' && showSettings()) {
         e.preventDefault()
         setShowSettings(false)
+      }
+      // Cmd+P — quick file open (only when a task is selected)
+      if (modPressed(e) && e.key === 'p' && selectedTaskId()) {
+        e.preventDefault()
+        setShowQuickOpen(true)
       }
       // Cmd+E — toggle Files panel
       if (modPressed(e) && e.key === 'e') {
@@ -202,6 +208,12 @@ export const Layout: Component = () => {
     }
     window.addEventListener('keydown', handleKey)
     onCleanup(() => window.removeEventListener('keydown', handleKey))
+
+    // Listen for quick-open menu event from Rust (CmdOrCtrl+P via native menu)
+    const unlisten = listen('quick-open', () => {
+      if (selectedTaskId()) setShowQuickOpen(true)
+    })
+    onCleanup(() => { unlisten.then(fn => fn()) })
   })
 
   return (

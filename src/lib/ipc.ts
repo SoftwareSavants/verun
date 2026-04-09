@@ -36,6 +36,9 @@ export const getTask = (id: string) =>
 export const deleteTask = (id: string) =>
   invoke<void>('delete_task', { id })
 
+export const getSetupInProgress = () =>
+  invoke<string[]>('get_setup_in_progress')
+
 // Sessions
 export const createSession = (taskId: string) =>
   invoke<Session>('create_session', { taskId })
@@ -207,6 +210,16 @@ export const watchWorktree = (taskId: string) =>
 
 export const unwatchWorktree = (taskId: string) =>
   invoke<void>('unwatch_worktree', { taskId })
+
+// LSP
+export const lspStart = (taskId: string, worktreePath: string) =>
+  invoke<void>('lsp_start', { taskId, worktreePath })
+
+export const lspSend = (taskId: string, message: string) =>
+  invoke<void>('lsp_send', { taskId, message })
+
+export const lspStop = (taskId: string) =>
+  invoke<void>('lsp_stop', { taskId })
 
 // App lifecycle
 export const quitApp = () =>

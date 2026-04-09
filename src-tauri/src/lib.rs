@@ -2,6 +2,7 @@ mod db;
 mod git_ops;
 mod github;
 mod ipc;
+mod lsp;
 mod policy;
 mod pty;
 mod stream;
@@ -29,8 +30,10 @@ pub fn run() {
         .manage(task::new_active_map())
         .manage(task::new_pending_approvals())
         .manage(task::new_pending_approval_meta())
+        .manage(task::new_setup_in_progress())
         .manage(pty::new_active_pty_map())
         .manage(watcher::new_file_watcher_map())
+        .manage(lsp::new_lsp_map())
         .setup(|app| {
             // Fix PATH for bundled .app / AppImage — the app inherits a minimal
             // system PATH that doesn't include Homebrew, nvm, etc.
@@ -55,6 +58,9 @@ pub fn run() {
                 let quit_item = MenuItemBuilder::with_id("quit", "Quit Verun")
                     .accelerator("CmdOrCtrl+Q")
                     .build(app)?;
+                let quick_open_item = MenuItemBuilder::with_id("quick-open", "Go to File…")
+                    .accelerator("CmdOrCtrl+P")
+                    .build(app)?;
                 let app_menu = SubmenuBuilder::new(app, "Verun")
                     .item(&PredefinedMenuItem::about(app, Some("About Verun"), None)?)
                     .separator()
@@ -75,6 +81,9 @@ pub fn run() {
                     .paste()
                     .select_all()
                     .build()?;
+                let view_menu = SubmenuBuilder::new(app, "View")
+                    .item(&quick_open_item)
+                    .build()?;
                 let window_menu = SubmenuBuilder::new(app, "Window")
                     .minimize()
                     .item(&PredefinedMenuItem::fullscreen(app, None)?)
@@ -82,6 +91,7 @@ pub fn run() {
                 let menu = MenuBuilder::new(app)
                     .item(&app_menu)
                     .item(&edit_menu)
+                    .item(&view_menu)
                     .item(&window_menu)
                     .build()?;
                 app.set_menu(menu)?;
@@ -116,6 +126,9 @@ pub fn run() {
             if event.id() == "quit" {
                 let _ = app.emit("confirm-quit", ());
             }
+            if event.id() == "quick-open" {
+                let _ = app.emit("quick-open", ());
+            }
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -146,6 +159,7 @@ pub fn run() {
             ipc::list_tasks,
             ipc::get_task,
             ipc::delete_task,
+            ipc::get_setup_in_progress,
             // Sessions
             ipc::create_session,
             ipc::send_message,
@@ -211,6 +225,10 @@ pub fn run() {
             ipc::write_text_file,
             ipc::watch_worktree,
             ipc::unwatch_worktree,
+            // LSP
+            ipc::lsp_start,
+            ipc::lsp_send,
+            ipc::lsp_stop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

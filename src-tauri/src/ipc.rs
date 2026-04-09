@@ -4,7 +4,8 @@ use crate::db::{
 use crate::git_ops;
 use crate::github;
 use crate::pty::{self, ActivePtyMap};
-use crate::task::{self, ActiveMap, ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals};
+use crate::task::{self, ActiveMap, ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals, SetupInProgress};
+use crate::lsp::LspMap;
 use crate::watcher::FileWatcherMap;
 use crate::worktree;
 use serde::Serialize;
@@ -212,8 +213,10 @@ pub struct ImportedHooks {
 
 #[tauri::command]
 pub async fn create_task(
+    app: AppHandle,
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
+    setup_in_progress: State<'_, SetupInProgress>,
     project_id: String,
     base_branch: Option<String>,
 ) -> Result<TaskWithSession, String> {
@@ -223,8 +226,26 @@ pub async fn create_task(
 
     let branch = base_branch.unwrap_or(project.base_branch);
     let port_offset = db::next_port_offset(pool.inner(), &project_id).await?;
-    let (task, session) = task::create_task(db_tx.inner(), project_id, project.repo_path, branch, project.setup_hook, port_offset).await?;
+    let (task, session) = task::create_task(
+        &app,
+        db_tx.inner(),
+        setup_in_progress.inner(),
+        task::CreateTaskParams {
+            project_id,
+            repo_path: project.repo_path,
+            base_branch: branch,
+            setup_hook: project.setup_hook,
+            port_offset,
+        },
+    ).await?;
     Ok(TaskWithSession { task, session })
+}
+
+#[tauri::command]
+pub async fn get_setup_in_progress(
+    setup_in_progress: State<'_, SetupInProgress>,
+) -> Result<Vec<String>, String> {
+    Ok(setup_in_progress.iter().map(|e| e.key().clone()).collect())
 }
 
 #[tauri::command]
@@ -1326,6 +1347,38 @@ pub async fn unwatch_worktree(
     task_id: String,
 ) -> Result<(), String> {
     watchers.remove(&task_id);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// LSP
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn lsp_start(
+    lsp_map: State<'_, LspMap>,
+    app: AppHandle,
+    task_id: String,
+    worktree_path: String,
+) -> Result<(), String> {
+    crate::lsp::start_server(&lsp_map, app, task_id, worktree_path).await
+}
+
+#[tauri::command]
+pub async fn lsp_send(
+    lsp_map: State<'_, LspMap>,
+    task_id: String,
+    message: String,
+) -> Result<(), String> {
+    crate::lsp::send_message(&lsp_map, &task_id, &message).await
+}
+
+#[tauri::command]
+pub async fn lsp_stop(
+    lsp_map: State<'_, LspMap>,
+    task_id: String,
+) -> Result<(), String> {
+    crate::lsp::stop_server(&lsp_map, &task_id).await;
     Ok(())
 }
 

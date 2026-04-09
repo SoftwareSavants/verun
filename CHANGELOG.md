@@ -4,6 +4,13 @@
 
 ### Changes
 
+- Non-blocking setup hooks — worktree creation returns instantly, setup hook runs in background so the chat UI appears immediately
+- Message queuing during setup — type and send your first prompt while the hook runs, it auto-sends on completion
+- Setup progress banner — slim inline indicator replaces the old full-screen spinner, with error state on failure
+- Quick Open (CMD+P) — fuzzy file finder for jumping to files in the worktree
+- LSP integration — language server protocol support for code intelligence in the editor
+- Code editor improvements — enhanced editing experience in the right panel
+- Fix `.verun` folder location — worktrees now created inside the project directory, not the parent
 - Project lifecycle hooks — setup hook runs after worktree creation, destroy hook before deletion, start command auto-runs in terminal
 - Per-task port allocation — 10 unique ports (VERUN_PORT_0–9) and VERUN_REPO_PATH injected into all processes
 - Auto-detect with Claude — analyzes project structure, detects env files, monorepo ports, and generates hooks

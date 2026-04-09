@@ -92,7 +92,7 @@ pub fn create_worktree(repo_path: &str, branch: &str, base_branch: &str) -> Resu
         return Err(format!("Repository path does not exist: {repo_path}"));
     }
 
-    let worktree_path = format!("{}/../.verun/worktrees/{}", repo_path, branch);
+    let worktree_path = format!("{}/.verun/worktrees/{}", repo_path, branch);
 
     // Best-effort fetch from origin
     let _ = git(repo_path).args(["fetch", "origin", base_branch]).output();

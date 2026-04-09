@@ -85,6 +85,15 @@ pub struct GitStatusChangedEvent {
     pub task_id: String,
 }
 
+/// Emitted to frontend when a task's setup hook starts, completes, or fails
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupHookEvent {
+    pub task_id: String,
+    pub status: String,
+    pub error: Option<String>,
+}
+
 /// Emitted to frontend when Claude needs tool approval
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

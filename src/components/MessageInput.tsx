@@ -1,11 +1,12 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
 import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath } from '../store/sessions'
 import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
+import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
 import type { Command } from '../store/commands'
-import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2 } from 'lucide-solid'
+import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2 } from 'lucide-solid'
 import { marked } from 'marked'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
@@ -366,6 +367,25 @@ export const MessageInput: Component<Props> = (props) => {
     const msg = message().trim()
     const atts = attachments()
     if (!sid || (!msg && atts.length === 0) || sending()) return
+
+    const tid = selectedTaskId()
+
+    // If setup hook is still running, queue the message for auto-send on completion
+    if (tid && isSetupRunning(tid)) {
+      queueMessage(tid, {
+        sessionId: sid,
+        message: msg,
+        attachments: atts.length > 0 ? atts : undefined,
+        model: currentModel(),
+        planMode: planMode(),
+        thinkingMode: thinkingMode(),
+        fastMode: fastMode(),
+      })
+      setMessage('')
+      setAttachments([])
+      setShowPalette(false)
+      return
+    }
 
     setSending(true)
     setMessage('')
@@ -1079,6 +1099,28 @@ export const MessageInput: Component<Props> = (props) => {
               Send
             </button>
           </div>
+        </div>
+      </Show>
+
+      {/* Queued message indicator (setup hook still running) */}
+      <Show when={selectedTaskId() && queuedMessages[selectedTaskId()!]}>
+        <div class="flex items-center gap-2 px-3 py-1.5 mb-1 text-xs text-text-dim bg-surface-1 rounded-lg border border-accent/10">
+          <Loader2 size={10} class="animate-spin text-accent shrink-0" />
+          <span class="truncate">Message queued — will send when setup completes</span>
+          <button
+            class="ml-auto shrink-0 text-text-dim hover:text-text-muted transition-colors"
+            onClick={() => {
+              const tid = selectedTaskId()!
+              const queued = queuedMessages[tid]
+              if (queued) {
+                setMessage(queued.message)
+                clearQueuedMessage(tid)
+              }
+            }}
+            title="Cancel queued message"
+          >
+            <X size={12} />
+          </button>
         </div>
       </Show>
 

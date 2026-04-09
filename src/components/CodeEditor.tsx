@@ -24,6 +24,7 @@ import { yaml } from '@codemirror/lang-yaml'
 import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
 import { setTabDirty } from '../store/files'
+import { getLspClient, isLspSupported } from '../lib/lsp'
 
 interface Props {
   taskId: string
@@ -347,7 +348,7 @@ export const CodeEditor: Component<Props> = (props) => {
     }
   }
 
-  const createEditor = (doc: string, path: string) => {
+  const createEditor = async (doc: string, path: string, worktreePath: string) => {
     // Destroy previous instance
     if (editorView) {
       editorView.destroy()
@@ -365,6 +366,18 @@ export const CodeEditor: Component<Props> = (props) => {
       save,
     )
 
+    // Add LSP plugin for JS/TS files
+    if (isLspSupported(path)) {
+      try {
+        const client = await getLspClient(props.taskId, worktreePath)
+        const fileUri = `file://${worktreePath}/${path}`
+        extensions.push(client.plugin(fileUri, 'typescript'))
+      } catch (e) {
+        console.warn('LSP not available:', e)
+        // Editor works fine without LSP
+      }
+    }
+
     const state = EditorState.create({ doc, extensions })
     editorView = new EditorView({ state, parent: editorParentRef })
   }
@@ -381,11 +394,11 @@ export const CodeEditor: Component<Props> = (props) => {
       setOriginalContent(text)
       setTabDirty(path, false)
 
-      // Create fresh editor with content + correct language
-      createEditor(text, path)
+      // Create fresh editor with content + correct language + LSP
+      await createEditor(text, path, task.worktreePath)
     } catch (e) {
       currentContent = `Error loading file: ${e}`
-      createEditor(currentContent, path)
+      await createEditor(currentContent, path, '')
     } finally {
       setLoading(false)
     }

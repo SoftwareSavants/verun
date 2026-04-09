@@ -666,7 +666,7 @@ mod tests {
             id: "t-001".into(),
             project_id: project_id.into(),
             name: None,
-            worktree_path: "/tmp/myapp/../.verun/worktrees/silly-penguin".into(),
+            worktree_path: "/tmp/myapp/.verun/worktrees/silly-penguin".into(),
             branch: "silly-penguin".into(),
             created_at: 2000,
             merge_base_sha: None,
