@@ -269,7 +269,7 @@ export const Sidebar: Component = () => {
 
       <div class="h-full bg-surface-1 flex flex-col overflow-hidden">
         {/* Titlebar drag region (macOS overlay titlebar) */}
-        {hasOverlayTitlebar && <div class="h-12 shrink-0 drag-region" />}
+        <Show when={hasOverlayTitlebar}><div class="h-12 shrink-0 drag-region" data-tauri-drag-region /></Show>
 
         {/* Header */}
         <div class="px-4 pb-2 flex items-center justify-between no-drag">

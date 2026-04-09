@@ -1,5 +1,4 @@
 import { Component, onMount, createSignal } from 'solid-js'
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
 import { Layout } from './components/Layout'
 import { SelectionMenu } from './components/SelectionMenu'
@@ -39,14 +38,6 @@ const App: Component = () => {
 
     // Dismiss on click anywhere
     document.addEventListener('click', () => setSelMenu(null))
-
-    // Double-click on drag regions toggles window maximize (standard macOS behavior)
-    document.addEventListener('dblclick', (e) => {
-      const target = e.target as HTMLElement
-      if (target.closest('.drag-region') && !target.closest('.no-drag')) {
-        getCurrentWindow().toggleMaximize()
-      }
-    })
 
     await initSessionListeners()
     await initTerminalListeners()

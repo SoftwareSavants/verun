@@ -275,7 +275,7 @@ export const CodeChanges: Component<Props> = (props) => {
   return (
     <div class="flex flex-col h-full overflow-hidden min-w-0">
       {/* Drag region for titlebar (macOS overlay) */}
-      {hasOverlayTitlebar && <div class="h-10 shrink-0 drag-region" />}
+      <Show when={hasOverlayTitlebar}><div class="h-10 shrink-0 drag-region" data-tauri-drag-region /></Show>
 
       {/* Header row: title + stats + git action — fixed height */}
       <div class="flex items-center justify-between px-3 h-9 border-b border-border-subtle bg-surface-1">

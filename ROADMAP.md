@@ -79,6 +79,7 @@ High-impact features that engineers are asking for most.
 - [ ] Steer & queue interaction modes (send follow-ups while the agent is working)
 - [ ] Unread / attention-required indicator on tasks in sidebar
 - [ ] OS notifications for task completion and approval prompts
+- [ ] Multi window support
 
 ### Code Tools
 - [ ] File tree viewer

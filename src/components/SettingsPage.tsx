@@ -1,4 +1,4 @@
-import { Component, createSignal, For } from 'solid-js'
+import { Component, createSignal, For, Show } from 'solid-js'
 import { ChevronDown, X } from 'lucide-solid'
 import { ACCENT_THEMES, getActiveTheme, setActiveTheme, type AccentTheme } from '../lib/theme'
 import { setShowSettings, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist } from '../store/ui'
@@ -21,7 +21,7 @@ export const SettingsPage: Component = () => {
   return (
     <div class="flex-1 h-full bg-surface-0 overflow-y-auto">
       {/* Drag region (macOS overlay) */}
-      {hasOverlayTitlebar && <div class="h-10 shrink-0 drag-region" />}
+      <Show when={hasOverlayTitlebar}><div class="h-10 shrink-0 drag-region" data-tauri-drag-region /></Show>
 
       <div class="max-w-lg mx-auto px-6 py-4">
         <div class="flex items-center justify-between mb-6">

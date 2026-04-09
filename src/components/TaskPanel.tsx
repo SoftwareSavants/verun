@@ -194,7 +194,7 @@ export const TaskPanel: Component = () => {
       <Show
         when={task()}
         fallback={
-          <div class="flex-1 flex items-center justify-center drag-region">
+          <div class="flex-1 flex items-center justify-center drag-region" data-tauri-drag-region>
             <div class="text-center max-w-xs no-drag">
               <div class="flex items-center justify-center gap-3 mb-5 text-text-dim">
                 <div class="flex flex-col items-center gap-1">
@@ -257,7 +257,7 @@ export const TaskPanel: Component = () => {
               {/* Chat column */}
               <div class="flex flex-col w-0 flex-[3] overflow-hidden">
                 {/* Header — drag region for titlebar */}
-                <div class={`px-4 ${hasOverlayTitlebar ? 'pt-10' : 'pt-2'} pb-2 flex items-center justify-between bg-surface-0 drag-region`}>
+                <div class={`px-4 ${hasOverlayTitlebar ? 'pt-10' : 'pt-2'} pb-2 flex items-center justify-between bg-surface-0 drag-region`} data-tauri-drag-region>
                   <h2 class="text-sm font-semibold text-text-primary truncate min-w-0 no-drag">
                     {t().name || 'New task'}
                   </h2>

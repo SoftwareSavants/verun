@@ -1,8 +1,9 @@
+const p = navigator.platform?.toLowerCase() ?? ''
 const ua = navigator.userAgent.toLowerCase()
 
-export const isMac = ua.includes('macintosh') || ua.includes('mac os')
-export const isWindows = ua.includes('windows')
-export const isLinux = ua.includes('linux')
+export const isMac = p.startsWith('mac') || ua.includes('macintosh')
+export const isWindows = p.startsWith('win') || ua.includes('windows')
+export const isLinux = p.startsWith('linux') || ua.includes('linux')
 
 /** The modifier key name: Cmd on macOS, Ctrl elsewhere */
 export const modKey = isMac ? 'Cmd' : 'Ctrl'
