@@ -12,6 +12,9 @@
 - Platform-adaptive clipboard, file manager, and shell commands
 - Cross-platform terminal fonts and xterm options
 - Conditional drag regions for macOS overlay titlebar
+- Fix window drag using data-tauri-drag-region attribute
+- Fix double-click maximize bouncing
+- Multi-platform release builds: macOS ARM/Intel DMG, Windows .exe, Linux AppImage
 
 ## 0.2.1 — 2026-04-08
 
