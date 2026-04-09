@@ -8,6 +8,17 @@ import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check } from 'lucide-so
 
 marked.setOptions({ breaks: true, gfm: true })
 
+function formatDuration(ms: number): string {
+  const totalSec = Math.round(ms / 1000)
+  if (totalSec < 60) return `${totalSec}s`
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  if (m < 60) return s > 0 ? `${m}m ${s}s` : `${m}m`
+  const h = Math.floor(m / 60)
+  const rm = m % 60
+  return rm > 0 ? `${h}h ${rm}m` : `${h}h`
+}
+
 function renderMarkdown(text: string): string {
   return marked.parse(text, { async: false }) as string
 }
@@ -29,6 +40,7 @@ interface UserBlock {
 interface AssistantBlock {
   type: 'assistant'
   text: string
+  durationMs?: number
 }
 interface ThinkingBlock {
   type: 'thinking'
@@ -46,7 +58,6 @@ interface SystemBlock {
   type: 'system'
   text: string
 }
-
 type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock
 
 function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
@@ -78,6 +89,7 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
 
   let toolCounter = 0
   let thinkingCounter = 0
+  let turnStartTs: number | undefined
 
   for (const item of items) {
     switch (item.kind) {
@@ -91,6 +103,7 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         break
       case 'userMessage':
         flushText(); flushThinking()
+        turnStartTs = item.timestamp
         blocks.push({ type: 'user', text: item.text, images: item.images })
         break
       case 'toolStart': {
@@ -123,12 +136,25 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         flushText(); flushThinking()
         blocks.push({ type: 'system', text: item.text })
         break
-      case 'turnEnd':
+      case 'turnEnd': {
         flushText(); flushThinking()
+        const durationMs = (turnStartTs && item.timestamp) ? item.timestamp - turnStartTs : undefined
+        if (durationMs) {
+          // Stamp duration on the last assistant block in this turn
+          for (let i = blocks.length - 1; i >= 0; i--) {
+            if (blocks[i].type === 'assistant') {
+              (blocks[i] as AssistantBlock).durationMs = durationMs
+              break
+            }
+            if (blocks[i].type === 'user') break
+          }
+        }
         if (item.status !== 'completed') {
           blocks.push({ type: 'system', text: `Turn ended: ${item.status}` })
         }
+        turnStartTs = undefined
         break
+      }
       case 'raw':
         break
     }
@@ -438,9 +464,12 @@ export const ChatView: Component<Props> = (props) => {
                       innerHTML={renderMarkdown(block.text)}
                     />
                     <div
-                      class="opacity-0 transition-opacity mt-0.5"
+                      class="flex items-center gap-2 opacity-0 transition-opacity mt-0.5"
                       classList={{ 'group-hover:opacity-100': props.sessionStatus !== 'running' }}
                     >
+                      <Show when={(block as AssistantBlock).durationMs}>
+                        <span class="text-[10px] text-text-dim/50">{formatDuration((block as AssistantBlock).durationMs!)}</span>
+                      </Show>
                       <CopyButton text={block.text} />
                     </div>
                   </div>

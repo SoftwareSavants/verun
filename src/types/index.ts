@@ -77,8 +77,8 @@ export type OutputItem =
   | { kind: 'toolStart'; tool: string; input: string }
   | { kind: 'toolResult'; text: string; isError: boolean }
   | { kind: 'system'; text: string }
-  | { kind: 'turnEnd'; status: string }
-  | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; dataBase64: string }> }
+  | { kind: 'turnEnd'; status: string; timestamp?: number }
+  | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; dataBase64: string }>; timestamp?: number }
   | { kind: 'raw'; text: string }
 
 export interface SessionOutputEvent {

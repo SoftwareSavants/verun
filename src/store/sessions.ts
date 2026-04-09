@@ -36,6 +36,7 @@ export async function sendMessage(sessionId: string, message: string, attachment
   const item: OutputItem = {
     kind: 'userMessage',
     text: message,
+    timestamp: Date.now(),
     ...(images && images.length > 0 ? { images } : {}),
   }
 
@@ -132,7 +133,7 @@ export async function loadOutputLines(sessionId: string, taskId: string) {
         }
       }
     } catch { /* ignore */ }
-    const parsed = parseNdjsonLine(l.line)
+    const parsed = parseNdjsonLine(l.line, l.emittedAt)
     if (parsed) items.push(...parsed)
   }
   setOutputItems(sessionId, items)
@@ -143,7 +144,7 @@ export async function loadOutputLines(sessionId: string, taskId: string) {
 }
 
 /** Re-parse a persisted NDJSON line back into OutputItems (mirrors Rust parse_sdk_event) */
-function parseNdjsonLine(line: string): OutputItem[] | null {
+function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null {
   let v: Record<string, unknown>
   try {
     v = JSON.parse(line)
@@ -155,7 +156,7 @@ function parseNdjsonLine(line: string): OutputItem[] | null {
 
   // Our synthetic user message
   if (type === 'verun_user_message') {
-    return [{ kind: 'userMessage', text: v.text as string }]
+    return [{ kind: 'userMessage', text: v.text as string, timestamp: emittedAt }]
   }
 
   // Stream event (content_block_delta)
@@ -212,7 +213,14 @@ function parseNdjsonLine(line: string): OutputItem[] | null {
     }
   }
 
-  // Skip system, result, rate_limit_event, etc.
+  // Turn completed (result)
+  if (type === 'result') {
+    const subtype = (v.subtype as string) || 'unknown'
+    const status = subtype === 'success' ? 'completed' : 'error'
+    return [{ kind: 'turnEnd', status, timestamp: emittedAt }]
+  }
+
+  // Skip system, rate_limit_event, etc.
   return null
 }
 
@@ -264,6 +272,12 @@ export async function initSessionListeners() {
 
   await listen<SessionOutputEvent>('session-output', (event) => {
     const { sessionId, items } = event.payload
+    const now = Date.now()
+    for (const item of items) {
+      if ((item.kind === 'userMessage' || item.kind === 'turnEnd') && !item.timestamp) {
+        (item as { timestamp?: number }).timestamp = now
+      }
+    }
     setOutputItems(produce(store => {
       const existing = store[sessionId]
       if (existing) {
