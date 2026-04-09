@@ -21,6 +21,7 @@
 - Auto-expanding code textareas for hook editors with shell-like styling
 - Keyboard shortcuts in settings — CMD+S to save, CMD+Enter in fields, CMD+Number to switch sections
 - Hooks auto-applied from `.verun.json` when Claude session completes
+- Fix Option+Arrow producing garbled characters instead of word navigation in terminal
 
 ## 0.3.0 — 2026-04-08
 

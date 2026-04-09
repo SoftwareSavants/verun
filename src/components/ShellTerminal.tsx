@@ -69,6 +69,7 @@ function setupXtermPassthrough(term: XTerm) {
     if (e.ctrlKey && (e.key === '`' || e.key === '~' || e.key === 'Tab')) return false
     if (e.ctrlKey && e.key >= '1' && e.key <= '9') return false
     if (modPressed(e)) return false
+    if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Backspace')) return false
     return true
   })
 }
