@@ -4,6 +4,8 @@
 
 ### Changes
 
+- Autodetect prompt rewritten — covers .env.example fallback, destroy hook for env file preservation, orchestrator passthrough config, inter-service URL rewriting, and explicit all-service port mapping
+- OS notifications — macOS desktop notifications when tasks complete, fail, or need approval; suppressed when the task is already in view; toggle in Settings
 - Unread / attention-required indicators on sidebar tasks — amber pulsing dot when a tool approval is pending, accent dot when new output arrives on a background task; cleared on task selection
 - Non-blocking setup hooks — worktree creation returns instantly, setup hook runs in background so the chat UI appears immediately
 - Message queuing during setup — type and send your first prompt while the hook runs, it auto-sends on completion
