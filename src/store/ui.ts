@@ -5,6 +5,50 @@ export const [selectedProjectId, setSelectedProjectId] = createSignal<string | n
 export const [selectedTaskId, setSelectedTaskId] = createSignal<string | null>(null)
 export const [selectedSessionId, setSelectedSessionId] = createSignal<string | null>(null)
 
+// Unread / attention-required indicators for sidebar tasks
+// "unread" = new output arrived while the task wasn't selected
+// "attention" = pending tool approval that needs user action
+// Both are persisted to localStorage so they survive reloads.
+
+const UNREAD_KEY = 'verun:unreadTasks'
+const ATTENTION_KEY = 'verun:attentionTasks'
+
+function loadSet(key: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? new Set(JSON.parse(raw) as string[]) : new Set()
+  } catch { return new Set() }
+}
+
+function persistSet(key: string, set: Set<string>) {
+  localStorage.setItem(key, JSON.stringify([...set]))
+}
+
+const [_unreadTaskIds, _setUnreadTaskIds] = createSignal<Set<string>>(loadSet(UNREAD_KEY))
+const [_attentionTaskIds, _setAttentionTaskIds] = createSignal<Set<string>>(loadSet(ATTENTION_KEY))
+
+export const isTaskUnread = (id: string) => _unreadTaskIds().has(id)
+export const isTaskAttention = (id: string) => _attentionTaskIds().has(id)
+
+export function markTaskUnread(taskId: string) {
+  if (taskId === selectedTaskId()) return
+  _setUnreadTaskIds(prev => { const s = new Set(prev); s.add(taskId); persistSet(UNREAD_KEY, s); return s })
+}
+
+export function markTaskAttention(taskId: string) {
+  if (taskId === selectedTaskId()) return
+  _setAttentionTaskIds(prev => { const s = new Set(prev); s.add(taskId); persistSet(ATTENTION_KEY, s); return s })
+}
+
+export function clearTaskAttention(taskId: string) {
+  _setAttentionTaskIds(prev => { const s = new Set(prev); s.delete(taskId); persistSet(ATTENTION_KEY, s); return s })
+}
+
+export function clearTaskIndicators(taskId: string) {
+  _setUnreadTaskIds(prev => { const s = new Set(prev); s.delete(taskId); persistSet(UNREAD_KEY, s); return s })
+  _setAttentionTaskIds(prev => { const s = new Set(prev); s.delete(taskId); persistSet(ATTENTION_KEY, s); return s })
+}
+
 export const [sidebarWidth, setSidebarWidth] = createSignal(280)
 export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
 

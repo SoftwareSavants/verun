@@ -355,13 +355,22 @@ export const Sidebar: Component = () => {
                         const hasError = () => !!getTaskError(task.id);
                         const attention = () => isTaskAttention(task.id);
                         const unread = () => !attention() && isTaskUnread(task.id);
+                        const hasIndicator = () => attention() || unread();
                         return (
                           <div
                             class={clsx(
                               "group/task pl-2 pr-2 py-1.5 rounded-md transition-colors flex items-start gap-2 cursor-pointer",
                               "hover:bg-surface-2",
                               selectedTaskId() === task.id && "bg-surface-2",
+                              attention() && "bg-amber-400/8",
+                              unread() && "bg-accent/8",
                             )}
+                            style={{
+                              "border-left": attention() ? "2px solid #fbbf24" :
+                                             unread() ? "2px solid #2d6e4f" :
+                                             "2px solid transparent",
+                              "border-radius": (attention() || unread()) ? "0 6px 6px 0" : undefined,
+                            }}
                             onClick={() => { setSelectedTaskId(task.id); setSelectedProjectId(task.projectId); setShowSettings(false) }}
                             onContextMenu={(e) => { if (!creating() && !hasError()) showTaskMenu(e, task.id) }}
                             title={creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
@@ -372,19 +381,13 @@ export const Sidebar: Component = () => {
                               {creating() ? <Loader2 size={12} class="animate-spin" /> : hasError() ? <AlertCircle size={12} /> : <PhaseIcon phase={phase()} />}
                             </span>
                             <div class="flex-1 min-w-0">
-                              <div class="text-xs text-text-secondary truncate">
+                              <div class={clsx("text-xs truncate", hasIndicator() ? "text-text-primary font-medium" : "text-text-secondary")}>
                                 {task.name || "New task"}
                               </div>
-                              <div class="text-[10px] text-text-dim truncate">
+                              <div class={clsx("text-[10px] truncate", hasIndicator() ? "text-text-muted" : "text-text-dim")}>
                                 {task.branch}
                               </div>
                             </div>
-                            <Show when={attention()}>
-                              <span class="shrink-0 w-2 h-2 rounded-full bg-amber-400 animate-pulse" title="Needs attention" />
-                            </Show>
-                            <Show when={unread()}>
-                              <span class="shrink-0 w-1.5 h-1.5 rounded-full bg-accent" title="New output" />
-                            </Show>
                             <button
                               class="shrink-0 p-0.5 rounded opacity-0 group-hover/task:opacity-60 hover:!opacity-100 text-text-dim hover:text-status-error transition-all"
                               onClick={(e) => {

@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Unread / attention-required indicators on sidebar tasks — amber pulsing dot when a tool approval is pending, accent dot when new output arrives on a background task; cleared on task selection
 - Non-blocking setup hooks — worktree creation returns instantly, setup hook runs in background so the chat UI appears immediately
 - Message queuing during setup — type and send your first prompt while the hook runs, it auto-sends on completion
 - Setup progress banner — slim inline indicator replaces the old full-screen spinner, with error state on failure

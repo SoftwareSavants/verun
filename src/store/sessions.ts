@@ -2,6 +2,7 @@ import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment, ToolApprovalRequest, PolicyAutoApprovedEvent } from '../types'
 import { setTasks } from './tasks'
+import { markTaskUnread, markTaskAttention, clearTaskAttention } from './ui'
 import * as ipc from '../lib/ipc'
 
 const MAX_ITEMS_IN_MEMORY = 50_000
@@ -91,6 +92,16 @@ function removeApproval(requestId: string, sessionId: string) {
       if (list.length === 0) delete store[sessionId]
     }
   }))
+  // Clear attention indicator if no more pending approvals for this task
+  const session = sessions.find(s => s.id === sessionId)
+  if (session) {
+    const taskSessions = sessions.filter(s => s.taskId === session.taskId)
+    const hasRemaining = taskSessions.some(s => {
+      const approvals = pendingApprovals[s.id]
+      return approvals && approvals.length > 0
+    })
+    if (!hasRemaining) clearTaskAttention(session.taskId)
+  }
 }
 
 export async function closeSession(sessionId: string) {
@@ -289,6 +300,9 @@ export async function initSessionListeners() {
         store[sessionId] = [...items]
       }
     }))
+    // Mark task as unread if it's not currently selected
+    const session = sessions.find(s => s.id === sessionId)
+    if (session) markTaskUnread(session.taskId)
   })
 
   await listen<SessionStatusEvent>('session-status', (event) => {
@@ -310,6 +324,9 @@ export async function initSessionListeners() {
         store[req.sessionId] = [req]
       }
     }))
+    // Mark task as needing attention
+    const session = sessions.find(s => s.id === req.sessionId)
+    if (session) markTaskAttention(session.taskId)
   })
 
   await listen<{ sessionId: string; name: string }>('session-name', (event) => {

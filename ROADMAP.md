@@ -63,10 +63,10 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Persist last selected model per project
 - [ ] Delete task option to also delete the branch
 - [ ] Loading state when deleting / archiving a task
-- [ ] Timestamp on each turn / run
+- [X] Timestamp on each turn / run
 - [ ] Interrupting turn causes a scroll movement
-- [ ] Option + arrow to move in terminal command isn't working
-- [ ] Worktrees should be under the project folder not Desktop
+- [X] Option + arrow to move in terminal command isn't working
+- [X] Worktrees should be under the project folder not Desktop
 
 ---
 
@@ -79,16 +79,17 @@ High-impact features that engineers are asking for most.
 - [ ] Subagent / nested thread visualization
 - [ ] Fork task or session (branch a conversation into a new direction)
 - [ ] Steer & queue interaction modes (send follow-ups while the agent is working)
-- [ ] Unread / attention-required indicator on tasks in sidebar
+- [X] Unread / attention-required indicator on tasks in sidebar
 - [ ] OS notifications for task completion and approval prompts
 - [ ] Multi window support
 - [ ] Setup script: Option/script to auto-copy .env and other files
 - [ ] Auto-update
+- [ ] Status 
 
 ### Code Tools
-- [ ] File tree viewer
-- [ ] Code editor / viewer
-- [ ] TS support
+- [X] File tree viewer
+- [-] Code editor / viewer
+- [-] TS support
 - [X] Mention files in chat (@ references)
 - [ ] Code review comments on diffs
 

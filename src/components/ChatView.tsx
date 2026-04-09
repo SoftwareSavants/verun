@@ -41,6 +41,7 @@ interface AssistantBlock {
   type: 'assistant'
   text: string
   durationMs?: number
+  isLastInTurn?: boolean
 }
 interface ThinkingBlock {
   type: 'thinking'
@@ -139,15 +140,15 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
       case 'turnEnd': {
         flushText(); flushThinking()
         const durationMs = (turnStartTs && item.timestamp) ? item.timestamp - turnStartTs : undefined
-        if (durationMs) {
-          // Stamp duration on the last assistant block in this turn
-          for (let i = blocks.length - 1; i >= 0; i--) {
-            if (blocks[i].type === 'assistant') {
-              (blocks[i] as AssistantBlock).durationMs = durationMs
-              break
-            }
-            if (blocks[i].type === 'user') break
+        // Mark the last assistant block in this turn
+        for (let i = blocks.length - 1; i >= 0; i--) {
+          if (blocks[i].type === 'assistant') {
+            const ab = blocks[i] as AssistantBlock
+            ab.isLastInTurn = true
+            if (durationMs) ab.durationMs = durationMs
+            break
           }
+          if (blocks[i].type === 'user') break
         }
         if (item.status !== 'completed') {
           blocks.push({ type: 'system', text: `Turn ended: ${item.status}` })
@@ -160,6 +161,16 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
     }
   }
   flushText(); flushThinking()
+  // Mark the last assistant block in an in-progress turn (no turnEnd yet)
+  if (turnStartTs !== undefined) {
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      if (blocks[i].type === 'assistant') {
+        (blocks[i] as AssistantBlock).isLastInTurn = true
+        break
+      }
+      if (blocks[i].type === 'user') break
+    }
+  }
   return blocks
 }
 
@@ -458,20 +469,19 @@ export const ChatView: Component<Props> = (props) => {
                 )
               case 'assistant':
                 return (
-                  <div class="px-5 py-1 group">
+                  <div class="px-5 py-1">
                     <div
                       class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
                       innerHTML={renderMarkdown(block.text)}
                     />
-                    <div
-                      class="flex items-center gap-2 opacity-0 transition-opacity mt-0.5"
-                      classList={{ 'group-hover:opacity-100': props.sessionStatus !== 'running' }}
-                    >
-                      <Show when={(block as AssistantBlock).durationMs}>
-                        <span class="text-[10px] text-text-dim/50">{formatDuration((block as AssistantBlock).durationMs!)}</span>
-                      </Show>
-                      <CopyButton text={block.text} />
-                    </div>
+                    <Show when={(block as AssistantBlock).isLastInTurn}>
+                      <div class="flex items-center gap-2 mt-0.5">
+                        <Show when={(block as AssistantBlock).durationMs}>
+                          <span class="text-[10px] text-text-dim/50">{formatDuration((block as AssistantBlock).durationMs!)}</span>
+                        </Show>
+                        <CopyButton text={block.text} />
+                      </div>
+                    </Show>
                   </div>
                 )
               case 'thinking':
