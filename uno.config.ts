@@ -85,6 +85,7 @@ export default defineConfig({
         }
         button { cursor: pointer; }
         textarea { resize: none; }
+        input[type="checkbox"] { appearance: auto; -webkit-appearance: checkbox; }
 
         /* Smooth transitions */
         * { -webkit-font-smoothing: antialiased; }

@@ -122,10 +122,10 @@ export function removePlaceholderTask(id: string) {
   setTasks(prev => prev.filter(t => t.id !== id))
 }
 
-export async function deleteTask(id: string) {
+export async function deleteTask(id: string, deleteBranch = true) {
   closeTerminalsForTask(id)
   clearTaskGitState(id)
-  await ipc.deleteTask(id)
+  await ipc.deleteTask(id, deleteBranch)
   setTasks(prev => prev.filter(t => t.id !== id))
 }
 

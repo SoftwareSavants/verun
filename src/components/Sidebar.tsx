@@ -25,6 +25,9 @@ import {
   setSelectedTaskId,
   showSettings,
   setShowSettings,
+  isTaskUnread,
+  isTaskAttention,
+  clearTaskIndicators,
 } from "../store/ui";
 import { sessionsForTask, loadSessions } from "../store/sessions";
 import { deleteProject, updateBaseBranch } from "../store/projects";
@@ -143,10 +146,21 @@ export const Sidebar: Component = () => {
     message: string;
     action: () => void;
   } | null>(null);
+  const [deleteTaskTarget, setDeleteTaskTarget] = createSignal<{
+    id: string;
+    deleteBranch: boolean;
+  } | null>(null);
   const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null);
   const [baseBranchProject, setBaseBranchProject] = createSignal<string | null>(null);
   const [branchOptions, setBranchOptions] = createSignal<string[]>([]);
   const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null);
+
+  // Clear unread/attention indicators when user selects a task
+  createEffect(
+    on(selectedTaskId, (id) => {
+      if (id) clearTaskIndicators(id);
+    }),
+  );
 
   // Load tasks for all projects on mount / when projects change
   createEffect(
@@ -229,13 +243,7 @@ export const Sidebar: Component = () => {
         },
         {
           label: "Delete Task",
-          action: () =>
-            setConfirmAction({
-              title: "Delete Task",
-              message:
-                "This will delete all sessions and the worktree for this task.",
-              action: () => deleteTask(taskId),
-            }),
+          action: () => setDeleteTaskTarget({ id: taskId, deleteBranch: true }),
           danger: true,
         },
       ],
@@ -345,6 +353,8 @@ export const Sidebar: Component = () => {
                         const config = () => PHASE_CONFIG[phase()];
                         const creating = () => isTaskCreating(task.id);
                         const hasError = () => !!getTaskError(task.id);
+                        const attention = () => isTaskAttention(task.id);
+                        const unread = () => !attention() && isTaskUnread(task.id);
                         return (
                           <div
                             class={clsx(
@@ -369,16 +379,17 @@ export const Sidebar: Component = () => {
                                 {task.branch}
                               </div>
                             </div>
+                            <Show when={attention()}>
+                              <span class="shrink-0 w-2 h-2 rounded-full bg-amber-400 animate-pulse" title="Needs attention" />
+                            </Show>
+                            <Show when={unread()}>
+                              <span class="shrink-0 w-1.5 h-1.5 rounded-full bg-accent" title="New output" />
+                            </Show>
                             <button
                               class="shrink-0 p-0.5 rounded opacity-0 group-hover/task:opacity-60 hover:!opacity-100 text-text-dim hover:text-status-error transition-all"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setConfirmAction({
-                                  title: "Delete Task",
-                                  message:
-                                    "This will delete all sessions and the worktree for this task.",
-                                  action: () => deleteTask(task.id),
-                                });
+                                setDeleteTaskTarget({ id: task.id, deleteBranch: true });
                               }}
                               title="Delete task"
                             >
@@ -444,6 +455,34 @@ export const Sidebar: Component = () => {
         }}
         onCancel={() => setConfirmAction(null)}
       />
+
+      <ConfirmDialog
+        open={!!deleteTaskTarget()}
+        title="Delete Task"
+        message="This will delete all sessions and the worktree for this task."
+        confirmLabel="Delete"
+        danger
+        onConfirm={() => {
+          const target = deleteTaskTarget();
+          if (target) deleteTask(target.id, target.deleteBranch);
+          setDeleteTaskTarget(null);
+        }}
+        onCancel={() => setDeleteTaskTarget(null)}
+      >
+        <label class="flex items-center gap-2 mb-4 text-sm text-text-secondary cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={deleteTaskTarget()?.deleteBranch ?? true}
+            onChange={(e) => {
+              const target = deleteTaskTarget();
+              if (target) setDeleteTaskTarget({ ...target, deleteBranch: e.currentTarget.checked });
+            }}
+            class="w-3.5 h-3.5 shrink-0"
+            style={{ "accent-color": "#2d6e4f" }}
+          />
+          Also delete the branch
+        </label>
+      </ConfirmDialog>
 
       <NewTaskDialog
         open={!!newTaskProjectId()}

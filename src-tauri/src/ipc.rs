@@ -107,7 +107,7 @@ pub async fn delete_project(
 
     let tasks = db::list_tasks_for_project(pool.inner(), &id).await?;
     for t in &tasks {
-        task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, t, &project.destroy_hook).await?;
+        task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, t, &project.destroy_hook, true).await?;
     }
 
     db_tx
@@ -268,6 +268,7 @@ pub async fn delete_task(
     db_tx: State<'_, DbWriteTx>,
     active: State<'_, ActiveMap>,
     id: String,
+    delete_branch: bool,
 ) -> Result<(), String> {
     let t = db::get_task(pool.inner(), &id)
         .await?
@@ -277,7 +278,7 @@ pub async fn delete_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
-    task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, &t, &project.destroy_hook).await
+    task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, &t, &project.destroy_hook, delete_branch).await
 }
 
 // ---------------------------------------------------------------------------

@@ -33,8 +33,8 @@ export const listTasks = (projectId: string) =>
 export const getTask = (id: string) =>
   invoke<Task | null>('get_task', { id })
 
-export const deleteTask = (id: string) =>
-  invoke<void>('delete_task', { id })
+export const deleteTask = (id: string, deleteBranch: boolean) =>
+  invoke<void>('delete_task', { id, deleteBranch })
 
 export const getSetupInProgress = () =>
   invoke<string[]>('get_setup_in_progress')

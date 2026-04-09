@@ -223,6 +223,7 @@ pub async fn delete_task(
     repo_path: &str,
     task: &Task,
     destroy_hook: &str,
+    delete_branch: bool,
 ) -> Result<(), String> {
     // Kill any active processes for this task's sessions
     let keys: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
@@ -243,14 +244,21 @@ pub async fn delete_task(
     let rp = repo_path.to_string();
     let wtp = task.worktree_path.clone();
     let hook = destroy_hook.to_string();
+    let branch = task.branch.clone();
     let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
-    let _ = tokio::task::spawn_blocking(move || {
+    let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
         if !hook.is_empty() {
             if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
                 eprintln!("[verun] destroy hook failed: {e}");
             }
         }
-        worktree::delete_worktree(&rp, &wtp)
+        worktree::delete_worktree(&rp, &wtp)?;
+        if delete_branch {
+            if let Err(e) = worktree::delete_branch(&rp, &branch) {
+                eprintln!("[verun] branch delete failed: {e}");
+            }
+        }
+        Ok(())
     }).await;
 
     db_tx

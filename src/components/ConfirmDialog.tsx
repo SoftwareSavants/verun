@@ -1,4 +1,4 @@
-import { Component } from 'solid-js'
+import { Component, JSX } from 'solid-js'
 import { Dialog } from './Dialog'
 import { DialogFooter } from './DialogFooter'
 
@@ -10,6 +10,7 @@ interface Props {
   danger?: boolean
   onConfirm: () => void
   onCancel: () => void
+  children?: JSX.Element
 }
 
 export const ConfirmDialog: Component<Props> = (props) => {
@@ -17,6 +18,7 @@ export const ConfirmDialog: Component<Props> = (props) => {
     <Dialog open={props.open} onClose={props.onCancel} onConfirm={props.onConfirm}>
       <h2 class="text-base font-semibold text-text-primary mb-2">{props.title}</h2>
       <p class="text-sm text-text-muted mb-4">{props.message}</p>
+      {props.children}
 
       <DialogFooter
         onCancel={props.onCancel}

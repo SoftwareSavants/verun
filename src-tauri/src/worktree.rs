@@ -186,6 +186,21 @@ pub fn delete_worktree(repo_path: &str, worktree_path: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// Delete a git branch.
+pub fn delete_branch(repo_path: &str, branch: &str) -> Result<(), String> {
+    let output = git(repo_path)
+        .args(["branch", "-D", branch])
+        .output()
+        .map_err(|e| format!("Failed to delete branch: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git branch -D failed: {stderr}"));
+    }
+
+    Ok(())
+}
+
 /// List all git worktrees for a repo.
 pub fn list_worktrees(repo_path: &str) -> Result<Vec<String>, String> {
     let output = git(repo_path)
