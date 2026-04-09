@@ -63,11 +63,19 @@ pub async fn add_project(
         return Err("Project already added".to_string());
     }
 
+    // Load config from .verun.json if it exists in the repo
+    let config_path = format!("{resolved}/.verun.json");
+    let (setup_hook, destroy_hook, start_command) =
+        task::parse_verun_config_file(&config_path).unwrap_or_default();
+
     let project = Project {
         id: Uuid::new_v4().to_string(),
         name,
         repo_path: resolved,
         base_branch,
+        setup_hook,
+        destroy_hook,
+        start_command,
         created_at: epoch_ms(),
     };
 
@@ -98,7 +106,7 @@ pub async fn delete_project(
 
     let tasks = db::list_tasks_for_project(pool.inner(), &id).await?;
     for t in &tasks {
-        task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, t).await?;
+        task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, t, &project.destroy_hook).await?;
     }
 
     db_tx
@@ -121,6 +129,83 @@ pub async fn update_project_base_branch(
         .map_err(|e| format!("DB write failed: {e}"))
 }
 
+#[tauri::command]
+pub async fn update_project_hooks(
+    db_tx: State<'_, DbWriteTx>,
+    id: String,
+    setup_hook: String,
+    destroy_hook: String,
+    start_command: String,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
+}
+
+/// Export current DB hooks to .verun.json in a task's worktree
+#[tauri::command]
+pub async fn export_project_config(
+    pool: State<'_, SqlitePool>,
+    project_id: String,
+    task_id: String,
+) -> Result<(), String> {
+    let project = db::get_project(pool.inner(), &project_id)
+        .await?
+        .ok_or_else(|| format!("Project {project_id} not found"))?;
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    let config = serde_json::json!({
+        "hooks": {
+            "setup": &project.setup_hook,
+            "destroy": &project.destroy_hook,
+        },
+        "startCommand": &project.start_command,
+    });
+    let pretty = serde_json::to_string_pretty(&config).unwrap_or_default();
+    let config_path = format!("{}/.verun.json", t.worktree_path);
+    std::fs::write(&config_path, format!("{pretty}\n"))
+        .map_err(|e| format!("Failed to write .verun.json: {e}"))
+}
+
+/// Import .verun.json from the repo root into DB. Returns the imported hooks.
+#[tauri::command]
+pub async fn import_project_config(
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    project_id: String,
+) -> Result<ImportedHooks, String> {
+    let project = db::get_project(pool.inner(), &project_id)
+        .await?
+        .ok_or_else(|| format!("Project {project_id} not found"))?;
+
+    let config_path = format!("{}/.verun.json", project.repo_path);
+    let (setup, destroy, start) = task::parse_verun_config_file(&config_path)
+        .ok_or_else(|| "No .verun.json found or file is empty".to_string())?;
+
+    db_tx
+        .send(db::DbWrite::UpdateProjectHooks {
+            id: project_id,
+            setup_hook: setup.clone(),
+            destroy_hook: destroy.clone(),
+            start_command: start.clone(),
+        })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+
+    Ok(ImportedHooks { setup_hook: setup, destroy_hook: destroy, start_command: start })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedHooks {
+    pub setup_hook: String,
+    pub destroy_hook: String,
+    pub start_command: String,
+}
+
 // ---------------------------------------------------------------------------
 // Tasks
 // ---------------------------------------------------------------------------
@@ -137,7 +222,8 @@ pub async fn create_task(
         .ok_or_else(|| format!("Project {project_id} not found"))?;
 
     let branch = base_branch.unwrap_or(project.base_branch);
-    let (task, session) = task::create_task(db_tx.inner(), project_id, project.repo_path, branch).await?;
+    let port_offset = db::next_port_offset(pool.inner(), &project_id).await?;
+    let (task, session) = task::create_task(db_tx.inner(), project_id, project.repo_path, branch, project.setup_hook, port_offset).await?;
     Ok(TaskWithSession { task, session })
 }
 
@@ -170,7 +256,7 @@ pub async fn delete_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
-    task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, &t).await
+    task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, &t, &project.destroy_hook).await
 }
 
 // ---------------------------------------------------------------------------
@@ -225,9 +311,11 @@ pub async fn send_message(
         pending_meta.inner().clone(),
         task::SendMessageParams {
             session_id,
-            task_id: session.task_id,
+            task_id: session.task_id.clone(),
+            project_id: t.project_id,
             worktree_path: t.worktree_path,
             repo_path,
+            port_offset: t.port_offset,
             trust_level,
             message,
             claude_session_id: session.claude_session_id,
@@ -922,15 +1010,18 @@ pub async fn pty_spawn(
     task_id: String,
     rows: u16,
     cols: u16,
+    initial_command: Option<String>,
 ) -> Result<pty::SpawnResult, String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
+    let repo_path = db::get_repo_path_for_task(pool.inner(), &task_id).await?;
+    let env_vars = worktree::verun_env_vars(t.port_offset, &repo_path);
     let map = pty_map.inner().clone();
     flatten_join(
         tokio::task::spawn_blocking(move || {
-            pty::spawn_pty(app, map, task_id, t.worktree_path, rows, cols)
+            pty::spawn_pty(app, map, task_id, t.worktree_path, rows, cols, initial_command, env_vars)
         })
         .await,
     )

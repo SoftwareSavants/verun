@@ -14,6 +14,15 @@ export const deleteProject = (id: string) =>
 export const updateProjectBaseBranch = (id: string, baseBranch: string) =>
   invoke<void>('update_project_base_branch', { id, baseBranch })
 
+export const updateProjectHooks = (id: string, setupHook: string, destroyHook: string, startCommand: string) =>
+  invoke<void>('update_project_hooks', { id, setupHook, destroyHook, startCommand })
+
+export const exportProjectConfig = (projectId: string, taskId: string) =>
+  invoke<void>('export_project_config', { projectId, taskId })
+
+export const importProjectConfig = (projectId: string) =>
+  invoke<{ setupHook: string; destroyHook: string; startCommand: string }>('import_project_config', { projectId })
+
 // Tasks
 export const createTask = (projectId: string, baseBranch?: string) =>
   invoke<TaskWithSession>('create_task', { projectId, baseBranch })
@@ -167,8 +176,8 @@ export const openInApp = (path: string, app: string) =>
   invoke<void>('open_in_app', { path, app })
 
 // PTY / Terminal
-export const ptySpawn = (taskId: string, rows: number, cols: number) =>
-  invoke<PtySpawnResult>('pty_spawn', { taskId, rows, cols })
+export const ptySpawn = (taskId: string, rows: number, cols: number, initialCommand?: string) =>
+  invoke<PtySpawnResult>('pty_spawn', { taskId, rows, cols, initialCommand })
 
 export const ptyWrite = (terminalId: string, data: string) =>
   invoke<void>('pty_write', { terminalId, data })

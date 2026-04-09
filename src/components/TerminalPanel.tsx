@@ -6,6 +6,7 @@ import { ShellTerminal } from './ShellTerminal'
 
 interface Props {
   taskId: string
+  startCommand?: string
 }
 
 export const TerminalPanel: Component<Props> = (props) => {
@@ -29,9 +30,15 @@ export const TerminalPanel: Component<Props> = (props) => {
     await closeTerminal(terminalId)
   }
 
-  // Auto-spawn first terminal if none exist
+  // Auto-spawn first terminal if none exist (with start command on first spawn)
   if (taskTerminals().length === 0) {
-    handleNew()
+    const cmd = props.startCommand
+    if (cmd) {
+      setSpawning(true)
+      spawnTerminal(props.taskId, 24, 80, cmd).finally(() => setSpawning(false))
+    } else {
+      handleNew()
+    }
   }
 
   return (

@@ -115,6 +115,8 @@ pub async fn create_task(
     project_id: String,
     repo_path: String,
     base_branch: String,
+    setup_hook: String,
+    port_offset: i64,
 ) -> Result<(Task, Session), String> {
     let id = Uuid::new_v4().to_string();
     let branch = funny_branch_name();
@@ -124,7 +126,17 @@ pub async fn create_task(
         let rp = repo_path.clone();
         let br = branch.clone();
         let bb = base_branch;
-        tokio::task::spawn_blocking(move || worktree::create_worktree(&rp, &br, &bb))
+        let hook = setup_hook;
+        let env_vars = worktree::verun_env_vars(port_offset, &rp);
+        tokio::task::spawn_blocking(move || {
+            let wt = worktree::create_worktree(&rp, &br, &bb)?;
+            if !hook.is_empty() {
+                if let Err(e) = worktree::run_hook(&wt, &hook, &env_vars) {
+                    eprintln!("[verun] setup hook failed: {e}");
+                }
+            }
+            Ok::<String, String>(wt)
+        })
             .await
             .map_err(|e| format!("Join error: {e}"))?
     }?;
@@ -137,6 +149,7 @@ pub async fn create_task(
         branch,
         created_at: now,
         merge_base_sha: None,
+        port_offset,
     };
 
     db_tx
@@ -156,6 +169,7 @@ pub async fn delete_task(
     active: &ActiveMap,
     repo_path: &str,
     task: &Task,
+    destroy_hook: &str,
 ) -> Result<(), String> {
     // Kill any active processes for this task's sessions
     let keys: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
@@ -175,7 +189,16 @@ pub async fn delete_task(
 
     let rp = repo_path.to_string();
     let wtp = task.worktree_path.clone();
-    let _ = tokio::task::spawn_blocking(move || worktree::delete_worktree(&rp, &wtp)).await;
+    let hook = destroy_hook.to_string();
+    let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
+    let _ = tokio::task::spawn_blocking(move || {
+        if !hook.is_empty() {
+            if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
+                eprintln!("[verun] destroy hook failed: {e}");
+            }
+        }
+        worktree::delete_worktree(&rp, &wtp)
+    }).await;
 
     db_tx
         .send(db::DbWrite::DeleteTask { id: task.id.clone() })
@@ -222,8 +245,10 @@ pub struct Attachment {
 pub struct SendMessageParams {
     pub session_id: String,
     pub task_id: String,
+    pub project_id: String,
     pub worktree_path: String,
     pub repo_path: String,
+    pub port_offset: i64,
     pub trust_level: TrustLevel,
     pub message: String,
     pub claude_session_id: Option<String>,
@@ -245,7 +270,7 @@ pub async fn send_message(
     pending_approval_meta: PendingApprovalMeta,
     params: SendMessageParams,
 ) -> Result<(), String> {
-    let SendMessageParams { session_id, task_id, worktree_path, repo_path, trust_level, message, claude_session_id, attachments, model, plan_mode, thinking_mode, fast_mode } = params;
+    let SendMessageParams { session_id, task_id, project_id, worktree_path, repo_path, port_offset, trust_level, message, claude_session_id, attachments, model, plan_mode, thinking_mode, fast_mode } = params;
     // Don't allow concurrent messages on the same session
     if active.contains_key(&session_id) {
         return Err("Session is already processing a message".to_string());
@@ -319,6 +344,9 @@ pub async fn send_message(
         "--include-partial-messages",
     ]);
     cmd.args(["--permission-prompt-tool", "stdio"]);
+    for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
+        cmd.env(&k, &v);
+    }
     if plan_mode {
         cmd.args(["--permission-mode", "plan"]);
     }
@@ -422,6 +450,7 @@ pub async fn send_message(
     let monitor_db_tx = db_tx.clone();
     let monitor_sid = session_id.clone();
     let monitor_tid = task_id.clone();
+    let monitor_pid = project_id.clone();
     let monitor_active = active.clone();
     let monitor_pending = pending_approvals.clone();
     let monitor_pending_meta = pending_approval_meta.clone();
@@ -430,6 +459,7 @@ pub async fn send_message(
     let monitor_trust = trust_level;
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
+        let wt_for_hooks = monitor_wt.clone();
         let captured = stream::stream_and_capture(
             monitor_app.clone(),
             monitor_sid.clone(),
@@ -462,6 +492,26 @@ pub async fn send_message(
                     claude_session_id: csid,
                 })
                 .await;
+        }
+
+        // Check for .verun.json config written by Claude auto-detect
+        let config_path = format!("{wt_for_hooks}/.verun.json");
+        if let Some((setup, destroy, start)) = parse_verun_config_file(&config_path) {
+            let _ = monitor_db_tx
+                .send(db::DbWrite::UpdateProjectHooks {
+                    id: monitor_pid.clone(),
+                    setup_hook: setup.clone(),
+                    destroy_hook: destroy.clone(),
+                    start_command: start.clone(),
+                })
+                .await;
+            let _ = monitor_app.emit("project-hooks-updated", serde_json::json!({
+                "projectId": monitor_pid,
+                "setupHook": setup,
+                "destroyHook": destroy,
+                "startCommand": start,
+            }));
+            eprintln!("[verun] auto-applied config from {config_path}");
         }
 
         // Update session status
@@ -568,6 +618,37 @@ async fn generate_session_title(first_message: &str, worktree_path: &str) -> Opt
     } else {
         Some(title)
     }
+}
+
+/// Parse a .verun.json config file. Returns (setup_hook, destroy_hook, start_command) if valid.
+/// Supports the structured format: { hooks: { setup, destroy }, startCommand }
+pub fn parse_verun_config_file(path: &str) -> Option<(String, String, String)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let hooks = v.get("hooks");
+    let setup = hooks
+        .and_then(|h| h.get("setup"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let destroy = hooks
+        .and_then(|h| h.get("destroy"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let start = v
+        .get("startCommand")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Only return if at least one field is set
+    if setup.is_empty() && destroy.is_empty() && start.is_empty() {
+        return None;
+    }
+
+    Some((setup, destroy, start))
 }
 
 fn extract_claude_session_id(lines: &[String]) -> Option<String> {

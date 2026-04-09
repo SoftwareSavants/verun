@@ -66,7 +66,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [ ] Timestamp on each turn / run
 - [ ] Interrupting turn causes a scroll movement
 - [ ] Option + arrow to move in terminal command isn't working
-- [ ] Worktrees should be under the app folder not desktop
+- [ ] Worktrees should be under the project folder not Desktop
 
 ---
 

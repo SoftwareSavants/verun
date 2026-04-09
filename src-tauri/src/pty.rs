@@ -53,6 +53,8 @@ pub struct SpawnResult {
 }
 
 /// Spawn a new PTY running the user's shell in the given working directory.
+/// If `initial_command` is provided, it will be written to the PTY immediately after spawn.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_pty(
     app: AppHandle,
     map: ActivePtyMap,
@@ -60,6 +62,8 @@ pub fn spawn_pty(
     cwd: String,
     rows: u16,
     cols: u16,
+    initial_command: Option<String>,
+    env_vars: Vec<(String, String)>,
 ) -> Result<SpawnResult, String> {
     let terminal_id = Uuid::new_v4().to_string();
     let pty_system = native_pty_system();
@@ -88,6 +92,9 @@ pub fn spawn_pty(
     cmd.arg("-l"); // login shell for $PATH, aliases, etc.
     cmd.cwd(&cwd);
     cmd.env("TERM", "xterm-256color");
+    for (k, v) in &env_vars {
+        cmd.env(k, v);
+    }
 
     let child = pair
         .slave
@@ -115,6 +122,18 @@ pub fn spawn_pty(
             child: Mutex::new(child),
         },
     );
+
+    // Write initial command if provided
+    if let Some(cmd) = initial_command {
+        if !cmd.is_empty() {
+            if let Some(handle) = map.get(&terminal_id) {
+                if let Ok(mut w) = handle.writer.lock() {
+                    let _ = w.write_all(format!("{cmd}\n").as_bytes());
+                    let _ = w.flush();
+                }
+            }
+        }
+    }
 
     // Spawn a dedicated OS thread for blocking read
     let tid = terminal_id.clone();

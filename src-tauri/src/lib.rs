@@ -138,6 +138,9 @@ pub fn run() {
             ipc::list_projects,
             ipc::delete_project,
             ipc::update_project_base_branch,
+            ipc::update_project_hooks,
+            ipc::export_project_config,
+            ipc::import_project_config,
             // Tasks
             ipc::create_task,
             ipc::list_tasks,

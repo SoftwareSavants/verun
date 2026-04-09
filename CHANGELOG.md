@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- Project lifecycle hooks — setup hook runs after worktree creation, destroy hook before deletion, start command auto-runs in terminal
+- Per-task port allocation — 10 unique ports (VERUN_PORT_0–9) and VERUN_REPO_PATH injected into all processes
+- Auto-detect with Claude — analyzes project structure, detects env files, monorepo ports, and generates hooks
+- `.verun.json` config file — shareable project config for hooks, auto-loaded when adding a project
+- Settings page redesign — sidebar nav with General + per-project sections for hook configuration
+- Project creation dialog — configure hooks on add, with auto-detect option
+- Import/Export buttons — sync hooks between DB and `.verun.json` for team sharing
+- Auto-expanding code textareas for hook editors with shell-like styling
+- Keyboard shortcuts in settings — CMD+S to save, CMD+Enter in fields, CMD+Number to switch sections
+- Hooks auto-applied from `.verun.json` when Claude session completes
+
 ## 0.3.0 — 2026-04-08
 
 ### Changes

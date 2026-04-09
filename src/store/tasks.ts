@@ -55,6 +55,7 @@ export function startTaskCreation(projectId: string, baseBranch: string): string
     branch: 'setting up…',
     createdAt: now,
     mergeBaseSha: null,
+    portOffset: 0,
   }
 
   setTasks(produce(t => t.unshift(placeholder)))

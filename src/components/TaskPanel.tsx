@@ -422,7 +422,7 @@ export const TaskPanel: Component = () => {
                     style={{ height: `${terminalHeight()}px`, display: showTerminal() ? 'block' : 'none' }}
                     class="shrink-0 overflow-hidden"
                   >
-                    <TerminalPanel taskId={t().id} />
+                    <TerminalPanel taskId={t().id} startCommand={projectById(t().projectId)?.startCommand} />
                   </div>
                 </Show>
               </div>

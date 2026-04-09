@@ -89,6 +89,22 @@ pub fn migrations() -> Vec<Migration> {
         description: "add merge_base_sha to tasks",
         sql: "ALTER TABLE tasks ADD COLUMN merge_base_sha TEXT;",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 5,
+        description: "add lifecycle hooks to projects",
+        sql: r#"
+            ALTER TABLE projects ADD COLUMN setup_hook TEXT NOT NULL DEFAULT '';
+            ALTER TABLE projects ADD COLUMN destroy_hook TEXT NOT NULL DEFAULT '';
+            ALTER TABLE projects ADD COLUMN start_command TEXT NOT NULL DEFAULT '';
+        "#,
+        kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 6,
+        description: "add port_offset to tasks for parallel port allocation",
+        sql: "ALTER TABLE tasks ADD COLUMN port_offset INTEGER NOT NULL DEFAULT 0;",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -103,6 +119,9 @@ pub struct Project {
     pub name: String,
     pub repo_path: String,
     pub base_branch: String,
+    pub setup_hook: String,
+    pub destroy_hook: String,
+    pub start_command: String,
     pub created_at: i64,
 }
 
@@ -116,6 +135,7 @@ pub struct Task {
     pub branch: String,
     pub created_at: i64,
     pub merge_base_sha: Option<String>,
+    pub port_offset: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -161,6 +181,7 @@ pub enum DbWrite {
     // Projects
     InsertProject(Project),
     UpdateProjectBaseBranch { id: String, base_branch: String },
+    UpdateProjectHooks { id: String, setup_hook: String, destroy_hook: String, start_command: String },
     DeleteProject { id: String },
 
     // Tasks
@@ -217,12 +238,16 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Projects --
         DbWrite::InsertProject(p) => {
             sqlx::query(
-                "INSERT INTO projects (id, name, repo_path, base_branch, created_at) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&p.id)
             .bind(&p.name)
             .bind(&p.repo_path)
             .bind(&p.base_branch)
+            .bind(&p.setup_hook)
+            .bind(&p.destroy_hook)
+            .bind(&p.start_command)
             .bind(p.created_at)
             .execute(pool)
             .await?;
@@ -230,6 +255,15 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         DbWrite::UpdateProjectBaseBranch { id, base_branch } => {
             sqlx::query("UPDATE projects SET base_branch = ? WHERE id = ?")
                 .bind(&base_branch)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command } => {
+            sqlx::query("UPDATE projects SET setup_hook = ?, destroy_hook = ?, start_command = ? WHERE id = ?")
+                .bind(&setup_hook)
+                .bind(&destroy_hook)
+                .bind(&start_command)
                 .bind(&id)
                 .execute(pool)
                 .await?;
@@ -265,8 +299,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Tasks --
         DbWrite::InsertTask(t) => {
             sqlx::query(
-                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&t.id)
             .bind(&t.project_id)
@@ -274,6 +308,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(&t.worktree_path)
             .bind(&t.branch)
             .bind(t.created_at)
+            .bind(t.port_offset)
             .execute(pool)
             .await?;
         }
@@ -465,6 +500,18 @@ pub async fn list_tasks_for_project(
     .map_err(|e| e.to_string())
 }
 
+pub async fn next_port_offset(pool: &SqlitePool, project_id: &str) -> Result<i64, String> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT COALESCE(MAX(port_offset), -1) FROM tasks WHERE project_id = ?",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(row.map(|(max,)| max + 1).unwrap_or(0))
+}
+
 // Sessions
 
 pub async fn get_session(pool: &SqlitePool, id: &str) -> Result<Option<Session>, String> {
@@ -576,13 +623,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_four_migrations() {
+    fn has_six_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 4);
+        assert_eq!(m.len(), 6);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
         assert_eq!(m[3].version, 4);
+        assert_eq!(m[4].version, 5);
+        assert_eq!(m[5].version, 6);
     }
 
     #[test]
@@ -605,6 +654,9 @@ mod tests {
             name: "My App".into(),
             repo_path: "/tmp/myapp".into(),
             base_branch: "main".into(),
+            setup_hook: String::new(),
+            destroy_hook: String::new(),
+            start_command: String::new(),
             created_at: 1000,
         }
     }
@@ -618,6 +670,7 @@ mod tests {
             branch: "silly-penguin".into(),
             created_at: 2000,
             merge_base_sha: None,
+            port_offset: 0,
         }
     }
 
@@ -905,6 +958,9 @@ mod tests {
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("repoPath").is_some());
         assert!(json.get("baseBranch").is_some());
+        assert!(json.get("setupHook").is_some());
+        assert!(json.get("destroyHook").is_some());
+        assert!(json.get("startCommand").is_some());
         assert!(json.get("createdAt").is_some());
     }
 

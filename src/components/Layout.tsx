@@ -2,7 +2,7 @@ import { Component, Show, onMount, onCleanup, createSignal } from 'solid-js'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
-import { SettingsPage } from './SettingsPage'
+import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { sidebarWidth, setSidebarWidth, addToast, showSettings, setShowSettings, toggleTerminal, showTerminal, setShowTerminal } from '../store/ui'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask } from '../store/terminals'
@@ -71,10 +71,26 @@ export const Layout: Component = () => {
       if (modPressed(e) && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
         const idx = parseInt(e.key) - 1
-        if (idx < tasks.length) {
-          setSelectedTaskId(tasks[idx].id)
-          setSelectedProjectId(tasks[idx].projectId)
-          setShowSettings(false)
+        if (showSettings()) {
+          // In settings: CMD+Number switches between sections
+          // 1 = General, 2+ = projects by order
+          if (idx === 0) {
+            selectSettingsSection('general')
+          } else if (idx - 1 < projects.length) {
+            selectSettingsSection(projects[idx - 1].id)
+          }
+        } else {
+          if (idx < tasks.length) {
+            setSelectedTaskId(tasks[idx].id)
+            setSelectedProjectId(tasks[idx].projectId)
+          }
+        }
+      }
+      // CMD+S — save in settings
+      if (modPressed(e) && e.key === 's') {
+        if (showSettings()) {
+          e.preventDefault()
+          setSettingsSaveRequested(prev => prev + 1)
         }
       }
       if (modPressed(e) && e.key === ',') {
@@ -145,20 +161,28 @@ export const Layout: Component = () => {
           focusActiveTerminal(tid)
         }
       }
-      // Ctrl+Tab / Ctrl+Shift+Tab — switch terminal tabs
+      // Ctrl+Tab / Ctrl+Shift+Tab — switch editor tabs (when in editor/files), else terminal tabs
       if (e.ctrlKey && e.key === 'Tab') {
-        const tid = selectedTaskId()
-        if (tid && showTerminal()) {
+        const active = document.activeElement
+        const inEditor = active && ((active as HTMLElement).isContentEditable || active.closest('.cm-editor'))
+        if (inEditor || rightPanelTab() === 'files') {
           e.preventDefault()
-          const terms = terminalsForTask(tid)
-          if (terms.length > 1) {
-            const currentId = activeTerminalId(tid)
-            const idx = terms.findIndex(t => t.id === currentId)
-            const next = e.shiftKey
-              ? (idx - 1 + terms.length) % terms.length
-              : (idx + 1) % terms.length
-            setActiveTerminalForTask(tid, terms[next].id)
-            requestAnimationFrame(() => focusActiveTerminal(tid))
+          if (e.shiftKey) prevTab()
+          else nextTab()
+        } else {
+          const tid = selectedTaskId()
+          if (tid && showTerminal()) {
+            e.preventDefault()
+            const terms = terminalsForTask(tid)
+            if (terms.length > 1) {
+              const currentId = activeTerminalId(tid)
+              const idx = terms.findIndex(t => t.id === currentId)
+              const next = e.shiftKey
+                ? (idx - 1 + terms.length) % terms.length
+                : (idx + 1) % terms.length
+              setActiveTerminalForTask(tid, terms[next].id)
+              requestAnimationFrame(() => focusActiveTerminal(tid))
+            }
           }
         }
       }

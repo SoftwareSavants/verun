@@ -5,7 +5,7 @@ import { SelectionMenu } from './components/SelectionMenu'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { ToastContainer } from './components/ToastContainer'
 import { initTheme } from './lib/theme'
-import { loadProjects } from './store/projects'
+import { loadProjects, initProjectListeners } from './store/projects'
 import { initSessionListeners, syncSessionStatuses } from './store/sessions'
 import { initTerminalListeners } from './store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from './store/git'
@@ -42,6 +42,7 @@ const App: Component = () => {
     await initSessionListeners()
     await initTerminalListeners()
     await initGitListeners()
+    await initProjectListeners()
     initWindowFocusRefresh()
     await loadProjects()
     await syncSessionStatuses()

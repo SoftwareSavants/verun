@@ -7,6 +7,9 @@ const makeProject = (overrides: Partial<Project> = {}): Project => ({
   name: 'my-app',
   repoPath: '/tmp/my-app',
   baseBranch: 'main',
+  setupHook: '',
+  destroyHook: '',
+  startCommand: '',
   createdAt: 1000,
   ...overrides,
 })

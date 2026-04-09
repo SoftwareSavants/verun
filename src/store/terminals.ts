@@ -82,8 +82,8 @@ export function refitActiveTerminal(taskId: string) {
 // Actions
 // ---------------------------------------------------------------------------
 
-export async function spawnTerminal(taskId: string, rows: number, cols: number): Promise<TerminalInstance> {
-  const result = await ipc.ptySpawn(taskId, rows, cols)
+export async function spawnTerminal(taskId: string, rows: number, cols: number, initialCommand?: string): Promise<TerminalInstance> {
+  const result = await ipc.ptySpawn(taskId, rows, cols, initialCommand)
   const instance: TerminalInstance = { id: result.terminalId, taskId, name: result.shellName }
   setTerminals(produce(t => t.push(instance)))
   setActiveTerminalForTask(taskId, result.terminalId)

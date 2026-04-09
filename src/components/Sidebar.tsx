@@ -30,6 +30,7 @@ import { sessionsForTask, loadSessions } from "../store/sessions";
 import { deleteProject, updateBaseBranch } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NewTaskDialog } from "./NewTaskDialog";
+import { AddProjectDialog } from "./AddProjectDialog";
 import { Dialog } from "./Dialog";
 import { Popover } from "./Popover";
 import {
@@ -48,7 +49,6 @@ import {
 } from "lucide-solid";
 import { clsx } from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { addProject } from "../store/projects";
 import { addToast } from "../store/ui";
 import * as ipc from "../lib/ipc";
 import { hasOverlayTitlebar } from "../lib/platform";
@@ -146,6 +146,7 @@ export const Sidebar: Component = () => {
   const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null);
   const [baseBranchProject, setBaseBranchProject] = createSignal<string | null>(null);
   const [branchOptions, setBranchOptions] = createSignal<string[]>([]);
+  const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null);
 
   // Load tasks for all projects on mount / when projects change
   createEffect(
@@ -280,14 +281,7 @@ export const Sidebar: Component = () => {
             class="p-1 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
             onClick={async () => {
               const selected = await openDialog({ directory: true, multiple: false });
-              if (!selected) return;
-              try {
-                const project = await addProject(selected as string);
-                setSelectedProjectId(project.id);
-                addToast(`Added ${project.name}`, "success");
-              } catch (e) {
-                addToast(String(e), "error");
-              }
+              if (selected) setAddProjectPath(selected as string);
             }}
             title="Add Project (⌘O)"
           >
@@ -417,14 +411,7 @@ export const Sidebar: Component = () => {
                 class="btn-primary text-xs px-4 py-1.5"
                 onClick={async () => {
                   const selected = await openDialog({ directory: true, multiple: false });
-                  if (!selected) return;
-                  try {
-                    const project = await addProject(selected as string);
-                    setSelectedProjectId(project.id);
-                    addToast(`Added ${project.name}`, "success");
-                  } catch (e) {
-                    addToast(String(e), "error");
-                  }
+                  if (selected) setAddProjectPath(selected as string);
                 }}
               >
                 Add Project
@@ -462,6 +449,13 @@ export const Sidebar: Component = () => {
         open={!!newTaskProjectId()}
         projectId={newTaskProjectId()}
         onClose={() => setNewTaskProjectId(null)}
+      />
+
+      <AddProjectDialog
+        open={!!addProjectPath()}
+        repoPath={addProjectPath()}
+        onClose={() => setAddProjectPath(null)}
+        onAdded={(id) => setSelectedProjectId(id)}
       />
 
       <Dialog open={!!baseBranchProject()} onClose={() => setBaseBranchProject(null)} width="18rem">

@@ -137,6 +137,40 @@ pub fn create_worktree(repo_path: &str, branch: &str, base_branch: &str) -> Resu
     Ok(abs_path)
 }
 
+/// Build env vars for a task: VERUN_PORT_0–9 and VERUN_REPO_PATH.
+pub fn verun_env_vars(port_offset: i64, repo_path: &str) -> Vec<(String, String)> {
+    let base_port = 10000 + port_offset * 10;
+    let mut vars: Vec<(String, String)> = (0..10)
+        .map(|i| (format!("VERUN_PORT_{i}"), format!("{}", base_port + i)))
+        .collect();
+    vars.push(("VERUN_REPO_PATH".into(), repo_path.into()));
+    vars
+}
+
+/// Run a shell command in the given directory with optional env vars.
+/// Skips silently if the command is empty. Returns Err with stderr on failure.
+pub fn run_hook(cwd: &str, command: &str, env_vars: &[(String, String)]) -> Result<(), String> {
+    if command.is_empty() {
+        return Ok(());
+    }
+
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", command]).current_dir(cwd);
+    for (k, v) in env_vars {
+        cmd.env(k, v);
+    }
+
+    let output = cmd.output()
+        .map_err(|e| format!("Failed to run hook: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Hook failed: {stderr}"));
+    }
+
+    Ok(())
+}
+
 /// Delete a git worktree.
 pub fn delete_worktree(repo_path: &str, worktree_path: &str) -> Result<(), String> {
     let output = git(repo_path)
@@ -581,5 +615,61 @@ mod tests {
         let (ahead, behind, _unpushed) = get_branch_status(&clone_path).unwrap();
         assert_eq!(ahead, 1, "should be 1 ahead of origin/main");
         assert_eq!(behind, 0, "should not be behind when main hasn't changed");
+    }
+
+    // -- Hook tests --
+
+    #[test]
+    fn run_hook_empty_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(run_hook(dir.path().to_str().unwrap(), "", &[]).is_ok());
+    }
+
+    #[test]
+    fn run_hook_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        run_hook(cwd, "echo hello > hook-test.txt", &[]).unwrap();
+        let content = fs::read_to_string(dir.path().join("hook-test.txt")).unwrap();
+        assert!(content.contains("hello"));
+    }
+
+    #[test]
+    fn run_hook_fails_on_bad_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_hook(dir.path().to_str().unwrap(), "false", &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn run_hook_runs_in_correct_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        run_hook(cwd, "pwd > cwd-test.txt", &[]).unwrap();
+        let content = fs::read_to_string(dir.path().join("cwd-test.txt")).unwrap();
+        let canonical = fs::canonicalize(dir.path()).unwrap();
+        assert_eq!(content.trim(), canonical.to_str().unwrap());
+    }
+
+    #[test]
+    fn run_hook_injects_env_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let vars = verun_env_vars(0, "/tmp/repo");
+        run_hook(cwd, "echo $VERUN_PORT_0 $VERUN_REPO_PATH > env-test.txt", &vars).unwrap();
+        let content = fs::read_to_string(dir.path().join("env-test.txt")).unwrap();
+        assert!(content.contains("10000"));
+        assert!(content.contains("/tmp/repo"));
+    }
+
+    #[test]
+    fn verun_env_vars_port_offset() {
+        let vars = verun_env_vars(3, "/repo");
+        let port_0 = vars.iter().find(|(k, _)| k == "VERUN_PORT_0").unwrap();
+        assert_eq!(port_0.1, "10030"); // 10000 + 3*10
+        let port_9 = vars.iter().find(|(k, _)| k == "VERUN_PORT_9").unwrap();
+        assert_eq!(port_9.1, "10039");
+        let repo = vars.iter().find(|(k, _)| k == "VERUN_REPO_PATH").unwrap();
+        assert_eq!(repo.1, "/repo");
     }
 }

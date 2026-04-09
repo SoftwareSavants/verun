@@ -5,6 +5,9 @@ export interface Project {
   name: string
   repoPath: string
   baseBranch: string
+  setupHook: string
+  destroyHook: string
+  startCommand: string
   createdAt: number
 }
 
@@ -16,6 +19,7 @@ export interface Task {
   branch: string
   createdAt: number
   mergeBaseSha: string | null
+  portOffset: number
 }
 
 export interface Session {
