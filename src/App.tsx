@@ -24,8 +24,8 @@ const App: Component = () => {
     initTheme()
     // Replace default context menu with custom selection menu
     document.addEventListener('contextmenu', (e) => {
-      // Allow our Sidebar's custom context menu
-      if ((e.target as HTMLElement).closest('[data-context-menu]')) return
+      // Allow custom context menus (sidebar, code editor, file tree)
+      if ((e.target as HTMLElement).closest('[data-context-menu]') || (e.target as HTMLElement).closest('.cm-editor') || (e.target as HTMLElement).closest('.code-editor-wrapper')) return
 
       e.preventDefault()
 

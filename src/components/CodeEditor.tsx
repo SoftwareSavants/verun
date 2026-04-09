@@ -1,11 +1,11 @@
 import { Component, createEffect, on, createSignal, Show, onCleanup, onMount } from 'solid-js'
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars } from '@codemirror/view'
-import { EditorState, type Extension } from '@codemirror/state'
+import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, type Tooltip } from '@codemirror/view'
+import { EditorState, StateField, StateEffect, type Extension } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit } from '@codemirror/language'
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search'
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete'
-import { jumpToDefinition, jumpToDefinitionKeymap, findReferencesKeymap, renameKeymap, formatKeymap } from '@codemirror/lsp-client'
+import { jumpToDefinition, jumpToDefinitionKeymap, findReferencesKeymap, formatKeymap, LSPPlugin } from '@codemirror/lsp-client'
 import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark'
 import { createSearchPanel, searchPanelTheme } from './SearchPanel'
 import { tags } from '@lezer/highlight'
@@ -26,7 +26,7 @@ import { yaml } from '@codemirror/lang-yaml'
 import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
 import { setTabDirty } from '../store/files'
-import { getLspClient, isLspSupported } from '../lib/lsp'
+import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 
 interface Props {
   taskId: string
@@ -158,6 +158,124 @@ const verunTheme = EditorView.theme({
   },
 }, { dark: true })
 
+// ── Inline rename widget (VS Code style) ──────────────────────────────
+const showRenameTooltip = StateEffect.define<Tooltip | null>()
+
+const renameTooltipField = StateField.define<Tooltip | null>({
+  create: () => null,
+  update(tooltip, tr) {
+    for (const e of tr.effects) {
+      if (e.is(showRenameTooltip)) return e.value
+    }
+    return tooltip
+  },
+  provide: f => showTooltip.from(f),
+})
+
+function inlineRename(view: EditorView): boolean {
+  const wordRange = view.state.wordAt(view.state.selection.main.head)
+  const plugin = LSPPlugin.get(view)
+  if (!wordRange || !plugin || !plugin.client.serverCapabilities?.renameProvider) return false
+
+  const word = view.state.sliceDoc(wordRange.from, wordRange.to)
+
+  view.dispatch({
+    effects: showRenameTooltip.of({
+      pos: wordRange.from,
+      above: true,
+      create: () => {
+        const container = document.createElement('div')
+        container.className = 'cm-rename-widget'
+
+        const input = document.createElement('input')
+        input.type = 'text'
+        input.value = word
+        input.className = 'cm-rename-input'
+        input.setAttribute('spellcheck', 'false')
+
+        const dismiss = () => {
+          view.dispatch({ effects: showRenameTooltip.of(null) })
+          view.focus()
+        }
+
+        const submit = () => {
+          const newName = input.value.trim()
+          dismiss()
+          if (newName && newName !== word) {
+            const p = LSPPlugin.get(view)
+            if (!p) return
+            p.client.sync()
+            p.client.withMapping((mapping: any) =>
+              p.client.request('textDocument/rename', {
+                newName,
+                position: p.toPosition(wordRange.from),
+                textDocument: { uri: p.uri },
+              }).then((response: any) => {
+                if (!response) return
+                for (const uri in response.changes) {
+                  const lspChanges = response.changes[uri]
+                  const file = p.client.workspace.getFile(uri)
+                  if (!lspChanges.length || !file) continue
+                  p.client.workspace.updateFile(uri, {
+                    changes: lspChanges.map((change: any) => ({
+                      from: mapping.mapPosition(uri, change.range.start),
+                      to: mapping.mapPosition(uri, change.range.end),
+                      insert: change.newText,
+                    })),
+                    userEvent: 'rename',
+                  })
+                }
+              })
+            )
+          }
+        }
+
+        input.onkeydown = (e: KeyboardEvent) => {
+          if (e.key === 'Enter') { e.preventDefault(); submit() }
+          else if (e.key === 'Escape') { e.preventDefault(); dismiss() }
+          e.stopPropagation()
+        }
+        input.onblur = dismiss
+
+        container.appendChild(input)
+        requestAnimationFrame(() => { input.focus(); input.select() })
+        return { dom: container }
+      },
+    }),
+  })
+  return true
+}
+
+const renameWidgetTheme = EditorView.theme({
+  '.cm-rename-widget': {
+    backgroundColor: '#252526',
+    border: '1px solid #454545',
+    borderRadius: '4px',
+    padding: '4px',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+  },
+  '.cm-rename-input': {
+    backgroundColor: '#3c3c3c',
+    color: '#cccccc',
+    border: '1px solid #3c3c3c',
+    borderRadius: '3px',
+    padding: '3px 6px',
+    fontSize: '13px',
+    fontFamily: '"SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace',
+    outline: 'none',
+    width: '200px',
+    height: '24px',
+    boxSizing: 'border-box',
+  },
+  '.cm-rename-input:focus': {
+    borderColor: '#007fd4',
+  },
+  // Position the tooltip properly
+  '.cm-tooltip.cm-tooltip-above': {
+    borderRadius: '4px',
+  },
+}, { dark: true })
+
 // ── Language detection ─────────────────────────────────────────────────
 function langFromExt(path: string): Extension | null {
   const ext = path.split('.').pop()?.toLowerCase() || ''
@@ -217,6 +335,8 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
     // Theme & highlighting
     verunTheme,
     searchPanelTheme,
+    renameWidgetTheme,
+    renameTooltipField,
     syntaxHighlighting(verunHighlightStyle),
     syntaxHighlighting(oneDarkHighlightStyle, { fallback: true }),
 
@@ -255,8 +375,8 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
       ...completionKeymap,
       ...jumpToDefinitionKeymap,
       ...findReferencesKeymap,
-      ...renameKeymap,
       ...formatKeymap,
+      { key: 'F2', run: inlineRename, preventDefault: true },
       indentWithTab,
       { key: 'Mod-s', run: () => { onSave(); return true } },
     ]),
@@ -284,10 +404,15 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
       }
     }),
 
-    // Context menu handler
+    // Context menu handler — move cursor to click position first
     EditorView.domEventHandlers({
       contextmenu: (event, view) => {
         event.preventDefault()
+        // Move cursor to right-click position so Go to Definition works on the right word
+        const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+        if (pos != null) {
+          view.dispatch({ selection: { anchor: pos } })
+        }
         const editorEl = view.dom.closest('.code-editor-wrapper')
         if (editorEl) {
           editorEl.dispatchEvent(new CustomEvent('editor-context-menu', {
@@ -315,9 +440,13 @@ export const CodeEditor: Component<Props> = (props) => {
   let editorView: EditorView | undefined
   let containerRef: HTMLDivElement | undefined
   let editorParentRef: HTMLDivElement | undefined
+  // Cursor position saved at right-click time, for context menu actions
+  let contextMenuCursorPos: number | null = null
 
   // Current content — tracked for save, not reactive for CM
   let currentContent = ''
+  // Current file URI for LSP view registration
+  let currentFileUri = ''
 
   const save = async () => {
     try {
@@ -332,6 +461,7 @@ export const CodeEditor: Component<Props> = (props) => {
   const createEditor = async (doc: string, path: string, worktreePath: string) => {
     // Destroy previous instance
     if (editorView) {
+      if (currentFileUri) unregisterEditorView(currentFileUri)
       editorView.destroy()
       editorView = undefined
     }
@@ -361,6 +491,12 @@ export const CodeEditor: Component<Props> = (props) => {
 
     const state = EditorState.create({ doc, extensions })
     editorView = new EditorView({ state, parent: editorParentRef })
+
+    // Register the view for cross-file go-to-definition
+    if (worktreePath) {
+      currentFileUri = `file://${worktreePath}/${path}`
+      registerEditorView(currentFileUri, editorView)
+    }
   }
 
   // Load file and create editor
@@ -387,6 +523,7 @@ export const CodeEditor: Component<Props> = (props) => {
 
   // Cleanup
   onCleanup(() => {
+    if (currentFileUri) unregisterEditorView(currentFileUri)
     if (editorView) {
       editorView.destroy()
       editorView = undefined
@@ -426,23 +563,29 @@ export const CodeEditor: Component<Props> = (props) => {
     setContextMenu(null)
   }
 
-  const handleGoToDefinition = () => {
-    if (editorView) jumpToDefinition(editorView)
+  /** Restore cursor, re-focus editor, then run action on next frame */
+  const runAtContextCursor = (_actionName: string, action: (view: EditorView) => boolean | void) => {
     setContextMenu(null)
+    if (!editorView || contextMenuCursorPos == null) return
+    const view = editorView
+    const pos = contextMenuCursorPos
+    view.dispatch({ selection: { anchor: pos } })
+    view.focus()
+    requestAnimationFrame(() => action(view))
+  }
+
+  const handleGoToDefinition = () => {
+    runAtContextCursor('GoToDefinition', (view) => jumpToDefinition(view))
   }
 
   const handleFindReferences = () => {
-    if (editorView) {
-      import('@codemirror/lsp-client').then(({ findReferences }) => findReferences(editorView!))
-    }
-    setContextMenu(null)
+    runAtContextCursor('FindReferences', (view) => {
+      import('@codemirror/lsp-client').then(({ findReferences }) => findReferences(view))
+    })
   }
 
   const handleRenameSymbol = () => {
-    if (editorView) {
-      import('@codemirror/lsp-client').then(({ renameSymbol }) => renameSymbol(editorView!))
-    }
-    setContextMenu(null)
+    runAtContextCursor('Rename', (view) => inlineRename(view))
   }
 
   const handleCopyPath = () => {
@@ -468,7 +611,10 @@ export const CodeEditor: Component<Props> = (props) => {
   }
 
   // Close context menu on click outside
-  const handleClickOutside = () => setContextMenu(null)
+  const handleClickOutside = (e: MouseEvent) => {
+    if ((e.target as HTMLElement).closest('.editor-ctx-menu')) return
+    setContextMenu(null)
+  }
   createEffect(() => {
     if (contextMenu()) {
       document.addEventListener('mousedown', handleClickOutside)
@@ -481,6 +627,9 @@ export const CodeEditor: Component<Props> = (props) => {
   // Listen for context menu event from CM dom handler
   onMount(() => {
     containerRef?.addEventListener('editor-context-menu', ((e: CustomEvent) => {
+      if (editorView) {
+        contextMenuCursorPos = editorView.state.selection.main.head
+      }
       setContextMenu({ x: e.detail.x, y: e.detail.y })
     }) as EventListener)
   })
@@ -498,7 +647,7 @@ export const CodeEditor: Component<Props> = (props) => {
       <Show when={contextMenu()}>
         {(pos) => (
           <div
-            class="fixed z-100 bg-[#21252b] border border-[#181a1f] rounded-lg py-1 min-w-52"
+            class="editor-ctx-menu fixed z-100 bg-[#21252b] border border-[#181a1f] rounded-lg py-1 min-w-52"
             style={{
               left: `${pos().x}px`,
               top: `${pos().y}px`,
