@@ -8,6 +8,7 @@ mod stream;
 mod task;
 mod worktree;
 
+#[cfg(target_os = "macos")]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_sql::Builder as SqlBuilder;
@@ -203,8 +204,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Verun")
         .run(|app_handle, event| match event {
+            #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => {
-                // macOS dock icon click: show the hidden window
                 if let Some(w) = app_handle.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();
