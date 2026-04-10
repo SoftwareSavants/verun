@@ -88,6 +88,8 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: /Users/runner/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target aarch64-apple-darwin
 
       - name: Upload DMG
@@ -95,6 +97,14 @@ jobs:
         with:
           name: macos-arm-dmg
           path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+
+      - name: Upload updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm-updater
+          path: |
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.tar.gz.sig
 
   build-macos-intel:
     needs: check-version
@@ -151,6 +161,8 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: /Users/runner/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target x86_64-apple-darwin
 
       - name: Upload DMG
@@ -158,6 +170,14 @@ jobs:
         with:
           name: macos-intel-dmg
           path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+
+      - name: Upload updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-intel-updater
+          path: |
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.tar.gz
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.tar.gz.sig
 
   build-windows:
     needs: check-version
@@ -184,6 +204,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build
 
       - name: Upload NSIS installer
@@ -191,6 +214,14 @@ jobs:
         with:
           name: windows-exe
           path: src-tauri/target/release/bundle/nsis/*.exe
+
+      - name: Upload updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-updater
+          path: |
+            src-tauri/target/release/bundle/nsis/*.nsis.zip
+            src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
 
   build-linux:
     needs: check-version
@@ -222,6 +253,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build
 
       - name: Upload AppImage
@@ -229,6 +263,12 @@ jobs:
         with:
           name: linux-appimage
           path: src-tauri/target/release/bundle/appimage/*.AppImage
+
+      - name: Upload updater signature
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-updater-sig
+          path: src-tauri/target/release/bundle/appimage/*.AppImage.sig
 
   release:
     needs: [check-version, build-macos-arm, build-macos-intel, build-windows, build-linux]
@@ -242,7 +282,33 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+
+          # DMGs (unique names per arch)
+          cp artifacts/macos-arm-dmg/*.dmg release-assets/
+          cp artifacts/macos-intel-dmg/*.dmg release-assets/
+
+          # Windows installer
+          cp artifacts/windows-exe/*.exe release-assets/
+
+          # Linux AppImage
+          cp artifacts/linux-appimage/*.AppImage release-assets/
+
+          # Updater artifacts — rename macOS tarballs to avoid collision
+          cp artifacts/macos-arm-updater/*.tar.gz release-assets/Verun_aarch64.app.tar.gz
+          cp artifacts/macos-arm-updater/*.tar.gz.sig release-assets/Verun_aarch64.app.tar.gz.sig
+          cp artifacts/macos-intel-updater/*.tar.gz release-assets/Verun_x86_64.app.tar.gz
+          cp artifacts/macos-intel-updater/*.tar.gz.sig release-assets/Verun_x86_64.app.tar.gz.sig
+
+          # Windows updater
+          cp artifacts/windows-updater/*.nsis.zip release-assets/
+          cp artifacts/windows-updater/*.nsis.zip.sig release-assets/
+
+          # Linux updater signature
+          cp artifacts/linux-updater-sig/*.AppImage.sig release-assets/
 
       - name: Extract changelog for this version
         id: changelog
@@ -254,6 +320,46 @@ jobs:
             echo "Release v${version}" > /tmp/release_notes.md
           fi
 
+      - name: Build latest.json for updater
+        run: |
+          version="${{ needs.check-version.outputs.version }}"
+          base_url="https://github.com/SoftwareSavants/verun/releases/download/v${version}"
+          pub_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Read signatures
+          da_sig=$(cat release-assets/Verun_aarch64.app.tar.gz.sig)
+          dx_sig=$(cat release-assets/Verun_x86_64.app.tar.gz.sig)
+          ws_sig=$(cat release-assets/*.nsis.zip.sig)
+          ls_sig=$(cat release-assets/*.AppImage.sig)
+
+          # Get filenames for Windows and Linux
+          win_file=$(basename release-assets/*.nsis.zip)
+          linux_file=$(basename release-assets/*.AppImage)
+
+          jq -n \
+            --arg version "$version" \
+            --arg notes "$(cat /tmp/release_notes.md)" \
+            --arg pub_date "$pub_date" \
+            --arg da_sig "$da_sig" \
+            --arg da_url "${base_url}/Verun_aarch64.app.tar.gz" \
+            --arg dx_sig "$dx_sig" \
+            --arg dx_url "${base_url}/Verun_x86_64.app.tar.gz" \
+            --arg ws_sig "$ws_sig" \
+            --arg wu_url "${base_url}/${win_file}" \
+            --arg ls_sig "$ls_sig" \
+            --arg lu_url "${base_url}/${linux_file}" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { signature: $da_sig, url: $da_url },
+                "darwin-x86_64": { signature: $dx_sig, url: $dx_url },
+                "windows-x86_64": { signature: $ws_sig, url: $wu_url },
+                "linux-x86_64": { signature: $ls_sig, url: $lu_url }
+              }
+            }' > release-assets/latest.json
+
       - name: Create tag
         run: |
           git tag "v${{ needs.check-version.outputs.version }}"
@@ -264,6 +370,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "v${{ needs.check-version.outputs.version }}" \
-            artifacts/* \
+            release-assets/* \
             --title "v${{ needs.check-version.outputs.version }}" \
             --notes-file /tmp/release_notes.md

@@ -85,7 +85,7 @@ High-impact features that engineers are asking for most.
 - [X] OS notifications for task completion and approval prompts
 - [ ] Multi window support
 - [-] Setup script: Option/script to auto-copy .env and other files
-- [ ] Auto-update
+- [X] Auto-update
 - [X] Session Status on the status tab bar
 
 ### Code Tools

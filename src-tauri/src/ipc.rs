@@ -1522,6 +1522,7 @@ pub async fn add_step(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_step(
     db_tx: State<'_, DbWriteTx>,
     id: String,

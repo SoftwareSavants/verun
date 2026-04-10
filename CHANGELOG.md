@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Auto-update — checks for updates on launch, shows a non-intrusive banner with download progress and one-click restart; also available via Verun > Check for Updates menu item; CI pipeline now generates signed updater artifacts and latest.json for all platforms
 - Steps — plan follow-up messages in a step list above the input. Enter adds a paused step while Claude is working, Shift+Enter adds an armed step (auto-sends on idle). Cmd+Enter fires the next step when idle or redirects when running. Steps persist across sessions and app restarts. Drag to reorder, click to arm/disarm.
 - Unread indicator on session tabs — accent dot appears when a non-selected session receives new output, cleared on selection
 - Fix merge PR showing error toast when main branch is checked out in another worktree

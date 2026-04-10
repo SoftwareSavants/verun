@@ -14,6 +14,7 @@ mod worktree;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_sql::Builder as SqlBuilder;
+use tauri_plugin_updater::UpdaterExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -23,6 +24,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(
             SqlBuilder::default()
                 .add_migrations("sqlite:verun.db", db::migrations())
@@ -62,8 +65,11 @@ pub fn run() {
                 let quick_open_item = MenuItemBuilder::with_id("quick-open", "Go to File…")
                     .accelerator("CmdOrCtrl+P")
                     .build(app)?;
+                let update_item = MenuItemBuilder::with_id("check-updates", "Check for Updates…")
+                    .build(app)?;
                 let app_menu = SubmenuBuilder::new(app, "Verun")
                     .item(&PredefinedMenuItem::about(app, Some("About Verun"), None)?)
+                    .item(&update_item)
                     .separator()
                     .item(&PredefinedMenuItem::services(app, None)?)
                     .separator()
@@ -121,6 +127,32 @@ pub fn run() {
                 }
             });
 
+            // Auto-check for updates after a short delay
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                match update_handle.updater() {
+                    Ok(updater) => match updater.check().await {
+                        Ok(Some(update)) => {
+                            let _ = update_handle.emit(
+                                "update-available",
+                                serde_json::json!({
+                                    "version": update.version,
+                                    "body": update.body.unwrap_or_default(),
+                                }),
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            eprintln!("[verun] update check failed: {e}");
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("[verun] updater init failed: {e}");
+                    }
+                }
+            });
+
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -129,6 +161,9 @@ pub fn run() {
             }
             if event.id() == "quick-open" {
                 let _ = app.emit("quick-open", ());
+            }
+            if event.id() == "check-updates" {
+                let _ = app.emit("check-updates", ());
             }
         })
         .on_window_event(|window, event| {

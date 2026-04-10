@@ -14,6 +14,7 @@ import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
 import { addToast } from './store/ui'
 import { initNotifications, showNotificationDialog, onNotificationDialogConfirm, onNotificationDialogCancel } from './lib/notifications'
+import { initUpdateListener } from './lib/updater'
 
 const App: Component = () => {
   const [selMenu, setSelMenu] = createSignal<{ x: number; y: number; text: string } | null>(null)
@@ -69,6 +70,7 @@ const App: Component = () => {
 
     // Prompt for notification permission on first launch
     initNotifications()
+    initUpdateListener()
   })
 
   return (
