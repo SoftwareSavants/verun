@@ -25,7 +25,7 @@ import { xml } from '@codemirror/lang-xml'
 import { yaml } from '@codemirror/lang-yaml'
 import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
-import { setTabDirty, getCachedContent, setCachedContent } from '../store/files'
+import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal } from '../store/files'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 
 interface Props {
@@ -452,6 +452,7 @@ export const CodeEditor: Component<Props> = (props) => {
     try {
       await ipc.writeTextFile(props.taskId, props.relativePath, currentContent)
       setOriginalContent(currentContent)
+      setCachedOriginal(props.taskId, props.relativePath, currentContent)
       setTabDirty(props.taskId, props.relativePath, false)
     } catch (e) {
       console.error('Save failed:', e)
@@ -504,9 +505,10 @@ export const CodeEditor: Component<Props> = (props) => {
   createEffect(on(() => props.relativePath, async (path) => {
     // Check cache first for instant tab switching
     const cached = getCachedContent(props.taskId, path)
-    if (cached !== undefined) {
+    const cachedOriginal = getCachedOriginal(props.taskId, path)
+    if (cached !== undefined && cachedOriginal !== undefined) {
       currentContent = cached
-      setOriginalContent(cached)
+      setOriginalContent(cachedOriginal)
       try {
         const task = await ipc.getTask(props.taskId)
         await createEditor(cached, path, task?.worktreePath ?? '')
@@ -526,6 +528,7 @@ export const CodeEditor: Component<Props> = (props) => {
       currentContent = text
       setOriginalContent(text)
       setCachedContent(props.taskId, path, text)
+      setCachedOriginal(props.taskId, path, text)
       setTabDirty(props.taskId, path, false)
 
       await createEditor(text, path, task.worktreePath)

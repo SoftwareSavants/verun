@@ -13,7 +13,7 @@ import { QuickOpen } from './QuickOpen'
 import { CodeEditor } from './CodeEditor'
 import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
-import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab } from '../store/files'
+import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs } from '../store/files'
 import { Square, Plus, X, FileCode, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
@@ -166,6 +166,15 @@ export const TaskPanel: Component = () => {
     const sid = selectedSessionId()
     return sid ? (outputItems[sid] || []) : []
   }
+
+  // File tab context menu
+  const [tabMenu, setTabMenu] = createSignal<{ x: number; y: number; path: string; taskId: string } | null>(null)
+  const closeTabMenu = () => setTabMenu(null)
+  createEffect(() => {
+    if (tabMenu()) document.addEventListener('mousedown', closeTabMenu)
+    else document.removeEventListener('mousedown', closeTabMenu)
+  })
+  onCleanup(() => document.removeEventListener('mousedown', closeTabMenu))
 
   const [creatingSession, setCreatingSession] = createSignal(false)
   const handleNewSession = async () => {
@@ -412,6 +421,10 @@ export const TaskPanel: Component = () => {
                           )}
                           onClick={() => setActiveTab(t().id, tab.relativePath)}
                           onDblClick={() => pinTab(t().id, tab.relativePath)}
+                          onContextMenu={(e) => {
+                            e.preventDefault()
+                            setTabMenu({ x: e.clientX, y: e.clientY, path: tab.relativePath, taskId: t().id })
+                          }}
                         >
                           <FileCode size={10} class="text-text-dim shrink-0" />
                           <span class={clsx('truncate max-w-28', tab.preview && 'italic')}>
@@ -482,6 +495,31 @@ export const TaskPanel: Component = () => {
                     }}
                     onCancel={cancelCloseTab}
                   />
+
+                  {/* File tab context menu */}
+                  <Show when={tabMenu()}>
+                    {(menu) => (
+                      <div
+                        class="fixed z-100 bg-[#21252b] border border-[#181a1f] rounded-lg py-1 min-w-44"
+                        style={{ left: `${menu().x}px`, top: `${menu().y}px`, 'box-shadow': '0 6px 24px rgba(0,0,0,0.5)' }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                      >
+                        <button class="w-full flex items-center justify-between px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left" onClick={() => { requestCloseTab(menu().taskId, menu().path); closeTabMenu() }}>
+                          <span>Close</span><span class="text-[11px] text-[#5c6370] ml-8">{'\u2318'}W</span>
+                        </button>
+                        <button class="w-full flex items-center px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left" onClick={() => { closeOtherTabs(menu().taskId, menu().path); closeTabMenu() }}>
+                          Close Others
+                        </button>
+                        <button class="w-full flex items-center px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left" onClick={() => { closeAllTabs(menu().taskId); closeTabMenu() }}>
+                          Close All
+                        </button>
+                        <div class="h-px bg-[#181a1f] my-1" />
+                        <button class="w-full flex items-center px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left" onClick={() => { navigator.clipboard.writeText(menu().path); closeTabMenu() }}>
+                          Copy Relative Path
+                        </button>
+                      </div>
+                    )}
+                  </Show>
 
                   {/* Terminal panel — resizable bottom section, kept in DOM to preserve xterm state */}
                   <div

@@ -286,18 +286,29 @@ export function setActiveTab(taskId: string, relativePath: string) {
 }
 
 // File content cache — avoids reload flicker when switching tabs
+// Tracks both current content (with edits) and original content (from disk)
 const fileContentCache = new Map<string, string>()
+const fileOriginalCache = new Map<string, string>()
 
 export function getCachedContent(taskId: string, relativePath: string): string | undefined {
   return fileContentCache.get(`${taskId}:${relativePath}`)
+}
+
+export function getCachedOriginal(taskId: string, relativePath: string): string | undefined {
+  return fileOriginalCache.get(`${taskId}:${relativePath}`)
 }
 
 export function setCachedContent(taskId: string, relativePath: string, content: string) {
   fileContentCache.set(`${taskId}:${relativePath}`, content)
 }
 
+export function setCachedOriginal(taskId: string, relativePath: string, content: string) {
+  fileOriginalCache.set(`${taskId}:${relativePath}`, content)
+}
+
 export function clearCachedContent(taskId: string, relativePath: string) {
   fileContentCache.delete(`${taskId}:${relativePath}`)
+  fileOriginalCache.delete(`${taskId}:${relativePath}`)
 }
 
 // Quick open overlay
