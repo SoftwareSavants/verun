@@ -1,6 +1,6 @@
 import { Component, Show, For, createSignal, createEffect } from 'solid-js'
 import { startTaskCreation } from '../store/tasks'
-import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionId } from '../store/ui'
+import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, setShowArchived } from '../store/ui'
 import { projectById } from '../store/projects'
 import * as ipc from '../lib/ipc'
 import { GitBranch } from 'lucide-solid'
@@ -43,6 +43,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
     setSelectedTaskId(placeholderId)
     setSelectedProjectId(props.projectId)
     setSelectedSessionId(null)
+    setShowArchived(false)
     props.onClose()
   }
 

@@ -209,7 +209,7 @@ pub fn merge_pr(worktree_path: &str) -> Result<(), String> {
     check_gh_installed()?;
 
     let output = gh(worktree_path)
-        .args(["pr", "merge", "--merge", "--delete-branch"])
+        .args(["pr", "merge", "--merge"])
         .output()
         .map_err(|e| format!("Failed to merge PR: {e}"))?;
 

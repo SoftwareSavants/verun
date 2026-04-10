@@ -4,10 +4,11 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
+import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
-import { sidebarWidth, setSidebarWidth, addToast, showSettings, setShowSettings, toggleTerminal, showTerminal, setShowTerminal } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, addToast, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal } from '../store/ui'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask } from '../store/terminals'
-import { tasks } from '../store/tasks'
+import { activeTasks } from '../store/tasks'
 import { addProject, projects } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
@@ -81,9 +82,11 @@ export const Layout: Component = () => {
             selectSettingsSection(projects[idx - 1].id)
           }
         } else {
-          if (idx < tasks.length) {
-            setSelectedTaskId(tasks[idx].id)
-            setSelectedProjectId(tasks[idx].projectId)
+          const active = activeTasks()
+          if (idx < active.length) {
+            setSelectedTaskId(active[idx].id)
+            setSelectedProjectId(active[idx].projectId)
+            setShowArchived(false)
           }
         }
       }
@@ -101,6 +104,10 @@ export const Layout: Component = () => {
       if (e.key === 'Escape' && showSettings()) {
         e.preventDefault()
         setShowSettings(false)
+      }
+      if (e.key === 'Escape' && showArchived()) {
+        e.preventDefault()
+        setShowArchived(false)
       }
       // Cmd+P — quick file open (only when a task is selected)
       if (modPressed(e) && e.key === 'p' && selectedTaskId()) {
@@ -234,8 +241,14 @@ export const Layout: Component = () => {
         />
       </Show>
 
-      <Show when={showSettings()} fallback={<TaskPanel />}>
+      <Show when={showSettings()}>
         <SettingsPage />
+      </Show>
+      <Show when={showArchived() && !showSettings()}>
+        <ArchivedPage />
+      </Show>
+      <Show when={!showSettings() && !showArchived()}>
+        <TaskPanel />
       </Show>
 
       <NewTaskDialog

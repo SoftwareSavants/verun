@@ -132,6 +132,21 @@ pub fn migrations() -> Vec<Migration> {
             CREATE INDEX IF NOT EXISTS idx_steps_session ON steps(session_id);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 9,
+        description: "add archived flag to tasks",
+        sql: "ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;",
+        kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 10,
+        description: "add archived_at and last_commit_message to tasks",
+        sql: r#"
+            ALTER TABLE tasks ADD COLUMN archived_at INTEGER;
+            ALTER TABLE tasks ADD COLUMN last_commit_message TEXT;
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -163,6 +178,12 @@ pub struct Task {
     pub created_at: i64,
     pub merge_base_sha: Option<String>,
     pub port_offset: i64,
+    #[sqlx(default)]
+    pub archived: bool,
+    #[sqlx(default)]
+    pub archived_at: Option<i64>,
+    #[sqlx(default)]
+    pub last_commit_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -233,6 +254,8 @@ pub enum DbWrite {
     UpdateTaskName { id: String, name: String },
     SetMergeBaseSha { id: String, sha: String },
     DeleteTask { id: String },
+    ArchiveTask { id: String, archived_at: i64, last_commit_message: Option<String> },
+    RestoreTask { id: String },
 
     // Sessions
     CreateSession(Session),
@@ -401,6 +424,16 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             sqlx::query("DELETE FROM sessions WHERE task_id = ?")
                 .bind(&id).execute(pool).await?;
             sqlx::query("DELETE FROM tasks WHERE id = ?")
+                .bind(&id).execute(pool).await?;
+        }
+
+        DbWrite::ArchiveTask { id, archived_at, last_commit_message } => {
+            sqlx::query("UPDATE tasks SET archived = 1, archived_at = ?, last_commit_message = ? WHERE id = ?")
+                .bind(archived_at).bind(&last_commit_message).bind(&id).execute(pool).await?;
+        }
+
+        DbWrite::RestoreTask { id } => {
+            sqlx::query("UPDATE tasks SET archived = 0, archived_at = NULL WHERE id = ?")
                 .bind(&id).execute(pool).await?;
         }
 
@@ -618,7 +651,7 @@ pub async fn list_tasks_for_project(
     project_id: &str,
 ) -> Result<Vec<Task>, String> {
     sqlx::query_as::<_, Task>(
-        "SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at DESC",
+        "SELECT * FROM tasks WHERE project_id = ? ORDER BY archived ASC, created_at DESC",
     )
     .bind(project_id)
     .fetch_all(pool)
@@ -761,9 +794,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_eight_migrations() {
+    fn has_ten_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 8);
+        assert_eq!(m.len(), 10);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
@@ -772,6 +805,8 @@ mod tests {
         assert_eq!(m[5].version, 6);
         assert_eq!(m[6].version, 7);
         assert_eq!(m[7].version, 8);
+        assert_eq!(m[8].version, 9);
+        assert_eq!(m[9].version, 10);
     }
 
     #[test]
@@ -811,6 +846,9 @@ mod tests {
             created_at: 2000,
             merge_base_sha: None,
             port_offset: 0,
+            archived: false,
+            archived_at: None,
+            last_commit_message: None,
         }
     }
 
@@ -969,6 +1007,82 @@ mod tests {
         assert!(get_output_lines(&pool, "s-001").await.unwrap().is_empty());
         // Project still exists
         assert!(get_project(&pool, "p-001").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn archive_task_sets_flag_and_preserves_data() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: vec![("line".into(), 100)],
+            },
+        )
+        .await
+        .unwrap();
+
+        process_write(&pool, DbWrite::ArchiveTask { id: "t-001".into(), archived_at: 9999, last_commit_message: Some("test commit".into()) })
+            .await
+            .unwrap();
+
+        // Task still exists and is archived
+        let task = get_task(&pool, "t-001").await.unwrap().unwrap();
+        assert!(task.archived);
+
+        // Sessions and output preserved
+        assert!(get_session(&pool, "s-001").await.unwrap().is_some());
+        assert!(!get_output_lines(&pool, "s-001").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn restore_task_clears_archived_flag() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+
+        process_write(&pool, DbWrite::ArchiveTask { id: "t-001".into(), archived_at: 9999, last_commit_message: Some("test commit".into()) }).await.unwrap();
+        let task = get_task(&pool, "t-001").await.unwrap().unwrap();
+        assert!(task.archived);
+
+        process_write(&pool, DbWrite::RestoreTask { id: "t-001".into() }).await.unwrap();
+        let task = get_task(&pool, "t-001").await.unwrap().unwrap();
+        assert!(!task.archived);
+    }
+
+    #[tokio::test]
+    async fn archived_tasks_sort_after_active() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+
+        let mut t1 = make_task("p-001");
+        t1.id = "t-old".into();
+        t1.created_at = 1000;
+        let mut t2 = make_task("p-001");
+        t2.id = "t-new".into();
+        t2.created_at = 3000;
+        let mut t3 = make_task("p-001");
+        t3.id = "t-archived".into();
+        t3.created_at = 5000; // newest but archived
+
+        process_write(&pool, DbWrite::InsertTask(t1)).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(t2)).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(t3)).await.unwrap();
+        process_write(&pool, DbWrite::ArchiveTask { id: "t-archived".into(), archived_at: 9999, last_commit_message: None })
+            .await
+            .unwrap();
+
+        let tasks = list_tasks_for_project(&pool, "p-001").await.unwrap();
+        assert_eq!(tasks.len(), 3);
+        // Active tasks first (newest first), archived last
+        assert_eq!(tasks[0].id, "t-new");
+        assert_eq!(tasks[1].id, "t-old");
+        assert_eq!(tasks[2].id, "t-archived");
+        assert!(!tasks[0].archived);
+        assert!(tasks[2].archived);
     }
 
     // -- Session tests --

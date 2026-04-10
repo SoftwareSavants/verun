@@ -13,6 +13,9 @@ describe('ipc', () => {
     expect(typeof ipc.listTasks).toBe('function')
     expect(typeof ipc.getTask).toBe('function')
     expect(typeof ipc.deleteTask).toBe('function')
+    expect(typeof ipc.archiveTask).toBe('function')
+    expect(typeof ipc.checkTaskWorktree).toBe('function')
+    expect(typeof ipc.restoreTask).toBe('function')
   })
 
   test('all session functions are exported', () => {

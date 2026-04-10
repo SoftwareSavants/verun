@@ -93,6 +93,7 @@ export function effectiveModel(taskId: string | null): ModelId {
 }
 export const [showAddProjectDialog, setShowAddProjectDialog] = createSignal(false)
 export const [showSettings, setShowSettings] = createSignal(false)
+export const [showArchived, setShowArchived] = createSignal(false)
 
 // Terminal panel — per-task visibility
 const [taskTerminalOpen, setTaskTerminalOpen] = createSignal<Record<string, boolean>>({})

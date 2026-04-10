@@ -62,7 +62,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Branch commits pane is empty after PR merge (commits moved to base branch, nothing to show)
 - [X] Persist last selected model per project
 - [X] Delete task option to also delete the branch
-- [ ] Loading state when deleting / archiving a task
+- [X] Loading state when deleting / archiving a task
 - [X] Timestamp on each turn / run
 - [ ] Interrupting turn causes a scroll movement
 - [X] Option + arrow to move in terminal command isn't working
@@ -94,6 +94,7 @@ High-impact features that engineers are asking for most.
 - [X] TS support
 - [X] Mention files in chat (@ references)
 - [ ] Code review comments on diffs
+- [ ] Problems section
 
 ### CLI Parity
 - [ ] Full Claude CLI parity (skills, slash commands, CLAUDE.md/AGENTS.md, memory)
@@ -126,3 +127,4 @@ Bigger bets, not yet scheduled.
 - [ ] Mobile companion app
 - [ ] Status page tracking
 - [ ] Project icons / favicons
+- [ ] Integrations

@@ -3,7 +3,7 @@ import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedPro
 import { refitActiveTerminal } from '../store/terminals'
 import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask } from '../store/tasks'
+import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask, restoreTask } from '../store/tasks'
 import { isSetupRunning, setupFailed, setupError } from '../store/setup'
 import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines, sessionCosts } from '../store/sessions'
 import { loadSteps } from '../store/steps'
@@ -16,7 +16,7 @@ import { CodeEditor } from './CodeEditor'
 import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree } from '../store/files'
-import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
+import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
@@ -496,14 +496,33 @@ export const TaskPanel: Component = () => {
                             sessionId={selectedSessionId()}
                           />
                         </div>
-                        <StepList
-                          sessionId={selectedSessionId()}
-                          isRunning={currentSession()?.status === 'running'}
-                        />
-                        <MessageInput
-                          sessionId={selectedSessionId()}
-                          isRunning={currentSession()?.status === 'running'}
-                        />
+                        <Show
+                          when={t().archived}
+                          fallback={
+                            <>
+                              <StepList
+                                sessionId={selectedSessionId()}
+                                isRunning={currentSession()?.status === 'running'}
+                              />
+                              <MessageInput
+                                sessionId={selectedSessionId()}
+                                isRunning={currentSession()?.status === 'running'}
+                              />
+                            </>
+                          }
+                        >
+                          <div class="px-4 py-3 border-t border-border-subtle bg-surface-1 flex items-center gap-3">
+                            <Archive size={16} class="shrink-0 text-text-dim" />
+                            <span class="flex-1 text-sm text-text-muted">This task is archived</span>
+                            <button
+                              class="px-3 py-1.5 text-xs font-medium rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors flex items-center gap-1.5"
+                              onClick={() => restoreTask(t().id)}
+                            >
+                              <RotateCcw size={12} />
+                              Restore
+                            </button>
+                          </div>
+                        </Show>
                       </>
                     }
                   >

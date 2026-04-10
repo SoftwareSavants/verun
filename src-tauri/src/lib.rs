@@ -160,6 +160,9 @@ pub fn run() {
             ipc::list_tasks,
             ipc::get_task,
             ipc::delete_task,
+            ipc::archive_task,
+            ipc::check_task_worktree,
+            ipc::restore_task,
             ipc::get_setup_in_progress,
             // Sessions
             ipc::create_session,

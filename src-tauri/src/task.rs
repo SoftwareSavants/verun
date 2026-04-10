@@ -74,6 +74,66 @@ pub fn new_setup_in_progress() -> SetupInProgress {
     Arc::new(DashMap::new())
 }
 
+/// Run a setup hook in the background, emitting events to the frontend.
+/// Shared by task creation and task restoration.
+pub fn spawn_setup_hook(
+    app: &AppHandle,
+    setup_in_progress: &SetupInProgress,
+    task_id: &str,
+    worktree_path: &str,
+    setup_hook: &str,
+    port_offset: i64,
+    repo_path: &str,
+) {
+    if setup_hook.is_empty() {
+        return;
+    }
+
+    setup_in_progress.insert(task_id.to_string(), true);
+    let _ = app.emit(
+        "setup-hook",
+        crate::stream::SetupHookEvent {
+            task_id: task_id.to_string(),
+            status: "running".to_string(),
+            error: None,
+        },
+    );
+
+    let bg_app = app.clone();
+    let bg_task_id = task_id.to_string();
+    let bg_wt = worktree_path.to_string();
+    let bg_env = worktree::verun_env_vars(port_offset, repo_path);
+    let bg_sip = setup_in_progress.clone();
+    let hook = setup_hook.to_string();
+
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            worktree::run_hook(&bg_wt, &hook, &bg_env)
+        })
+        .await;
+
+        bg_sip.remove(&bg_task_id);
+
+        let (status, error) = match result {
+            Ok(Ok(())) => ("completed".to_string(), None),
+            Ok(Err(e)) => {
+                eprintln!("[verun] setup hook failed: {e}");
+                ("failed".to_string(), Some(e))
+            }
+            Err(e) => ("failed".to_string(), Some(format!("Join error: {e}"))),
+        };
+
+        let _ = bg_app.emit(
+            "setup-hook",
+            crate::stream::SetupHookEvent {
+                task_id: bg_task_id,
+                status,
+                error,
+            },
+        );
+    });
+}
+
 pub fn get_active_session_ids(active: &ActiveMap) -> Vec<String> {
     active.iter().map(|e| e.key().clone()).collect()
 }
@@ -157,6 +217,9 @@ pub async fn create_task(
         created_at: now,
         merge_base_sha: None,
         port_offset,
+        archived: false,
+        archived_at: None,
+        last_commit_message: None,
     };
 
     db_tx
@@ -168,50 +231,7 @@ pub async fn create_task(
     let session = create_session(db_tx, task.id.clone()).await?;
 
     // Phase 2: Run setup hook in background (if non-empty)
-    if !setup_hook.is_empty() {
-        setup_in_progress.insert(task.id.clone(), true);
-        let _ = app.emit(
-            "setup-hook",
-            crate::stream::SetupHookEvent {
-                task_id: task.id.clone(),
-                status: "running".to_string(),
-                error: None,
-            },
-        );
-
-        let bg_app = app.clone();
-        let bg_task_id = task.id.clone();
-        let bg_wt = worktree_path;
-        let bg_env = worktree::verun_env_vars(port_offset, &repo_path);
-        let bg_sip = setup_in_progress.clone();
-
-        tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                worktree::run_hook(&bg_wt, &setup_hook, &bg_env)
-            })
-            .await;
-
-            bg_sip.remove(&bg_task_id);
-
-            let (status, error) = match result {
-                Ok(Ok(())) => ("completed".to_string(), None),
-                Ok(Err(e)) => {
-                    eprintln!("[verun] setup hook failed: {e}");
-                    ("failed".to_string(), Some(e))
-                }
-                Err(e) => ("failed".to_string(), Some(format!("Join error: {e}"))),
-            };
-
-            let _ = bg_app.emit(
-                "setup-hook",
-                crate::stream::SetupHookEvent {
-                    task_id: bg_task_id,
-                    status,
-                    error,
-                },
-            );
-        });
-    }
+    spawn_setup_hook(app, setup_in_progress, &task.id, &worktree_path, &setup_hook, port_offset, &repo_path);
 
     Ok((task, session))
 }
@@ -263,6 +283,64 @@ pub async fn delete_task(
 
     db_tx
         .send(db::DbWrite::DeleteTask { id: task.id.clone() })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+
+    Ok(())
+}
+
+pub async fn archive_task(
+    app: &AppHandle,
+    db_tx: &DbWriteTx,
+    active: &ActiveMap,
+    task: &Task,
+    destroy_hook: &str,
+    repo_path: &str,
+) -> Result<(), String> {
+    // Kill any active processes for this task's sessions
+    let keys: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
+    for sid in keys {
+        abort_message(app, db_tx, active, &sid).await?;
+    }
+
+    // Close any PTY terminals for this task
+    if let Some(pty_map) = app.try_state::<crate::pty::ActivePtyMap>() {
+        let task_id = task.id.clone();
+        let map = pty_map.inner().clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::pty::close_all_for_task(&map, &task_id);
+        })
+        .await;
+    }
+
+    // Run destroy hook and capture last commit message (but keep worktree and branch)
+    let rp = repo_path.to_string();
+    let branch = task.branch.clone();
+    let hook = destroy_hook.to_string();
+    let wtp = task.worktree_path.clone();
+    let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
+    let last_commit_message = tokio::task::spawn_blocking(move || {
+        if !hook.is_empty() {
+            if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
+                eprintln!("[verun] destroy hook failed: {e}");
+            }
+        }
+        worktree::last_commit_message(&rp, &branch)
+    })
+    .await
+    .unwrap_or(None);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+
+    db_tx
+        .send(db::DbWrite::ArchiveTask {
+            id: task.id.clone(),
+            archived_at: now,
+            last_commit_message,
+        })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
 

@@ -12,10 +12,11 @@ import { taskGit, refreshTaskGit } from "../store/git";
 import { projects } from "../store/projects";
 import {
   tasks,
-  tasksForProject,
+  activeTasksForProject,
   loadTasks,
-  deleteTask,
+  archiveTask,
   isTaskCreating,
+  isTaskArchiving,
   getTaskError,
 } from "../store/tasks";
 import {
@@ -25,6 +26,8 @@ import {
   setSelectedTaskId,
   showSettings,
   setShowSettings,
+  showArchived,
+  setShowArchived,
   isTaskUnread,
   isTaskAttention,
   clearTaskIndicators,
@@ -144,10 +147,7 @@ export const Sidebar: Component = () => {
     message: string;
     action: () => void;
   } | null>(null);
-  const [deleteTaskTarget, setDeleteTaskTarget] = createSignal<{
-    id: string;
-    deleteBranch: boolean;
-  } | null>(null);
+  const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null);
   const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null);
   const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null);
 
@@ -233,9 +233,8 @@ export const Sidebar: Component = () => {
           action: () => ipc.openInFinder(task.worktreePath),
         },
         {
-          label: "Delete Task",
-          action: () => setDeleteTaskTarget({ id: taskId, deleteBranch: true }),
-          danger: true,
+          label: "Archive Task",
+          action: () => setArchiveTaskTarget(taskId),
         },
       ],
     });
@@ -316,7 +315,7 @@ export const Sidebar: Component = () => {
 
                 <Show
                   when={
-                    tasksForProject(project.id).length === 0 &&
+                    activeTasksForProject(project.id).length === 0 &&
                     selectedProjectId() === project.id
                   }
                 >
@@ -333,20 +332,22 @@ export const Sidebar: Component = () => {
                   </div>
                 </Show>
 
-                <Show when={tasksForProject(project.id).length > 0}>
+                <Show when={activeTasksForProject(project.id).length > 0}>
                   <div
                     class="ml-2.5 mt-0.5 pl-2 flex flex-col gap-0.5"
                     style={{ "border-left": "1px solid #3a3a48" }}
                   >
-                    <For each={tasksForProject(project.id)}>
+                    <For each={activeTasksForProject(project.id)}>
                       {(task) => {
                         const phase = () => taskPhase(task.id);
                         const config = () => PHASE_CONFIG[phase()];
                         const creating = () => isTaskCreating(task.id);
+                        const archiving = () => isTaskArchiving(task.id);
                         const hasError = () => !!getTaskError(task.id);
                         const attention = () => isTaskAttention(task.id);
                         const unread = () => !attention() && isTaskUnread(task.id);
                         const hasIndicator = () => attention() || unread();
+                        const disabled = () => creating() || archiving();
                         return (
                           <div
                             class={clsx(
@@ -355,6 +356,7 @@ export const Sidebar: Component = () => {
                               selectedTaskId() === task.id && "bg-surface-2",
                               attention() && "bg-amber-400/8",
                               unread() && "bg-accent/8",
+                              archiving() && "opacity-50 pointer-events-none",
                             )}
                             style={{
                               "border-left": attention() ? "2px solid #fbbf24" :
@@ -362,14 +364,14 @@ export const Sidebar: Component = () => {
                                              "2px solid transparent",
                               "border-radius": (attention() || unread()) ? "0 6px 6px 0" : undefined,
                             }}
-                            onClick={() => { setSelectedTaskId(task.id); setSelectedProjectId(task.projectId); setShowSettings(false) }}
-                            onContextMenu={(e) => { if (!creating() && !hasError()) showTaskMenu(e, task.id) }}
-                            title={creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
+                            onClick={() => { setSelectedTaskId(task.id); setSelectedProjectId(task.projectId); setShowSettings(false); setShowArchived(false) }}
+                            onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
+                            title={archiving() ? 'Archiving…' : creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
                           >
                             <span
-                              class={clsx("shrink-0 mt-0.5", creating() ? 'text-accent' : hasError() ? 'text-status-error' : config().color)}
+                              class={clsx("shrink-0 mt-0.5", disabled() ? 'text-accent' : hasError() ? 'text-status-error' : config().color)}
                             >
-                              {creating() ? <Loader2 size={12} class="animate-spin" /> : hasError() ? <AlertCircle size={12} /> : <PhaseIcon phase={phase()} />}
+                              {disabled() ? <Loader2 size={12} class="animate-spin" /> : hasError() ? <AlertCircle size={12} /> : <PhaseIcon phase={phase()} />}
                             </span>
                             <div class="flex-1 min-w-0">
                               <div class={clsx("text-xs truncate", hasIndicator() ? "text-text-primary font-medium" : "text-text-secondary")}>
@@ -379,22 +381,25 @@ export const Sidebar: Component = () => {
                                 {task.branch}
                               </div>
                             </div>
-                            <button
-                              class="shrink-0 p-0.5 rounded opacity-0 group-hover/task:opacity-60 hover:!opacity-100 text-text-dim hover:text-status-error transition-all"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDeleteTaskTarget({ id: task.id, deleteBranch: true });
-                              }}
-                              title="Delete task"
-                            >
-                              <Archive size={12} />
-                            </button>
+                            <Show when={!archiving()}>
+                              <button
+                                class="shrink-0 p-0.5 rounded opacity-0 group-hover/task:opacity-60 hover:!opacity-100 text-text-dim hover:text-text-muted transition-all"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setArchiveTaskTarget(task.id);
+                                }}
+                                title="Archive task"
+                              >
+                                <Archive size={12} />
+                              </button>
+                            </Show>
                           </div>
                         );
                       }}
                     </For>
                   </div>
                 </Show>
+
               </div>
             )}
           </For>
@@ -425,16 +430,35 @@ export const Sidebar: Component = () => {
           </Show>
         </div>
 
-        {/* Settings footer */}
-        <button
-          class={`w-full px-4 py-3 border-t border-border-subtle flex items-center gap-2 transition-colors no-drag ${
-            showSettings() ? 'text-text-secondary' : 'text-text-dim hover:text-text-muted'
-          }`}
-          onClick={() => setShowSettings(!showSettings())}
-        >
-          <Settings size={13} />
-          <span class="text-[11px]">Settings</span>
-        </button>
+        {/* Footer */}
+        <div class="border-t border-border-subtle flex flex-col no-drag">
+          <button
+            class={`w-full px-4 py-2.5 flex items-center gap-2 transition-colors ${
+              showArchived() ? 'text-text-secondary' : 'text-text-dim hover:text-text-muted'
+            }`}
+            onClick={() => {
+              const next = !showArchived()
+              setShowArchived(next)
+              if (next) { setShowSettings(false); setSelectedTaskId(null) }
+            }}
+          >
+            <Archive size={13} />
+            <span class="text-[11px]">Archived</span>
+          </button>
+          <button
+            class={`w-full px-4 py-2.5 flex items-center gap-2 transition-colors ${
+              showSettings() ? 'text-text-secondary' : 'text-text-dim hover:text-text-muted'
+            }`}
+            onClick={() => {
+              const next = !showSettings()
+              setShowSettings(next)
+              if (next) setShowArchived(false)
+            }}
+          >
+            <Settings size={13} />
+            <span class="text-[11px]">Settings</span>
+          </button>
+        </div>
       </div>
 
       <ConfirmDialog
@@ -451,32 +475,20 @@ export const Sidebar: Component = () => {
       />
 
       <ConfirmDialog
-        open={!!deleteTaskTarget()}
-        title="Delete Task"
-        message="This will delete all sessions and the worktree for this task."
-        confirmLabel="Delete"
-        danger
+        open={!!archiveTaskTarget()}
+        title="Archive Task"
+        message="This will stop all sessions and archive this task."
+        confirmLabel="Archive"
         onConfirm={() => {
-          const target = deleteTaskTarget();
-          if (target) deleteTask(target.id, target.deleteBranch);
-          setDeleteTaskTarget(null);
+          const target = archiveTaskTarget();
+          if (target) {
+            if (selectedTaskId() === target) setSelectedTaskId(null)
+            archiveTask(target)
+          }
+          setArchiveTaskTarget(null);
         }}
-        onCancel={() => setDeleteTaskTarget(null)}
-      >
-        <label class="flex items-center gap-2 mb-4 text-sm text-text-secondary cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={deleteTaskTarget()?.deleteBranch ?? true}
-            onChange={(e) => {
-              const target = deleteTaskTarget();
-              if (target) setDeleteTaskTarget({ ...target, deleteBranch: e.currentTarget.checked });
-            }}
-            class="w-3.5 h-3.5 shrink-0"
-            style={{ "accent-color": "#2d6e4f" }}
-          />
-          Also delete the branch
-        </label>
-      </ConfirmDialog>
+        onCancel={() => setArchiveTaskTarget(null)}
+      />
 
       <NewTaskDialog
         open={!!newTaskProjectId()}

@@ -281,6 +281,83 @@ pub async fn delete_task(
     task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, &t, &project.destroy_hook, delete_branch).await
 }
 
+#[tauri::command]
+pub async fn archive_task(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    active: State<'_, ActiveMap>,
+    id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &id)
+        .await?
+        .ok_or_else(|| format!("Task {id} not found"))?;
+
+    let project = db::get_project(pool.inner(), &t.project_id)
+        .await?
+        .ok_or_else(|| format!("Project {} not found", t.project_id))?;
+
+    task::archive_task(&app, db_tx.inner(), active.inner(), &t, &project.destroy_hook, &project.repo_path).await
+}
+
+#[tauri::command]
+pub async fn check_task_worktree(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<(bool, bool), String> {
+    let t = db::get_task(pool.inner(), &id)
+        .await?
+        .ok_or_else(|| format!("Task {id} not found"))?;
+
+    let project = db::get_project(pool.inner(), &t.project_id)
+        .await?
+        .ok_or_else(|| format!("Project {} not found", t.project_id))?;
+
+    let wtp = t.worktree_path.clone();
+    let rp = project.repo_path.clone();
+    let branch = t.branch.clone();
+    tokio::task::spawn_blocking(move || {
+        worktree::check_worktree_exists(&rp, &wtp, &branch)
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))
+}
+
+#[tauri::command]
+pub async fn restore_task(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    setup_in_progress: State<'_, task::SetupInProgress>,
+    id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &id)
+        .await?
+        .ok_or_else(|| format!("Task {id} not found"))?;
+
+    let project = db::get_project(pool.inner(), &t.project_id)
+        .await?
+        .ok_or_else(|| format!("Project {} not found", t.project_id))?;
+
+    db_tx
+        .send(db::DbWrite::RestoreTask { id })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+
+    // Re-run setup hook
+    task::spawn_setup_hook(
+        &app,
+        setup_in_progress.inner(),
+        &t.id,
+        &t.worktree_path,
+        &project.setup_hook,
+        t.port_offset,
+        &project.repo_path,
+    );
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------

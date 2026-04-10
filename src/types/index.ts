@@ -20,6 +20,9 @@ export interface Task {
   createdAt: number
   mergeBaseSha: string | null
   portOffset: number
+  archived: boolean
+  archivedAt: number | null
+  lastCommitMessage: string | null
 }
 
 export interface Session {

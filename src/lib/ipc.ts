@@ -36,6 +36,15 @@ export const getTask = (id: string) =>
 export const deleteTask = (id: string, deleteBranch: boolean) =>
   invoke<void>('delete_task', { id, deleteBranch })
 
+export const archiveTask = (id: string) =>
+  invoke<void>('archive_task', { id })
+
+export const checkTaskWorktree = (id: string) =>
+  invoke<[boolean, boolean]>('check_task_worktree', { id })
+
+export const restoreTask = (id: string) =>
+  invoke<void>('restore_task', { id })
+
 export const getSetupInProgress = () =>
   invoke<string[]>('get_setup_in_progress')
 

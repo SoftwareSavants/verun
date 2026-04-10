@@ -171,6 +171,28 @@ pub fn run_hook(cwd: &str, command: &str, env_vars: &[(String, String)]) -> Resu
     Ok(())
 }
 
+/// Get the last commit message for a branch.
+pub fn last_commit_message(repo_path: &str, branch: &str) -> Option<String> {
+    git(repo_path)
+        .args(["log", "-1", "--format=%s", branch])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Check if a worktree path exists on disk and its branch exists in the repo.
+pub fn check_worktree_exists(repo_path: &str, worktree_path: &str, branch: &str) -> (bool, bool) {
+    let worktree_exists = std::path::Path::new(worktree_path).is_dir();
+    let branch_exists = git(repo_path)
+        .args(["rev-parse", "--verify", branch])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    (worktree_exists, branch_exists)
+}
+
 /// Delete a git worktree.
 pub fn delete_worktree(repo_path: &str, worktree_path: &str) -> Result<(), String> {
     let output = git(repo_path)

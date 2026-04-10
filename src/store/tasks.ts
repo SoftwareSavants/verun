@@ -11,14 +11,24 @@ export const [tasks, setTasks] = createStore<Task[]>([])
 const [creatingTasks, setCreatingTasks] = createSignal<Set<string>>(new Set())
 const [taskErrors, setTaskErrors] = createSignal<Record<string, string>>({})
 
+// Track tasks currently being archived
+const [archivingTasks, setArchivingTasks] = createSignal<Set<string>>(new Set())
+
 export const isTaskCreating = (id: string) => creatingTasks().has(id)
 export const getTaskError = (id: string) => taskErrors()[id] ?? null
+export const isTaskArchiving = (id: string) => archivingTasks().has(id)
 
 function addCreating(id: string) {
   setCreatingTasks(prev => new Set([...prev, id]))
 }
 function removeCreating(id: string) {
   setCreatingTasks(prev => { const s = new Set(prev); s.delete(id); return s })
+}
+function addArchiving(id: string) {
+  setArchivingTasks(prev => new Set([...prev, id]))
+}
+function removeArchiving(id: string) {
+  setArchivingTasks(prev => { const s = new Set(prev); s.delete(id); return s })
 }
 function setTaskError(id: string, error: string) {
   setTaskErrors(prev => ({ ...prev, [id]: error }))
@@ -33,8 +43,17 @@ export async function loadTasks(projectId: string) {
   setTasks(prev => [...prev.filter(t => t.projectId !== projectId), ...list])
 }
 
+export const activeTasks = () =>
+  tasks.filter(t => !t.archived)
+
 export const tasksForProject = (projectId: string) =>
   tasks.filter(t => t.projectId === projectId)
+
+export const activeTasksForProject = (projectId: string) =>
+  tasks.filter(t => t.projectId === projectId && !t.archived)
+
+export const archivedTasksForProject = (projectId: string) =>
+  tasks.filter(t => t.projectId === projectId && t.archived)
 
 export async function createTask(projectId: string, baseBranch?: string): Promise<{ task: Task; session: Session }> {
   const result = await ipc.createTask(projectId, baseBranch)
@@ -56,6 +75,9 @@ export function startTaskCreation(projectId: string, baseBranch: string): string
     createdAt: now,
     mergeBaseSha: null,
     portOffset: 0,
+    archived: false,
+    archivedAt: null,
+    lastCommitMessage: null,
   }
 
   setTasks(produce(t => t.unshift(placeholder)))
@@ -127,6 +149,23 @@ export async function deleteTask(id: string, deleteBranch = true) {
   clearTaskGitState(id)
   await ipc.deleteTask(id, deleteBranch)
   setTasks(prev => prev.filter(t => t.id !== id))
+}
+
+export async function archiveTask(id: string) {
+  addArchiving(id)
+  try {
+    closeTerminalsForTask(id)
+    clearTaskGitState(id)
+    await ipc.archiveTask(id)
+    setTasks(t => t.id === id, 'archived', true)
+  } finally {
+    removeArchiving(id)
+  }
+}
+
+export async function restoreTask(id: string) {
+  await ipc.restoreTask(id)
+  setTasks(t => t.id === id, 'archived', false)
 }
 
 export async function updateTaskName(id: string, name: string) {

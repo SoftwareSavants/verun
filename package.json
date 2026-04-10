@@ -43,6 +43,7 @@
     "@codemirror/view": "^6.41.0",
     "@lezer/highlight": "^1.2.3",
     "@replit/codemirror-minimap": "^0.5.2",
+    "@tanstack/solid-table": "^8.21.3",
     "@tanstack/solid-virtual": "^3.13.23",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.0",
