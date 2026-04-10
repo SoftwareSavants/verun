@@ -16,6 +16,7 @@ Run multiple Claude Code sessions in parallel, each in its own isolated git work
 - **Inline diffs** — see exactly what Claude changed with syntax-highlighted diffs
 - **Git actions** — commit, push, create PR, merge — all without leaving the app
 - **Plan mode** — review implementation plans before Claude starts coding
+- **Desktop notifications** — get notified when tasks complete, fail, or need approval
 - **Tool approval** — configurable trust levels (Normal, Supervised, Full Auto)
 - **Resumable** — sessions survive app restarts via `claude --resume`
 - **Persistent history** — all output stored locally in SQLite

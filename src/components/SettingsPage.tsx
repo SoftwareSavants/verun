@@ -2,6 +2,7 @@ import { Component, createSignal, createEffect, on, For, Show } from 'solid-js'
 import { ChevronDown, X, Settings, FolderGit2, Loader2, Sparkles, Download, Upload } from 'lucide-solid'
 import { ACCENT_THEMES, getActiveTheme, setActiveTheme, type AccentTheme } from '../lib/theme'
 import { setShowSettings, setSelectedTaskId, setSelectedSessionId, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist } from '../store/ui'
+import { notificationsEnabled, setNotificationsEnabledAndPersist } from '../lib/notifications'
 import { projects, updateHooks, updateStoreHooks } from '../store/projects'
 import { createTask, tasksForProject } from '../store/tasks'
 import { sendMessage, setSessions, setOutputItems } from '../store/sessions'
@@ -289,6 +290,18 @@ export const SettingsPage: Component = () => {
                   </div>
                   <Toggle checked={defaultHideWhitespace()} onChange={(v) => setDefaultHideWhitespaceAndPersist(v)} />
                 </div>
+              </div>
+            </div>
+
+            {/* Notifications section */}
+            <div class="mb-8">
+              <h2 class="section-title mb-4">Notifications</h2>
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="text-sm text-text-primary">Desktop notifications</div>
+                  <div class="text-xs text-text-dim mt-0.5">Notify when tasks complete, fail, or need approval</div>
+                </div>
+                <Toggle checked={notificationsEnabled()} onChange={(v) => setNotificationsEnabledAndPersist(v)} />
               </div>
             </div>
           </Show>

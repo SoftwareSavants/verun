@@ -1,9 +1,10 @@
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment, ToolApprovalRequest, PolicyAutoApprovedEvent } from '../types'
-import { setTasks } from './tasks'
+import { setTasks, taskById } from './tasks'
 import { markTaskUnread, markTaskAttention, clearTaskAttention } from './ui'
 import * as ipc from '../lib/ipc'
+import { notify } from '../lib/notifications'
 
 const MAX_ITEMS_IN_MEMORY = 50_000
 
@@ -307,10 +308,21 @@ export async function initSessionListeners() {
 
   await listen<SessionStatusEvent>('session-status', (event) => {
     const { sessionId, status } = event.payload
+    const prevSession = sessions.find(s => s.id === sessionId)
+    const wasRunning = prevSession?.status === 'running'
     setSessions(s => s.id === sessionId, 'status', status)
     // Clear pending approvals when session stops running
     if (status !== 'running') {
       setPendingApprovals(produce(store => { delete store[sessionId] }))
+    }
+    // OS notification on completion/error
+    if (wasRunning && (status === 'idle' || status === 'error') && prevSession) {
+      const taskName = taskById(prevSession.taskId)?.name || 'Task'
+      notify({
+        title: status === 'error' ? 'Task failed' : 'Task completed',
+        body: taskName,
+        taskId: prevSession.taskId,
+      })
     }
   })
 
@@ -324,9 +336,20 @@ export async function initSessionListeners() {
         store[req.sessionId] = [req]
       }
     }))
-    // Mark task as needing attention
+    // Mark task as needing attention + OS notification
     const session = sessions.find(s => s.id === req.sessionId)
-    if (session) markTaskAttention(session.taskId)
+    if (session) {
+      markTaskAttention(session.taskId)
+      const taskName = taskById(session.taskId)?.name || 'Task'
+      const isQuestion = req.toolName === 'AskUserQuestion'
+      notify({
+        title: isQuestion ? 'Question from task' : 'Approval needed',
+        body: isQuestion
+          ? `${taskName}: ${(req.toolInput?.question as string)?.slice(0, 100) || 'has a question'}`
+          : `${taskName}: ${req.toolName}`,
+        taskId: session.taskId,
+      })
+    }
   })
 
   await listen<{ sessionId: string; name: string }>('session-name', (event) => {

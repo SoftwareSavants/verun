@@ -13,6 +13,7 @@ import { initSetupListeners } from './store/setup'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
 import { addToast } from './store/ui'
+import { initNotifications, showNotificationDialog, onNotificationDialogConfirm, onNotificationDialogCancel } from './lib/notifications'
 
 const App: Component = () => {
   const [selMenu, setSelMenu] = createSignal<{ x: number; y: number; text: string } | null>(null)
@@ -65,6 +66,9 @@ const App: Component = () => {
     } catch {
       addToast('Claude CLI not found. Install with: npm i -g @anthropic-ai/claude-code', 'error')
     }
+
+    // Prompt for notification permission on first launch
+    initNotifications()
   })
 
   return (
@@ -83,6 +87,14 @@ const App: Component = () => {
         danger
         onConfirm={() => ipc.quitApp()}
         onCancel={() => setShowQuitConfirm(false)}
+      />
+      <ConfirmDialog
+        open={showNotificationDialog()}
+        title="Enable desktop notifications?"
+        message="Verun can notify you when tasks complete, fail, or need your approval. This is especially useful when you're running multiple sessions in parallel — you'll know exactly when something needs your attention, even if the app is in the background."
+        confirmLabel="Enable"
+        onConfirm={onNotificationDialogConfirm}
+        onCancel={onNotificationDialogCancel}
       />
     </>
   )

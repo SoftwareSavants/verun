@@ -1388,6 +1388,19 @@ pub fn quit_app() {
     std::process::exit(0);
 }
 
+// ── Notifications ──────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn send_notification(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| format!("notification failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

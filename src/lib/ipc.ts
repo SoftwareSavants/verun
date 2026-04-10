@@ -221,6 +221,10 @@ export const lspSend = (taskId: string, message: string) =>
 export const lspStop = (taskId: string) =>
   invoke<void>('lsp_stop', { taskId })
 
+// Notifications
+export const sendNotification = (title: string, body: string) =>
+  invoke<void>('send_notification', { title, body })
+
 // App lifecycle
 export const quitApp = () =>
   invoke<void>('quit_app')

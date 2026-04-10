@@ -22,6 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             SqlBuilder::default()
                 .add_migrations("sqlite:verun.db", db::migrations())
@@ -229,6 +230,8 @@ pub fn run() {
             ipc::lsp_start,
             ipc::lsp_send,
             ipc::lsp_stop,
+            // Notifications
+            ipc::send_notification,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

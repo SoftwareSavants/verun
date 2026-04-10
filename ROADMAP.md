@@ -67,6 +67,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [ ] Interrupting turn causes a scroll movement
 - [X] Option + arrow to move in terminal command isn't working
 - [X] Worktrees should be under the project folder not Desktop
+- [ ] Move default branch to project settings
 
 ---
 
@@ -80,11 +81,11 @@ High-impact features that engineers are asking for most.
 - [ ] Fork task or session (branch a conversation into a new direction)
 - [ ] Steer & queue interaction modes (send follow-ups while the agent is working)
 - [X] Unread / attention-required indicator on tasks in sidebar
-- [ ] OS notifications for task completion and approval prompts
+- [X] OS notifications for task completion and approval prompts
 - [ ] Multi window support
 - [ ] Setup script: Option/script to auto-copy .env and other files
 - [ ] Auto-update
-- [ ] Status 
+- [ ] Session Status on the status tab bar
 
 ### Code Tools
 - [X] File tree viewer
@@ -95,7 +96,7 @@ High-impact features that engineers are asking for most.
 
 ### CLI Parity
 - [ ] Full Claude CLI parity (skills, slash commands, CLAUDE.md/AGENTS.md, memory)
-- [ ] Tokens and subscription usage display
+- [-] Tokens and subscription usage display
 
 ---
 
