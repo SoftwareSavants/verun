@@ -169,13 +169,17 @@ export const TaskPanel: Component = () => {
   }
 
   // File tab context menu
+  let tabMenuRef: HTMLDivElement | undefined
   const [tabMenu, setTabMenu] = createSignal<{ x: number; y: number; path: string; taskId: string } | null>(null)
-  const closeTabMenu = () => setTabMenu(null)
+  const closeTabMenu = (e?: MouseEvent) => {
+    if (e && tabMenuRef && tabMenuRef.contains(e.target as Node)) return
+    setTabMenu(null)
+  }
   createEffect(() => {
-    if (tabMenu()) document.addEventListener('mousedown', closeTabMenu)
-    else document.removeEventListener('mousedown', closeTabMenu)
+    if (tabMenu()) document.addEventListener('mousedown', closeTabMenu as EventListener, true)
+    else document.removeEventListener('mousedown', closeTabMenu as EventListener, true)
   })
-  onCleanup(() => document.removeEventListener('mousedown', closeTabMenu))
+  onCleanup(() => document.removeEventListener('mousedown', closeTabMenu as EventListener, true))
 
   const [creatingSession, setCreatingSession] = createSignal(false)
   const handleNewSession = async () => {
@@ -501,9 +505,9 @@ export const TaskPanel: Component = () => {
                   <Show when={tabMenu()}>
                     {(menu) => (
                       <div
+                        ref={tabMenuRef}
                         class="fixed z-100 bg-[#21252b] border border-[#181a1f] rounded-lg py-1 min-w-44"
                         style={{ left: `${menu().x}px`, top: `${menu().y}px`, 'box-shadow': '0 6px 24px rgba(0,0,0,0.5)' }}
-                        onMouseDown={(e) => e.stopPropagation()}
                       >
                         <button class="w-full flex items-center justify-between px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left" onClick={() => { requestCloseTab(menu().taskId, menu().path); closeTabMenu() }}>
                           <span>Close</span><span class="text-[11px] text-[#5c6370] ml-8">{'\u2318'}W</span>

@@ -55,15 +55,19 @@ export const FileTree: Component<Props> = (props) => {
   }))
 
   // Close context menu on click outside
-  const closeMenu = () => setContextMenu(null)
+  let menuRef: HTMLDivElement | undefined
+  const closeMenu = (e: MouseEvent) => {
+    if (menuRef && menuRef.contains(e.target as Node)) return
+    setContextMenu(null)
+  }
   createEffect(() => {
     if (contextMenu()) {
-      document.addEventListener('mousedown', closeMenu)
+      document.addEventListener('mousedown', closeMenu, true)
     } else {
-      document.removeEventListener('mousedown', closeMenu)
+      document.removeEventListener('mousedown', closeMenu, true)
     }
   })
-  onCleanup(() => document.removeEventListener('mousedown', closeMenu))
+  onCleanup(() => document.removeEventListener('mousedown', closeMenu, true))
 
   // Build flattened node list from expanded state
   const flatNodes = (): FlatNode[] => {
@@ -268,13 +272,13 @@ export const FileTree: Component<Props> = (props) => {
       <Show when={contextMenu()}>
         {(menu) => (
           <div
+            ref={menuRef}
             class="fixed z-100 bg-[#21252b] border border-[#181a1f] rounded-lg py-1 min-w-52"
             style={{
               left: `${menu().x}px`,
               top: `${menu().y}px`,
               'box-shadow': '0 6px 24px rgba(0,0,0,0.5)',
             }}
-            onMouseDown={(e) => e.stopPropagation()}
           >
             {/* File-specific actions */}
             <Show when={!menu().entry.isDir}>
