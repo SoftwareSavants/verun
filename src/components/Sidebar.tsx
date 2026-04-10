@@ -30,12 +30,12 @@ import {
   clearTaskIndicators,
 } from "../store/ui";
 import { sessionsForTask, loadSessions } from "../store/sessions";
-import { deleteProject, updateBaseBranch } from "../store/projects";
+import { deleteProject } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NewTaskDialog } from "./NewTaskDialog";
 import { AddProjectDialog } from "./AddProjectDialog";
-import { Dialog } from "./Dialog";
 import { Popover } from "./Popover";
+import { selectSettingsSection } from "./SettingsPage";
 import {
   Plus,
   FolderPlus,
@@ -48,11 +48,9 @@ import {
   Archive,
   Folder,
   Settings,
-  GitBranch,
 } from "lucide-solid";
 import { clsx } from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { addToast } from "../store/ui";
 import * as ipc from "../lib/ipc";
 import { hasOverlayTitlebar } from "../lib/platform";
 
@@ -151,8 +149,6 @@ export const Sidebar: Component = () => {
     deleteBranch: boolean;
   } | null>(null);
   const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null);
-  const [baseBranchProject, setBaseBranchProject] = createSignal<string | null>(null);
-  const [branchOptions, setBranchOptions] = createSignal<string[]>([]);
   const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null);
 
   // Clear unread/attention indicators when user selects a task
@@ -204,15 +200,10 @@ export const Sidebar: Component = () => {
           action: () => ipc.openInFinder(project.repoPath),
         },
         {
-          label: `Base branch: ${project.baseBranch}`,
-          action: async () => {
-            setBaseBranchProject(projectId);
-            try {
-              const info = await ipc.getRepoInfo(project.repoPath);
-              setBranchOptions(info.branches);
-            } catch {
-              setBranchOptions([project.baseBranch]);
-            }
+          label: "Project Settings",
+          action: () => {
+            setShowSettings(true);
+            selectSettingsSection(projectId);
           },
         },
         {
@@ -499,40 +490,6 @@ export const Sidebar: Component = () => {
         onClose={() => setAddProjectPath(null)}
         onAdded={(id) => setSelectedProjectId(id)}
       />
-
-      <Dialog open={!!baseBranchProject()} onClose={() => setBaseBranchProject(null)} width="18rem">
-        <h2 class="text-base font-semibold text-text-primary mb-3">Base Branch</h2>
-        <div class="flex flex-col gap-1 max-h-48 overflow-y-auto">
-          <For each={branchOptions()}>
-            {(branch) => {
-              const project = () => projects.find(p => p.id === baseBranchProject());
-              const isActive = () => project()?.baseBranch === branch;
-              return (
-                <button
-                  class={clsx(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-left transition-colors",
-                    isActive() ? "bg-accent/15 text-accent" : "text-text-secondary hover:bg-surface-3"
-                  )}
-                  onClick={async () => {
-                    const pid = baseBranchProject();
-                    if (pid) {
-                      await updateBaseBranch(pid, branch);
-                      addToast(`Base branch set to ${branch}`, 'success');
-                    }
-                    setBaseBranchProject(null);
-                  }}
-                >
-                  <GitBranch size={13} class="shrink-0" />
-                  {branch}
-                </button>
-              );
-            }}
-          </For>
-        </div>
-        <div class="flex justify-end mt-3">
-          <button class="btn-ghost text-xs" onClick={() => setBaseBranchProject(null)}>Cancel</button>
-        </div>
-      </Dialog>
     </>
   );
 };

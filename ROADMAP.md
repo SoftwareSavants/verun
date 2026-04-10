@@ -61,13 +61,13 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Loading indicator when creating a task (worktree creation can be slow)
 - [X] Branch commits pane is empty after PR merge (commits moved to base branch, nothing to show)
 - [X] Persist last selected model per project
-- [ ] Delete task option to also delete the branch
+- [X] Delete task option to also delete the branch
 - [ ] Loading state when deleting / archiving a task
 - [X] Timestamp on each turn / run
 - [ ] Interrupting turn causes a scroll movement
 - [X] Option + arrow to move in terminal command isn't working
 - [X] Worktrees should be under the project folder not Desktop
-- [ ] Move default branch to project settings
+- [X] Move default branch to project settings
 - [ ] Resolve conflicts button not showing
 
 ---
@@ -84,9 +84,9 @@ High-impact features that engineers are asking for most.
 - [X] Unread / attention-required indicator on tasks in sidebar
 - [X] OS notifications for task completion and approval prompts
 - [ ] Multi window support
-- [ ] Setup script: Option/script to auto-copy .env and other files
+- [-] Setup script: Option/script to auto-copy .env and other files
 - [ ] Auto-update
-- [ ] Session Status on the status tab bar
+- [X] Session Status on the status tab bar
 
 ### Code Tools
 - [X] File tree viewer

@@ -1,9 +1,9 @@
 import { Component, createSignal, createEffect, on, For, Show } from 'solid-js'
-import { ChevronDown, X, Settings, FolderGit2, Loader2, Sparkles, Download, Upload } from 'lucide-solid'
+import { ChevronDown, X, Settings, FolderGit2, Loader2, Sparkles, Download, Upload, GitBranch } from 'lucide-solid'
 import { ACCENT_THEMES, getActiveTheme, setActiveTheme, type AccentTheme } from '../lib/theme'
 import { setShowSettings, setSelectedTaskId, setSelectedSessionId, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist } from '../store/ui'
 import { notificationsEnabled, setNotificationsEnabledAndPersist } from '../lib/notifications'
-import { projects, updateHooks, updateStoreHooks } from '../store/projects'
+import { projects, updateHooks, updateStoreHooks, updateBaseBranch } from '../store/projects'
 import { createTask, tasksForProject } from '../store/tasks'
 import { sendMessage, setSessions, setOutputItems } from '../store/sessions'
 import * as ipc from '../lib/ipc'
@@ -41,6 +41,9 @@ export const SettingsPage: Component = () => {
 
   const [saving, setSaving] = createSignal(false)
   const [suggesting, setSuggesting] = createSignal(false)
+  const [branchDropdownOpen, setBranchDropdownOpen] = createSignal(false)
+  const [branchOptions, setBranchOptions] = createSignal<string[]>([])
+  const [loadingBranches, setLoadingBranches] = createSignal(false)
 
   // Populate edit fields from active project on mount
   const section = activeSection()
@@ -306,8 +309,75 @@ export const SettingsPage: Component = () => {
             </div>
           </Show>
 
-          {/* Per-project hooks section */}
+          {/* Per-project settings */}
           <Show when={activeSection() !== 'general' && selectedProject()}>
+            {/* Repository section */}
+            <div class="mb-8">
+              <h2 class="section-title mb-4">Repository</h2>
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="text-sm text-text-primary">Base branch</div>
+                  <div class="text-xs text-text-dim mt-0.5">New tasks branch off from this</div>
+                </div>
+
+                <div class="relative">
+                  <button
+                    class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-2 border border-border hover:border-border-active transition-colors text-sm min-w-[140px] max-w-[220px]"
+                    onClick={async () => {
+                      const p = selectedProject()
+                      if (!p) return
+                      if (!branchDropdownOpen()) {
+                        setLoadingBranches(true)
+                        setBranchDropdownOpen(true)
+                        try {
+                          const info = await ipc.getRepoInfo(p.repoPath)
+                          setBranchOptions(info.branches)
+                        } catch {
+                          setBranchOptions([p.baseBranch])
+                        } finally {
+                          setLoadingBranches(false)
+                        }
+                      } else {
+                        setBranchDropdownOpen(false)
+                      }
+                    }}
+                  >
+                    <GitBranch size={13} class="text-text-dim shrink-0" />
+                    <span class="text-text-secondary flex-1 text-left truncate" title={selectedProject()!.baseBranch}>{selectedProject()!.baseBranch}</span>
+                    <Show when={loadingBranches()} fallback={<ChevronDown size={12} class="text-text-dim" />}>
+                      <Loader2 size={12} class="text-text-dim animate-spin" />
+                    </Show>
+                  </button>
+
+                  <Popover open={branchDropdownOpen()} onClose={() => setBranchDropdownOpen(false)} class="py-1 max-h-64 overflow-y-auto w-56 absolute right-0 top-full mt-1 bg-surface-2 border-border-active">
+                    <For each={branchOptions()}>
+                      {(branch) => (
+                        <button
+                          class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs transition-colors hover:bg-surface-3"
+                          style={{
+                            color: selectedProject()!.baseBranch === branch ? "var(--accent)" : "#a1a1aa",
+                            background: selectedProject()!.baseBranch === branch ? "var(--accent-muted)" : undefined,
+                          }}
+                          onClick={async () => {
+                            const p = selectedProject()
+                            if (p) {
+                              await updateBaseBranch(p.id, branch)
+                              addToast(`Base branch set to ${branch}`, 'success')
+                            }
+                            setBranchDropdownOpen(false)
+                          }}
+                        >
+                          <GitBranch size={13} class="shrink-0" />
+                          <span class="truncate" title={branch}>{branch}</span>
+                        </button>
+                      )}
+                    </For>
+                  </Popover>
+                </div>
+              </div>
+            </div>
+
             <div class="mb-8">
               <div class="flex items-center justify-between mb-4">
                 <h2 class="section-title">Lifecycle Hooks</h2>
