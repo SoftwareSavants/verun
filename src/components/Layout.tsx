@@ -11,7 +11,7 @@ import { tasks } from '../store/tasks'
 import { addProject, projects } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
-import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/files'
+import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView, rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/files'
 
 async function pickAndAddProject() {
   const selected = await openDialog({ directory: true, multiple: false })
@@ -112,31 +112,33 @@ export const Layout: Component = () => {
         e.preventDefault()
         setRightPanelTab(rightPanelTab() === 'files' ? 'changes' : 'files')
       }
-      // Cmd+W — close active editor tab (only when Files panel is active and a tab is open)
+      // Cmd+W — close active editor tab
       if (modPressed(e) && e.key === 'w' && !e.shiftKey) {
-        const active = document.activeElement
-        const inEditor = active && ((active as HTMLElement).isContentEditable || active.closest('.cm-editor'))
-        if (inEditor || rightPanelTab() === 'files') {
-          const path = activeTabPath()
-          if (path) {
+        const tid = selectedTaskId()
+        if (tid) {
+          const path = activeTabPath(tid)
+          if (path && mainView(tid) !== 'session') {
             e.preventDefault()
-            requestCloseTab(path)
+            requestCloseTab(tid, path)
           }
         }
       }
       // Cmd+Shift+T — reopen closed tab
       if (modPressed(e) && e.shiftKey && e.key === 't') {
-        e.preventDefault()
-        reopenClosedTab()
+        const tid = selectedTaskId()
+        if (tid) {
+          e.preventDefault()
+          reopenClosedTab(tid)
+        }
       }
       // Cmd+Alt+Right / Cmd+Alt+Left — switch editor tabs
       if (modPressed(e) && e.altKey && e.key === 'ArrowRight') {
-        e.preventDefault()
-        nextTab()
+        const tid = selectedTaskId()
+        if (tid) { e.preventDefault(); nextTab(tid) }
       }
       if (modPressed(e) && e.altKey && e.key === 'ArrowLeft') {
-        e.preventDefault()
-        prevTab()
+        const tid = selectedTaskId()
+        if (tid) { e.preventDefault(); prevTab(tid) }
       }
       // Ctrl+` — toggle terminal panel (focus terminal when opening)
       if (e.ctrlKey && !e.shiftKey && e.key === '`') {
@@ -167,14 +169,14 @@ export const Layout: Component = () => {
           focusActiveTerminal(tid)
         }
       }
-      // Ctrl+Tab / Ctrl+Shift+Tab — switch editor tabs (when in editor/files), else terminal tabs
+      // Ctrl+Tab / Ctrl+Shift+Tab — switch editor tabs (when viewing a file), else terminal tabs
       if (e.ctrlKey && e.key === 'Tab') {
-        const active = document.activeElement
-        const inEditor = active && ((active as HTMLElement).isContentEditable || active.closest('.cm-editor'))
-        if (inEditor || rightPanelTab() === 'files') {
+        const tid = selectedTaskId()
+        const inFileView = tid && mainView(tid) !== 'session'
+        if (inFileView) {
           e.preventDefault()
-          if (e.shiftKey) prevTab()
-          else nextTab()
+          if (e.shiftKey) prevTab(tid)
+          else nextTab(tid)
         } else {
           const tid = selectedTaskId()
           if (tid && showTerminal()) {

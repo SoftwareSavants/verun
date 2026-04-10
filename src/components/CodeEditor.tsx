@@ -25,7 +25,7 @@ import { xml } from '@codemirror/lang-xml'
 import { yaml } from '@codemirror/lang-yaml'
 import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
-import { setTabDirty } from '../store/files'
+import { setTabDirty, getCachedContent, setCachedContent } from '../store/files'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 
 interface Props {
@@ -452,7 +452,7 @@ export const CodeEditor: Component<Props> = (props) => {
     try {
       await ipc.writeTextFile(props.taskId, props.relativePath, currentContent)
       setOriginalContent(currentContent)
-      setTabDirty(props.relativePath, false)
+      setTabDirty(props.taskId, props.relativePath, false)
     } catch (e) {
       console.error('Save failed:', e)
     }
@@ -472,7 +472,8 @@ export const CodeEditor: Component<Props> = (props) => {
       path,
       (content) => {
         currentContent = content
-        setTabDirty(props.relativePath, content !== originalContent())
+        setCachedContent(props.taskId, props.relativePath, content)
+        setTabDirty(props.taskId, props.relativePath, content !== originalContent())
       },
       save,
     )
@@ -499,8 +500,23 @@ export const CodeEditor: Component<Props> = (props) => {
     }
   }
 
-  // Load file and create editor
+  // Load file and create editor — uses cache to avoid flicker on tab switch
   createEffect(on(() => props.relativePath, async (path) => {
+    // Check cache first for instant tab switching
+    const cached = getCachedContent(props.taskId, path)
+    if (cached !== undefined) {
+      currentContent = cached
+      setOriginalContent(cached)
+      try {
+        const task = await ipc.getTask(props.taskId)
+        await createEditor(cached, path, task?.worktreePath ?? '')
+      } catch {
+        await createEditor(cached, path, '')
+      }
+      setLoading(false)
+      return
+    }
+
     setLoading(true)
     try {
       const task = await ipc.getTask(props.taskId)
@@ -509,9 +525,9 @@ export const CodeEditor: Component<Props> = (props) => {
       const text = await ipc.readTextFile(fullPath)
       currentContent = text
       setOriginalContent(text)
-      setTabDirty(path, false)
+      setCachedContent(props.taskId, path, text)
+      setTabDirty(props.taskId, path, false)
 
-      // Create fresh editor with content + correct language + LSP
       await createEditor(text, path, task.worktreePath)
     } catch (e) {
       currentContent = `Error loading file: ${e}`

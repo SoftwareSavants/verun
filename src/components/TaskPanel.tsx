@@ -10,8 +10,11 @@ import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { RightPanel } from './RightPanel'
 import { QuickOpen } from './QuickOpen'
+import { CodeEditor } from './CodeEditor'
 import { TerminalPanel } from './TerminalPanel'
-import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
+import { ConfirmDialog } from './ConfirmDialog'
+import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab } from '../store/files'
+import { Square, Plus, X, FileCode, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
@@ -340,18 +343,19 @@ export const TaskPanel: Component = () => {
                     </div>
                   </Show>
 
-                  {/* Session tabs — pill style */}
+                  {/* Unified tab bar — sessions + open files */}
                   <div class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
+                    {/* Session tabs */}
                     <For each={taskSessions()}>
                       {(session) => (
                         <div
                           class={clsx(
                             'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap cursor-pointer',
-                            selectedSessionId() === session.id
+                            mainView(t().id) === 'session' && selectedSessionId() === session.id
                               ? 'bg-accent-muted text-accent-hover border border-accent/20'
                               : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
                           )}
-                          onClick={() => setSelectedSessionId(session.id)}
+                          onClick={() => { setSelectedSessionId(session.id); setMainView(t().id, 'session') }}
                         >
                           <span>{session.name || 'New session'}</span>
                           <SessionTime session={session} />
@@ -390,6 +394,47 @@ export const TaskPanel: Component = () => {
                         </div>
                       )}
                     </For>
+
+                    {/* Separator between sessions and files */}
+                    <Show when={openTabs(t().id).length > 0}>
+                      <span class="w-px h-4 bg-border-subtle mx-0.5 shrink-0" />
+                    </Show>
+
+                    {/* File tabs */}
+                    <For each={openTabs(t().id)}>
+                      {(tab) => (
+                        <div
+                          class={clsx(
+                            'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap cursor-pointer',
+                            mainView(t().id) === tab.relativePath
+                              ? 'bg-surface-3 text-text-secondary border border-border-active'
+                              : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
+                          )}
+                          onClick={() => setActiveTab(t().id, tab.relativePath)}
+                          onDblClick={() => pinTab(t().id, tab.relativePath)}
+                        >
+                          <FileCode size={10} class="text-text-dim shrink-0" />
+                          <span class={clsx('truncate max-w-28', tab.preview && 'italic')}>
+                            {tab.dirty ? '\u2022 ' : ''}{tab.name}
+                          </span>
+                          <button
+                            class={clsx(
+                              'ml-0.5 shrink-0 text-text-dim hover:text-text-muted transition-opacity',
+                              tab.dirty ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                            )}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              requestCloseTab(t().id, tab.relativePath)
+                            }}
+                            title="Close"
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      )}
+                    </For>
+
+                    {/* New session button */}
                     <button
                       class="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-40"
                       onClick={handleNewSession}
@@ -401,17 +446,41 @@ export const TaskPanel: Component = () => {
                     </button>
                   </div>
 
-                  {/* Chat */}
-                  <div class="flex-1 overflow-hidden">
-                    <ChatView
-                      output={currentOutput()}
-                      sessionStatus={currentSession()?.status}
-                    />
-                  </div>
+                  {/* Main content — chat or editor */}
+                  <Show
+                    when={mainView(t().id) !== 'session'}
+                    fallback={
+                      <>
+                        <div class="flex-1 overflow-hidden">
+                          <ChatView
+                            output={currentOutput()}
+                            sessionStatus={currentSession()?.status}
+                          />
+                        </div>
+                        <MessageInput
+                          sessionId={selectedSessionId()}
+                          isRunning={currentSession()?.status === 'running'}
+                        />
+                      </>
+                    }
+                  >
+                    <div class="flex-1 overflow-hidden">
+                      <CodeEditor taskId={t().id} relativePath={mainView(t().id)} />
+                    </div>
+                  </Show>
 
-                  <MessageInput
-                    sessionId={selectedSessionId()}
-                    isRunning={currentSession()?.status === 'running'}
+                  {/* Unsaved changes confirm */}
+                  <ConfirmDialog
+                    open={!!pendingClose()}
+                    title="Unsaved changes"
+                    message={`"${pendingClose()?.split('/').pop()}" has unsaved changes. Close without saving?`}
+                    confirmLabel="Close without saving"
+                    danger
+                    onConfirm={() => {
+                      const path = pendingClose()
+                      if (path) forceCloseTab(t().id, path)
+                    }}
+                    onCancel={cancelCloseTab}
                   />
 
                   {/* Terminal panel — resizable bottom section, kept in DOM to preserve xterm state */}
