@@ -9,6 +9,7 @@
     "build": "vite build",
     "serve": "vite preview",
     "tauri": "tauri",
+    "postinstall": "cd src-tauri/resources/lsp && npm install --no-package-lock",
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:ui": "vitest --ui"
