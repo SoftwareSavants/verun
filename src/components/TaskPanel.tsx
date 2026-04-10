@@ -5,7 +5,7 @@ import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask } from '../store/tasks'
 import { isSetupRunning, setupFailed, setupError } from '../store/setup'
-import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines } from '../store/sessions'
+import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines, sessionCosts } from '../store/sessions'
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { RightPanel } from './RightPanel'
@@ -355,6 +355,9 @@ export const TaskPanel: Component = () => {
                         >
                           <span>{session.name || 'New session'}</span>
                           <SessionTime session={session} />
+                          <Show when={sessionCosts[session.id] > 0}>
+                            <span class="text-text-dim">${sessionCosts[session.id] < 1 ? sessionCosts[session.id].toFixed(3) : sessionCosts[session.id].toFixed(2)}</span>
+                          </Show>
 
                           <Show when={session.status === 'running'}>
                             <button

@@ -1,6 +1,7 @@
+import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment, ToolApprovalRequest, PolicyAutoApprovedEvent } from '../types'
+import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo } from '../types'
 import { setTasks, taskById } from './tasks'
 import { markTaskUnread, markTaskAttention, clearTaskAttention } from './ui'
 import * as ipc from '../lib/ipc'
@@ -12,6 +13,9 @@ export const [sessions, setSessions] = createStore<Session[]>([])
 export const [outputItems, setOutputItems] = createStore<Record<string, OutputItem[]>>({})
 export const [pendingApprovals, setPendingApprovals] = createStore<Record<string, ToolApprovalRequest[]>>({})
 export const [autoApprovedCounts, setAutoApprovedCounts] = createStore<Record<string, number>>({})
+export const [sessionCosts, setSessionCosts] = createStore<Record<string, number>>({})
+export const [sessionTokens, setSessionTokens] = createStore<Record<string, { input: number; output: number }>>({})
+export const [rateLimitInfo, setRateLimitInfo] = createSignal<RateLimitInfo | null>(null)
 export const [taskPlanMode, setTaskPlanMode] = createStore<Record<string, boolean>>({})
 export const [taskThinkingMode, setTaskThinkingMode] = createStore<Record<string, boolean>>({})
 export const [taskFastMode, setTaskFastMode] = createStore<Record<string, boolean>>({})
@@ -21,6 +25,10 @@ export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
   // Merge — keep sessions from other tasks, replace sessions for this task
   setSessions(prev => [...prev.filter(s => s.taskId !== taskId), ...list])
+  // Seed session costs from persisted data
+  for (const s of list) {
+    if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
+  }
 }
 
 export async function createSession(taskId: string): Promise<Session> {
@@ -108,8 +116,10 @@ function removeApproval(requestId: string, sessionId: string) {
 export async function closeSession(sessionId: string) {
   // Remove from local store
   setSessions(prev => prev.filter(s => s.id !== sessionId))
-  // Clean up output from memory
+  // Clean up output and usage from memory
   setOutputItems(produce(store => { delete store[sessionId] }))
+  setSessionCosts(produce(store => { delete store[sessionId] }))
+  setSessionTokens(produce(store => { delete store[sessionId] }))
   // Persist closure to DB (status = 'closed', filtered from future loads)
   await ipc.closeSession(sessionId)
 }
@@ -153,6 +163,21 @@ export async function loadOutputLines(sessionId: string, taskId: string) {
   setTaskThinkingMode(taskId, lastThinkingMode)
   setTaskFastMode(taskId, lastFastMode)
   setTaskPlanFilePath(taskId, planFilePath)
+  // Accumulate costs + tokens from replayed output
+  let replayCost = 0
+  let replayInputTokens = 0
+  let replayOutputTokens = 0
+  for (const item of items) {
+    if (item.kind === 'turnEnd') {
+      if (item.cost) replayCost += item.cost
+      if (item.inputTokens) replayInputTokens += item.inputTokens
+      if (item.outputTokens) replayOutputTokens += item.outputTokens
+    }
+  }
+  if (replayCost > 0) setSessionCosts(sessionId, replayCost)
+  if (replayInputTokens > 0 || replayOutputTokens > 0) {
+    setSessionTokens(sessionId, { input: replayInputTokens, output: replayOutputTokens })
+  }
 }
 
 /** Re-parse a persisted NDJSON line back into OutputItems (mirrors Rust parse_sdk_event) */
@@ -229,7 +254,11 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
   if (type === 'result') {
     const subtype = (v.subtype as string) || 'unknown'
     const status = subtype === 'success' ? 'completed' : 'error'
-    return [{ kind: 'turnEnd', status, timestamp: emittedAt }]
+    const cost = typeof v.total_cost_usd === 'number' ? v.total_cost_usd : undefined
+    const usage = v.usage as Record<string, unknown> | undefined
+    const inputTokens = typeof usage?.input_tokens === 'number' ? usage.input_tokens as number : undefined
+    const outputTokens = typeof usage?.output_tokens === 'number' ? usage.output_tokens as number : undefined
+    return [{ kind: 'turnEnd', status, timestamp: emittedAt, cost, inputTokens, outputTokens }]
   }
 
   // Skip system, rate_limit_event, etc.
@@ -301,6 +330,25 @@ export async function initSessionListeners() {
         store[sessionId] = [...items]
       }
     }))
+    // Accumulate cost + tokens from turnEnd events
+    for (const item of items) {
+      if (item.kind === 'turnEnd') {
+        if (item.cost) {
+          setSessionCosts(produce(store => {
+            store[sessionId] = (store[sessionId] || 0) + item.cost!
+          }))
+        }
+        if (item.inputTokens || item.outputTokens) {
+          setSessionTokens(produce(store => {
+            const prev = store[sessionId] || { input: 0, output: 0 }
+            store[sessionId] = {
+              input: prev.input + (item.inputTokens || 0),
+              output: prev.output + (item.outputTokens || 0),
+            }
+          }))
+        }
+      }
+    }
     // Mark task as unread if it's not currently selected
     const session = sessions.find(s => s.id === sessionId)
     if (session) markTaskUnread(session.taskId)
@@ -367,6 +415,10 @@ export async function initSessionListeners() {
     setAutoApprovedCounts(produce(store => {
       store[sessionId] = (store[sessionId] || 0) + 1
     }))
+  })
+
+  await listen<RateLimitInfo>('rate-limit-info', (event) => {
+    setRateLimitInfo(event.payload)
   })
 
   // Re-fetch any pending approvals that survived a frontend reload

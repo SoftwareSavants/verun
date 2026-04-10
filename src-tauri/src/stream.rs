@@ -50,7 +50,12 @@ pub enum OutputItem {
 
     /// Turn completed
     #[serde(rename_all = "camelCase")]
-    TurnEnd { status: String },
+    TurnEnd {
+        status: String,
+        cost: Option<f64>,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+    },
 
     /// Raw line (fallback for unrecognized events)
     #[serde(rename_all = "camelCase")]
@@ -104,6 +109,18 @@ pub struct ToolApprovalEvent {
     pub tool_input: serde_json::Value,
 }
 
+/// Emitted to frontend with subscription rate limit info
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitInfoEvent {
+    pub session_id: String,
+    pub resets_at: i64,
+    pub overage_resets_at: i64,
+    pub rate_limit_type: String,
+    pub overage_status: String,
+    pub is_using_overage: bool,
+}
+
 /// Emitted to frontend when a tool call was auto-approved by the policy engine
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,7 +167,11 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
                 "success" => "completed",
                 _ => "error",
             };
-            vec![OutputItem::TurnEnd { status: status.to_string() }]
+            let cost = v.get("total_cost_usd").and_then(|c| c.as_f64());
+            let usage = v.get("usage");
+            let input_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(|t| t.as_u64());
+            let output_tokens = usage.and_then(|u| u.get("output_tokens")).and_then(|t| t.as_u64());
+            vec![OutputItem::TurnEnd { status: status.to_string(), cost, input_tokens, output_tokens }]
         }
 
         // -- Telemetry events we can surface --
@@ -162,8 +183,11 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
             }]
         }
 
-        // Ignore rate_limit_event, auth_status, etc. silently
-        "rate_limit_event" | "auth_status" | "tool_use_summary" => vec![],
+        // Rate limit events are handled directly in stream_and_capture (emitted as separate Tauri event)
+        "rate_limit_event" => vec![],
+
+        // Ignore auth_status, etc. silently
+        "auth_status" | "tool_use_summary" => vec![],
 
         // Control requests are handled separately in stream_and_capture
         "control_request" | "control_response" => vec![],
@@ -331,6 +355,12 @@ fn extract_text_content(content: Option<&serde_json::Value>) -> String {
 // Main streaming loop
 // ---------------------------------------------------------------------------
 
+/// Result of streaming a session — captured lines + accumulated cost
+pub struct StreamResult {
+    pub lines: Vec<String>,
+    pub total_cost: f64,
+}
+
 /// Stream stdout from the claude process, parse NDJSON events, emit
 /// structured items to frontend, persist to DB, and return all captured lines.
 ///
@@ -352,12 +382,13 @@ pub async fn stream_and_capture(
     worktree_path: String,
     repo_path: String,
     trust_level: TrustLevel,
-) -> Vec<String> {
+) -> StreamResult {
     let mut reader = BufReader::new(stdout).lines();
     let mut buffer: Vec<OutputItem> = Vec::new();
     let mut captured: Vec<String> = Vec::new();
     let mut last_flush = Instant::now();
     let mut total_persisted: usize = 0;
+    let mut total_cost: f64 = 0.0;
 
     loop {
         let deadline = tokio::time::sleep(FLUSH_INTERVAL);
@@ -391,6 +422,24 @@ pub async fn stream_and_capture(
                             }
                         }
 
+                        // Intercept rate_limit_event — emit as separate Tauri event
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                            if v.get("type").and_then(|t| t.as_str()) == Some("rate_limit_event") {
+                                if let Some(info) = v.get("rate_limit_info") {
+                                    let _ = app.emit("rate-limit-info", RateLimitInfoEvent {
+                                        session_id: session_id.clone(),
+                                        resets_at: info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
+                                        overage_resets_at: info.get("overageResetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
+                                        rate_limit_type: info.get("rateLimitType").and_then(|r| r.as_str()).unwrap_or("").to_string(),
+                                        overage_status: info.get("overageStatus").and_then(|r| r.as_str()).unwrap_or("").to_string(),
+                                        is_using_overage: info.get("isUsingOverage").and_then(|r| r.as_bool()).unwrap_or(false),
+                                    });
+                                }
+                                persist_line(&db_tx, &session_id, &line, &mut total_persisted);
+                                continue;
+                            }
+                        }
+
                         // Parse NDJSON into structured items
                         let items = parse_sdk_event(&line);
 
@@ -414,8 +463,11 @@ pub async fn stream_and_capture(
                                     emit_item(&app, &session_id, item);
                                     has_immediate = true;
                                 }
-                                OutputItem::TurnEnd { .. } => {
+                                OutputItem::TurnEnd { cost, .. } => {
                                     is_turn_end = true;
+                                    if let Some(c) = cost {
+                                        total_cost += c;
+                                    }
                                     buffer.push(item);
                                 }
                                 _ => {
@@ -454,7 +506,7 @@ pub async fn stream_and_capture(
     }
 
     flush_buffer(&app, &session_id, &mut buffer);
-    captured
+    StreamResult { lines: captured, total_cost }
 }
 
 /// Check if a line is a `control_request` for tool approval.
@@ -747,12 +799,32 @@ mod tests {
     }
 
     #[test]
-    fn parse_result_success() {
-        let line = r#"{"type":"result","subtype":"success","session_id":"abc","cost":0.01}"#;
+    fn parse_result_success_with_usage() {
+        let line = r#"{"type":"result","subtype":"success","session_id":"abc","total_cost_usd":0.042,"usage":{"input_tokens":100,"output_tokens":50}}"#;
         let items = parse_sdk_event(line);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::TurnEnd { status } => assert_eq!(status, "completed"),
+            OutputItem::TurnEnd { status, cost, input_tokens, output_tokens } => {
+                assert_eq!(status, "completed");
+                assert_eq!(*cost, Some(0.042));
+                assert_eq!(*input_tokens, Some(100));
+                assert_eq!(*output_tokens, Some(50));
+            }
+            _ => panic!("Expected TurnEnd item"),
+        }
+    }
+
+    #[test]
+    fn parse_result_without_usage() {
+        let line = r#"{"type":"result","subtype":"success","session_id":"abc"}"#;
+        let items = parse_sdk_event(line);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::TurnEnd { cost, input_tokens, output_tokens, .. } => {
+                assert_eq!(*cost, None);
+                assert_eq!(*input_tokens, None);
+                assert_eq!(*output_tokens, None);
+            }
             _ => panic!("Expected TurnEnd item"),
         }
     }

@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Token and cost usage display — per-turn cost + tokens shown next to duration on assistant messages, cumulative session cost in tab pills, and usage chip in the input toolbar with popover showing session stats and subscription reset timer
 - Autodetect prompt rewritten — covers .env.example fallback, destroy hook for env file preservation, orchestrator passthrough config, inter-service URL rewriting, and explicit all-service port mapping
 - OS notifications — macOS desktop notifications when tasks complete, fail, or need approval; suppressed when the task is already in view; toggle in Settings
 - Unread / attention-required indicators on sidebar tasks — amber pulsing dot when a tool approval is pending, accent dot when new output arrives on a background task; cleared on task selection

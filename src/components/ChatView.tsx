@@ -19,6 +19,17 @@ function formatDuration(ms: number): string {
   return rm > 0 ? `${h}h ${rm}m` : `${h}h`
 }
 
+function formatCost(cost: number): string {
+  if (cost < 0.01) return `$${cost.toFixed(4)}`
+  if (cost < 1) return `$${cost.toFixed(3)}`
+  return `$${cost.toFixed(2)}`
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return `${n}`
+}
+
 function renderMarkdown(text: string): string {
   return marked.parse(text, { async: false }) as string
 }
@@ -41,6 +52,8 @@ interface AssistantBlock {
   type: 'assistant'
   text: string
   durationMs?: number
+  turnCost?: number
+  turnTokens?: { input: number; output: number }
   isLastInTurn?: boolean
 }
 interface ThinkingBlock {
@@ -140,12 +153,18 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
       case 'turnEnd': {
         flushText(); flushThinking()
         const durationMs = (turnStartTs && item.timestamp) ? item.timestamp - turnStartTs : undefined
+        const turnCost = item.cost
+        const turnTokens = (item.inputTokens || item.outputTokens)
+          ? { input: item.inputTokens || 0, output: item.outputTokens || 0 }
+          : undefined
         // Mark the last assistant block in this turn
         for (let i = blocks.length - 1; i >= 0; i--) {
           if (blocks[i].type === 'assistant') {
             const ab = blocks[i] as AssistantBlock
             ab.isLastInTurn = true
             if (durationMs) ab.durationMs = durationMs
+            if (turnCost) ab.turnCost = turnCost
+            if (turnTokens) ab.turnTokens = turnTokens
             break
           }
           if (blocks[i].type === 'user') break
@@ -477,7 +496,25 @@ export const ChatView: Component<Props> = (props) => {
                     <Show when={(block as AssistantBlock).isLastInTurn}>
                       <div class="flex items-center gap-2 mt-0.5">
                         <Show when={(block as AssistantBlock).durationMs}>
-                          <span class="text-[10px] text-text-dim/50">{formatDuration((block as AssistantBlock).durationMs!)}</span>
+                          {(() => {
+                            const ab = block as AssistantBlock
+                            const hasCostInfo = ab.turnCost || ab.turnTokens
+                            if (!hasCostInfo) {
+                              return <span class="text-[10px] text-text-dim/50">{formatDuration(ab.durationMs!)}</span>
+                            }
+                            const parts = [
+                              ab.turnCost ? formatCost(ab.turnCost) : '',
+                              ab.turnTokens ? `${formatTokens(ab.turnTokens.input)} in / ${formatTokens(ab.turnTokens.output)} out` : '',
+                            ].filter(Boolean).join(' · ')
+                            return (
+                              <span class="relative group/dur">
+                                <span class="text-[10px] text-text-dim/50 cursor-default">{formatDuration(ab.durationMs!)}</span>
+                                <span class="absolute left-0 bottom-full mb-1 hidden group-hover/dur:block z-50 whitespace-nowrap px-2 py-1 rounded bg-surface-3 border border-border-active shadow-lg text-[10px] text-text-secondary">
+                                  {parts}
+                                </span>
+                              </span>
+                            )
+                          })()}
                         </Show>
                         <CopyButton text={block.text} />
                       </div>

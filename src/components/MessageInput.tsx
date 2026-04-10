@@ -1,12 +1,12 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath } from '../store/sessions'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath } from '../store/sessions'
 import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
 import type { Command } from '../store/commands'
-import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2 } from 'lucide-solid'
+import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity } from 'lucide-solid'
 import { marked } from 'marked'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
@@ -44,6 +44,130 @@ async function fileToAttachment(file: File): Promise<Attachment | null> {
 
 // Module-level signal — survives re-renders
 const [planExpanded, setPlanExpanded] = createSignal(true)
+
+// ---------------------------------------------------------------------------
+// Usage chip + popover (rate limit info + session cost/tokens)
+// ---------------------------------------------------------------------------
+
+const [showUsagePopover, setShowUsagePopover] = createSignal(false)
+
+const fmtCost = (c: number) => c < 0.01 ? `$${c.toFixed(4)}` : c < 1 ? `$${c.toFixed(3)}` : `$${c.toFixed(2)}`
+const fmtTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
+
+function formatResetTime(epochSec: number): string {
+  const d = new Date(epochSec * 1000)
+  const now = new Date()
+  const isToday = d.getUTCDate() === now.getUTCDate() && d.getUTCMonth() === now.getUTCMonth()
+  const h = d.getUTCHours()
+  const ampm = h >= 12 ? 'pm' : 'am'
+  const h12 = h % 12 || 12
+  if (isToday) return `${h12}${ampm} (UTC)`
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  return `${months[d.getUTCMonth()]} ${d.getUTCDate()} at ${h12}${ampm} (UTC)`
+}
+
+function formatTimeUntil(epochSec: number): string {
+  const diffMs = epochSec * 1000 - Date.now()
+  if (diffMs <= 0) return 'now'
+  const h = Math.floor(diffMs / 3_600_000)
+  const m = Math.floor((diffMs % 3_600_000) / 60_000)
+  return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+function UsageChip(chipProps: { sessionId: string | null }) {
+  const cost = () => {
+    const sid = chipProps.sessionId
+    return sid ? (sessionCosts[sid] || 0) : 0
+  }
+  const tokens = () => {
+    const sid = chipProps.sessionId
+    return sid ? sessionTokens[sid] : undefined
+  }
+
+  const chipLabel = () => {
+    const c = cost()
+    const rl = rateLimitInfo()
+    if (c > 0 && rl) return `${fmtCost(c)} · Resets ${formatTimeUntil(rl.resetsAt)}`
+    if (c > 0) return fmtCost(c)
+    if (rl) return `Resets ${formatTimeUntil(rl.resetsAt)}`
+    return 'Usage'
+  }
+
+  return (
+    <div class="relative">
+      <button
+        class={clsx(
+          'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+          rateLimitInfo()?.isUsingOverage
+            ? 'text-status-error/80 hover:text-status-error hover:bg-status-error/10'
+            : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+        )}
+        onClick={() => setShowUsagePopover(!showUsagePopover())}
+        title="Usage info"
+      >
+        <Activity size={13} />
+        <span>{chipLabel()}</span>
+      </button>
+      <Popover open={showUsagePopover()} onClose={() => setShowUsagePopover(false)} class="py-3 px-4 min-w-64 absolute bottom-full left-0 mb-1">
+        {/* Rate limit windows */}
+        <Show when={rateLimitInfo()}>
+          {(() => {
+            const rl = rateLimitInfo()!
+            return (
+              <>
+                <div class="mb-3">
+                  <div class="text-[11px] font-medium text-text-primary mb-0.5">Current session</div>
+                  <div class="text-[10px] text-text-dim">
+                    Resets {formatResetTime(rl.resetsAt)}
+                  </div>
+                </div>
+                <Show when={rl.overageResetsAt > 0}>
+                  <div class="mb-3">
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-[11px] font-medium text-text-primary">Overage window</span>
+                      <Show when={rl.isUsingOverage}>
+                        <span class="text-[9px] px-1 py-0.5 rounded bg-status-error/15 text-status-error font-medium">Active</span>
+                      </Show>
+                    </div>
+                    <div class="text-[10px] text-text-dim mt-0.5">
+                      Resets {formatResetTime(rl.overageResetsAt)}
+                    </div>
+                  </div>
+                </Show>
+              </>
+            )
+          })()}
+        </Show>
+
+        {/* Session stats */}
+        <Show when={cost() > 0 || tokens()}>
+          <Show when={rateLimitInfo()}>
+            <div class="border-t border-border-subtle my-2.5" />
+          </Show>
+          <div class="text-[11px] font-medium text-text-primary mb-1.5">This session</div>
+          <div class="space-y-1 text-[11px]">
+            <Show when={cost() > 0}>
+              <div class="flex justify-between gap-6">
+                <span class="text-text-dim">Cost</span>
+                <span class="text-text-secondary font-mono">{fmtCost(cost())}</span>
+              </div>
+            </Show>
+            <Show when={tokens()}>
+              <div class="flex justify-between gap-6">
+                <span class="text-text-dim">Input</span>
+                <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.input)} tokens</span>
+              </div>
+              <div class="flex justify-between gap-6">
+                <span class="text-text-dim">Output</span>
+                <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.output)} tokens</span>
+              </div>
+            </Show>
+          </div>
+        </Show>
+      </Popover>
+    </div>
+  )
+}
 
 export const MessageInput: Component<Props> = (props) => {
   let fileInputRef!: HTMLInputElement
@@ -1353,6 +1477,9 @@ export const MessageInput: Component<Props> = (props) => {
                 {autoApprovedCount()} auto-approved
               </span>
             </Show>
+
+            {/* Usage chip */}
+            <UsageChip sessionId={props.sessionId} />
           </div>
 
           <div class="flex items-center gap-1">

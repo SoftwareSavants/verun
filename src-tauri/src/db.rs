@@ -105,6 +105,12 @@ pub fn migrations() -> Vec<Migration> {
         description: "add port_offset to tasks for parallel port allocation",
         sql: "ALTER TABLE tasks ADD COLUMN port_offset INTEGER NOT NULL DEFAULT 0;",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 7,
+        description: "add total_cost to sessions",
+        sql: "ALTER TABLE sessions ADD COLUMN total_cost REAL NOT NULL DEFAULT 0.0;",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -148,6 +154,7 @@ pub struct Session {
     pub status: String,
     pub started_at: i64,
     pub ended_at: Option<i64>,
+    pub total_cost: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -196,6 +203,7 @@ pub enum DbWrite {
     UpdateSessionStatus { id: String, status: String },
     SetClaudeSessionId { id: String, claude_session_id: String },
     EndSession { id: String, ended_at: i64 },
+    AccumulateSessionCost { id: String, cost: f64 },
     CloseSession { id: String },
 
     // Output
@@ -345,8 +353,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Sessions --
         DbWrite::CreateSession(s) => {
             sqlx::query(
-                "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(&s.task_id)
@@ -355,6 +363,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(&s.status)
             .bind(s.started_at)
             .bind(s.ended_at)
+            .bind(s.total_cost)
             .execute(pool)
             .await?;
         }
@@ -382,6 +391,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         DbWrite::EndSession { id, ended_at } => {
             sqlx::query("UPDATE sessions SET status = 'done', ended_at = ? WHERE id = ?")
                 .bind(ended_at)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        DbWrite::AccumulateSessionCost { id, cost } => {
+            sqlx::query("UPDATE sessions SET total_cost = total_cost + ? WHERE id = ?")
+                .bind(cost)
                 .bind(&id)
                 .execute(pool)
                 .await?;
@@ -623,15 +639,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_six_migrations() {
+    fn has_seven_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 6);
+        assert_eq!(m.len(), 7);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
         assert_eq!(m[3].version, 4);
         assert_eq!(m[4].version, 5);
         assert_eq!(m[5].version, 6);
+        assert_eq!(m[6].version, 7);
     }
 
     #[test]
@@ -683,6 +700,7 @@ mod tests {
             status: "running".into(),
             started_at: 3000,
             ended_at: None,
+            total_cost: 0.0,
         }
     }
 

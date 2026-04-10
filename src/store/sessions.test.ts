@@ -10,6 +10,7 @@ const makeSession = (overrides: Partial<Session> = {}): Session => ({
   status: 'idle',
   startedAt: 1000,
   endedAt: null,
+  totalCost: 0,
   ...overrides,
 })
 

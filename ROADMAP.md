@@ -68,6 +68,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Option + arrow to move in terminal command isn't working
 - [X] Worktrees should be under the project folder not Desktop
 - [ ] Move default branch to project settings
+- [ ] Resolve conflicts button not showing
 
 ---
 
@@ -96,7 +97,7 @@ High-impact features that engineers are asking for most.
 
 ### CLI Parity
 - [ ] Full Claude CLI parity (skills, slash commands, CLAUDE.md/AGENTS.md, memory)
-- [-] Tokens and subscription usage display
+- [X] Tokens and subscription usage display
 
 ---
 

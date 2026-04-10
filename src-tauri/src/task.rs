@@ -283,6 +283,7 @@ pub async fn create_session(db_tx: &DbWriteTx, task_id: String) -> Result<Sessio
         status: "idle".to_string(),
         started_at: epoch_ms(),
         ended_at: None,
+        total_cost: 0.0,
     };
 
     db_tx
@@ -521,7 +522,7 @@ pub async fn send_message(
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let wt_for_hooks = monitor_wt.clone();
-        let captured = stream::stream_and_capture(
+        let stream_result = stream::stream_and_capture(
             monitor_app.clone(),
             monitor_sid.clone(),
             monitor_tid.clone(),
@@ -536,6 +537,16 @@ pub async fn send_message(
         )
         .await;
 
+        // Persist accumulated session cost
+        if stream_result.total_cost > 0.0 {
+            let _ = monitor_db_tx
+                .send(db::DbWrite::AccumulateSessionCost {
+                    id: monitor_sid.clone(),
+                    cost: stream_result.total_cost,
+                })
+                .await;
+        }
+
         // Process exited — get exit code
         let status = if let Some((_, mut proc)) = monitor_active.remove(&monitor_sid) {
             let exit = proc.child.wait().await.ok().and_then(|s| s.code());
@@ -546,7 +557,7 @@ pub async fn send_message(
         };
 
         // Try to extract claude session_id from captured output
-        if let Some(csid) = extract_claude_session_id(&captured) {
+        if let Some(csid) = extract_claude_session_id(&stream_result.lines) {
             let _ = monitor_db_tx
                 .send(db::DbWrite::SetClaudeSessionId {
                     id: monitor_sid.clone(),

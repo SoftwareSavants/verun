@@ -30,6 +30,7 @@ export interface Session {
   status: SessionStatus
   startedAt: number
   endedAt: number | null
+  totalCost: number
 }
 
 export interface OutputLine {
@@ -77,7 +78,7 @@ export type OutputItem =
   | { kind: 'toolStart'; tool: string; input: string }
   | { kind: 'toolResult'; text: string; isError: boolean }
   | { kind: 'system'; text: string }
-  | { kind: 'turnEnd'; status: string; timestamp?: number }
+  | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number }
   | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; dataBase64: string }>; timestamp?: number }
   | { kind: 'raw'; text: string }
 
@@ -89,6 +90,15 @@ export interface SessionOutputEvent {
 export interface SessionStatusEvent {
   sessionId: string
   status: SessionStatus
+}
+
+export interface RateLimitInfo {
+  sessionId: string
+  resetsAt: number
+  overageResetsAt: number
+  rateLimitType: string
+  overageStatus: string
+  isUsingOverage: boolean
 }
 
 export interface ToolApprovalRequest {
