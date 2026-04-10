@@ -163,7 +163,6 @@ export function openFile(taskId: string, relativePath: string, name: string) {
       setMainView(taskId, relativePath)
       pushMru(taskId, relativePath)
     }
-    revealFileInTree(taskId, relativePath)
     return
   }
 
@@ -175,7 +174,6 @@ export function openFile(taskId: string, relativePath: string, name: string) {
   setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
-  revealFileInTree(taskId, relativePath)
 }
 
 /** Open a file as a permanent tab (double-click, or programmatic). */
@@ -195,7 +193,6 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
       setMainView(taskId, relativePath)
     }
     pushMru(taskId, relativePath)
-    revealFileInTree(taskId, relativePath)
     return
   }
 
@@ -208,7 +205,6 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
   setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
-  revealFileInTree(taskId, relativePath)
 }
 
 /** Pin the current preview tab (called on edit or double-click). */
@@ -317,8 +313,9 @@ export function clearCachedContent(taskId: string, relativePath: string) {
 
 // ── Reveal file in tree ──────────────────────────────────────────────
 
-// Signal consumed by FileTree to scroll+highlight the target
-const [revealRequest, setRevealRequest] = createSignal<{ taskId: string; relativePath: string } | null>(null)
+// Signal consumed by FileTree to scroll to the target. Counter ensures re-fire for same file.
+let revealCounter = 0
+const [revealRequest, setRevealRequest] = createSignal<{ taskId: string; relativePath: string; seq: number } | null>(null)
 export { revealRequest }
 
 /** Expand all ancestor directories and signal the tree to scroll to the file. */
@@ -341,8 +338,8 @@ export async function revealFileInTree(taskId: string, relativePath: string) {
   // Switch right panel to files tab so the tree is visible
   setRightPanelTab('files')
 
-  // Signal the tree to scroll
-  setRevealRequest({ taskId, relativePath })
+  // Signal the tree to scroll (unique seq forces re-fire even for same file)
+  setRevealRequest({ taskId, relativePath, seq: ++revealCounter })
 }
 
 // Quick open overlay
@@ -361,6 +358,7 @@ export function nextTab(taskId: string) {
     setTaskActiveTab(prev => ({ ...prev, [taskId]: next }))
     setMainView(taskId, next)
     pushMru(taskId, next)
+    revealFileInTree(taskId, next)
   }
 }
 
@@ -377,6 +375,7 @@ export function prevTab(taskId: string) {
     setTaskActiveTab(p => ({ ...p, [taskId]: prev }))
     setMainView(taskId, prev)
     pushMru(taskId, prev)
+    revealFileInTree(taskId, prev)
   }
 }
 

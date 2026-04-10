@@ -15,7 +15,7 @@ import { QuickOpen } from './QuickOpen'
 import { CodeEditor } from './CodeEditor'
 import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
-import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs } from '../store/files'
+import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree } from '../store/files'
 import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
@@ -444,7 +444,7 @@ export const TaskPanel: Component = () => {
                               ? 'bg-surface-3 text-text-secondary border border-border-active'
                               : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
                           )}
-                          onClick={() => setActiveTab(t().id, tab.relativePath)}
+                          onClick={() => { setActiveTab(t().id, tab.relativePath); revealFileInTree(t().id, tab.relativePath) }}
                           onDblClick={() => pinTab(t().id, tab.relativePath)}
                           onContextMenu={(e) => {
                             e.preventDefault()

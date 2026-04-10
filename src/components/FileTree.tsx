@@ -4,7 +4,7 @@ import { Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
 import {
   getDirContents, loadDirectory, isExpanded, toggleExpanded, collapseDir,
-  invalidateDirectory, openFile, openFilePinned, revealRequest
+  invalidateDirectory, openFile, openFilePinned, revealRequest, mainView
 } from '../store/files'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
@@ -89,22 +89,34 @@ export const FileTree: Component<Props> = (props) => {
   const virtualizer = createVirtualizer({
     get count() { return flatNodes().length },
     getScrollElement: () => scrollRef ?? null,
-    estimateSize: () => 28,
+    estimateSize: () => 24,
     overscan: 10,
   })
 
-  // Reveal file in tree — scroll to it and briefly highlight
-  const [highlightPath, setHighlightPath] = createSignal<string | null>(null)
+  // Reveal file in tree — scroll to it after expanded dirs settle
   createEffect(() => {
     const req = revealRequest()
-    if (!req || req.taskId !== props.taskId) return
-    // Find the target in the (now-expanded) flat node list
-    const idx = flatNodes().findIndex(n => n.entry.relativePath === req.relativePath)
-    if (idx >= 0) {
-      virtualizer.scrollToIndex(idx, { align: 'auto' })
-      setHighlightPath(req.relativePath)
-      setTimeout(() => setHighlightPath(null), 1500)
+    console.log('[reveal] effect fired', req, 'myTask:', props.taskId)
+    if (!req || req.taskId !== props.taskId) {
+      console.log('[reveal] skipped — no req or task mismatch')
+      return
     }
+    setTimeout(() => {
+      const nodes = flatNodes()
+      const idx = nodes.findIndex(n => n.entry.relativePath === req.relativePath)
+      console.log('[reveal] setTimeout fired, looking for:', req.relativePath)
+      console.log('[reveal] flatNodes count:', nodes.length, 'found idx:', idx)
+      console.log('[reveal] scrollRef:', !!scrollRef, 'scrollRef.clientHeight:', scrollRef?.clientHeight, 'scrollRef.scrollHeight:', scrollRef?.scrollHeight)
+      if (idx >= 0 && scrollRef) {
+        const rowHeight = 24
+        const containerHeight = scrollRef.clientHeight
+        const targetTop = idx * rowHeight
+        const currentTop = scrollRef.scrollTop
+        console.log('[reveal] targetTop:', targetTop, 'currentTop:', currentTop, 'containerHeight:', containerHeight)
+        scrollRef.scrollTop = targetTop - containerHeight / 2 + rowHeight / 2
+        console.log('[reveal] scrollTop set to:', scrollRef.scrollTop)
+      }
+    }, 50)
   })
 
   const handleClick = (entry: FileEntry) => {
@@ -243,7 +255,11 @@ export const FileTree: Component<Props> = (props) => {
                       }}
                     >
                       <button
-                        class={`w-full flex items-center gap-1 px-2 py-0.5 text-[12px] text-text-secondary hover:bg-surface-2 transition-colors text-left truncate${highlightPath() === n().entry.relativePath ? ' bg-accent-muted/40 !text-text-primary' : ''}`}
+                        class={`w-full h-full flex items-center gap-1 px-2 py-1 text-[12px] transition-colors text-left truncate${
+                          !n().entry.isDir && mainView(props.taskId) === n().entry.relativePath
+                            ? ' bg-surface-3 text-text-primary'
+                            : ' text-text-secondary hover:bg-surface-2'
+                        }`}
                         style={{ "padding-left": `${n().depth * 16 + 8}px` }}
                         onClick={() => handleClick(n().entry)}
                         onDblClick={() => handleDoubleClick(n().entry)}

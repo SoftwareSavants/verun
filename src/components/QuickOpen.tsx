@@ -2,7 +2,7 @@ import { Component, Show, For, createSignal, createEffect, on } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
 import { Search } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
-import { showQuickOpen, setShowQuickOpen, openFilePinned } from '../store/files'
+import { showQuickOpen, setShowQuickOpen, openFilePinned, revealFileInTree } from '../store/files'
 import { selectedTaskId } from '../store/ui'
 import * as ipc from '../lib/ipc'
 
@@ -123,6 +123,7 @@ export const QuickOpen: Component = () => {
     const taskId = selectedTaskId()
     if (!taskId) return
     openFilePinned(taskId, path, name)
+    revealFileInTree(taskId, path)
     close()
   }
 
@@ -183,6 +184,10 @@ export const QuickOpen: Component = () => {
               value={query()}
               onInput={(e) => setQuery(e.currentTarget.value)}
               onKeyDown={handleKeyDown}
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck={false}
             />
           </div>
 
