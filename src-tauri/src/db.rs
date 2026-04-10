@@ -487,7 +487,7 @@ pub async fn get_project(pool: &SqlitePool, id: &str) -> Result<Option<Project>,
 }
 
 pub async fn list_projects(pool: &SqlitePool) -> Result<Vec<Project>, String> {
-    sqlx::query_as::<_, Project>("SELECT * FROM projects ORDER BY created_at DESC")
+    sqlx::query_as::<_, Project>("SELECT * FROM projects ORDER BY created_at ASC")
         .fetch_all(pool)
         .await
         .map_err(|e| e.to_string())
@@ -735,7 +735,7 @@ mod tests {
 
         let projects = list_projects(&pool).await.unwrap();
         assert_eq!(projects.len(), 2);
-        assert_eq!(projects[0].id, "p-002"); // newest first
+        assert_eq!(projects[0].id, "p-001"); // oldest first
     }
 
     #[tokio::test]
