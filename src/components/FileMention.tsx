@@ -1,5 +1,6 @@
 import { Component, For, Show, createSignal, createEffect, on } from 'solid-js'
 import { clsx } from 'clsx'
+import { getFileIcon } from '../lib/fileIcons'
 
 interface Props {
   query: string
@@ -81,22 +82,7 @@ export const FileMention: Component<Props> = (props) => {
 
   ;(window as any).__fileMentionKeyDown = handleKeyDown
 
-  const fileIcon = (path: string) => {
-    const ext = path.split('.').pop()?.toLowerCase() ?? ''
-    const icons: Record<string, string> = {
-      rs: 'text-orange-400',
-      ts: 'text-blue-400',
-      tsx: 'text-blue-400',
-      js: 'text-yellow-400',
-      jsx: 'text-yellow-400',
-      css: 'text-purple-400',
-      html: 'text-red-400',
-      json: 'text-green-400',
-      toml: 'text-green-400',
-      md: 'text-text-muted',
-    }
-    return icons[ext] ?? 'text-text-dim'
-  }
+  // File icons imported from ../lib/fileIcons
 
   return (
     <Show when={filtered().length > 0}>
@@ -121,7 +107,7 @@ export const FileMention: Component<Props> = (props) => {
                   onMouseEnter={() => setSelectedIndex(i())}
                   onClick={() => props.onSelect(file)}
                 >
-                  <span class={clsx('text-xs shrink-0', fileIcon(file))}>@</span>
+                  <span class="shrink-0">{(() => { const I = getFileIcon(name); return <I size={12} /> })()}</span>
                   <span class="text-xs font-mono truncate">
                     <span class="text-text-primary">{name}</span>
                     <Show when={dir}>

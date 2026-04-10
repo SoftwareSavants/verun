@@ -1,6 +1,7 @@
 import { Component, For, Show, createEffect, on, onCleanup, onMount, createSignal } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
-import { Folder, FolderOpen, File, ChevronRight, ChevronDown, FileCode, FileJson, FileText, Image, FileType } from 'lucide-solid'
+import { Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-solid'
+import { getFileIcon } from '../lib/fileIcons'
 import {
   getDirContents, loadDirectory, isExpanded, toggleExpanded, collapseDir,
   invalidateDirectory, openFile, openFilePinned
@@ -24,27 +25,7 @@ interface ContextMenuState {
   entry: FileEntry
 }
 
-function getFileIcon(name: string): Component<{ size: number; class?: string }> {
-  const ext = name.split('.').pop()?.toLowerCase() || ''
-  switch (ext) {
-    case 'ts': case 'tsx': case 'js': case 'jsx': case 'mjs': case 'cjs':
-    case 'rs': case 'py': case 'go': case 'java': case 'rb': case 'php':
-    case 'c': case 'cpp': case 'h': case 'hpp': case 'swift': case 'kt':
-    case 'cs': case 'lua': case 'sh': case 'bash': case 'zsh':
-    case 'html': case 'css': case 'scss': case 'vue': case 'svelte':
-      return FileCode
-    case 'json': case 'jsonc': case 'json5':
-      return FileJson
-    case 'md': case 'mdx': case 'txt': case 'rst': case 'adoc':
-      return FileText
-    case 'png': case 'jpg': case 'jpeg': case 'gif': case 'svg': case 'ico': case 'webp':
-      return Image
-    case 'toml': case 'yaml': case 'yml': case 'ini': case 'cfg': case 'conf':
-      return FileType
-    default:
-      return File
-  }
-}
+// getFileIcon imported from ../lib/fileIcons
 
 export const FileTree: Component<Props> = (props) => {
   let scrollRef: HTMLDivElement | undefined
@@ -268,7 +249,7 @@ export const FileTree: Component<Props> = (props) => {
                             const I = Icon()
                             return <I
                               size={14}
-                              class={n().entry.isDir ? 'text-accent' : 'text-text-dim'}
+                              class={n().entry.isDir ? 'text-accent' : undefined}
                             />
                           })()}
                         </span>

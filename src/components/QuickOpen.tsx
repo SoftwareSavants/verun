@@ -1,6 +1,7 @@
 import { Component, Show, For, createSignal, createEffect, on } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
-import { Search, File, FileCode, FileJson, FileText } from 'lucide-solid'
+import { Search } from 'lucide-solid'
+import { getFileIcon } from '../lib/fileIcons'
 import { showQuickOpen, setShowQuickOpen, openFilePinned } from '../store/files'
 import { selectedTaskId } from '../store/ui'
 import * as ipc from '../lib/ipc'
@@ -68,22 +69,7 @@ function fuzzyMatch(query: string, path: string): number | null {
   return score
 }
 
-// ── File icon by extension ─────────────────────────────────────────────
-function getIcon(name: string) {
-  const ext = name.split('.').pop()?.toLowerCase() || ''
-  switch (ext) {
-    case 'ts': case 'tsx': case 'js': case 'jsx': case 'rs': case 'py':
-    case 'go': case 'java': case 'c': case 'cpp': case 'html': case 'css':
-    case 'vue': case 'svelte': case 'sh':
-      return FileCode
-    case 'json': case 'jsonc':
-      return FileJson
-    case 'md': case 'txt':
-      return FileText
-    default:
-      return File
-  }
-}
+// getFileIcon imported from ../lib/fileIcons
 
 // ── Component ──────────────────────────────────────────────────────────
 export const QuickOpen: Component = () => {
@@ -251,7 +237,7 @@ export const QuickOpen: Component = () => {
                           }}
                           onMouseEnter={() => setSelectedIndex(virtualRow.index)}
                         >
-                          {(() => { const I = getIcon(name()); return <I size={14} class="shrink-0 text-[#5c6370]" /> })()}
+                          {(() => { const I = getFileIcon(name()); return <I size={14} class="shrink-0" /> })()}
                           <span class="text-[12px] truncate">
                             <span class={isSelected() ? 'text-[#abb2bf]' : 'text-[#abb2bf]/80'}>{name()}</span>
                             <Show when={dir()}>

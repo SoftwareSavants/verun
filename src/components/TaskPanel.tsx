@@ -14,7 +14,8 @@ import { CodeEditor } from './CodeEditor'
 import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs } from '../store/files'
-import { Square, Plus, X, FileCode, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
+import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2 } from 'lucide-solid'
+import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
@@ -426,7 +427,7 @@ export const TaskPanel: Component = () => {
                             setTabMenu({ x: e.clientX, y: e.clientY, path: tab.relativePath, taskId: t().id })
                           }}
                         >
-                          <FileCode size={10} class="text-text-dim shrink-0" />
+                          {(() => { const I = getFileIcon(tab.name); return <I size={10} class="shrink-0" /> })()}
                           <span class={clsx('truncate max-w-28', tab.preview && 'italic')}>
                             {tab.dirty ? '\u2022 ' : ''}{tab.name}
                           </span>

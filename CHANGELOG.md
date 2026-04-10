@@ -4,6 +4,8 @@
 
 ### Changes
 
+- Per-language file icons — TypeScript, JavaScript, React, Rust, Python, Go, Java, Ruby, PHP, C/C++, Swift, Kotlin, C#, Lua, Shell, HTML, CSS, Sass, Vue, Svelte, JSON, TOML, YAML, Markdown, and more — with official brand colors, shown in file tree, tabs, quick open, and file mentions
+- Base branch selector moved from sidebar context menu to project settings page for discoverability
 - LSP always installed — moved language server install to postinstall hook so it runs on every `pnpm install` (local and CI), not just during production builds
 - Token and cost usage display — per-turn cost + tokens shown next to duration on assistant messages, cumulative session cost in tab pills, and usage chip in the input toolbar with popover showing session stats and subscription reset timer
 - Autodetect prompt rewritten — covers .env.example fallback, destroy hook for env file preservation, orchestrator passthrough config, inter-service URL rewriting, and explicit all-service port mapping
