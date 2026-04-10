@@ -37,6 +37,7 @@ function renderMarkdown(text: string): string {
 interface Props {
   output: OutputItem[]
   sessionStatus?: SessionStatus
+  sessionId?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +387,8 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
   )
 }
 
+// ---------------------------------------------------------------------------
+// Queued Message Bubble
 // ---------------------------------------------------------------------------
 // Main ChatView
 // ---------------------------------------------------------------------------

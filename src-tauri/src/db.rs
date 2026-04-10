@@ -111,6 +111,27 @@ pub fn migrations() -> Vec<Migration> {
         description: "add total_cost to sessions",
         sql: "ALTER TABLE sessions ADD COLUMN total_cost REAL NOT NULL DEFAULT 0.0;",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 8,
+        description: "create steps table for persistent message queue",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS steps (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                message TEXT NOT NULL,
+                attachments_json TEXT,
+                armed INTEGER NOT NULL DEFAULT 0,
+                model TEXT,
+                plan_mode INTEGER,
+                thinking_mode INTEGER,
+                fast_mode INTEGER,
+                sort_order INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_steps_session ON steps(session_id);
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -179,6 +200,22 @@ pub struct AuditEntry {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct Step {
+    pub id: String,
+    pub session_id: String,
+    pub message: String,
+    pub attachments_json: Option<String>,
+    pub armed: bool,
+    pub model: Option<String>,
+    pub plan_mode: Option<bool>,
+    pub thinking_mode: Option<bool>,
+    pub fast_mode: Option<bool>,
+    pub sort_order: i64,
+    pub created_at: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Async write queue
 // ---------------------------------------------------------------------------
@@ -221,6 +258,13 @@ pub enum DbWrite {
         reason: String,
         created_at: i64,
     },
+
+    // Steps
+    InsertStep(Step),
+    UpdateStep { id: String, message: String, armed: bool, model: Option<String>, plan_mode: Option<bool>, thinking_mode: Option<bool>, fast_mode: Option<bool>, attachments_json: Option<String> },
+    DeleteStep { id: String },
+    ReorderSteps { session_id: String, ids: Vec<String> },
+    DisarmAllSteps { session_id: String },
 
     // Startup recovery
     ResetRunningSessions,
@@ -277,7 +321,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .await?;
         }
         DbWrite::DeleteProject { id } => {
-            // Cascade: audit_log → trust_levels → output_lines → sessions → tasks → project
+            // Cascade: audit_log → trust_levels → steps → output_lines → sessions → tasks → project
             sqlx::query(
                 "DELETE FROM policy_audit_log WHERE task_id IN \
                  (SELECT id FROM tasks WHERE project_id = ?)",
@@ -286,6 +330,11 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             sqlx::query(
                 "DELETE FROM task_trust_levels WHERE task_id IN \
                  (SELECT id FROM tasks WHERE project_id = ?)",
+            )
+            .bind(&id).execute(pool).await?;
+            sqlx::query(
+                "DELETE FROM steps WHERE session_id IN \
+                 (SELECT s.id FROM sessions s JOIN tasks t ON s.task_id = t.id WHERE t.project_id = ?)",
             )
             .bind(&id).execute(pool).await?;
             sqlx::query(
@@ -339,6 +388,11 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .bind(&id).execute(pool).await?;
             sqlx::query("DELETE FROM task_trust_levels WHERE task_id = ?")
                 .bind(&id).execute(pool).await?;
+            sqlx::query(
+                "DELETE FROM steps WHERE session_id IN \
+                 (SELECT id FROM sessions WHERE task_id = ?)",
+            )
+            .bind(&id).execute(pool).await?;
             sqlx::query(
                 "DELETE FROM output_lines WHERE session_id IN \
                  (SELECT id FROM sessions WHERE task_id = ?)",
@@ -462,6 +516,62 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .await?;
         }
 
+        // -- Steps --
+        DbWrite::InsertStep(s) => {
+            sqlx::query(
+                "INSERT INTO steps (id, session_id, message, attachments_json, armed, model, plan_mode, thinking_mode, fast_mode, sort_order, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&s.id)
+            .bind(&s.session_id)
+            .bind(&s.message)
+            .bind(&s.attachments_json)
+            .bind(s.armed)
+            .bind(&s.model)
+            .bind(s.plan_mode)
+            .bind(s.thinking_mode)
+            .bind(s.fast_mode)
+            .bind(s.sort_order)
+            .bind(s.created_at)
+            .execute(pool)
+            .await?;
+        }
+        DbWrite::UpdateStep { id, message, armed, model, plan_mode, thinking_mode, fast_mode, attachments_json } => {
+            sqlx::query("UPDATE steps SET message = ?, armed = ?, model = ?, plan_mode = ?, thinking_mode = ?, fast_mode = ?, attachments_json = ? WHERE id = ?")
+                .bind(&message)
+                .bind(armed)
+                .bind(&model)
+                .bind(plan_mode)
+                .bind(thinking_mode)
+                .bind(fast_mode)
+                .bind(&attachments_json)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        DbWrite::DeleteStep { id } => {
+            sqlx::query("DELETE FROM steps WHERE id = ?")
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        DbWrite::ReorderSteps { session_id, ids } => {
+            for (i, id) in ids.iter().enumerate() {
+                sqlx::query("UPDATE steps SET sort_order = ? WHERE id = ? AND session_id = ?")
+                    .bind(i as i64)
+                    .bind(id)
+                    .bind(&session_id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        DbWrite::DisarmAllSteps { session_id } => {
+            sqlx::query("UPDATE steps SET armed = 0 WHERE session_id = ?")
+                .bind(&session_id)
+                .execute(pool)
+                .await?;
+        }
+
         // -- Startup recovery --
         DbWrite::ResetRunningSessions => {
             sqlx::query("UPDATE sessions SET status = 'idle' WHERE status = 'running'")
@@ -566,6 +676,18 @@ pub async fn get_output_lines(
     .map_err(|e| e.to_string())
 }
 
+// Steps
+
+pub async fn list_steps(pool: &SqlitePool, session_id: &str) -> Result<Vec<Step>, String> {
+    sqlx::query_as::<_, Step>(
+        "SELECT * FROM steps WHERE session_id = ? ORDER BY sort_order ASC",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
 // Policy
 
 pub async fn get_trust_level(pool: &SqlitePool, task_id: &str) -> Result<String, String> {
@@ -639,9 +761,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_seven_migrations() {
+    fn has_eight_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 7);
+        assert_eq!(m.len(), 8);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
@@ -649,6 +771,7 @@ mod tests {
         assert_eq!(m[4].version, 5);
         assert_eq!(m[5].version, 6);
         assert_eq!(m[6].version, 7);
+        assert_eq!(m[7].version, 8);
     }
 
     #[test]
@@ -1004,5 +1127,206 @@ mod tests {
     fn get_nonexistent_returns_none() {
         // Sync check that the functions exist and return the right types
         // Actual async tests above cover the behavior
+    }
+
+    // -- Step tests --
+
+    fn make_step(session_id: &str, sort_order: i64) -> Step {
+        Step {
+            id: format!("step-{sort_order}"),
+            session_id: session_id.into(),
+            message: format!("Do thing {sort_order}"),
+            attachments_json: None,
+            armed: false,
+            model: Some("sonnet".into()),
+            plan_mode: Some(false),
+            thinking_mode: Some(true),
+            fast_mode: Some(false),
+            sort_order,
+            created_at: 5000 + sort_order,
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_and_list_steps() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].id, "step-0");
+        assert_eq!(steps[1].id, "step-1");
+        assert_eq!(steps[0].message, "Do thing 0");
+    }
+
+    #[tokio::test]
+    async fn list_steps_returns_sorted_by_sort_order() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+
+        // Insert in reverse order
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 2))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.iter().map(|s| s.sort_order).collect::<Vec<_>>(), vec![0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn list_steps_scoped_by_session() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(Session { id: "s-002".into(), ..make_session("t-001") })).await.unwrap();
+
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(Step { id: "step-other".into(), session_id: "s-002".into(), ..make_step("s-002", 0) })).await.unwrap();
+
+        assert_eq!(list_steps(&pool, "s-001").await.unwrap().len(), 1);
+        assert_eq!(list_steps(&pool, "s-002").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn update_step_changes_message_and_armed() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+
+        process_write(&pool, DbWrite::UpdateStep {
+            id: "step-0".into(),
+            message: "Updated message".into(),
+            armed: true,
+            model: Some("opus".into()),
+            plan_mode: Some(true),
+            thinking_mode: Some(false),
+            fast_mode: Some(true),
+            attachments_json: Some("[{\"name\":\"img.png\"}]".into()),
+        }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps[0].message, "Updated message");
+        assert!(steps[0].armed);
+        assert_eq!(steps[0].model.as_deref(), Some("opus"));
+        assert_eq!(steps[0].plan_mode, Some(true));
+        assert_eq!(steps[0].fast_mode, Some(true));
+        assert!(steps[0].attachments_json.is_some());
+    }
+
+    #[tokio::test]
+    async fn delete_step_removes_it() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+
+        process_write(&pool, DbWrite::DeleteStep { id: "step-0".into() }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].id, "step-1");
+    }
+
+    #[tokio::test]
+    async fn reorder_steps_updates_sort_order() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 2))).await.unwrap();
+
+        // Reverse the order
+        process_write(&pool, DbWrite::ReorderSteps {
+            session_id: "s-001".into(),
+            ids: vec!["step-2".into(), "step-1".into(), "step-0".into()],
+        }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["step-2", "step-1", "step-0"]);
+    }
+
+    #[tokio::test]
+    async fn disarm_all_steps_sets_armed_false() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+
+        let mut armed_step = make_step("s-001", 0);
+        armed_step.armed = true;
+        process_write(&pool, DbWrite::InsertStep(armed_step)).await.unwrap();
+        let mut armed_step2 = make_step("s-001", 1);
+        armed_step2.armed = true;
+        process_write(&pool, DbWrite::InsertStep(armed_step2)).await.unwrap();
+
+        process_write(&pool, DbWrite::DisarmAllSteps { session_id: "s-001".into() }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert!(steps.iter().all(|s| !s.armed));
+    }
+
+    #[tokio::test]
+    async fn delete_task_cascades_to_steps() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+
+        process_write(&pool, DbWrite::DeleteTask { id: "t-001".into() }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn delete_project_cascades_to_steps() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+
+        process_write(&pool, DbWrite::DeleteProject { id: "p-001".into() }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.len(), 0);
+    }
+
+    #[test]
+    fn step_serializes_as_camel_case() {
+        let step = Step {
+            id: "step-1".into(),
+            session_id: "s-001".into(),
+            message: "do something".into(),
+            attachments_json: None,
+            armed: true,
+            model: Some("sonnet".into()),
+            plan_mode: Some(true),
+            thinking_mode: Some(true),
+            fast_mode: Some(false),
+            sort_order: 0,
+            created_at: 5000,
+        };
+        let json = serde_json::to_value(&step).unwrap();
+        assert!(json.get("sessionId").is_some());
+        assert!(json.get("attachmentsJson").is_some());
+        assert!(json.get("sortOrder").is_some());
+        assert!(json.get("planMode").is_some());
+        assert!(json.get("createdAt").is_some());
     }
 }

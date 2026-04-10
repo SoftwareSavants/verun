@@ -80,7 +80,7 @@ High-impact features that engineers are asking for most.
 - [X] Refresh the state (github...) on app resume
 - [ ] Subagent / nested thread visualization
 - [ ] Fork task or session (branch a conversation into a new direction)
-- [ ] Steer & queue interaction modes (send follow-ups while the agent is working)
+- [X] Steer & queue interaction modes (send follow-ups while the agent is working)
 - [X] Unread / attention-required indicator on tasks in sidebar
 - [X] OS notifications for task completion and approval prompts
 - [ ] Multi window support

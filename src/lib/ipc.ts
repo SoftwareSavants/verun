@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
 
 // Projects
 export const addProject = (repoPath: string) =>
@@ -224,6 +224,25 @@ export const lspStop = (taskId: string) =>
 // Notifications
 export const sendNotification = (title: string, body: string) =>
   invoke<void>('send_notification', { title, body })
+
+// Steps
+export const listSteps = (sessionId: string) =>
+  invoke<Step[]>('list_steps', { sessionId })
+
+export const addStep = (id: string, sessionId: string, message: string, attachmentsJson: string | null, armed: boolean, model: string | null, planMode: boolean | null, thinkingMode: boolean | null, fastMode: boolean | null, sortOrder: number) =>
+  invoke<void>('add_step', { id, sessionId, message, attachmentsJson, armed, model, planMode, thinkingMode, fastMode, sortOrder })
+
+export const updateStep = (id: string, message: string, armed: boolean, model: string | null, planMode: boolean | null, thinkingMode: boolean | null, fastMode: boolean | null, attachmentsJson: string | null) =>
+  invoke<void>('update_step', { id, message, armed, model, planMode, thinkingMode, fastMode, attachmentsJson })
+
+export const deleteStep = (id: string) =>
+  invoke<void>('delete_step', { id })
+
+export const reorderSteps = (sessionId: string, ids: string[]) =>
+  invoke<void>('reorder_steps', { sessionId, ids })
+
+export const disarmAllSteps = (sessionId: string) =>
+  invoke<void>('disarm_all_steps', { sessionId })
 
 // App lifecycle
 export const quitApp = () =>

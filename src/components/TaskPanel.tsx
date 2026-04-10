@@ -1,11 +1,13 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, toggleTerminal, terminalHeight, setTerminalHeightAndPersist } from '../store/ui'
+import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread } from '../store/ui'
 import { refitActiveTerminal } from '../store/terminals'
 import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask } from '../store/tasks'
 import { isSetupRunning, setupFailed, setupError } from '../store/setup'
 import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines, sessionCosts } from '../store/sessions'
+import { loadSteps } from '../store/steps'
+import { StepList } from './StepList'
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { RightPanel } from './RightPanel'
@@ -148,8 +150,10 @@ export const TaskPanel: Component = () => {
 
   createEffect(on(selectedSessionId, async (sessionId) => {
     if (sessionId) {
+      clearSessionUnread(sessionId)
       const tid = selectedTaskId()
       await loadOutputLines(sessionId, tid ?? sessionId)
+      await loadSteps(sessionId)
     }
   }))
 
@@ -383,6 +387,9 @@ export const TaskPanel: Component = () => {
                           )}
                           onClick={() => { setSelectedSessionId(session.id); setMainView(t().id, 'session') }}
                         >
+                          <Show when={isSessionUnread(session.id)}>
+                            <div class="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
+                          </Show>
                           <span>{session.name || 'New session'}</span>
                           <SessionTime session={session} />
                           <Show when={sessionCosts[session.id] > 0}>
@@ -486,8 +493,13 @@ export const TaskPanel: Component = () => {
                           <ChatView
                             output={currentOutput()}
                             sessionStatus={currentSession()?.status}
+                            sessionId={selectedSessionId()}
                           />
                         </div>
+                        <StepList
+                          sessionId={selectedSessionId()}
+                          isRunning={currentSession()?.status === 'running'}
+                        />
                         <MessageInput
                           sessionId={selectedSessionId()}
                           isRunning={currentSession()?.status === 'running'}

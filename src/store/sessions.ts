@@ -3,7 +3,8 @@ import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo } from '../types'
 import { setTasks, taskById } from './tasks'
-import { markTaskUnread, markTaskAttention, clearTaskAttention } from './ui'
+import { markTaskUnread, markTaskAttention, clearTaskAttention, markSessionUnread } from './ui'
+import { dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
 import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
 
@@ -114,6 +115,8 @@ function removeApproval(requestId: string, sessionId: string) {
 }
 
 export async function closeSession(sessionId: string) {
+  // Clear any steps
+  clearSteps(sessionId)
   // Remove from local store
   setSessions(prev => prev.filter(s => s.id !== sessionId))
   // Clean up output and usage from memory
@@ -297,6 +300,18 @@ export async function syncSessionStatuses() {
   }
 }
 
+/** Try to drain armed steps — call after editing finishes if session might be idle */
+export function tryDrainSteps(sessionId: string) {
+  const session = sessions.find(s => s.id === sessionId)
+  if (session?.status === 'idle') {
+    const next = dequeueArmedStep(sessionId)
+    if (next) {
+      const attachments = next.attachmentsJson ? JSON.parse(next.attachmentsJson) : undefined
+      sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
+    }
+  }
+}
+
 export const sessionsForTask = (taskId: string) =>
   sessions.filter(s => s.taskId === taskId)
 
@@ -352,6 +367,8 @@ export async function initSessionListeners() {
     // Mark task as unread if it's not currently selected
     const session = sessions.find(s => s.id === sessionId)
     if (session) markTaskUnread(session.taskId)
+    // Mark session tab as unread if it's not the selected session
+    markSessionUnread(sessionId)
   })
 
   await listen<SessionStatusEvent>('session-status', (event) => {
@@ -363,7 +380,19 @@ export async function initSessionListeners() {
     if (status !== 'running') {
       setPendingApprovals(produce(store => { delete store[sessionId] }))
     }
-    // OS notification on completion/error
+    // Drain armed steps on idle
+    if (status === 'idle') {
+      const next = dequeueArmedStep(sessionId)
+      if (next) {
+        const attachments = next.attachmentsJson ? JSON.parse(next.attachmentsJson) : undefined
+        sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
+      }
+    }
+    // Disarm all steps on error (keep them, just stop auto-send)
+    if (status === 'error') {
+      disarmAllSteps(sessionId)
+    }
+    // OS notification on completion/error (suppress if queue drained — more work pending)
     if (wasRunning && (status === 'idle' || status === 'error') && prevSession) {
       const taskName = taskById(prevSession.taskId)?.name || 'Task'
       notify({

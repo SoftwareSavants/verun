@@ -40,6 +40,20 @@ export interface OutputLine {
   emittedAt: number
 }
 
+export interface Step {
+  id: string
+  sessionId: string
+  message: string
+  attachmentsJson: string | null
+  armed: boolean
+  model: string | null
+  planMode: boolean | null
+  thinkingMode: boolean | null
+  fastMode: boolean | null
+  sortOrder: number
+  createdAt: number
+}
+
 export interface TaskWithSession {
   task: Task
   session: Session

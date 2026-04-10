@@ -1,12 +1,13 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath } from '../store/sessions'
-import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps } from '../store/sessions'
+import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
+import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
 import type { Command } from '../store/commands'
-import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity } from 'lucide-solid'
+import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { marked } from 'marked'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
@@ -193,6 +194,33 @@ export const MessageInput: Component<Props> = (props) => {
   const [filesLoaded, setFilesLoaded] = createSignal<string | null>(null)
   const [trustLevel, setTrustLevelLocal] = createSignal<TrustLevel>('normal')
   const [showTrustMenu, setShowTrustMenu] = createSignal(false)
+
+  // Edit last message state — ArrowUp loads last user/queued message, Escape restores draft
+  const [editingMessageIdx, setEditingMessageIdx] = createSignal<number | null>(null)
+  const [editingStepId, setEditingStepId] = createSignal<string | null>(null)
+  const [savedDraft, setSavedDraft] = createSignal<string>('')
+  const [savedDraftAttachments, setSavedDraftAttachments] = createSignal<Attachment[]>([])
+
+  // React to edit requests from StepList (clicking Edit on a step)
+  createEffect(on(editStepRequest, (req) => {
+    if (!req) return
+    setEditStepRequest(null) // consume the request
+    setSavedDraft(message())
+    setSavedDraftAttachments(attachments())
+    setEditingStepId(req.stepId)
+    setMessage(req.message)
+    // Restore step's attachments into the input
+    const stepAttachments: Attachment[] = req.attachmentsJson ? JSON.parse(req.attachmentsJson) : []
+    setAttachments(stepAttachments)
+    requestAnimationFrame(() => {
+      if (textareaRef) {
+        textareaRef.value = req.message
+        autoResize(textareaRef)
+        textareaRef.setSelectionRange(req.message.length, req.message.length)
+        textareaRef.focus()
+      }
+    })
+  }))
 
   // Load trust level when task changes + reset file cache
   createEffect(on(selectedTaskId, async (taskId) => {
@@ -512,6 +540,9 @@ export const MessageInput: Component<Props> = (props) => {
     }
 
     setSending(true)
+    setEditingMessageIdx(null)
+    setEditingStepId(null)
+    setSavedDraft('')
     setMessage('')
     setAttachments([])
     setShowPalette(false)
@@ -527,6 +558,58 @@ export const MessageInput: Component<Props> = (props) => {
   const handleAbort = async () => {
     const sid = props.sessionId
     if (sid) await abortMessage(sid)
+  }
+
+  const handleAddStep = (armed: boolean) => {
+    const sid = props.sessionId
+    const msg = message().trim()
+    const atts = attachments()
+    if (!sid || (!msg && atts.length === 0)) return
+
+    addStep({
+      sessionId: sid,
+      message: msg,
+      attachments: atts.length > 0 ? atts : undefined,
+      armed,
+      model: currentModel(),
+      planMode: planMode(),
+      thinkingMode: thinkingMode(),
+      fastMode: fastMode(),
+    })
+    setMessage('')
+    setAttachments([])
+    setShowPalette(false)
+  }
+
+  const handleSteer = async () => {
+    const sid = props.sessionId
+    const msg = message().trim()
+    const atts = attachments()
+    if (!sid || (!msg && atts.length === 0)) return
+
+    setMessage('')
+    setAttachments([])
+    setShowPalette(false)
+    setSending(true)
+    try {
+      await abortMessage(sid)
+      await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
+    } catch (e) {
+      console.error('Failed to steer:', e)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const handleFireNextStep = async () => {
+    const sid = props.sessionId
+    if (!sid) return
+    const steps = getSteps(sid)
+    if (steps.length === 0) return
+    const step = extractStep(sid, steps[0].id)
+    if (!step) return
+    const atts = step.attachmentsJson ? JSON.parse(step.attachmentsJson) : undefined
+    await sendMessage(sid, step.message, atts, step.model ?? undefined, step.planMode ?? undefined, step.thinkingMode ?? undefined, step.fastMode ?? undefined)
   }
 
   const handleAppCommand = async (cmd: Command) => {
@@ -614,6 +697,52 @@ export const MessageInput: Component<Props> = (props) => {
     })
   }
 
+  const handleCancelEdit = () => {
+    const draft = savedDraft()
+    const draftAtts = savedDraftAttachments()
+    setEditingMessageIdx(null)
+    setEditingStepId(null)
+    setSavedDraft('')
+    setSavedDraftAttachments([])
+    setMessage(draft)
+    setAttachments(draftAtts)
+    requestAnimationFrame(() => {
+      if (textareaRef) {
+        textareaRef.value = draft
+        autoResize(textareaRef)
+      }
+    })
+  }
+
+  const handleSaveEdit = () => {
+    const esId = editingStepId()
+    if (esId && props.sessionId) {
+      const editedMsg = message().trim()
+      const atts = attachments()
+      if (editedMsg) {
+        updateStep(props.sessionId, esId, {
+          message: editedMsg,
+          model: currentModel(),
+          planMode: planMode(),
+          thinkingMode: thinkingMode(),
+          fastMode: fastMode(),
+          attachmentsJson: atts.length > 0 ? JSON.stringify(atts) : null,
+        })
+      }
+      setEditingStepId(null)
+      setSavedDraft('')
+      setSavedDraftAttachments([])
+      setMessage('')
+      setAttachments([])
+      setShowPalette(false)
+      if (!props.isRunning) {
+        tryDrainSteps(props.sessionId)
+      }
+      return true
+    }
+    return false
+  }
+
   const handleKeyDown = (e: KeyboardEvent) => {
     // Forward to file mention if open
     if (showFileMention()) {
@@ -641,21 +770,99 @@ export const MessageInput: Component<Props> = (props) => {
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Cmd+Enter
+    if (e.key === 'Enter' && e.metaKey) {
+      e.preventDefault()
+      if (props.isRunning) {
+        handleSteer() // abort + send immediately
+      } else {
+        handleFireNextStep() // fire next step from list
+      }
+      return
+    }
+
+    // Shift+Enter while running = add armed step
+    if (e.key === 'Enter' && e.shiftKey && props.isRunning) {
+      e.preventDefault()
+      handleAddStep(true)
+      return
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey) {
       e.preventDefault()
       // Check if it's a slash command (app or claude)
       const msg = message().trim()
       if (msg.startsWith('/')) {
         const cmdName = msg.slice(1).split(/\s+/)[0]
-        // Check app commands first
         const appCmds = ['new-session', 'clear', 'model', 'plan']
         if (appCmds.includes(cmdName)) {
           handleAppCommand({ name: cmdName, description: '', category: 'app' })
           return
         }
-        // Otherwise send as-is (Claude skill)
       }
-      handleSend()
+      // If editing a step, save the edit back
+      if (handleSaveEdit()) return
+      if (props.isRunning) {
+        handleAddStep(false) // add paused step
+      } else {
+        handleSend()
+      }
+    }
+
+    // ArrowUp with empty input — edit last step or last unsent user message
+    if (e.key === 'ArrowUp' && editingMessageIdx() === null && editingStepId() === null) {
+      if (!message().trim() && textareaRef && textareaRef.selectionStart === 0) {
+        const sid = props.sessionId
+        if (!sid) return
+
+        // Check steps first — edit the last step
+        const steps = getSteps(sid)
+        if (steps.length > 0) {
+          const last = steps[steps.length - 1]
+          e.preventDefault()
+          setSavedDraft(message())
+          setSavedDraftAttachments(attachments())
+          setEditingStepId(last.id)
+          setMessage(last.message)
+          const stepAtts: Attachment[] = last.attachmentsJson ? JSON.parse(last.attachmentsJson) : []
+          setAttachments(stepAtts)
+          requestAnimationFrame(() => {
+            if (textareaRef) {
+              textareaRef.value = last.message
+              autoResize(textareaRef)
+              textareaRef.setSelectionRange(last.message.length, last.message.length)
+            }
+          })
+          return
+        }
+
+        // No steps — check if last output item is an unsent user message
+        if (!props.isRunning) {
+          const items = outputItems[sid]
+          if (!items) return
+          const lastItem = items[items.length - 1]
+          if (lastItem?.kind === 'userMessage') {
+            e.preventDefault()
+            setSavedDraft(message())
+            setEditingMessageIdx(items.length - 1)
+            const text = (lastItem as { text: string }).text
+            setMessage(text)
+            requestAnimationFrame(() => {
+              if (textareaRef) {
+                textareaRef.value = text
+                autoResize(textareaRef)
+                textareaRef.setSelectionRange(text.length, text.length)
+              }
+            })
+          }
+        }
+      }
+    }
+
+    // Escape while editing — restore saved draft
+    if (e.key === 'Escape' && (editingMessageIdx() !== null || editingStepId() !== null)) {
+      e.preventDefault()
+      handleCancelEdit()
     }
   }
 
@@ -1248,14 +1455,38 @@ export const MessageInput: Component<Props> = (props) => {
         </div>
       </Show>
 
+      <Show when={editingMessageIdx() !== null || editingStepId() !== null}>
+        <div class="px-3 pb-0.5">
+          <span class="text-[10px] text-text-dim">
+            Editing next step · Escape to cancel
+          </span>
+        </div>
+      </Show>
+      <Show when={props.isRunning && editingMessageIdx() === null && editingStepId() === null && (message().trim() || attachments().length > 0)}>
+        <div class="px-3 pb-0.5">
+          <span class="text-[10px] text-text-dim">
+            Enter to add next step · Shift+Enter to add & arm · Cmd+Enter to redirect
+          </span>
+        </div>
+      </Show>
+      <Show when={!props.isRunning && editingMessageIdx() === null && editingStepId() === null && getSteps(props.sessionId).length > 0}>
+        <div class="px-3 pb-0.5">
+          <span class="text-[10px] text-text-dim">
+            Cmd+Enter to send next step
+          </span>
+        </div>
+      </Show>
+
       <div class={clsx(
         'relative bg-surface-1 rounded-xl transition-all outline-none',
         currentApproval() || showPlanResponse() || (showPlanViewer() && planContent()) ? 'hidden' : '',
-        planMode()
-          ? 'border border-accent/40 shadow-[0_0_0_2px_rgba(59,130,246,0.15)]'
-          : dragOver()
-            ? 'border border-accent/50 bg-accent/5'
-            : ''
+        (editingMessageIdx() !== null || editingStepId() !== null)
+          ? 'border border-amber-500/40 shadow-[0_0_0_2px_rgba(245,158,11,0.12)]'
+          : planMode()
+            ? 'border border-accent/40 shadow-[0_0_0_2px_rgba(59,130,246,0.15)]'
+            : dragOver()
+              ? 'border border-accent/50 bg-accent/5'
+              : ''
       )}>
         {/* Command palette */}
         <Show when={showPalette()}>
@@ -1347,7 +1578,7 @@ export const MessageInput: Component<Props> = (props) => {
           onInput={handleInput}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          disabled={!props.sessionId || props.isRunning}
+          disabled={!props.sessionId}
           rows={3}
         />
 
@@ -1487,37 +1718,100 @@ export const MessageInput: Component<Props> = (props) => {
             <button
               class="w-7 h-7 flex items-center justify-center rounded-lg text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors shrink-0 disabled:opacity-30"
               onClick={() => fileInputRef?.click()}
-              disabled={!props.sessionId || props.isRunning}
+              disabled={!props.sessionId}
               title="Attach image"
             >
               <Plus size={16} />
             </button>
 
-            {/* Send / Stop button */}
-            <Show
-              when={props.isRunning}
-              fallback={
-                <button
-                  class={clsx(
-                    'w-7 h-7 flex items-center justify-center rounded-lg transition-colors',
-                    (!message().trim() && attachments().length === 0) || !props.sessionId || sending()
-                      ? 'text-text-dim/30 border border-border'
-                      : 'text-text-primary bg-surface-3 border border-border-active hover:bg-surface-4'
-                  )}
-                  onClick={handleSend}
-                  disabled={(!message().trim() && attachments().length === 0) || !props.sessionId || sending()}
-                  title="Send (Enter)"
-                >
-                  <ArrowUp size={16} />
-                </button>
-              }
-            >
+            {/* Send / Stop buttons */}
+            <Show when={props.isRunning}>
               <button
                 class="w-7 h-7 flex items-center justify-center rounded-lg bg-status-error/10 text-status-error hover:bg-status-error/20 transition-colors"
                 onClick={handleAbort}
                 title="Stop session"
               >
                 <Square size={14} />
+              </button>
+            </Show>
+            <Show
+              when={props.isRunning}
+              fallback={
+                <>
+                  <Show
+                    when={editingStepId() !== null || editingMessageIdx() !== null}
+                    fallback={
+                      <button
+                        class={clsx(
+                          'w-7 h-7 flex items-center justify-center rounded-lg transition-colors',
+                          (!message().trim() && attachments().length === 0) || !props.sessionId
+                            ? 'text-text-dim/20'
+                            : 'text-text-dim hover:text-accent hover:bg-accent/10'
+                        )}
+                        onClick={() => handleAddStep(false)}
+                        disabled={(!message().trim() && attachments().length === 0) || !props.sessionId}
+                        title="Add as next step"
+                      >
+                        <ListPlus size={16} />
+                      </button>
+                    }
+                  >
+                    <button
+                      class="w-7 h-7 flex items-center justify-center rounded-lg text-text-dim hover:text-status-error hover:bg-status-error/10 transition-colors"
+                      onClick={handleCancelEdit}
+                      title="Cancel edit (Esc)"
+                    >
+                      <X size={16} />
+                    </button>
+                  </Show>
+                  <Show
+                    when={editingStepId() !== null || editingMessageIdx() !== null}
+                    fallback={
+                      <button
+                        class={clsx(
+                          'w-7 h-7 flex items-center justify-center rounded-lg transition-colors',
+                          (!message().trim() && attachments().length === 0) || !props.sessionId || sending()
+                            ? 'text-text-dim/30 border border-border'
+                            : 'text-text-primary bg-surface-3 border border-border-active hover:bg-surface-4'
+                        )}
+                        onClick={handleSend}
+                        disabled={(!message().trim() && attachments().length === 0) || !props.sessionId || sending()}
+                        title="Send (Enter)"
+                      >
+                        <ArrowUp size={16} />
+                      </button>
+                    }
+                  >
+                    <button
+                      class={clsx(
+                        'w-7 h-7 flex items-center justify-center rounded-lg transition-colors',
+                        !message().trim()
+                          ? 'text-text-dim/30 border border-border'
+                          : 'text-amber-500 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20'
+                      )}
+                      onClick={handleSaveEdit}
+                      disabled={!message().trim()}
+                      title="Save edit (Enter)"
+                    >
+                      <Check size={16} />
+                    </button>
+                  </Show>
+                </>
+              }
+            >
+              <button
+                class={clsx(
+                  'w-7 h-7 flex items-center justify-center rounded-lg transition-colors relative',
+                  (!message().trim() && attachments().length === 0) || !props.sessionId || sending()
+                    ? 'text-text-dim/30 border border-border'
+                    : 'text-accent bg-accent/10 border border-accent/30 hover:bg-accent/20'
+                )}
+                onClick={() => handleAddStep(false)}
+                disabled={(!message().trim() && attachments().length === 0) || !props.sessionId || sending()}
+                title="Add next step (Enter)"
+              >
+                <ArrowUp size={16} />
+                <div class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent" />
               </button>
             </Show>
           </div>

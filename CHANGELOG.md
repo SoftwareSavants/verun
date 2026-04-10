@@ -4,6 +4,8 @@
 
 ### Changes
 
+- Steps — plan follow-up messages in a step list above the input. Enter adds a paused step while Claude is working, Shift+Enter adds an armed step (auto-sends on idle). Cmd+Enter fires the next step when idle or redirects when running. Steps persist across sessions and app restarts. Drag to reorder, click to arm/disarm.
+- Unread indicator on session tabs — accent dot appears when a non-selected session receives new output, cleared on selection
 - Per-language file icons — TypeScript, JavaScript, React, Rust, Python, Go, Java, Ruby, PHP, C/C++, Swift, Kotlin, C#, Lua, Shell, HTML, CSS, Sass, Vue, Svelte, JSON, TOML, YAML, Markdown, and more — with official brand colors, shown in file tree, tabs, quick open, and file mentions
 - Context menus on file tree and file tabs now work — clicks were being swallowed by Solid's event delegation before the handler could fire
 - Tab bar auto-scrolls to the active file tab when opening a file
