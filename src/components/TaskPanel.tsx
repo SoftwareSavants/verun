@@ -168,6 +168,18 @@ export const TaskPanel: Component = () => {
     return sid ? (outputItems[sid] || []) : []
   }
 
+  // Scroll active tab into view when it changes
+  let tabBarRef: HTMLDivElement | undefined
+  createEffect(() => {
+    const tid = selectedTaskId()
+    if (!tid || !tabBarRef) return
+    const view = mainView(tid)
+    if (!view || view === 'session') return
+    // Find the active tab element by data attribute
+    const el = tabBarRef.querySelector(`[data-tab-path="${CSS.escape(view)}"]`) as HTMLElement | null
+    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+  })
+
   // File tab context menu
   let tabMenuRef: HTMLDivElement | undefined
   const [tabMenu, setTabMenu] = createSignal<{ x: number; y: number; path: string; taskId: string } | null>(null)
@@ -358,7 +370,7 @@ export const TaskPanel: Component = () => {
                   </Show>
 
                   {/* Unified tab bar — sessions + open files */}
-                  <div class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
+                  <div ref={tabBarRef} class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
                     {/* Session tabs */}
                     <For each={taskSessions()}>
                       {(session) => (
@@ -418,6 +430,7 @@ export const TaskPanel: Component = () => {
                     <For each={openTabs(t().id)}>
                       {(tab) => (
                         <div
+                          data-tab-path={tab.relativePath}
                           class={clsx(
                             'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap cursor-pointer',
                             mainView(t().id) === tab.relativePath
