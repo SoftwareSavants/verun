@@ -163,6 +163,7 @@ export function openFile(taskId: string, relativePath: string, name: string) {
       setMainView(taskId, relativePath)
       pushMru(taskId, relativePath)
     }
+    revealFileInTree(taskId, relativePath)
     return
   }
 
@@ -174,6 +175,7 @@ export function openFile(taskId: string, relativePath: string, name: string) {
   setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
+  revealFileInTree(taskId, relativePath)
 }
 
 /** Open a file as a permanent tab (double-click, or programmatic). */
@@ -193,6 +195,7 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
       setMainView(taskId, relativePath)
     }
     pushMru(taskId, relativePath)
+    revealFileInTree(taskId, relativePath)
     return
   }
 
@@ -205,6 +208,7 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
   setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
+  revealFileInTree(taskId, relativePath)
 }
 
 /** Pin the current preview tab (called on edit or double-click). */
@@ -309,6 +313,36 @@ export function setCachedOriginal(taskId: string, relativePath: string, content:
 export function clearCachedContent(taskId: string, relativePath: string) {
   fileContentCache.delete(`${taskId}:${relativePath}`)
   fileOriginalCache.delete(`${taskId}:${relativePath}`)
+}
+
+// ── Reveal file in tree ──────────────────────────────────────────────
+
+// Signal consumed by FileTree to scroll+highlight the target
+const [revealRequest, setRevealRequest] = createSignal<{ taskId: string; relativePath: string } | null>(null)
+export { revealRequest }
+
+/** Expand all ancestor directories and signal the tree to scroll to the file. */
+export async function revealFileInTree(taskId: string, relativePath: string) {
+  // Build list of ancestor paths: "src/components/App.tsx" → ["src", "src/components"]
+  const parts = relativePath.split('/')
+  const ancestors: string[] = []
+  for (let i = 0; i < parts.length - 1; i++) {
+    ancestors.push(parts.slice(0, i + 1).join('/'))
+  }
+
+  // Expand + load each ancestor (sequentially so children are available)
+  for (const dir of ancestors) {
+    if (!getDirContents(taskId, dir)) {
+      await loadDirectory(taskId, dir)
+    }
+    expandDir(taskId, dir)
+  }
+
+  // Switch right panel to files tab so the tree is visible
+  setRightPanelTab('files')
+
+  // Signal the tree to scroll
+  setRevealRequest({ taskId, relativePath })
 }
 
 // Quick open overlay

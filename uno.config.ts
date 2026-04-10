@@ -49,6 +49,8 @@ export default defineConfig({
     'text-status-idle', 'text-status-running', 'text-status-done', 'text-status-error',
     'text-text-muted', 'text-amber-400', 'text-emerald-400', 'text-purple-400', 'text-red-400',
     'animate-spin', 'border-l-2',
+    // Reveal-in-tree highlight (dynamically applied)
+    'bg-accent-muted/40',
   ],
   shortcuts: [
     ['btn', 'px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer'],

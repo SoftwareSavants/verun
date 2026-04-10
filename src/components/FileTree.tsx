@@ -4,7 +4,7 @@ import { Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
 import {
   getDirContents, loadDirectory, isExpanded, toggleExpanded, collapseDir,
-  invalidateDirectory, openFile, openFilePinned
+  invalidateDirectory, openFile, openFilePinned, revealRequest
 } from '../store/files'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
@@ -91,6 +91,20 @@ export const FileTree: Component<Props> = (props) => {
     getScrollElement: () => scrollRef ?? null,
     estimateSize: () => 28,
     overscan: 10,
+  })
+
+  // Reveal file in tree — scroll to it and briefly highlight
+  const [highlightPath, setHighlightPath] = createSignal<string | null>(null)
+  createEffect(() => {
+    const req = revealRequest()
+    if (!req || req.taskId !== props.taskId) return
+    // Find the target in the (now-expanded) flat node list
+    const idx = flatNodes().findIndex(n => n.entry.relativePath === req.relativePath)
+    if (idx >= 0) {
+      virtualizer.scrollToIndex(idx, { align: 'auto' })
+      setHighlightPath(req.relativePath)
+      setTimeout(() => setHighlightPath(null), 1500)
+    }
   })
 
   const handleClick = (entry: FileEntry) => {
@@ -229,7 +243,7 @@ export const FileTree: Component<Props> = (props) => {
                       }}
                     >
                       <button
-                        class="w-full flex items-center gap-1 px-2 py-0.5 text-[12px] text-text-secondary hover:bg-surface-2 transition-colors text-left truncate"
+                        class={`w-full flex items-center gap-1 px-2 py-0.5 text-[12px] text-text-secondary hover:bg-surface-2 transition-colors text-left truncate${highlightPath() === n().entry.relativePath ? ' bg-accent-muted/40 !text-text-primary' : ''}`}
                         style={{ "padding-left": `${n().depth * 16 + 8}px` }}
                         onClick={() => handleClick(n().entry)}
                         onDblClick={() => handleDoubleClick(n().entry)}
