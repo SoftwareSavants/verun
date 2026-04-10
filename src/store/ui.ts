@@ -49,6 +49,20 @@ export function clearTaskIndicators(taskId: string) {
   _setAttentionTaskIds(prev => { const s = new Set(prev); s.delete(taskId); persistSet(ATTENTION_KEY, s); return s })
 }
 
+// Unread indicators for session tabs (in-memory only, no persistence needed)
+const [_unreadSessionIds, _setUnreadSessionIds] = createSignal<Set<string>>(new Set())
+
+export const isSessionUnread = (id: string) => _unreadSessionIds().has(id)
+
+export function markSessionUnread(sessionId: string) {
+  if (sessionId === selectedSessionId()) return
+  _setUnreadSessionIds(prev => { const s = new Set(prev); s.add(sessionId); return s })
+}
+
+export function clearSessionUnread(sessionId: string) {
+  _setUnreadSessionIds(prev => { const s = new Set(prev); s.delete(sessionId); return s })
+}
+
 export const [sidebarWidth, setSidebarWidth] = createSignal(280)
 export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
 
@@ -139,3 +153,6 @@ export function addToast(message: string, type: Toast['type'] = 'info') {
 export function dismissToast(id: string) {
   setToasts(prev => prev.filter(t => t.id !== id))
 }
+
+// Shared edit-queued-message signal — set by ChatView edit button, consumed by MessageInput
+export const [editQueuedRequest, setEditQueuedRequest] = createSignal<{ sessionId: string; messageId: string; message: string } | null>(null)

@@ -1,7 +1,8 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath } from '../store/sessions'
-import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId } from '../store/ui'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainQueue } from '../store/sessions'
+import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editQueuedRequest, setEditQueuedRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
+import { enqueueMessage, clearQueue, getQueue, updateQueuedMessage } from '../store/queue'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
@@ -193,6 +194,28 @@ export const MessageInput: Component<Props> = (props) => {
   const [filesLoaded, setFilesLoaded] = createSignal<string | null>(null)
   const [trustLevel, setTrustLevelLocal] = createSignal<TrustLevel>('normal')
   const [showTrustMenu, setShowTrustMenu] = createSignal(false)
+
+  // Edit last message state — ArrowUp loads last user/queued message, Escape restores draft
+  const [editingMessageIdx, setEditingMessageIdx] = createSignal<number | null>(null)
+  const [editingQueuedId, setEditingQueuedId] = createSignal<string | null>(null)
+  const [savedDraft, setSavedDraft] = createSignal<string>('')
+
+  // React to edit requests from ChatView (clicking Edit on a queued bubble)
+  createEffect(on(editQueuedRequest, (req) => {
+    if (!req) return
+    setEditQueuedRequest(null) // consume the request
+    setSavedDraft(message())
+    setEditingQueuedId(req.messageId)
+    setMessage(req.message)
+    requestAnimationFrame(() => {
+      if (textareaRef) {
+        textareaRef.value = req.message
+        autoResize(textareaRef)
+        textareaRef.setSelectionRange(req.message.length, req.message.length)
+        textareaRef.focus()
+      }
+    })
+  }))
 
   // Load trust level when task changes + reset file cache
   createEffect(on(selectedTaskId, async (taskId) => {
@@ -512,6 +535,9 @@ export const MessageInput: Component<Props> = (props) => {
     }
 
     setSending(true)
+    setEditingMessageIdx(null)
+    setEditingQueuedId(null)
+    setSavedDraft('')
     setMessage('')
     setAttachments([])
     setShowPalette(false)
@@ -527,6 +553,52 @@ export const MessageInput: Component<Props> = (props) => {
   const handleAbort = async () => {
     const sid = props.sessionId
     if (sid) await abortMessage(sid)
+  }
+
+  const handleQueue = () => {
+    const sid = props.sessionId
+    const msg = message().trim()
+    const atts = attachments()
+    if (!sid || (!msg && atts.length === 0)) return
+
+    enqueueMessage({
+      id: crypto.randomUUID(),
+      sessionId: sid,
+      message: msg,
+      attachments: atts.length > 0 ? atts : undefined,
+      model: currentModel(),
+      planMode: planMode(),
+      thinkingMode: thinkingMode(),
+      fastMode: fastMode(),
+    })
+    setMessage('')
+    setAttachments([])
+    setShowPalette(false)
+  }
+
+  const handleSteer = async () => {
+    const sid = props.sessionId
+    const msg = message().trim()
+    const atts = attachments()
+    if (!sid || (!msg && atts.length === 0)) return
+
+    // Stash remaining queue and clear to prevent drain race on abort→idle
+    const remaining = [...getQueue(sid)]
+    clearQueue(sid)
+    setMessage('')
+    setAttachments([])
+    setShowPalette(false)
+    setSending(true)
+    try {
+      await abortMessage(sid)
+      await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
+    } catch (e) {
+      console.error('Failed to steer:', e)
+    } finally {
+      setSending(false)
+    }
+    // Re-enqueue remaining messages so they drain after this turn
+    for (const m of remaining) enqueueMessage(m)
   }
 
   const handleAppCommand = async (cmd: Command) => {
@@ -641,7 +713,14 @@ export const MessageInput: Component<Props> = (props) => {
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Cmd+Enter while running = steer (abort + send immediately)
+    if (e.key === 'Enter' && e.metaKey && props.isRunning) {
+      e.preventDefault()
+      handleSteer()
+      return
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey) {
       e.preventDefault()
       // Check if it's a slash command (app or claude)
       const msg = message().trim()
@@ -655,7 +734,98 @@ export const MessageInput: Component<Props> = (props) => {
         }
         // Otherwise send as-is (Claude skill)
       }
-      handleSend()
+      // If editing a queued message, save the edit and let queue handle delivery
+      const eqId = editingQueuedId()
+      if (eqId && props.sessionId) {
+        const editedMsg = message().trim()
+        if (editedMsg) {
+          updateQueuedMessage(props.sessionId, eqId, { message: editedMsg, editing: false })
+        }
+        setEditingQueuedId(null)
+        setSavedDraft('')
+        setMessage('')
+        setAttachments([])
+        setShowPalette(false)
+        // If session is idle, drain now
+        if (!props.isRunning) {
+          tryDrainQueue(props.sessionId)
+        }
+        return
+      }
+      if (props.isRunning) {
+        handleQueue()
+      } else {
+        handleSend()
+      }
+    }
+
+    // ArrowUp with empty input — edit last queued message or last unsent user message
+    if (e.key === 'ArrowUp' && editingMessageIdx() === null && editingQueuedId() === null) {
+      if (!message().trim() && textareaRef && textareaRef.selectionStart === 0) {
+        const sid = props.sessionId
+        if (!sid) return
+
+        // Check queue first — edit the last queued message
+        const queue = getQueue(sid)
+        if (queue.length > 0) {
+          const last = queue[queue.length - 1]
+          e.preventDefault()
+          setSavedDraft(message())
+          setEditingQueuedId(last.id)
+          updateQueuedMessage(sid, last.id, { editing: true })
+          setMessage(last.message)
+          requestAnimationFrame(() => {
+            if (textareaRef) {
+              textareaRef.value = last.message
+              autoResize(textareaRef)
+              textareaRef.setSelectionRange(last.message.length, last.message.length)
+            }
+          })
+          return
+        }
+
+        // No queue — check if last output item is an unsent user message
+        if (!props.isRunning) {
+          const items = outputItems[sid]
+          if (!items) return
+          const lastItem = items[items.length - 1]
+          if (lastItem?.kind === 'userMessage') {
+            e.preventDefault()
+            setSavedDraft(message())
+            setEditingMessageIdx(items.length - 1)
+            const text = (lastItem as { text: string }).text
+            setMessage(text)
+            requestAnimationFrame(() => {
+              if (textareaRef) {
+                textareaRef.value = text
+                autoResize(textareaRef)
+                textareaRef.setSelectionRange(text.length, text.length)
+              }
+            })
+          }
+        }
+      }
+    }
+
+    // Escape while editing — restore saved draft
+    if (e.key === 'Escape' && (editingMessageIdx() !== null || editingQueuedId() !== null)) {
+      e.preventDefault()
+      const draft = savedDraft()
+      // Clear editing flag on queued message so queue can resume
+      const eqId = editingQueuedId()
+      if (eqId && props.sessionId) {
+        updateQueuedMessage(props.sessionId, eqId, { editing: false })
+      }
+      setEditingMessageIdx(null)
+      setEditingQueuedId(null)
+      setSavedDraft('')
+      setMessage(draft)
+      requestAnimationFrame(() => {
+        if (textareaRef) {
+          textareaRef.value = draft
+          autoResize(textareaRef)
+        }
+      })
     }
   }
 
@@ -1248,6 +1418,21 @@ export const MessageInput: Component<Props> = (props) => {
         </div>
       </Show>
 
+      <Show when={editingMessageIdx() !== null || editingQueuedId() !== null}>
+        <div class="px-3 pb-0.5">
+          <span class="text-[10px] text-text-dim">
+            Editing message · Escape to cancel
+          </span>
+        </div>
+      </Show>
+      <Show when={props.isRunning && editingMessageIdx() === null && editingQueuedId() === null && (message().trim() || attachments().length > 0)}>
+        <div class="px-3 pb-0.5">
+          <span class="text-[10px] text-text-dim">
+            Enter to queue · Cmd+Enter to redirect
+          </span>
+        </div>
+      </Show>
+
       <div class={clsx(
         'relative bg-surface-1 rounded-xl transition-all outline-none',
         currentApproval() || showPlanResponse() || (showPlanViewer() && planContent()) ? 'hidden' : '',
@@ -1347,7 +1532,7 @@ export const MessageInput: Component<Props> = (props) => {
           onInput={handleInput}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          disabled={!props.sessionId || props.isRunning}
+          disabled={!props.sessionId}
           rows={3}
         />
 
@@ -1487,13 +1672,22 @@ export const MessageInput: Component<Props> = (props) => {
             <button
               class="w-7 h-7 flex items-center justify-center rounded-lg text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors shrink-0 disabled:opacity-30"
               onClick={() => fileInputRef?.click()}
-              disabled={!props.sessionId || props.isRunning}
+              disabled={!props.sessionId}
               title="Attach image"
             >
               <Plus size={16} />
             </button>
 
-            {/* Send / Stop button */}
+            {/* Send / Stop buttons */}
+            <Show when={props.isRunning}>
+              <button
+                class="w-7 h-7 flex items-center justify-center rounded-lg bg-status-error/10 text-status-error hover:bg-status-error/20 transition-colors"
+                onClick={handleAbort}
+                title="Stop session"
+              >
+                <Square size={14} />
+              </button>
+            </Show>
             <Show
               when={props.isRunning}
               fallback={
@@ -1513,11 +1707,18 @@ export const MessageInput: Component<Props> = (props) => {
               }
             >
               <button
-                class="w-7 h-7 flex items-center justify-center rounded-lg bg-status-error/10 text-status-error hover:bg-status-error/20 transition-colors"
-                onClick={handleAbort}
-                title="Stop session"
+                class={clsx(
+                  'w-7 h-7 flex items-center justify-center rounded-lg transition-colors relative',
+                  (!message().trim() && attachments().length === 0) || !props.sessionId || sending()
+                    ? 'text-text-dim/30 border border-border'
+                    : 'text-accent bg-accent/10 border border-accent/30 hover:bg-accent/20'
+                )}
+                onClick={handleQueue}
+                disabled={(!message().trim() && attachments().length === 0) || !props.sessionId || sending()}
+                title="Queue message (Enter)"
               >
-                <Square size={14} />
+                <ArrowUp size={16} />
+                <div class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent" />
               </button>
             </Show>
           </div>

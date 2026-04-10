@@ -4,6 +4,8 @@
 
 ### Changes
 
+- Steer & queue — send messages while Claude is working. Enter to queue (auto-sends when the turn finishes), Cmd+Enter to redirect (aborts current turn and sends immediately). Queued messages appear as dashed-border bubbles with edit, send-now, and remove actions. Editing a queued message pauses the queue until you save. Arrow Up edits the last queued or unsent message.
+- Unread indicator on session tabs — accent dot appears when a non-selected session receives new output, cleared on selection
 - Per-language file icons — TypeScript, JavaScript, React, Rust, Python, Go, Java, Ruby, PHP, C/C++, Swift, Kotlin, C#, Lua, Shell, HTML, CSS, Sass, Vue, Svelte, JSON, TOML, YAML, Markdown, and more — with official brand colors, shown in file tree, tabs, quick open, and file mentions
 - Context menus on file tree and file tabs now work — clicks were being swallowed by Solid's event delegation before the handler could fire
 - Tab bar auto-scrolls to the active file tab when opening a file
