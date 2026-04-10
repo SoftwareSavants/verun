@@ -6,19 +6,66 @@ import { selectedTaskId } from '../store/ui'
 import * as ipc from '../lib/ipc'
 
 // ── Fuzzy match scoring ────────────────────────────────────────────────
+// Character-by-character fuzzy match like VS Code:
+// - Each query char must appear in order in the path
+// - Bonuses for: consecutive matches, word boundary matches (after / _ . -),
+//   camelCase boundaries, filename matches over path matches
+// - "numforhelp" matches "number_format_helper.ts"
+// - "src/app" matches "src/components/App.tsx"
 function fuzzyMatch(query: string, path: string): number | null {
   if (!query) return 0
-  const lower = path.toLowerCase()
   const q = query.toLowerCase()
+  const p = path.toLowerCase()
+  const nameStart = p.lastIndexOf('/') + 1
 
-  // Try substring match first
-  const idx = lower.indexOf(q)
-  if (idx === -1) return null
+  let score = 0
+  let qi = 0
+  let consecutive = 0
+  let prevMatchIdx = -2
 
-  // Score: prefer matches in filename over path
-  const nameStart = lower.lastIndexOf('/') + 1
-  if (idx >= nameStart) return 2000 - idx + nameStart // filename match — high priority
-  return 1000 - idx // path match — lower priority
+  for (let pi = 0; pi < p.length && qi < q.length; pi++) {
+    if (p[pi] === q[qi]) {
+      qi++
+
+      // Consecutive match bonus
+      if (pi === prevMatchIdx + 1) {
+        consecutive++
+        score += 5 + consecutive * 2
+      } else {
+        consecutive = 0
+        score += 1
+      }
+
+      // Word boundary bonus: after / _ . - or camelCase
+      if (pi === 0 || '/_.-'.includes(p[pi - 1])) {
+        score += 10
+      } else if (
+        pi > 0 &&
+        path[pi] === path[pi].toUpperCase() &&
+        path[pi - 1] === path[pi - 1].toLowerCase()
+      ) {
+        // camelCase boundary
+        score += 8
+      }
+
+      // Filename match bonus (matches in the filename score higher)
+      if (pi >= nameStart) {
+        score += 3
+      }
+
+      // Exact start of filename bonus
+      if (pi === nameStart) {
+        score += 15
+      }
+
+      prevMatchIdx = pi
+    }
+  }
+
+  // All query chars must be matched
+  if (qi < q.length) return null
+
+  return score
 }
 
 // ── File icon by extension ─────────────────────────────────────────────
