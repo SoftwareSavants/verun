@@ -1128,4 +1128,205 @@ mod tests {
         // Sync check that the functions exist and return the right types
         // Actual async tests above cover the behavior
     }
+
+    // -- Step tests --
+
+    fn make_step(session_id: &str, sort_order: i64) -> Step {
+        Step {
+            id: format!("step-{sort_order}"),
+            session_id: session_id.into(),
+            message: format!("Do thing {sort_order}"),
+            attachments_json: None,
+            armed: false,
+            model: Some("sonnet".into()),
+            plan_mode: Some(false),
+            thinking_mode: Some(true),
+            fast_mode: Some(false),
+            sort_order,
+            created_at: 5000 + sort_order,
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_and_list_steps() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].id, "step-0");
+        assert_eq!(steps[1].id, "step-1");
+        assert_eq!(steps[0].message, "Do thing 0");
+    }
+
+    #[tokio::test]
+    async fn list_steps_returns_sorted_by_sort_order() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+
+        // Insert in reverse order
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 2))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.iter().map(|s| s.sort_order).collect::<Vec<_>>(), vec![0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn list_steps_scoped_by_session() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(Session { id: "s-002".into(), ..make_session("t-001") })).await.unwrap();
+
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(Step { id: "step-other".into(), session_id: "s-002".into(), ..make_step("s-002", 0) })).await.unwrap();
+
+        assert_eq!(list_steps(&pool, "s-001").await.unwrap().len(), 1);
+        assert_eq!(list_steps(&pool, "s-002").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn update_step_changes_message_and_armed() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+
+        process_write(&pool, DbWrite::UpdateStep {
+            id: "step-0".into(),
+            message: "Updated message".into(),
+            armed: true,
+            model: Some("opus".into()),
+            plan_mode: Some(true),
+            thinking_mode: Some(false),
+            fast_mode: Some(true),
+            attachments_json: Some("[{\"name\":\"img.png\"}]".into()),
+        }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps[0].message, "Updated message");
+        assert!(steps[0].armed);
+        assert_eq!(steps[0].model.as_deref(), Some("opus"));
+        assert_eq!(steps[0].plan_mode, Some(true));
+        assert_eq!(steps[0].fast_mode, Some(true));
+        assert!(steps[0].attachments_json.is_some());
+    }
+
+    #[tokio::test]
+    async fn delete_step_removes_it() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+
+        process_write(&pool, DbWrite::DeleteStep { id: "step-0".into() }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].id, "step-1");
+    }
+
+    #[tokio::test]
+    async fn reorder_steps_updates_sort_order() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 2))).await.unwrap();
+
+        // Reverse the order
+        process_write(&pool, DbWrite::ReorderSteps {
+            session_id: "s-001".into(),
+            ids: vec!["step-2".into(), "step-1".into(), "step-0".into()],
+        }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["step-2", "step-1", "step-0"]);
+    }
+
+    #[tokio::test]
+    async fn disarm_all_steps_sets_armed_false() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+
+        let mut armed_step = make_step("s-001", 0);
+        armed_step.armed = true;
+        process_write(&pool, DbWrite::InsertStep(armed_step)).await.unwrap();
+        let mut armed_step2 = make_step("s-001", 1);
+        armed_step2.armed = true;
+        process_write(&pool, DbWrite::InsertStep(armed_step2)).await.unwrap();
+
+        process_write(&pool, DbWrite::DisarmAllSteps { session_id: "s-001".into() }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert!(steps.iter().all(|s| !s.armed));
+    }
+
+    #[tokio::test]
+    async fn delete_task_cascades_to_steps() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+
+        process_write(&pool, DbWrite::DeleteTask { id: "t-001".into() }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn delete_project_cascades_to_steps() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+
+        process_write(&pool, DbWrite::DeleteProject { id: "p-001".into() }).await.unwrap();
+
+        let steps = list_steps(&pool, "s-001").await.unwrap();
+        assert_eq!(steps.len(), 0);
+    }
+
+    #[test]
+    fn step_serializes_as_camel_case() {
+        let step = Step {
+            id: "step-1".into(),
+            session_id: "s-001".into(),
+            message: "do something".into(),
+            attachments_json: None,
+            armed: true,
+            model: Some("sonnet".into()),
+            plan_mode: Some(true),
+            thinking_mode: Some(true),
+            fast_mode: Some(false),
+            sort_order: 0,
+            created_at: 5000,
+        };
+        let json = serde_json::to_value(&step).unwrap();
+        assert!(json.get("sessionId").is_some());
+        assert!(json.get("attachmentsJson").is_some());
+        assert!(json.get("sortOrder").is_some());
+        assert!(json.get("planMode").is_some());
+        assert!(json.get("createdAt").is_some());
+    }
 }
