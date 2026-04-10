@@ -19,7 +19,7 @@ Run multiple Claude Code sessions in parallel, each in its own isolated git work
 - **File tree** — gitignore-aware directory browser with lazy loading and filesystem watching
 - **Inline diffs** — see exactly what Claude changed with syntax-highlighted diffs
 - **Git actions** — commit, push, create PR, merge — all without leaving the app
-- **Steer & queue** — send follow-up messages while Claude is working; queue for later or redirect immediately
+- **Steps** — plan follow-up messages while Claude works; fire manually or arm for auto-send
 - **Plan mode** — review implementation plans before Claude starts coding
 - **Desktop notifications** — get notified when tasks complete, fail, or need approval
 - **Tool approval** — configurable trust levels (Normal, Supervised, Full Auto)

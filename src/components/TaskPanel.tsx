@@ -6,6 +6,8 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask } from '../store/tasks'
 import { isSetupRunning, setupFailed, setupError } from '../store/setup'
 import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines, sessionCosts } from '../store/sessions'
+import { loadSteps } from '../store/steps'
+import { StepList } from './StepList'
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { RightPanel } from './RightPanel'
@@ -151,6 +153,7 @@ export const TaskPanel: Component = () => {
       clearSessionUnread(sessionId)
       const tid = selectedTaskId()
       await loadOutputLines(sessionId, tid ?? sessionId)
+      await loadSteps(sessionId)
     }
   }))
 
@@ -493,6 +496,10 @@ export const TaskPanel: Component = () => {
                             sessionId={selectedSessionId()}
                           />
                         </div>
+                        <StepList
+                          sessionId={selectedSessionId()}
+                          isRunning={currentSession()?.status === 'running'}
+                        />
                         <MessageInput
                           sessionId={selectedSessionId()}
                           isRunning={currentSession()?.status === 'running'}

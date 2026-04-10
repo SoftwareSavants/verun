@@ -1,5 +1,5 @@
 use crate::db::{
-    self, DbWriteTx, OutputLine, Project, Session, Task,
+    self, DbWriteTx, OutputLine, Project, Session, Step, Task,
 };
 use crate::git_ops;
 use crate::github;
@@ -1399,6 +1399,101 @@ pub async fn send_notification(app: AppHandle, title: String, body: String) -> R
         .body(body)
         .show()
         .map_err(|e| format!("notification failed: {e}"))
+}
+
+// ── Steps ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_steps(
+    pool: State<'_, SqlitePool>,
+    session_id: String,
+) -> Result<Vec<Step>, String> {
+    db::list_steps(pool.inner(), &session_id).await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn add_step(
+    db_tx: State<'_, DbWriteTx>,
+    id: String,
+    session_id: String,
+    message: String,
+    attachments_json: Option<String>,
+    armed: bool,
+    model: Option<String>,
+    plan_mode: Option<bool>,
+    thinking_mode: Option<bool>,
+    fast_mode: Option<bool>,
+    sort_order: i64,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::InsertStep(Step {
+            id,
+            session_id,
+            message,
+            attachments_json,
+            armed,
+            model,
+            plan_mode,
+            thinking_mode,
+            fast_mode,
+            sort_order,
+            created_at: epoch_ms(),
+        }))
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
+}
+
+#[tauri::command]
+pub async fn update_step(
+    db_tx: State<'_, DbWriteTx>,
+    id: String,
+    message: String,
+    armed: bool,
+    model: Option<String>,
+    plan_mode: Option<bool>,
+    thinking_mode: Option<bool>,
+    fast_mode: Option<bool>,
+    attachments_json: Option<String>,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::UpdateStep { id, message, armed, model, plan_mode, thinking_mode, fast_mode, attachments_json })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
+}
+
+#[tauri::command]
+pub async fn delete_step(
+    db_tx: State<'_, DbWriteTx>,
+    id: String,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::DeleteStep { id })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
+}
+
+#[tauri::command]
+pub async fn reorder_steps(
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::ReorderSteps { session_id, ids })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
+}
+
+#[tauri::command]
+pub async fn disarm_all_steps(
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::DisarmAllSteps { session_id })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
 }
 
 #[cfg(test)]

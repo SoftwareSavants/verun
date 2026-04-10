@@ -1,13 +1,13 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainQueue } from '../store/sessions'
-import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editQueuedRequest, setEditQueuedRequest } from '../store/ui'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps } from '../store/sessions'
+import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
-import { enqueueMessage, clearQueue, getQueue, updateQueuedMessage } from '../store/queue'
+import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
 import type { Command } from '../store/commands'
-import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity } from 'lucide-solid'
+import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { marked } from 'marked'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
@@ -197,16 +197,21 @@ export const MessageInput: Component<Props> = (props) => {
 
   // Edit last message state — ArrowUp loads last user/queued message, Escape restores draft
   const [editingMessageIdx, setEditingMessageIdx] = createSignal<number | null>(null)
-  const [editingQueuedId, setEditingQueuedId] = createSignal<string | null>(null)
+  const [editingStepId, setEditingStepId] = createSignal<string | null>(null)
   const [savedDraft, setSavedDraft] = createSignal<string>('')
+  const [savedDraftAttachments, setSavedDraftAttachments] = createSignal<Attachment[]>([])
 
-  // React to edit requests from ChatView (clicking Edit on a queued bubble)
-  createEffect(on(editQueuedRequest, (req) => {
+  // React to edit requests from StepList (clicking Edit on a step)
+  createEffect(on(editStepRequest, (req) => {
     if (!req) return
-    setEditQueuedRequest(null) // consume the request
+    setEditStepRequest(null) // consume the request
     setSavedDraft(message())
-    setEditingQueuedId(req.messageId)
+    setSavedDraftAttachments(attachments())
+    setEditingStepId(req.stepId)
     setMessage(req.message)
+    // Restore step's attachments into the input
+    const stepAttachments: Attachment[] = req.attachmentsJson ? JSON.parse(req.attachmentsJson) : []
+    setAttachments(stepAttachments)
     requestAnimationFrame(() => {
       if (textareaRef) {
         textareaRef.value = req.message
@@ -536,7 +541,7 @@ export const MessageInput: Component<Props> = (props) => {
 
     setSending(true)
     setEditingMessageIdx(null)
-    setEditingQueuedId(null)
+    setEditingStepId(null)
     setSavedDraft('')
     setMessage('')
     setAttachments([])
@@ -555,17 +560,17 @@ export const MessageInput: Component<Props> = (props) => {
     if (sid) await abortMessage(sid)
   }
 
-  const handleQueue = () => {
+  const handleAddStep = (armed: boolean) => {
     const sid = props.sessionId
     const msg = message().trim()
     const atts = attachments()
     if (!sid || (!msg && atts.length === 0)) return
 
-    enqueueMessage({
-      id: crypto.randomUUID(),
+    addStep({
       sessionId: sid,
       message: msg,
       attachments: atts.length > 0 ? atts : undefined,
+      armed,
       model: currentModel(),
       planMode: planMode(),
       thinkingMode: thinkingMode(),
@@ -582,9 +587,6 @@ export const MessageInput: Component<Props> = (props) => {
     const atts = attachments()
     if (!sid || (!msg && atts.length === 0)) return
 
-    // Stash remaining queue and clear to prevent drain race on abort→idle
-    const remaining = [...getQueue(sid)]
-    clearQueue(sid)
     setMessage('')
     setAttachments([])
     setShowPalette(false)
@@ -597,8 +599,17 @@ export const MessageInput: Component<Props> = (props) => {
     } finally {
       setSending(false)
     }
-    // Re-enqueue remaining messages so they drain after this turn
-    for (const m of remaining) enqueueMessage(m)
+  }
+
+  const handleFireNextStep = async () => {
+    const sid = props.sessionId
+    if (!sid) return
+    const steps = getSteps(sid)
+    if (steps.length === 0) return
+    const step = extractStep(sid, steps[0].id)
+    if (!step) return
+    const atts = step.attachmentsJson ? JSON.parse(step.attachmentsJson) : undefined
+    await sendMessage(sid, step.message, atts, step.model ?? undefined, step.planMode ?? undefined, step.thinkingMode ?? undefined, step.fastMode ?? undefined)
   }
 
   const handleAppCommand = async (cmd: Command) => {
@@ -686,6 +697,52 @@ export const MessageInput: Component<Props> = (props) => {
     })
   }
 
+  const handleCancelEdit = () => {
+    const draft = savedDraft()
+    const draftAtts = savedDraftAttachments()
+    setEditingMessageIdx(null)
+    setEditingStepId(null)
+    setSavedDraft('')
+    setSavedDraftAttachments([])
+    setMessage(draft)
+    setAttachments(draftAtts)
+    requestAnimationFrame(() => {
+      if (textareaRef) {
+        textareaRef.value = draft
+        autoResize(textareaRef)
+      }
+    })
+  }
+
+  const handleSaveEdit = () => {
+    const esId = editingStepId()
+    if (esId && props.sessionId) {
+      const editedMsg = message().trim()
+      const atts = attachments()
+      if (editedMsg) {
+        updateStep(props.sessionId, esId, {
+          message: editedMsg,
+          model: currentModel(),
+          planMode: planMode(),
+          thinkingMode: thinkingMode(),
+          fastMode: fastMode(),
+          attachmentsJson: atts.length > 0 ? JSON.stringify(atts) : null,
+        })
+      }
+      setEditingStepId(null)
+      setSavedDraft('')
+      setSavedDraftAttachments([])
+      setMessage('')
+      setAttachments([])
+      setShowPalette(false)
+      if (!props.isRunning) {
+        tryDrainSteps(props.sessionId)
+      }
+      return true
+    }
+    return false
+  }
+
   const handleKeyDown = (e: KeyboardEvent) => {
     // Forward to file mention if open
     if (showFileMention()) {
@@ -713,10 +770,21 @@ export const MessageInput: Component<Props> = (props) => {
       }
     }
 
-    // Cmd+Enter while running = steer (abort + send immediately)
-    if (e.key === 'Enter' && e.metaKey && props.isRunning) {
+    // Cmd+Enter
+    if (e.key === 'Enter' && e.metaKey) {
       e.preventDefault()
-      handleSteer()
+      if (props.isRunning) {
+        handleSteer() // abort + send immediately
+      } else {
+        handleFireNextStep() // fire next step from list
+      }
+      return
+    }
+
+    // Shift+Enter while running = add armed step
+    if (e.key === 'Enter' && e.shiftKey && props.isRunning) {
+      e.preventDefault()
+      handleAddStep(true)
       return
     }
 
@@ -726,54 +794,38 @@ export const MessageInput: Component<Props> = (props) => {
       const msg = message().trim()
       if (msg.startsWith('/')) {
         const cmdName = msg.slice(1).split(/\s+/)[0]
-        // Check app commands first
         const appCmds = ['new-session', 'clear', 'model', 'plan']
         if (appCmds.includes(cmdName)) {
           handleAppCommand({ name: cmdName, description: '', category: 'app' })
           return
         }
-        // Otherwise send as-is (Claude skill)
       }
-      // If editing a queued message, save the edit and let queue handle delivery
-      const eqId = editingQueuedId()
-      if (eqId && props.sessionId) {
-        const editedMsg = message().trim()
-        if (editedMsg) {
-          updateQueuedMessage(props.sessionId, eqId, { message: editedMsg, editing: false })
-        }
-        setEditingQueuedId(null)
-        setSavedDraft('')
-        setMessage('')
-        setAttachments([])
-        setShowPalette(false)
-        // If session is idle, drain now
-        if (!props.isRunning) {
-          tryDrainQueue(props.sessionId)
-        }
-        return
-      }
+      // If editing a step, save the edit back
+      if (handleSaveEdit()) return
       if (props.isRunning) {
-        handleQueue()
+        handleAddStep(false) // add paused step
       } else {
         handleSend()
       }
     }
 
-    // ArrowUp with empty input — edit last queued message or last unsent user message
-    if (e.key === 'ArrowUp' && editingMessageIdx() === null && editingQueuedId() === null) {
+    // ArrowUp with empty input — edit last step or last unsent user message
+    if (e.key === 'ArrowUp' && editingMessageIdx() === null && editingStepId() === null) {
       if (!message().trim() && textareaRef && textareaRef.selectionStart === 0) {
         const sid = props.sessionId
         if (!sid) return
 
-        // Check queue first — edit the last queued message
-        const queue = getQueue(sid)
-        if (queue.length > 0) {
-          const last = queue[queue.length - 1]
+        // Check steps first — edit the last step
+        const steps = getSteps(sid)
+        if (steps.length > 0) {
+          const last = steps[steps.length - 1]
           e.preventDefault()
           setSavedDraft(message())
-          setEditingQueuedId(last.id)
-          updateQueuedMessage(sid, last.id, { editing: true })
+          setSavedDraftAttachments(attachments())
+          setEditingStepId(last.id)
           setMessage(last.message)
+          const stepAtts: Attachment[] = last.attachmentsJson ? JSON.parse(last.attachmentsJson) : []
+          setAttachments(stepAtts)
           requestAnimationFrame(() => {
             if (textareaRef) {
               textareaRef.value = last.message
@@ -784,7 +836,7 @@ export const MessageInput: Component<Props> = (props) => {
           return
         }
 
-        // No queue — check if last output item is an unsent user message
+        // No steps — check if last output item is an unsent user message
         if (!props.isRunning) {
           const items = outputItems[sid]
           if (!items) return
@@ -808,24 +860,9 @@ export const MessageInput: Component<Props> = (props) => {
     }
 
     // Escape while editing — restore saved draft
-    if (e.key === 'Escape' && (editingMessageIdx() !== null || editingQueuedId() !== null)) {
+    if (e.key === 'Escape' && (editingMessageIdx() !== null || editingStepId() !== null)) {
       e.preventDefault()
-      const draft = savedDraft()
-      // Clear editing flag on queued message so queue can resume
-      const eqId = editingQueuedId()
-      if (eqId && props.sessionId) {
-        updateQueuedMessage(props.sessionId, eqId, { editing: false })
-      }
-      setEditingMessageIdx(null)
-      setEditingQueuedId(null)
-      setSavedDraft('')
-      setMessage(draft)
-      requestAnimationFrame(() => {
-        if (textareaRef) {
-          textareaRef.value = draft
-          autoResize(textareaRef)
-        }
-      })
+      handleCancelEdit()
     }
   }
 
@@ -1418,17 +1455,24 @@ export const MessageInput: Component<Props> = (props) => {
         </div>
       </Show>
 
-      <Show when={editingMessageIdx() !== null || editingQueuedId() !== null}>
+      <Show when={editingMessageIdx() !== null || editingStepId() !== null}>
         <div class="px-3 pb-0.5">
           <span class="text-[10px] text-text-dim">
-            Editing message · Escape to cancel
+            Editing next step · Escape to cancel
           </span>
         </div>
       </Show>
-      <Show when={props.isRunning && editingMessageIdx() === null && editingQueuedId() === null && (message().trim() || attachments().length > 0)}>
+      <Show when={props.isRunning && editingMessageIdx() === null && editingStepId() === null && (message().trim() || attachments().length > 0)}>
         <div class="px-3 pb-0.5">
           <span class="text-[10px] text-text-dim">
-            Enter to queue · Cmd+Enter to redirect
+            Enter to add next step · Shift+Enter to add & arm · Cmd+Enter to redirect
+          </span>
+        </div>
+      </Show>
+      <Show when={!props.isRunning && editingMessageIdx() === null && editingStepId() === null && getSteps(props.sessionId).length > 0}>
+        <div class="px-3 pb-0.5">
+          <span class="text-[10px] text-text-dim">
+            Cmd+Enter to send next step
           </span>
         </div>
       </Show>
@@ -1436,11 +1480,13 @@ export const MessageInput: Component<Props> = (props) => {
       <div class={clsx(
         'relative bg-surface-1 rounded-xl transition-all outline-none',
         currentApproval() || showPlanResponse() || (showPlanViewer() && planContent()) ? 'hidden' : '',
-        planMode()
-          ? 'border border-accent/40 shadow-[0_0_0_2px_rgba(59,130,246,0.15)]'
-          : dragOver()
-            ? 'border border-accent/50 bg-accent/5'
-            : ''
+        (editingMessageIdx() !== null || editingStepId() !== null)
+          ? 'border border-amber-500/40 shadow-[0_0_0_2px_rgba(245,158,11,0.12)]'
+          : planMode()
+            ? 'border border-accent/40 shadow-[0_0_0_2px_rgba(59,130,246,0.15)]'
+            : dragOver()
+              ? 'border border-accent/50 bg-accent/5'
+              : ''
       )}>
         {/* Command palette */}
         <Show when={showPalette()}>
@@ -1691,19 +1737,66 @@ export const MessageInput: Component<Props> = (props) => {
             <Show
               when={props.isRunning}
               fallback={
-                <button
-                  class={clsx(
-                    'w-7 h-7 flex items-center justify-center rounded-lg transition-colors',
-                    (!message().trim() && attachments().length === 0) || !props.sessionId || sending()
-                      ? 'text-text-dim/30 border border-border'
-                      : 'text-text-primary bg-surface-3 border border-border-active hover:bg-surface-4'
-                  )}
-                  onClick={handleSend}
-                  disabled={(!message().trim() && attachments().length === 0) || !props.sessionId || sending()}
-                  title="Send (Enter)"
-                >
-                  <ArrowUp size={16} />
-                </button>
+                <>
+                  <Show
+                    when={editingStepId() !== null || editingMessageIdx() !== null}
+                    fallback={
+                      <button
+                        class={clsx(
+                          'w-7 h-7 flex items-center justify-center rounded-lg transition-colors',
+                          (!message().trim() && attachments().length === 0) || !props.sessionId
+                            ? 'text-text-dim/20'
+                            : 'text-text-dim hover:text-accent hover:bg-accent/10'
+                        )}
+                        onClick={() => handleAddStep(false)}
+                        disabled={(!message().trim() && attachments().length === 0) || !props.sessionId}
+                        title="Add as next step"
+                      >
+                        <ListPlus size={16} />
+                      </button>
+                    }
+                  >
+                    <button
+                      class="w-7 h-7 flex items-center justify-center rounded-lg text-text-dim hover:text-status-error hover:bg-status-error/10 transition-colors"
+                      onClick={handleCancelEdit}
+                      title="Cancel edit (Esc)"
+                    >
+                      <X size={16} />
+                    </button>
+                  </Show>
+                  <Show
+                    when={editingStepId() !== null || editingMessageIdx() !== null}
+                    fallback={
+                      <button
+                        class={clsx(
+                          'w-7 h-7 flex items-center justify-center rounded-lg transition-colors',
+                          (!message().trim() && attachments().length === 0) || !props.sessionId || sending()
+                            ? 'text-text-dim/30 border border-border'
+                            : 'text-text-primary bg-surface-3 border border-border-active hover:bg-surface-4'
+                        )}
+                        onClick={handleSend}
+                        disabled={(!message().trim() && attachments().length === 0) || !props.sessionId || sending()}
+                        title="Send (Enter)"
+                      >
+                        <ArrowUp size={16} />
+                      </button>
+                    }
+                  >
+                    <button
+                      class={clsx(
+                        'w-7 h-7 flex items-center justify-center rounded-lg transition-colors',
+                        !message().trim()
+                          ? 'text-text-dim/30 border border-border'
+                          : 'text-amber-500 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20'
+                      )}
+                      onClick={handleSaveEdit}
+                      disabled={!message().trim()}
+                      title="Save edit (Enter)"
+                    >
+                      <Check size={16} />
+                    </button>
+                  </Show>
+                </>
               }
             >
               <button
@@ -1713,9 +1806,9 @@ export const MessageInput: Component<Props> = (props) => {
                     ? 'text-text-dim/30 border border-border'
                     : 'text-accent bg-accent/10 border border-accent/30 hover:bg-accent/20'
                 )}
-                onClick={handleQueue}
+                onClick={() => handleAddStep(false)}
                 disabled={(!message().trim() && attachments().length === 0) || !props.sessionId || sending()}
-                title="Queue message (Enter)"
+                title="Add next step (Enter)"
               >
                 <ArrowUp size={16} />
                 <div class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent" />

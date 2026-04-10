@@ -4,10 +4,7 @@ import { clsx } from 'clsx'
 import { marked } from 'marked'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import type { OutputItem, SessionStatus } from '../types'
-import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, Pencil, ArrowUp, Trash2 } from 'lucide-solid'
-import { getQueue, removeQueuedMessage, updateQueuedMessage, sendNowFromQueue, clearQueue, enqueueMessage } from '../store/queue'
-import { sendMessage, abortMessage } from '../store/sessions'
-import { setEditQueuedRequest } from '../store/ui'
+import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check } from 'lucide-solid'
 
 marked.setOptions({ breaks: true, gfm: true })
 
@@ -393,75 +390,6 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
 // ---------------------------------------------------------------------------
 // Queued Message Bubble
 // ---------------------------------------------------------------------------
-
-const QueuedMessageBubble: Component<{
-  id: string
-  sessionId: string
-  message: string
-  editing?: boolean
-  sessionStatus?: SessionStatus
-  onScrollNeeded: () => void
-}> = (props) => {
-  const startEdit = () => {
-    updateQueuedMessage(props.sessionId, props.id, { editing: true })
-    setEditQueuedRequest({ sessionId: props.sessionId, messageId: props.id, message: props.message })
-  }
-
-  const handleSendNow = async () => {
-    // Extract target and save remaining queue, then clear to prevent drain race on abort→idle
-    const msg = sendNowFromQueue(props.sessionId, props.id)
-    if (!msg) return
-    const remaining = [...getQueue(props.sessionId)]
-    clearQueue(props.sessionId)
-    try {
-      if (props.sessionStatus === 'running') {
-        await abortMessage(props.sessionId)
-      }
-      await sendMessage(props.sessionId, msg.message, msg.attachments, msg.model, msg.planMode, msg.thinkingMode, msg.fastMode)
-    } catch (e) {
-      console.error('Failed to send now:', e)
-    }
-    // Re-enqueue remaining messages so they drain after this turn
-    for (const m of remaining) enqueueMessage(m)
-  }
-
-  return (
-    <div class="flex justify-end items-center gap-1.5 px-5 py-1">
-      <Show when={!props.editing}>
-        <div class="flex items-center gap-0.5">
-          <button
-            class="p-1 rounded-md text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors"
-            onClick={startEdit}
-            title="Edit"
-          >
-            <Pencil size={13} />
-          </button>
-          <button
-            class="p-1 rounded-md text-text-dim hover:text-accent hover:bg-accent/10 transition-colors"
-            onClick={handleSendNow}
-            title="Send now"
-          >
-            <ArrowUp size={13} />
-          </button>
-          <button
-            class="p-1 rounded-md text-text-dim hover:text-status-error hover:bg-status-error/10 transition-colors"
-            onClick={() => removeQueuedMessage(props.sessionId, props.id)}
-            title="Remove"
-          >
-            <Trash2 size={13} />
-          </button>
-        </div>
-      </Show>
-      <div class="max-w-[75%] bg-accent/8 rounded-2xl rounded-br-lg border border-accent/15 border-dashed overflow-hidden">
-        <div class="px-4 py-2.5 text-sm text-text-secondary whitespace-pre-wrap leading-relaxed select-text">
-          {props.message}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Main ChatView
 // ---------------------------------------------------------------------------
 
@@ -492,11 +420,6 @@ export const ChatView: Component<Props> = (props) => {
   // Auto-scroll when session starts running (thinking dots appear)
   createEffect(on(() => props.sessionStatus, (status) => {
     if (status === 'running') scheduleAutoScroll()
-  }))
-
-  // Auto-scroll when queue changes
-  createEffect(on(() => getQueue(props.sessionId ?? undefined).length, () => {
-    scheduleAutoScroll()
   }))
 
   const scheduleAutoScroll = () => {
@@ -622,20 +545,6 @@ export const ChatView: Component<Props> = (props) => {
             </div>
           </div>
         </Show>
-
-        {/* Queued messages */}
-        <For each={getQueue(props.sessionId ?? undefined)}>
-          {(qm) => (
-            <QueuedMessageBubble
-              id={qm.id}
-              sessionId={qm.sessionId}
-              message={qm.message}
-              editing={qm.editing}
-              sessionStatus={props.sessionStatus}
-              onScrollNeeded={scheduleAutoScroll}
-            />
-          )}
-        </For>
 
         <Show when={blocks.length === 0 && props.sessionStatus !== 'error'}>
           <div class="flex-1 flex items-center justify-center pt-20">

@@ -232,6 +232,13 @@ pub fn run() {
             ipc::lsp_stop,
             // Notifications
             ipc::send_notification,
+            // Steps
+            ipc::list_steps,
+            ipc::add_step,
+            ipc::update_step,
+            ipc::delete_step,
+            ipc::reorder_steps,
+            ipc::disarm_all_steps,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

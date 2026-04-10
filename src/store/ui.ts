@@ -154,5 +154,5 @@ export function dismissToast(id: string) {
   setToasts(prev => prev.filter(t => t.id !== id))
 }
 
-// Shared edit-queued-message signal — set by ChatView edit button, consumed by MessageInput
-export const [editQueuedRequest, setEditQueuedRequest] = createSignal<{ sessionId: string; messageId: string; message: string } | null>(null)
+// Shared edit-step signal — set by StepList edit button, consumed by MessageInput
+export const [editStepRequest, setEditStepRequest] = createSignal<{ sessionId: string; stepId: string; message: string; attachmentsJson?: string | null } | null>(null)
