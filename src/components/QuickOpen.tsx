@@ -1,7 +1,7 @@
 import { Component, Show, For, createSignal, createEffect, on } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
 import { Search, File, FileCode, FileJson, FileText } from 'lucide-solid'
-import { showQuickOpen, setShowQuickOpen, openFile, setRightPanelTab } from '../store/files'
+import { showQuickOpen, setShowQuickOpen, openFilePinned } from '../store/files'
 import { selectedTaskId } from '../store/ui'
 import * as ipc from '../lib/ipc'
 
@@ -134,8 +134,9 @@ export const QuickOpen: Component = () => {
     const path = results[selectedIndex()]
     if (!path) return
     const name = path.split('/').pop() || path
-    openFile(path, name)
-    setRightPanelTab('files')
+    const taskId = selectedTaskId()
+    if (!taskId) return
+    openFilePinned(taskId, path, name)
     close()
   }
 

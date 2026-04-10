@@ -3,7 +3,7 @@ import { createVirtualizer } from '@tanstack/solid-virtual'
 import { Folder, FolderOpen, File, ChevronRight, ChevronDown, FileCode, FileJson, FileText, Image, FileType } from 'lucide-solid'
 import {
   getDirContents, loadDirectory, isExpanded, toggleExpanded, collapseDir,
-  invalidateDirectory, openFile
+  invalidateDirectory, openFile, openFilePinned
 } from '../store/files'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
@@ -115,7 +115,15 @@ export const FileTree: Component<Props> = (props) => {
         loadDirectory(props.taskId, entry.relativePath)
       }
     } else {
-      openFile(entry.relativePath, entry.name)
+      // Single click → preview tab (replaces existing preview)
+      openFile(props.taskId, entry.relativePath, entry.name)
+    }
+  }
+
+  const handleDoubleClick = (entry: FileEntry) => {
+    if (!entry.isDir) {
+      // Double click → pin the tab (make it permanent)
+      openFilePinned(props.taskId, entry.relativePath, entry.name)
     }
   }
 
@@ -128,7 +136,7 @@ export const FileTree: Component<Props> = (props) => {
   const handleOpenFile = () => {
     const menu = contextMenu()
     if (!menu) return
-    openFile(menu.entry.relativePath, menu.entry.name)
+    openFilePinned(props.taskId, menu.entry.relativePath, menu.entry.name)
     setContextMenu(null)
   }
 
@@ -239,6 +247,7 @@ export const FileTree: Component<Props> = (props) => {
                         class="w-full flex items-center gap-1 px-2 py-0.5 text-[12px] text-text-secondary hover:bg-surface-2 transition-colors text-left truncate"
                         style={{ "padding-left": `${n().depth * 16 + 8}px` }}
                         onClick={() => handleClick(n().entry)}
+                        onDblClick={() => handleDoubleClick(n().entry)}
                         onContextMenu={(e) => {
                           e.preventDefault()
                           e.stopPropagation()

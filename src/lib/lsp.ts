@@ -4,7 +4,7 @@ import { EditorView } from '@codemirror/view'
 import { Text } from '@codemirror/state'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from './ipc'
-import { openFile, setRightPanelTab } from '../store/files'
+import { openFilePinned } from '../store/files'
 import type { FileTreeChangedEvent } from '../types'
 
 interface LspMessagePayload {
@@ -58,10 +58,12 @@ class VerunWorkspace extends Workspace {
   files: WorkspaceFile[] = []
   private fileVersions: Record<string, number> = {}
   private worktreePath: string
+  private taskId: string
 
-  constructor(client: LSPClient, worktreePath: string) {
+  constructor(client: LSPClient, worktreePath: string, taskId: string) {
     super(client)
     this.worktreePath = worktreePath
+    this.taskId = taskId
   }
 
   private nextVersion(uri: string) {
@@ -115,8 +117,7 @@ class VerunWorkspace extends Workspace {
     const name = relativePath.split('/').pop() || relativePath
 
     // Open the file in the editor
-    openFile(relativePath, name)
-    setRightPanelTab('files')
+    openFilePinned(this.taskId, relativePath, name)
 
     // Wait for the CodeEditor to mount and register the view (max 3s)
     return new Promise<EditorView | null>((resolve) => {
@@ -175,7 +176,7 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
 
   const client = new LSPClient({
     rootUri: `file://${worktreePath}`,
-    workspace: (c) => new VerunWorkspace(c, worktreePath),
+    workspace: (c) => new VerunWorkspace(c, worktreePath, taskId),
     extensions: languageServerExtensions(),
   })
 

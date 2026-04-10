@@ -18,7 +18,12 @@
 - File tree viewer — gitignore-aware directory browser with lazy loading, virtualized rendering, filesystem watching, and context menus
 - Code editor — CodeMirror 6 with One Dark syntax highlighting, code folding, 15+ language modes, context menu with LSP actions
 - Right panel tabs — Changes and Files tabs in the collapsible right panel
-- Editor tab management — open/close/reopen tabs, unsaved changes confirmation, Ctrl+Tab switching, CMD+W close, CMD+Shift+T reopen
+- Unified tab bar — sessions and editor file tabs share one tab bar in the main area; clicking a session shows chat, clicking a file shows the editor
+- Per-task editor tabs — each task has its own set of open files; switching tasks preserves editor state
+- Preview tabs — single-click opens a transient tab (italic) that gets replaced; double-click, editing, or saving pins it
+- MRU tab switching — Ctrl+Tab goes to the last used tab, not the next in order
+- Editor content caching — switching between tabs is instant with no loading flicker
+- Editor tab management — open/close/reopen tabs, unsaved changes confirmation, tab context menu (Close, Close Others, Close All, Copy Path), CMD+W close, CMD+Shift+T reopen
 - File tree context menu — open, copy path, reveal in Finder, refresh, collapse/expand
 - CMD+E to toggle between Changes and Files panel
 - Fix `.verun` folder location — worktrees now created inside the project directory, not the parent

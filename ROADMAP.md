@@ -90,8 +90,8 @@ High-impact features that engineers are asking for most.
 
 ### Code Tools
 - [X] File tree viewer
-- [-] Code editor / viewer
-- [-] TS support
+- [X] Code editor / viewer
+- [X] TS support
 - [X] Mention files in chat (@ references)
 - [ ] Code review comments on diffs
 
