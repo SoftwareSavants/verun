@@ -288,11 +288,7 @@ export const MessageInput: Component<Props> = (props) => {
     const sid = props.sessionId
     // Don't show the simple panel when the full plan viewer is active
     if (showPlanViewer() && planContent()) return false
-    const result = sid !== null && planResponseSession() === sid && !currentApproval()
-    if (result) {
-      console.log('[showPlanResponse] returning true', { sid, planResponseSession: planResponseSession(), currentApproval: currentApproval() })
-    }
-    return result
+    return sid !== null && planResponseSession() === sid && !currentApproval()
   }
 
   const setShowPlanResponse = (show: boolean) => {

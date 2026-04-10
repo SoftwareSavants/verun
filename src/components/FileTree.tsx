@@ -96,25 +96,20 @@ export const FileTree: Component<Props> = (props) => {
   // Reveal file in tree — scroll to it after expanded dirs settle
   createEffect(() => {
     const req = revealRequest()
-    console.log('[reveal] effect fired', req, 'myTask:', props.taskId)
-    if (!req || req.taskId !== props.taskId) {
-      console.log('[reveal] skipped — no req or task mismatch')
-      return
-    }
+    if (!req || req.taskId !== props.taskId) return
     setTimeout(() => {
       const nodes = flatNodes()
       const idx = nodes.findIndex(n => n.entry.relativePath === req.relativePath)
-      console.log('[reveal] setTimeout fired, looking for:', req.relativePath)
-      console.log('[reveal] flatNodes count:', nodes.length, 'found idx:', idx)
-      console.log('[reveal] scrollRef:', !!scrollRef, 'scrollRef.clientHeight:', scrollRef?.clientHeight, 'scrollRef.scrollHeight:', scrollRef?.scrollHeight)
       if (idx >= 0 && scrollRef) {
         const rowHeight = 24
         const containerHeight = scrollRef.clientHeight
         const targetTop = idx * rowHeight
         const currentTop = scrollRef.scrollTop
-        console.log('[reveal] targetTop:', targetTop, 'currentTop:', currentTop, 'containerHeight:', containerHeight)
+        // Skip scroll if the item is already visible in the viewport
+        const visibleTop = currentTop
+        const visibleBottom = currentTop + containerHeight
+        if (targetTop >= visibleTop && targetTop + rowHeight <= visibleBottom) return
         scrollRef.scrollTop = targetTop - containerHeight / 2 + rowHeight / 2
-        console.log('[reveal] scrollTop set to:', scrollRef.scrollTop)
       }
     }, 50)
   })

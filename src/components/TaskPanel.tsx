@@ -444,7 +444,7 @@ export const TaskPanel: Component = () => {
                               ? 'bg-surface-3 text-text-secondary border border-border-active'
                               : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
                           )}
-                          onClick={() => { setActiveTab(t().id, tab.relativePath); revealFileInTree(t().id, tab.relativePath) }}
+                          onClick={() => { if (mainView(t().id) === tab.relativePath) return; setActiveTab(t().id, tab.relativePath); revealFileInTree(t().id, tab.relativePath) }}
                           onDblClick={() => pinTab(t().id, tab.relativePath)}
                           onContextMenu={(e) => {
                             e.preventDefault()
