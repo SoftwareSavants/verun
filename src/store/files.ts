@@ -162,11 +162,9 @@ export function openFile(taskId: string, relativePath: string, name: string) {
   const already = tabs.some(t => t.relativePath === relativePath)
 
   if (already) {
-    if (activeTabPath(taskId) !== relativePath) {
-      setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
-      setMainView(taskId, relativePath)
-      pushMru(taskId, relativePath)
-    }
+    setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
+    setMainView(taskId, relativePath)
+    pushMru(taskId, relativePath)
     return
   }
 

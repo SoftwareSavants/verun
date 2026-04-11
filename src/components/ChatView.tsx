@@ -443,6 +443,11 @@ function clearHighlights(container: HTMLElement) {
 }
 
 // ---------------------------------------------------------------------------
+// Scroll position persistence across mount/unmount (e.g. switching to file editor and back)
+// ---------------------------------------------------------------------------
+const savedScrollPositions = new Map<string, { scrollTop: number; autoScroll: boolean }>()
+
+// ---------------------------------------------------------------------------
 // Main ChatView
 // ---------------------------------------------------------------------------
 
@@ -520,6 +525,27 @@ export const ChatView: Component<Props> = (props) => {
     }
   }
 
+  // Save scroll position on unmount, restore after first block rebuild on remount
+  let pendingScrollRestore: { scrollTop: number; autoScroll: boolean } | null = null
+  onMount(() => {
+    const sid = props.sessionId
+    if (sid) {
+      const saved = savedScrollPositions.get(sid)
+      if (saved) {
+        autoScroll = saved.autoScroll
+        pendingScrollRestore = saved
+      }
+    }
+    onCleanup(() => {
+      if (sid && containerRef) {
+        savedScrollPositions.set(sid, {
+          scrollTop: containerRef.scrollTop,
+          autoScroll,
+        })
+      }
+    })
+  })
+
   // Cmd+F / Ctrl+F handler
   onMount(() => {
     const handler = (e: KeyboardEvent) => {
@@ -557,7 +583,20 @@ export const ChatView: Component<Props> = (props) => {
       if (showSearch() && searchQuery()) {
         requestAnimationFrame(() => runSearch(searchQuery()))
       }
-      scheduleAutoScroll()
+      // On remount: restore saved scroll position instead of auto-scrolling
+      if (pendingScrollRestore) {
+        const restore = pendingScrollRestore
+        pendingScrollRestore = null
+        if (!restore.autoScroll) {
+          requestAnimationFrame(() => {
+            if (containerRef) containerRef.scrollTop = restore.scrollTop
+          })
+        } else {
+          scheduleAutoScroll()
+        }
+      } else {
+        scheduleAutoScroll()
+      }
     }
   }))
 

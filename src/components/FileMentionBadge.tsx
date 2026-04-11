@@ -5,7 +5,7 @@ import { getFileIcon } from '../lib/fileIcons'
 import { highlightCode, langFromPath } from '../lib/highlighter'
 import { readWorktreeFile } from '../lib/ipc'
 import { openFile } from '../store/files'
-import { X } from 'lucide-solid'
+import { X, ExternalLink } from 'lucide-solid'
 
 interface Props {
   filePath: string
@@ -131,17 +131,18 @@ export const FileMentionBadge: Component<Props> = (props) => {
         <Portal>
           <div
             ref={(el) => { floatingEl = el; updatePosition() }}
-            class="fixed z-50 w-96 max-h-72 bg-surface-2 border border-border-active rounded-lg shadow-xl overflow-hidden"
+            class="fixed z-50 w-[28rem] max-h-96 bg-surface-2 border border-border-active rounded-lg shadow-xl overflow-hidden"
             style={floatingStyle()}
             onMouseEnter={handleEnter}
             onMouseLeave={handleLeave}
           >
             <div
-              class="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-border bg-surface-1 cursor-pointer hover:bg-surface-2 transition-colors"
+              class="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-1 cursor-pointer hover:bg-surface-2 transition-colors"
               onClick={handleOpen}
             >
-              <Icon size={11} class="shrink-0" />
-              <span class="text-[10px] font-mono text-text-secondary truncate">{props.filePath}</span>
+              <Icon size={13} class="shrink-0" />
+              <span class="text-[11px] font-mono text-text-primary truncate flex-1">{props.filePath}</span>
+              <ExternalLink size={12} class="shrink-0 text-text-dim" />
             </div>
             <Show
               when={!loading()}
@@ -158,7 +159,7 @@ export const FileMentionBadge: Component<Props> = (props) => {
                 }
               >
                 <div
-                  class="overflow-auto max-h-60 [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:px-3 [&_pre]:py-2 [&_code]:!text-[11px] [&_code]:!leading-relaxed"
+                  class="overflow-auto max-h-80 [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:px-3 [&_pre]:py-2 [&_code]:!text-[11px] [&_code]:!leading-relaxed"
                   innerHTML={preview()!.html}
                 />
               </Show>
