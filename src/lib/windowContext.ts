@@ -37,6 +37,8 @@ export function parseWindowContext(): WindowContext {
 /** Module-level parsed context — safe to import from stores (outside component tree) */
 export const windowContext = parseWindowContext()
 
+console.log('[window-context]', windowContext.windowType, windowContext.windowLabel, { taskId: windowContext.taskId, projectId: windowContext.projectId })
+
 /**
  * Returns true if this window should handle events for the given taskId.
  * Task windows own their specific task (or the task they created).
@@ -54,11 +56,15 @@ export function registerWindowedTaskChecker(fn: (taskId: string) => boolean) {
 
 export function isTaskOwnedByThisWindow(taskId: string, currentTaskId?: string | null): boolean {
   if (windowContext.windowType === 'task') {
-    if (windowContext.taskId) return windowContext.taskId === taskId
-    // New-task window: fall back to currentTaskId (the task created in this window)
-    return currentTaskId != null && currentTaskId === taskId
+    const owned = windowContext.taskId
+      ? windowContext.taskId === taskId
+      : currentTaskId != null && currentTaskId === taskId
+    console.log('[ownership]', windowContext.windowLabel, 'task window, taskId:', taskId, 'ctx.taskId:', windowContext.taskId, 'currentTaskId:', currentTaskId, '→', owned)
+    return owned
   }
   // Main window: own all tasks except those open in a separate window
-  if (_isTaskWindowedFn && _isTaskWindowedFn(taskId)) return false
-  return true
+  const windowed = _isTaskWindowedFn ? _isTaskWindowedFn(taskId) : false
+  const owned = !windowed
+  console.log('[ownership]', 'main', 'taskId:', taskId, 'windowed:', windowed, '→', owned)
+  return owned
 }

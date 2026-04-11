@@ -48,6 +48,7 @@ export const TaskWindowShell: Component = () => {
   }
 
   // Set selection eagerly so TaskPanel renders the right task immediately
+  console.log('[task-window] init', { taskId: ctx.taskId, projectId: ctx.projectId, windowLabel: ctx.windowLabel })
   if (ctx.taskId) {
     setSelectedTaskId(ctx.taskId)
   } else if (ctx.projectId) {
