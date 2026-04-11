@@ -215,13 +215,11 @@ jobs:
           name: windows-exe
           path: src-tauri/target/release/bundle/nsis/*.exe
 
-      - name: Upload updater artifacts
+      - name: Upload updater signature
         uses: actions/upload-artifact@v4
         with:
-          name: windows-updater
-          path: |
-            src-tauri/target/release/bundle/nsis/*.nsis.zip
-            src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
+          name: windows-updater-sig
+          path: src-tauri/target/release/bundle/nsis/*.exe.sig
 
   build-linux:
     needs: check-version
@@ -303,9 +301,8 @@ jobs:
           cp artifacts/macos-intel-updater/*.tar.gz release-assets/Verun_x86_64.app.tar.gz
           cp artifacts/macos-intel-updater/*.tar.gz.sig release-assets/Verun_x86_64.app.tar.gz.sig
 
-          # Windows updater
-          cp artifacts/windows-updater/*.nsis.zip release-assets/
-          cp artifacts/windows-updater/*.nsis.zip.sig release-assets/
+          # Windows updater signature
+          cp artifacts/windows-updater-sig/*.exe.sig release-assets/
 
           # Linux updater signature
           cp artifacts/linux-updater-sig/*.AppImage.sig release-assets/
@@ -329,11 +326,11 @@ jobs:
           # Read signatures
           da_sig=$(cat release-assets/Verun_aarch64.app.tar.gz.sig)
           dx_sig=$(cat release-assets/Verun_x86_64.app.tar.gz.sig)
-          ws_sig=$(cat release-assets/*.nsis.zip.sig)
+          ws_sig=$(cat release-assets/*-setup.exe.sig)
           ls_sig=$(cat release-assets/*.AppImage.sig)
 
           # Get filenames for Windows and Linux
-          win_file=$(basename release-assets/*.nsis.zip)
+          win_file=$(basename release-assets/*-setup.exe)
           linux_file=$(basename release-assets/*.AppImage)
 
           jq -n \
