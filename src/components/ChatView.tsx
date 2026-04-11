@@ -5,6 +5,8 @@ import { marked } from 'marked'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import type { OutputItem, SessionStatus } from '../types'
 import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X } from 'lucide-solid'
+import { FileMentionBadge } from './FileMentionBadge'
+import { parseMentions } from '../lib/mentions'
 
 marked.setOptions({ breaks: true, gfm: true })
 
@@ -38,6 +40,7 @@ interface Props {
   output: OutputItem[]
   sessionStatus?: SessionStatus
   sessionId?: string | null
+  taskId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -668,7 +671,13 @@ export const ChatView: Component<Props> = (props) => {
                       </Show>
                       <Show when={block.text}>
                         <div class="px-4 py-2.5 text-sm text-text-primary whitespace-pre-wrap leading-relaxed select-text">
-                          {block.text}
+                          <For each={parseMentions(block.text)}>
+                            {(seg) => (
+                              <Show when={seg.type === 'mention'} fallback={seg.value}>
+                                <FileMentionBadge filePath={seg.value} taskId={props.taskId} size="sm" />
+                              </Show>
+                            )}
+                          </For>
                         </div>
                       </Show>
                     </div>

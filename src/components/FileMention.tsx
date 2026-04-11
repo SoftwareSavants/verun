@@ -55,6 +55,13 @@ export const FileMention: Component<Props> = (props) => {
     listRef?.scrollTo(0, 0)
   }))
 
+  // Scroll selected item into view on arrow navigation
+  createEffect(on(selectedIndex, (idx) => {
+    if (!listRef) return
+    const item = listRef.querySelectorAll('button')[idx]
+    item?.scrollIntoView({ block: 'nearest' })
+  }))
+
   const handleKeyDown = (e: KeyboardEvent) => {
     const items = filtered()
     if (items.length === 0) return

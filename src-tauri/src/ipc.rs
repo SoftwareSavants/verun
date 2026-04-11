@@ -1481,6 +1481,46 @@ pub async fn list_directory(
 }
 
 #[tauri::command]
+pub async fn read_worktree_file(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    relative_path: String,
+    max_bytes: Option<u64>,
+) -> Result<String, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    let full_path = std::path::Path::new(&t.worktree_path).join(&relative_path);
+
+    // Safety: ensure the resolved path is within the worktree
+    let canonical_base = std::fs::canonicalize(&t.worktree_path)
+        .map_err(|e| format!("Cannot resolve worktree: {e}"))?;
+    if let Ok(canonical_file) = std::fs::canonicalize(&full_path) {
+        if !canonical_file.starts_with(&canonical_base) {
+            return Err("Path escapes worktree boundary".into());
+        }
+    }
+
+    let limit = max_bytes.unwrap_or(50_000) as usize;
+    let bytes = tokio::fs::read(&full_path)
+        .await
+        .map_err(|e| format!("Failed to read {relative_path}: {e}"))?;
+
+    let truncated = bytes.len() > limit;
+    let slice = if truncated { &bytes[..limit] } else { &bytes[..] };
+
+    let text = String::from_utf8(slice.to_vec())
+        .map_err(|_| "Binary file — preview not available".to_string())?;
+
+    if truncated {
+        Ok(format!("{text}\n… (truncated)"))
+    } else {
+        Ok(text)
+    }
+}
+
+#[tauri::command]
 pub async fn write_text_file(
     pool: State<'_, SqlitePool>,
     task_id: String,

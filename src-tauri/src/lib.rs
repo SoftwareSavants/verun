@@ -265,6 +265,7 @@ pub fn run() {
             ipc::quit_app,
             // File tree
             ipc::list_directory,
+            ipc::read_worktree_file,
             ipc::write_text_file,
             ipc::watch_worktree,
             ipc::unwatch_worktree,

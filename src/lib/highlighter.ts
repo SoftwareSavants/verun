@@ -118,3 +118,30 @@ export async function highlightLine(
 
   return [{ content: line }]
 }
+
+export async function highlightCode(
+  code: string,
+  lang: string | null,
+): Promise<string> {
+  if (!lang || !LANG_TO_IMPORT[lang]) {
+    // Return escaped HTML
+    return code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
+
+  try {
+    const hl = await getHighlighter()
+
+    if (!loadedLangs.has(lang)) {
+      const langModule = await LANG_TO_IMPORT[lang]()
+      await hl.loadLanguage(langModule.default ?? langModule)
+      loadedLangs.add(lang)
+    }
+
+    return hl.codeToHtml(code, {
+      lang,
+      theme: 'github-dark',
+    })
+  } catch {
+    return code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
+}

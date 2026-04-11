@@ -75,7 +75,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [ ] Type overlay showing on top of error, merge and restyle both overlays
 - [ ] Persists current message in task
 - [X] Find in session
-- [ ] @mentioned files ship in input and sent messages
+- [X] @mentioned files ship in input and sent messages
 - [ ] Images viewer
 
 ---

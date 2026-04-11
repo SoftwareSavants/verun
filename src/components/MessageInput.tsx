@@ -6,6 +6,7 @@ import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
+import { openFile } from '../store/files'
 import type { Command } from '../store/commands'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { marked } from 'marked'
@@ -172,12 +173,148 @@ function UsageChip(chipProps: { sessionId: string | null }) {
 
 export const MessageInput: Component<Props> = (props) => {
   let fileInputRef!: HTMLInputElement
-  let textareaRef!: HTMLTextAreaElement
+  let inputRef!: HTMLDivElement
   let customAnswerRef!: HTMLInputElement
+
+  // ── Contenteditable helpers ──────────────────────────────────────────
+  // The input is a contenteditable div with text nodes + badge spans.
+  // `data-mention` spans are non-editable inline badges.
+  // serializeInput() reads the DOM and returns plain text with @path tokens.
+
+  const serializeInput = (): string => {
+    if (!inputRef) return ''
+    let text = ''
+    const walk = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += (node.textContent ?? '').replace(/\u200B/g, '')
+      } else if (node instanceof HTMLElement) {
+        if (node.dataset.mention) {
+          text += `@${node.dataset.mention}`
+        } else if (node.tagName === 'BR') {
+          text += '\n'
+        } else {
+          for (const child of node.childNodes) walk(child)
+        }
+      }
+    }
+    for (const child of inputRef.childNodes) walk(child)
+    // Browser may leave a trailing <br> → lone '\n'; treat as empty
+    return text === '\n' ? '' : text
+  }
+
+  const setInputContent = (text: string) => {
+    if (!inputRef) return
+    // Parse text into mixed text nodes + badge elements
+    inputRef.innerHTML = ''
+    const mentionRe = /@([^\s]+)/g
+    let lastIndex = 0
+    for (const match of text.matchAll(mentionRe)) {
+      const start = match.index!
+      if (start > lastIndex) {
+        inputRef.appendChild(document.createTextNode(text.slice(lastIndex, start)))
+      }
+      inputRef.appendChild(wrapBadge(createMentionBadge(match[1])))
+      lastIndex = start + match[0].length
+    }
+    if (lastIndex < text.length) {
+      inputRef.appendChild(document.createTextNode(text.slice(lastIndex)))
+    }
+    autoResizeInput()
+  }
+
+  const ZWS = '\u200B' // zero-width space — cursor landing pad around badges
+
+  const createMentionBadge = (filePath: string): HTMLSpanElement => {
+    const span = document.createElement('span')
+    span.dataset.mention = filePath
+    span.contentEditable = 'false'
+    span.className = 'inline-flex items-center gap-1 rounded-md font-mono border px-1.5 py-0.5 text-xs bg-accent/10 border-accent/15 hover:bg-accent/20 transition-colors cursor-pointer align-baseline mx-0.5 select-all'
+    span.title = filePath
+    const name = filePath.split('/').pop() ?? filePath
+    span.textContent = name
+    span.addEventListener('click', () => {
+      const tid = selectedTaskId()
+      if (tid) openFile(tid, filePath, name)
+    })
+    return span
+  }
+
+  /** Wrap a badge with ZWS text nodes so the cursor can land before/after it */
+  const wrapBadge = (badge: HTMLSpanElement): DocumentFragment => {
+    const frag = document.createDocumentFragment()
+    frag.appendChild(document.createTextNode(ZWS))
+    frag.appendChild(badge)
+    frag.appendChild(document.createTextNode(ZWS))
+    return frag
+  }
+
+  const getCursorOffset = (): number => {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0 || !inputRef) return 0
+    const range = sel.getRangeAt(0)
+    const preRange = document.createRange()
+    preRange.setStart(inputRef, 0)
+    preRange.setEnd(range.startContainer, range.startOffset)
+    // Serialize the pre-cursor content to count the offset in text terms
+    const frag = preRange.cloneContents()
+    const tmp = document.createElement('div')
+    tmp.appendChild(frag)
+    let offset = 0
+    const walk = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        offset += (node.textContent ?? '').replace(/\u200B/g, '').length
+      } else if (node instanceof HTMLElement) {
+        if (node.dataset.mention) {
+          offset += node.dataset.mention.length + 1 // @path
+        } else if (node.tagName === 'BR') {
+          offset += 1
+        } else {
+          for (const child of node.childNodes) walk(child)
+        }
+      }
+    }
+    for (const child of tmp.childNodes) walk(child)
+    return offset
+  }
+
+  const setCursorToEnd = () => {
+    if (!inputRef) return
+    const sel = window.getSelection()
+    if (!sel) return
+    const range = document.createRange()
+    range.selectNodeContents(inputRef)
+    range.collapse(false)
+    sel.removeAllRanges()
+    sel.addRange(range)
+  }
+
+  const autoResizeInput = () => {
+    if (!inputRef) return
+    inputRef.style.height = 'auto'
+    inputRef.style.height = Math.min(inputRef.scrollHeight, 200) + 'px'
+  }
   const [taskMessages, setTaskMessages] = createSignal<Record<string, string>>({})
   const [taskAttachments, setTaskAttachments] = createSignal<Record<string, Attachment[]>>({})
   const message = () => taskMessages()[selectedTaskId() ?? ''] ?? ''
-  const setMessage = (v: string) => { const tid = selectedTaskId(); if (tid) setTaskMessages(prev => ({ ...prev, [tid]: v })) }
+  const setMessageRaw = (v: string) => {
+    const tid = selectedTaskId()
+    if (tid) setTaskMessages(prev => ({ ...prev, [tid]: v }))
+  }
+  /** Set message signal + sync the contenteditable DOM */
+  const setMessage = (v: string) => {
+    setMessageRaw(v)
+    if (!inputRef) return
+    // Sync DOM when set programmatically (not from handleInput which already has the DOM right)
+    const current = serializeInput()
+    if (current !== v) {
+      if (v === '') {
+        inputRef.textContent = ''
+      } else {
+        setInputContent(v)
+        setCursorToEnd()
+      }
+    }
+  }
   const attachments = () => taskAttachments()[selectedTaskId() ?? ''] ?? []
   const setAttachments = (v: Attachment[] | ((prev: Attachment[]) => Attachment[])) => {
     const tid = selectedTaskId()
@@ -189,7 +326,6 @@ export const MessageInput: Component<Props> = (props) => {
   const [showPalette, setShowPalette] = createSignal(false)
   const [showFileMention, setShowFileMention] = createSignal(false)
   const [fileMentionQuery, setFileMentionQuery] = createSignal('')
-  const [mentionStartPos, setMentionStartPos] = createSignal(0)
   const [worktreeFiles, setWorktreeFiles] = createSignal<string[]>([])
   const [filesLoaded, setFilesLoaded] = createSignal<string | null>(null)
   const [trustLevel, setTrustLevelLocal] = createSignal<TrustLevel>('normal')
@@ -213,11 +349,10 @@ export const MessageInput: Component<Props> = (props) => {
     const stepAttachments: Attachment[] = req.attachmentsJson ? JSON.parse(req.attachmentsJson) : []
     setAttachments(stepAttachments)
     requestAnimationFrame(() => {
-      if (textareaRef) {
-        textareaRef.value = req.message
-        autoResize(textareaRef)
-        textareaRef.setSelectionRange(req.message.length, req.message.length)
-        textareaRef.focus()
+      if (inputRef) {
+        setInputContent(req.message)
+        setCursorToEnd()
+        inputRef.focus()
       }
     })
   }))
@@ -470,32 +605,67 @@ export const MessageInput: Component<Props> = (props) => {
     setIsCustomSelected({})
   }))
 
-  // Auto-focus textarea and reset height when session changes
-  createEffect(on(() => props.sessionId, () => {
+  // Sync contenteditable DOM when task changes (each task has its own message)
+  createEffect(on(selectedTaskId, () => {
     setPlanFeedback('')
-    if (textareaRef) {
-      textareaRef.style.height = 'auto'
-      if (!textareaRef.disabled) {
-        requestAnimationFrame(() => textareaRef.focus())
+    if (inputRef) {
+      const msg = message()
+      if (msg) {
+        setInputContent(msg)
+      } else {
+        inputRef.textContent = ''
+      }
+      inputRef.style.height = 'auto'
+      if (props.sessionId) {
+        requestAnimationFrame(() => { inputRef.focus(); setCursorToEnd() })
       }
     }
   }))
 
-  // Auto-focus textarea when user starts typing anywhere
+  // Auto-focus input when user starts typing anywhere
   onMount(() => {
+    requestAnimationFrame(() => {
+      if (inputRef && props.sessionId) inputRef.focus()
+    })
+
     const handler = (e: KeyboardEvent) => {
-      // Skip if already focused on an input, editor, or modifier keys, or special keys
       const active = document.activeElement
       if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return
       if (active && ((active as HTMLElement).isContentEditable || active.closest('.cm-editor'))) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
       if (e.key.length !== 1) return // non-printable
-      if (!textareaRef || textareaRef.disabled) return
+      if (!inputRef || !props.sessionId) return
 
-      textareaRef.focus()
+      inputRef.focus()
     }
     window.addEventListener('keydown', handler)
     onCleanup(() => window.removeEventListener('keydown', handler))
+  })
+
+  // Refocus input when the window regains focus
+  onMount(() => {
+    const handler = () => {
+      if (inputRef && props.sessionId) {
+        requestAnimationFrame(() => inputRef.focus())
+      }
+    }
+    window.addEventListener('focus', handler)
+    onCleanup(() => window.removeEventListener('focus', handler))
+  })
+
+  // Re-evaluate overlays when cursor moves (arrow keys, click to reposition)
+  onMount(() => {
+    let raf = 0
+    const handler = () => {
+      if (!inputRef || document.activeElement !== inputRef) return
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => updateOverlays())
+    }
+    document.addEventListener('selectionchange', handler)
+    onCleanup(() => {
+      document.removeEventListener('selectionchange', handler)
+      cancelAnimationFrame(raf)
+    })
   })
 
   const addFiles = async (files: FileList | File[]) => {
@@ -672,25 +842,47 @@ export const MessageInput: Component<Props> = (props) => {
   }
 
   const handleFileMentionSelect = (filePath: string) => {
-    const msg = message()
-    const start = mentionStartPos()
-    const cursorPos = textareaRef?.selectionStart ?? msg.length
-    // Replace @query with @filePath
-    const before = msg.slice(0, start)
-    const after = msg.slice(cursorPos)
-    const newMsg = `${before}@${filePath} ${after}`
-    setMessage(newMsg)
+    if (!inputRef) return
     setShowFileMention(false)
-    // Set cursor position after inserted text
-    requestAnimationFrame(() => {
-      if (textareaRef) {
-        const pos = start + filePath.length + 2 // @ + path + space
-        textareaRef.selectionStart = pos
-        textareaRef.selectionEnd = pos
-        textareaRef.focus()
-        autoResize(textareaRef)
-      }
-    })
+
+    // Find and remove the @query text from the DOM, then insert badge + space
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return
+
+    const range = sel.getRangeAt(0)
+    const textNode = range.startContainer
+    if (textNode.nodeType !== Node.TEXT_NODE) return
+
+    const text = textNode.textContent ?? ''
+    const cursorPos = range.startOffset
+    // Walk backwards to find the @ trigger
+    let atIdx = cursorPos - 1
+    while (atIdx >= 0 && text[atIdx] !== '@') atIdx--
+    // Also account for possible space before @
+    const beforeAt = text.slice(0, atIdx)
+    const afterCursor = text.slice(cursorPos)
+
+    // Replace the text node: [beforeAt] [ZWS badge ZWS] [space + afterCursor]
+    const parent = textNode.parentNode!
+    const beforeNode = document.createTextNode(beforeAt)
+    const wrapped = wrapBadge(createMentionBadge(filePath))
+    const afterNode = document.createTextNode(' ' + afterCursor)
+
+    parent.insertBefore(beforeNode, textNode)
+    parent.insertBefore(wrapped, textNode)
+    parent.insertBefore(afterNode, textNode)
+    parent.removeChild(textNode)
+
+    // Place cursor after the space
+    const newRange = document.createRange()
+    newRange.setStart(afterNode, 1)
+    newRange.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(newRange)
+
+    setMessageRaw(serializeInput())
+    autoResizeInput()
+    inputRef.focus()
   }
 
   const handleCancelEdit = () => {
@@ -703,9 +895,9 @@ export const MessageInput: Component<Props> = (props) => {
     setMessage(draft)
     setAttachments(draftAtts)
     requestAnimationFrame(() => {
-      if (textareaRef) {
-        textareaRef.value = draft
-        autoResize(textareaRef)
+      if (inputRef) {
+        setInputContent(draft)
+        autoResizeInput()
       }
     })
   }
@@ -766,6 +958,144 @@ export const MessageInput: Component<Props> = (props) => {
       }
     }
 
+    // Arrow keys — intercept to skip over ZWS nodes and badges
+    // We prevent default and move the cursor manually when near a badge.
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey && inputRef) {
+      const sel = window.getSelection()
+      if (sel && sel.isCollapsed && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0)
+        const node = range.startContainer
+        const off = range.startOffset
+        const right = e.key === 'ArrowRight'
+
+        // Find the target to skip to, if we're about to enter or are inside a ZWS/badge
+        let target: { node: Node; offset: number } | null = null
+
+        if (node.nodeType === Node.TEXT_NODE && node.textContent === ZWS) {
+          // Currently on a ZWS — skip in the arrow direction
+          const sib = right ? node.nextSibling : node.previousSibling
+          if (sib) {
+            if (sib.nodeType === Node.TEXT_NODE && sib.textContent !== ZWS) {
+              target = { node: sib, offset: right ? 0 : (sib.textContent?.length ?? 0) }
+            } else if (sib instanceof HTMLElement && sib.dataset.mention) {
+              // Badge — skip over it and its far-side ZWS
+              const far = right ? sib.nextSibling : sib.previousSibling
+              if (far?.nodeType === Node.TEXT_NODE && far.textContent === ZWS) {
+                const realSib = right ? far.nextSibling : far.previousSibling
+                if (realSib?.nodeType === Node.TEXT_NODE) {
+                  target = { node: realSib, offset: right ? 0 : (realSib.textContent?.length ?? 0) }
+                } else {
+                  target = { node: inputRef, offset: right ? Array.from(inputRef.childNodes).indexOf(far as ChildNode) + 1 : Array.from(inputRef.childNodes).indexOf(far as ChildNode) }
+                }
+              }
+            } else if (sib.nodeType === Node.TEXT_NODE && sib.textContent === ZWS) {
+              // Another ZWS (shouldn't happen often) — skip it too
+              const next = right ? sib.nextSibling : sib.previousSibling
+              if (next?.nodeType === Node.TEXT_NODE) {
+                target = { node: next, offset: right ? 0 : (next.textContent?.length ?? 0) }
+              }
+            }
+          }
+        } else if (node.nodeType === Node.TEXT_NODE) {
+          // In a regular text node — check if we're about to step into a ZWS
+          const atEdge = right ? off === (node.textContent?.length ?? 0) : off === 0
+          if (atEdge) {
+            const sib = right ? node.nextSibling : node.previousSibling
+            if (sib?.nodeType === Node.TEXT_NODE && sib.textContent === ZWS) {
+              // About to enter ZWS — skip over it and the badge
+              const badge = right ? sib.nextSibling : sib.previousSibling
+              if (badge instanceof HTMLElement && badge.dataset.mention) {
+                const farZws = right ? badge.nextSibling : badge.previousSibling
+                if (farZws?.nodeType === Node.TEXT_NODE && farZws.textContent === ZWS) {
+                  const realSib = right ? farZws.nextSibling : farZws.previousSibling
+                  if (realSib?.nodeType === Node.TEXT_NODE) {
+                    target = { node: realSib, offset: right ? 0 : (realSib.textContent?.length ?? 0) }
+                  } else {
+                    target = { node: inputRef, offset: right ? Array.from(inputRef.childNodes).indexOf(farZws as ChildNode) + 1 : Array.from(inputRef.childNodes).indexOf(farZws as ChildNode) }
+                  }
+                }
+              }
+            }
+          }
+        } else if (node === inputRef) {
+          // Cursor is at the container level — check child at offset
+          const child = right ? inputRef.childNodes[off] : inputRef.childNodes[off - 1]
+          if (child?.nodeType === Node.TEXT_NODE && child.textContent === ZWS) {
+            const badge = right ? child.nextSibling : child.previousSibling
+            if (badge instanceof HTMLElement && badge.dataset.mention) {
+              const farZws = right ? badge.nextSibling : badge.previousSibling
+              if (farZws?.nodeType === Node.TEXT_NODE && farZws.textContent === ZWS) {
+                const realSib = right ? farZws.nextSibling : farZws.previousSibling
+                if (realSib?.nodeType === Node.TEXT_NODE) {
+                  target = { node: realSib, offset: right ? 0 : (realSib.textContent?.length ?? 0) }
+                }
+              }
+            }
+          }
+        }
+
+        if (target) {
+          e.preventDefault()
+          const newRange = document.createRange()
+          newRange.setStart(target.node, target.offset)
+          newRange.collapse(true)
+          sel.removeAllRanges()
+          sel.addRange(newRange)
+        }
+      }
+    }
+
+    // Backspace/Delete adjacent to a badge — remove the badge + its ZWS wrappers
+    if ((e.key === 'Backspace' || e.key === 'Delete') && inputRef) {
+      const sel = window.getSelection()
+      if (sel && sel.isCollapsed && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0)
+        const node = range.startContainer
+        const offset = range.startOffset
+
+        // Helper: remove a badge and all its surrounding ZWS nodes
+        const removeBadge = (badge: HTMLElement) => {
+          e.preventDefault()
+          // Collect all ZWS siblings around the badge
+          const toRemove: Node[] = [badge]
+          let sib = badge.previousSibling
+          while (sib?.nodeType === Node.TEXT_NODE && sib.textContent === ZWS) {
+            toRemove.push(sib)
+            sib = sib.previousSibling
+          }
+          sib = badge.nextSibling
+          while (sib?.nodeType === Node.TEXT_NODE && sib.textContent === ZWS) {
+            toRemove.push(sib)
+            sib = sib.nextSibling
+          }
+          // Also remove the current node if it's a ZWS
+          if (node !== badge && node.nodeType === Node.TEXT_NODE && node.textContent === ZWS) {
+            toRemove.push(node)
+          }
+          for (const n of toRemove) n.parentNode?.removeChild(n)
+          setMessageRaw(serializeInput())
+          autoResizeInput()
+        }
+
+        // Check if we're in a ZWS text node next to a badge
+        if (node.nodeType === Node.TEXT_NODE && node.textContent === ZWS) {
+          const sibling = e.key === 'Backspace' ? node.previousSibling : node.nextSibling
+          if (sibling instanceof HTMLElement && sibling.dataset.mention) {
+            removeBadge(sibling)
+          }
+        }
+        // Check if cursor is at a position in the parent where sibling is a badge
+        else if (node === inputRef || node.nodeType === Node.ELEMENT_NODE) {
+          const children = Array.from((node === inputRef ? inputRef : node).childNodes)
+          const idx = e.key === 'Backspace' ? offset - 1 : offset
+          const target = children[idx]
+          if (target instanceof HTMLElement && target.dataset.mention) {
+            removeBadge(target)
+          }
+        }
+      }
+    }
+
     // Cmd+Enter
     if (e.key === 'Enter' && e.metaKey) {
       e.preventDefault()
@@ -807,7 +1137,7 @@ export const MessageInput: Component<Props> = (props) => {
 
     // ArrowUp with empty input — edit last step or last unsent user message
     if (e.key === 'ArrowUp' && editingMessageIdx() === null && editingStepId() === null) {
-      if (!message().trim() && textareaRef && textareaRef.selectionStart === 0) {
+      if (!message().trim() && inputRef && getCursorOffset() === 0) {
         const sid = props.sessionId
         if (!sid) return
 
@@ -823,10 +1153,9 @@ export const MessageInput: Component<Props> = (props) => {
           const stepAtts: Attachment[] = last.attachmentsJson ? JSON.parse(last.attachmentsJson) : []
           setAttachments(stepAtts)
           requestAnimationFrame(() => {
-            if (textareaRef) {
-              textareaRef.value = last.message
-              autoResize(textareaRef)
-              textareaRef.setSelectionRange(last.message.length, last.message.length)
+            if (inputRef) {
+              setInputContent(last.message)
+              setCursorToEnd()
             }
           })
           return
@@ -844,10 +1173,9 @@ export const MessageInput: Component<Props> = (props) => {
             const text = (lastItem as { text: string }).text
             setMessage(text)
             requestAnimationFrame(() => {
-              if (textareaRef) {
-                textareaRef.value = text
-                autoResize(textareaRef)
-                textareaRef.setSelectionRange(text.length, text.length)
+              if (inputRef) {
+                setInputContent(text)
+                setCursorToEnd()
               }
             })
           }
@@ -862,19 +1190,30 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
 
-  const handleInput = (e: InputEvent & { currentTarget: HTMLTextAreaElement }) => {
-    const val = e.currentTarget.value
-    setMessage(val)
-    autoResize(e.currentTarget)
+  const handleInput = () => {
+    const val = serializeInput()
+    setMessageRaw(val)
+    autoResizeInput()
+    // Clean up stale browser artifacts when empty
+    if (val.length === 0 && inputRef && inputRef.childNodes.length > 0) {
+      inputRef.textContent = ''
+    }
 
     // /plan + space → toggle plan mode and clear
     if (val === '/plan ') {
       setPlanMode(!planMode())
-      setMessage('')
+      setMessageRaw('')
       setShowPalette(false)
-      e.currentTarget.value = ''
+      if (inputRef) inputRef.textContent = ''
       return
     }
+
+    updateOverlays(val)
+  }
+
+  /** Check cursor position and show/hide command palette + file mention overlay */
+  const updateOverlays = (val?: string) => {
+    if (val === undefined) val = message()
 
     // Show/hide command palette
     if (val.startsWith('/') && val.indexOf(' ') === -1) {
@@ -884,14 +1223,12 @@ export const MessageInput: Component<Props> = (props) => {
     }
 
     // Detect @ file mentions
-    const cursorPos = e.currentTarget.selectionStart ?? val.length
+    const cursorPos = getCursorOffset()
     const textBeforeCursor = val.slice(0, cursorPos)
     // Find the last @ that's either at start or after a space
     const atMatch = textBeforeCursor.match(/(?:^|[\s])@([^\s]*)$/)
     if (atMatch) {
       const query = atMatch[1]
-      const atPos = textBeforeCursor.length - atMatch[0].length + (atMatch[0].startsWith('@') ? 0 : 1)
-      setMentionStartPos(atPos)
       setFileMentionQuery(query)
       setShowFileMention(true)
 
@@ -919,6 +1256,13 @@ export const MessageInput: Component<Props> = (props) => {
     if (files.length > 0) {
       e.preventDefault()
       await addFiles(files)
+      return
+    }
+    // Plain text paste — strip HTML formatting from contenteditable
+    const text = e.clipboardData?.getData('text/plain')
+    if (text) {
+      e.preventDefault()
+      document.execCommand('insertText', false, text)
     }
   }
 
@@ -931,10 +1275,6 @@ export const MessageInput: Component<Props> = (props) => {
     if (files && files.length > 0) await addFiles(files)
   }
 
-  const autoResize = (el: HTMLTextAreaElement) => {
-    el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 200) + 'px'
-  }
 
   // Keyboard shortcuts for approval/question UI
   onMount(() => {
@@ -1484,33 +1824,37 @@ export const MessageInput: Component<Props> = (props) => {
               ? 'border border-accent/50 bg-accent/5'
               : ''
       )}>
-        {/* Command palette */}
+        {/* Command palette — onMouseDown preventDefault keeps focus in the input */}
         <Show when={showPalette()}>
-          <CommandPalette
-            query={message()}
-            onSelect={handleCommandSelect}
-            onTab={(cmd) => {
-              if (cmd.name === 'plan') {
-                setPlanMode(!planMode())
-                setMessage('')
+          <div onMouseDown={e => e.preventDefault()}>
+            <CommandPalette
+              query={message()}
+              onSelect={handleCommandSelect}
+              onTab={(cmd) => {
+                if (cmd.name === 'plan') {
+                  setPlanMode(!planMode())
+                  setMessage('')
+                  setShowPalette(false)
+                  return
+                }
+                setMessage(`/${cmd.name} `)
                 setShowPalette(false)
-                return
-              }
-              setMessage(`/${cmd.name} `)
-              setShowPalette(false)
-            }}
-            onDismiss={() => setShowPalette(false)}
-          />
+              }}
+              onDismiss={() => setShowPalette(false)}
+            />
+          </div>
         </Show>
 
         {/* File mention palette */}
         <Show when={showFileMention()}>
-          <FileMention
-            query={fileMentionQuery()}
-            files={worktreeFiles()}
-            onSelect={handleFileMentionSelect}
-            onDismiss={() => setShowFileMention(false)}
-          />
+          <div onMouseDown={e => e.preventDefault()}>
+            <FileMention
+              query={fileMentionQuery()}
+              files={worktreeFiles()}
+              onSelect={handleFileMentionSelect}
+              onDismiss={() => setShowFileMention(false)}
+            />
+          </div>
         </Show>
 
         {/* Attachment previews */}
@@ -1558,25 +1902,32 @@ export const MessageInput: Component<Props> = (props) => {
           }}
         />
 
-        {/* Textarea */}
-        <textarea
-          ref={textareaRef}
-          class="w-full bg-transparent text-sm text-text-primary outline-none resize-none placeholder-text-dim leading-normal px-3.5 pt-3 pb-2"
-          style={{ height: 'auto', 'max-height': '200px', 'overflow-y': 'auto', outline: 'none' }}
-          placeholder={
-            dragOver()
-              ? 'Drop files here...'
-              : props.sessionId
-                ? 'Ask for changes, @reference files, use /skills'
-                : 'Select a session first'
-          }
-          value={message()}
-          onInput={handleInput}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          disabled={!props.sessionId}
-          rows={3}
-        />
+        {/* Contenteditable input — text + inline mention badges */}
+        <div class="relative">
+          <Show when={!message()}>
+            <div class="absolute inset-0 text-sm text-text-dim leading-normal px-3.5 pt-3 pb-2 pointer-events-none select-none">
+              {dragOver()
+                ? 'Drop files here...'
+                : props.sessionId
+                  ? 'Ask for changes, @reference files, use /skills'
+                  : 'Select a session first'}
+            </div>
+          </Show>
+          <div
+            ref={inputRef}
+            class="w-full bg-transparent text-sm text-text-primary outline-none leading-normal px-3.5 pt-3 pb-2 whitespace-pre-wrap break-words"
+            style={{ 'min-height': '4.5em', 'max-height': '200px', 'overflow-y': 'auto', outline: 'none' }}
+            contentEditable={!!props.sessionId}
+            onInput={handleInput}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onFocus={() => updateOverlays()}
+            onBlur={() => {
+              setShowPalette(false)
+              setShowFileMention(false)
+            }}
+          />
+        </div>
 
         {/* Bottom toolbar */}
         <div class="flex items-center justify-between px-2 pb-2 pt-0.5">

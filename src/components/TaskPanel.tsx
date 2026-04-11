@@ -584,6 +584,7 @@ export const TaskPanel: Component = () => {
                             output={currentOutput()}
                             sessionStatus={currentSession()?.status}
                             sessionId={selectedSessionId()}
+                            taskId={t().id}
                           />
                         </div>
                         <Show

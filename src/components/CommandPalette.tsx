@@ -17,6 +17,15 @@ export const CommandPalette: Component<Props> = (props) => {
   // Reset selection when query changes
   createEffect(on(() => props.query, () => setSelectedIndex(0)))
 
+  let listRef!: HTMLDivElement
+
+  // Scroll selected item into view on arrow navigation
+  createEffect(on(selectedIndex, (idx) => {
+    if (!listRef) return
+    const item = listRef.querySelectorAll('button')[idx]
+    item?.scrollIntoView({ block: 'nearest' })
+  }))
+
   const handleKeyDown = (e: KeyboardEvent) => {
     const items = filtered()
     if (items.length === 0) return
@@ -50,7 +59,7 @@ export const CommandPalette: Component<Props> = (props) => {
 
   return (
     <Show when={filtered().length > 0}>
-      <div class="absolute bottom-full left-0 right-0 mb-1 z-50 bg-surface-2 border border-border-active rounded-lg shadow-xl max-h-64 overflow-y-auto animate-in">
+      <div ref={listRef} class="absolute bottom-full left-0 right-0 mb-1 z-50 bg-surface-2 border border-border-active rounded-lg shadow-xl max-h-64 overflow-y-auto animate-in">
         <div class="py-1">
           <For each={filtered()}>
             {(cmd, i) => (

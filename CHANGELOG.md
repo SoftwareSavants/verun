@@ -11,6 +11,7 @@
 - File tree and open file tabs highlight red for files with errors, yellow for warnings
 - Folders in the file tree highlight when any descendant file has errors
 - Find in session (Cmd+F) — search through chat messages with match highlighting and navigation
+- @mentioned files render as inline badges in the input and sent messages — hover to preview with syntax highlighting, click to open in the editor
 
 ## 0.4.2 — 2026-04-11
 
