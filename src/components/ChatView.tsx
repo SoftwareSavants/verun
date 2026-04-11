@@ -1,10 +1,10 @@
-import { Component, For, Show, createEffect, on, createSignal } from 'solid-js'
+import { Component, For, Show, createEffect, on, createSignal, onMount, onCleanup } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { marked } from 'marked'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import type { OutputItem, SessionStatus } from '../types'
-import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check } from 'lucide-solid'
+import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X } from 'lucide-solid'
 
 marked.setOptions({ breaks: true, gfm: true })
 
@@ -388,19 +388,156 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
 }
 
 // ---------------------------------------------------------------------------
-// Queued Message Bubble
+// Search helpers — mark-based text highlighting
+// ---------------------------------------------------------------------------
+
+function getTextNodes(root: HTMLElement): Text[] {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const nodes: Text[] = []
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text)
+  return nodes
+}
+
+function highlightMatches(container: HTMLElement, query: string): HTMLElement[] {
+  if (!query) return []
+  const marks: HTMLElement[] = []
+  const lowerQuery = query.toLowerCase()
+  const textNodes = getTextNodes(container)
+
+  for (const node of textNodes) {
+    const text = node.textContent || ''
+    const lowerText = text.toLowerCase()
+    let idx = lowerText.indexOf(lowerQuery)
+    if (idx === -1) continue
+
+    const frag = document.createDocumentFragment()
+    let lastEnd = 0
+    while (idx !== -1) {
+      if (idx > lastEnd) frag.appendChild(document.createTextNode(text.slice(lastEnd, idx)))
+      const mark = document.createElement('mark')
+      mark.className = 'chat-search-match'
+      mark.textContent = text.slice(idx, idx + query.length)
+      frag.appendChild(mark)
+      marks.push(mark)
+      lastEnd = idx + query.length
+      idx = lowerText.indexOf(lowerQuery, lastEnd)
+    }
+    if (lastEnd < text.length) frag.appendChild(document.createTextNode(text.slice(lastEnd)))
+    node.parentNode?.replaceChild(frag, node)
+  }
+  return marks
+}
+
+function clearHighlights(container: HTMLElement) {
+  const marks = container.querySelectorAll('mark.chat-search-match')
+  marks.forEach(mark => {
+    const parent = mark.parentNode
+    if (parent) {
+      parent.replaceChild(document.createTextNode(mark.textContent || ''), mark)
+      parent.normalize()
+    }
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Main ChatView
 // ---------------------------------------------------------------------------
 
 export const ChatView: Component<Props> = (props) => {
   let containerRef!: HTMLDivElement
+  let contentRef!: HTMLDivElement
+  let searchInputRef!: HTMLInputElement
   let autoScroll = true
   let scrollRafPending = false
 
   // Use a store for blocks so mutations are granular
   const [blocks, setBlocks] = createStore<DisplayBlock[]>([])
   let lastItemCount = 0
+
+  // Search state
+  const [showSearch, setShowSearch] = createSignal(false)
+  const [searchQuery, setSearchQuery] = createSignal('')
+  const [matches, setMatches] = createSignal<HTMLElement[]>([])
+  const [currentMatchIdx, setCurrentMatchIdx] = createSignal(-1)
+
+  const openSearch = () => {
+    setShowSearch(true)
+    requestAnimationFrame(() => searchInputRef?.focus())
+  }
+
+  const closeSearch = () => {
+    setShowSearch(false)
+    setSearchQuery('')
+    setCurrentMatchIdx(-1)
+    if (contentRef) clearHighlights(contentRef)
+    setMatches([])
+  }
+
+  const runSearch = (query: string) => {
+    if (contentRef) clearHighlights(contentRef)
+    if (!query) {
+      setMatches([])
+      setCurrentMatchIdx(-1)
+      return
+    }
+    const found = highlightMatches(contentRef, query)
+    setMatches(found)
+    if (found.length > 0) {
+      setCurrentMatchIdx(found.length - 1)
+      scrollToMatch(found[found.length - 1])
+    } else {
+      setCurrentMatchIdx(-1)
+    }
+  }
+
+  const scrollToMatch = (el: HTMLElement) => {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    // Briefly highlight current match
+    el.classList.add('chat-search-current')
+    // Remove from all others
+    matches().forEach(m => { if (m !== el) m.classList.remove('chat-search-current') })
+  }
+
+  const goToMatch = (delta: number) => {
+    const m = matches()
+    if (m.length === 0) return
+    const next = (currentMatchIdx() + delta + m.length) % m.length
+    setCurrentMatchIdx(next)
+    scrollToMatch(m[next])
+  }
+
+  const handleSearchKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      closeSearch()
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (e.shiftKey) goToMatch(1)
+      else goToMatch(-1)
+    }
+  }
+
+  // Cmd+F / Ctrl+F handler
+  onMount(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+        // Only handle if this ChatView is visible (container in DOM)
+        if (!containerRef || !containerRef.offsetParent) return
+        e.preventDefault()
+        if (showSearch()) {
+          searchInputRef?.select()
+        } else {
+          openSearch()
+        }
+      }
+    }
+    window.addEventListener('keydown', handler)
+    onCleanup(() => {
+      window.removeEventListener('keydown', handler)
+      // Clean up marks if component unmounts while search is open
+      if (contentRef) clearHighlights(contentRef)
+    })
+  })
 
   // Rebuild blocks only when output items change
   createEffect(on(() => props.output.length, (len) => {
@@ -413,6 +550,10 @@ export const ChatView: Component<Props> = (props) => {
       const newBlocks = rebuildBlocks(props.output)
       setBlocks(newBlocks)
       lastItemCount = len
+      // Re-apply search highlights after block rebuild
+      if (showSearch() && searchQuery()) {
+        requestAnimationFrame(() => runSearch(searchQuery()))
+      }
       scheduleAutoScroll()
     }
   }))
@@ -448,13 +589,57 @@ export const ChatView: Component<Props> = (props) => {
   }
 
   return (
-    <div
-      ref={containerRef}
-      class="w-full h-full overflow-y-auto overflow-x-hidden"
-      onScroll={handleScroll}
-      onClick={handleLinkClick}
-    >
-      <div class="flex flex-col gap-2 py-4">
+    <div class="w-full h-full relative">
+      {/* Search bar — outside scroll container */}
+      <Show when={showSearch()}>
+        <div class="absolute top-2 right-3 z-20 flex items-center gap-1 bg-surface-2 border border-border rounded-lg px-2 py-1 shadow-lg">
+          <input
+            ref={searchInputRef}
+            class="bg-transparent text-sm text-text-primary outline-none w-52 placeholder-text-dim"
+            placeholder="Find in session..."
+            value={searchQuery()}
+            onInput={(e) => {
+              const q = e.currentTarget.value
+              setSearchQuery(q)
+              runSearch(q)
+            }}
+            onKeyDown={handleSearchKeyDown}
+          />
+          <span class="text-[11px] text-text-dim whitespace-nowrap w-16 text-right">
+            {searchQuery() ? (matches().length === 0 ? 'No results' : `${currentMatchIdx() + 1} of ${matches().length}`) : '\u00A0'}
+          </span>
+          <button
+            class="p-0.5 text-text-dim hover:text-text-muted transition-colors disabled:opacity-30"
+            onClick={() => goToMatch(-1)}
+            disabled={matches().length === 0}
+            title="Previous (Enter)"
+          >
+            <ArrowUp size={14} />
+          </button>
+          <button
+            class="p-0.5 text-text-dim hover:text-text-muted transition-colors disabled:opacity-30"
+            onClick={() => goToMatch(1)}
+            disabled={matches().length === 0}
+            title="Next (Shift+Enter)"
+          >
+            <ArrowDown size={14} />
+          </button>
+          <button
+            class="p-0.5 text-text-dim hover:text-text-muted transition-colors"
+            onClick={closeSearch}
+            title="Close (Esc)"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      </Show>
+      <div
+        ref={containerRef}
+        class="w-full h-full overflow-y-auto overflow-x-hidden"
+        onScroll={handleScroll}
+        onClick={handleLinkClick}
+      >
+      <div ref={contentRef} class="flex flex-col gap-2 py-4">
         <Show when={props.sessionStatus === 'error'}>
           <div class="mx-5 flex items-center gap-2 px-3 py-2 rounded-lg bg-status-error/8 border border-status-error/15">
             <AlertTriangle size={14} class="text-status-error shrink-0" />
@@ -556,6 +741,7 @@ export const ChatView: Component<Props> = (props) => {
             </div>
           </div>
         </Show>
+      </div>
       </div>
     </div>
   )

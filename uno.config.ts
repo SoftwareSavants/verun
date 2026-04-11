@@ -172,6 +172,18 @@ export default defineConfig({
         .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
         .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
 
+        /* Chat search highlights */
+        mark.chat-search-match {
+          background: rgba(234, 179, 8, 0.3);
+          color: inherit;
+          padding: 0;
+          border-radius: 0;
+        }
+        mark.chat-search-match.chat-search-current {
+          background: rgba(234, 179, 8, 0.7);
+          box-shadow: 0 0 0 1px rgba(234, 179, 8, 0.9);
+        }
+
         /* Scroll shadow for horizontal overflow */
         .scroll-shadow-x {
           mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
