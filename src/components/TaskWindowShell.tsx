@@ -32,12 +32,18 @@ export const TaskWindowShell: Component = () => {
     setSelectedProjectId(ctx.projectId)
   }
 
-  // Notify the main window whenever this window's task changes.
+  // Notify other windows whenever this window's task changes.
   // For existing tasks: fires immediately with the fixed taskId.
   // For new-task windows: fires when the placeholder is replaced with the real ID.
   createEffect(on(selectedTaskId, (taskId) => {
     if (taskId) emit('task-window-changed', { taskId, open: true })
   }))
+
+  // Notify when this window closes so the main window un-dims the task
+  window.addEventListener('beforeunload', () => {
+    const taskId = selectedTaskId()
+    if (taskId) emit('task-window-changed', { taskId, open: false })
+  })
 
   // --- Initialization ---
 
