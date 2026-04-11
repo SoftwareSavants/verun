@@ -5,15 +5,16 @@ import { SelectionMenu } from './components/SelectionMenu'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { ToastContainer } from './components/ToastContainer'
 import { initTheme } from './lib/theme'
-import { loadProjects, initProjectListeners } from './store/projects'
+import { loadProjects, initProjectListeners, projects } from './store/projects'
 import { initSessionListeners, syncSessionStatuses } from './store/sessions'
+import { loadTasks, taskById } from './store/tasks'
 import { initTerminalListeners } from './store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from './store/git'
 import { initSetupListeners } from './store/setup'
 import { initProblemsListener } from './store/problems'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
-import { addToast } from './store/ui'
+import { addToast, selectedTaskId, setSelectedTaskId, setSelectedProjectId } from './store/ui'
 import { initNotifications, showNotificationDialog, onNotificationDialogConfirm, onNotificationDialogCancel } from './lib/notifications'
 import { initUpdateListener } from './lib/updater'
 
@@ -51,6 +52,17 @@ const App: Component = () => {
     initProblemsListener()
     initWindowFocusRefresh()
     await loadProjects()
+    // Restore last selected task — load its project's tasks first so we can validate
+    const savedTid = selectedTaskId()
+    if (savedTid) {
+      await Promise.all(projects.map(p => loadTasks(p.id)))
+      const task = taskById(savedTid)
+      if (task && !task.archived) {
+        setSelectedProjectId(task.projectId)
+      } else {
+        setSelectedTaskId(null)
+      }
+    }
     await syncSessionStatuses()
 
     // Dismiss splash screen, reveal app

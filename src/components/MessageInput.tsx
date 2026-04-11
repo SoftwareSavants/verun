@@ -296,9 +296,34 @@ export const MessageInput: Component<Props> = (props) => {
   const [taskMessages, setTaskMessages] = createSignal<Record<string, string>>({})
   const [taskAttachments, setTaskAttachments] = createSignal<Record<string, Attachment[]>>({})
   const message = () => taskMessages()[selectedTaskId() ?? ''] ?? ''
+
+  // Debounced localStorage persistence for drafts
+  let draftSaveTimer: ReturnType<typeof setTimeout> | null = null
+  const persistDraft = (tid: string) => {
+    if (draftSaveTimer) clearTimeout(draftSaveTimer)
+    draftSaveTimer = setTimeout(() => {
+      const msg = taskMessages()[tid] ?? ''
+      const atts = taskAttachments()[tid] ?? []
+      if (msg) localStorage.setItem(`verun:draft-msg:${tid}`, msg)
+      else localStorage.removeItem(`verun:draft-msg:${tid}`)
+      if (atts.length > 0) localStorage.setItem(`verun:draft-att:${tid}`, JSON.stringify(atts))
+      else localStorage.removeItem(`verun:draft-att:${tid}`)
+    }, 500)
+  }
+  const clearPersistedDraft = (tid: string) => {
+    if (draftSaveTimer) clearTimeout(draftSaveTimer)
+    localStorage.removeItem(`verun:draft-msg:${tid}`)
+    localStorage.removeItem(`verun:draft-att:${tid}`)
+  }
+
   const setMessageRaw = (v: string) => {
     const tid = selectedTaskId()
-    if (tid) setTaskMessages(prev => ({ ...prev, [tid]: v }))
+    if (tid) {
+      setTaskMessages(prev => ({ ...prev, [tid]: v }))
+      // Clear persisted draft immediately when emptied (message sent), debounce otherwise
+      if (v === '' && !taskAttachments()[tid]?.length) clearPersistedDraft(tid)
+      else persistDraft(tid)
+    }
   }
   /** Set message signal + sync the contenteditable DOM */
   const setMessage = (v: string) => {
@@ -319,7 +344,10 @@ export const MessageInput: Component<Props> = (props) => {
   const setAttachments = (v: Attachment[] | ((prev: Attachment[]) => Attachment[])) => {
     const tid = selectedTaskId()
     if (!tid) return
-    setTaskAttachments(prev => ({ ...prev, [tid]: typeof v === 'function' ? v(prev[tid] ?? []) : v }))
+    const resolved = typeof v === 'function' ? v(taskAttachments()[tid] ?? []) : v
+    setTaskAttachments(prev => ({ ...prev, [tid]: resolved }))
+    if (resolved.length === 0 && !taskMessages()[tid]) clearPersistedDraft(tid)
+    else persistDraft(tid)
   }
   const [sending, setSending] = createSignal(false)
   const [dragOver, setDragOver] = createSignal(false)
@@ -357,11 +385,22 @@ export const MessageInput: Component<Props> = (props) => {
     })
   }))
 
-  // Load trust level when task changes + reset file cache
+  // Load trust level when task changes + reset file cache + restore draft
   createEffect(on(selectedTaskId, async (taskId) => {
     setFilesLoaded(null)
     setWorktreeFiles([])
     if (taskId) {
+      // Restore persisted draft if not already in memory
+      if (!taskMessages()[taskId]) {
+        const savedMsg = localStorage.getItem(`verun:draft-msg:${taskId}`)
+        if (savedMsg) setTaskMessages(prev => ({ ...prev, [taskId]: savedMsg }))
+      }
+      if (!taskAttachments()[taskId]?.length) {
+        try {
+          const savedAtt = localStorage.getItem(`verun:draft-att:${taskId}`)
+          if (savedAtt) setTaskAttachments(prev => ({ ...prev, [taskId]: JSON.parse(savedAtt) }))
+        } catch { /* ignore corrupt data */ }
+      }
       try {
         const level = await ipc.getTrustLevel(taskId) as TrustLevel
         setTrustLevelLocal(level)

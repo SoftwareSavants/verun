@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Draft message, attachments, mode switches (plan/thinking/fast), and last selected task now persist across app restarts
 - Switched bundled LSP from typescript-language-server to vtsls for project-wide diagnostics support
 - Problems panel — collapsible section at the bottom of the Changes/Files pane showing project-wide TypeScript diagnostics via `enableProjectDiagnostics`, grouped by file with resizable height
 - Click any problem to jump to the exact line and column in the editor
