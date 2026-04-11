@@ -159,15 +159,20 @@ export const Sidebar: Component = () => {
   const [renamingTaskId, setRenamingTaskId] = createSignal<string | null>(null);
   const [windowedTasks, setWindowedTasks] = createSignal<Set<string>>(new Set());
 
-  // Track which tasks have open windows
+  // Track which tasks have open windows — deselect in main when popped out
   onMount(() => {
     const unlisten = listen<{ taskId: string; open: boolean }>("task-window-changed", (event) => {
+      const { taskId, open } = event.payload;
       setWindowedTasks(prev => {
         const next = new Set(prev);
-        if (event.payload.open) next.add(event.payload.taskId);
-        else next.delete(event.payload.taskId);
+        if (open) next.add(taskId);
+        else next.delete(taskId);
         return next;
       });
+      // Deselect in main when a task is popped out
+      if (open && selectedTaskId() === taskId) {
+        setSelectedTaskId(null);
+      }
     });
     onCleanup(() => { unlisten.then(fn => fn()) });
   });
@@ -377,26 +382,41 @@ export const Sidebar: Component = () => {
                         const unread = () => !attention() && isTaskUnread(task.id);
                         const hasIndicator = () => attention() || unread();
                         const disabled = () => creating() || archiving();
+                        const windowed = () => windowedTasks().has(task.id);
+
+                        const handleClick = () => {
+                          if (windowed()) {
+                            // Redirect to the existing task window
+                            ipc.openTaskWindow(task.id, task.name || undefined);
+                            return;
+                          }
+                          setSelectedTaskId(task.id);
+                          setSelectedProjectId(task.projectId);
+                          setShowSettings(false);
+                          setShowArchived(false);
+                        };
+
                         return (
                           <div
                             class={clsx(
                               "group/task pl-2 pr-2 py-1.5 rounded-md transition-colors flex items-start gap-2 cursor-pointer",
                               "hover:bg-surface-2",
-                              selectedTaskId() === task.id && "bg-surface-2",
-                              attention() && "bg-amber-400/8",
-                              unread() && "bg-accent/8",
+                              !windowed() && selectedTaskId() === task.id && "bg-surface-2",
+                              !windowed() && attention() && "bg-amber-400/8",
+                              !windowed() && unread() && "bg-accent/8",
                               archiving() && "opacity-50 pointer-events-none",
+                              windowed() && "opacity-50",
                             )}
                             style={{
-                              "border-left": attention() ? "2px solid #fbbf24" :
-                                             unread() ? "2px solid #2d6e4f" :
+                              "border-left": !windowed() && attention() ? "2px solid #fbbf24" :
+                                             !windowed() && unread() ? "2px solid #2d6e4f" :
                                              "2px solid transparent",
-                              "border-radius": (attention() || unread()) ? "0 6px 6px 0" : undefined,
+                              "border-radius": (!windowed() && (attention() || unread())) ? "0 6px 6px 0" : undefined,
                             }}
-                            onClick={() => { setSelectedTaskId(task.id); setSelectedProjectId(task.projectId); setShowSettings(false); setShowArchived(false) }}
+                            onClick={handleClick}
                             onDblClick={() => { if (!disabled() && !hasError()) ipc.openTaskWindow(task.id, task.name || undefined) }}
                             onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
-                            title={archiving() ? 'Archiving…' : creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
+                            title={windowed() ? 'Open in separate window — click to focus' : archiving() ? 'Archiving…' : creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
                           >
                             <span
                               class={clsx("shrink-0 mt-0.5", disabled() ? 'text-accent' : hasError() ? 'text-status-error' : config().color)}
