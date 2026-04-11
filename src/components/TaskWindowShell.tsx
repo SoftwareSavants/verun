@@ -6,7 +6,6 @@ import { initStores, dismissSplash, checkCli, installContextMenu, initQuitListen
 import { initTheme } from '../lib/theme'
 import { refreshTaskGit } from '../store/git'
 import { loadTasks, taskById } from '../store/tasks'
-import { isSetupRunning } from '../store/setup'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, addToast } from '../store/ui'
 import { modPressed } from '../lib/platform'
 import { toggleTerminal, showTerminal, setShowTerminal } from '../store/ui'
@@ -26,15 +25,6 @@ export const TaskWindowShell: Component = () => {
   const [showNewTask, setShowNewTask] = createSignal(!ctx.taskId && !!ctx.projectId)
   const [selMenu, setSelMenu] = createSignal<{ x: number; y: number; text: string } | null>(null)
   const [showSetupCloseConfirm, setShowSetupCloseConfirm] = createSignal(false)
-
-  // Intercept close when setup hook is running
-  getCurrentWindow().onCloseRequested((event) => {
-    const tid = selectedTaskId()
-    if (tid && isSetupRunning(tid)) {
-      event.preventDefault()
-      setShowSetupCloseConfirm(true)
-    }
-  })
 
   // Set selection eagerly so TaskPanel renders the right task immediately
   if (ctx.taskId) {
@@ -94,9 +84,15 @@ export const TaskWindowShell: Component = () => {
       }
     })
 
+    // Setup hook still running — Rust prevented close, show confirmation dialog
+    const unlistenSetupClose = listen('confirm-close-setup', () => {
+      setShowSetupCloseConfirm(true)
+    })
+
     onCleanup(() => {
       unlistenRemoved.then(fn => fn())
       unlistenName.then(fn => fn())
+      unlistenSetupClose.then(fn => fn())
     })
   })
 
@@ -212,7 +208,7 @@ export const TaskWindowShell: Component = () => {
         title="Setup hook is running"
         message="The setup script is still running. It will continue in the background if you close this window."
         confirmLabel="Close anyway"
-        onConfirm={() => { setShowSetupCloseConfirm(false); getCurrentWindow().destroy() }}
+        onConfirm={() => { setShowSetupCloseConfirm(false); ipc.forceCloseTaskWindow() }}
         onCancel={() => setShowSetupCloseConfirm(false)}
       />
     </>

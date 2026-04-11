@@ -275,3 +275,6 @@ export const openTaskWindow = (taskId: string, taskName?: string) =>
 
 export const openNewTaskWindow = (projectId: string) =>
   invoke<void>('open_new_task_window', { projectId })
+
+export const forceCloseTaskWindow = () =>
+  invoke<void>('force_close_task_window')

@@ -1793,6 +1793,24 @@ pub async fn open_new_task_window(
     Ok(())
 }
 
+/// Force-close a task window, cleaning up the window-task map and notifying the main window.
+/// Used when the user confirms closing while a setup hook is running.
+#[tauri::command]
+pub async fn force_close_task_window(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    if let Some(map) = app.try_state::<crate::WindowTaskMap>() {
+        if let Some((_, task_id)) = map.remove(window.label()) {
+            let _ = app.emit(
+                "task-window-changed",
+                serde_json::json!({ "taskId": task_id, "open": false }),
+            );
+        }
+    }
+    window.destroy().map_err(|e| format!("Failed to destroy window: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

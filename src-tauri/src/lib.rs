@@ -186,9 +186,20 @@ pub fn run() {
                         api.prevent_close();
                     }
                 } else if window.label().starts_with("task-") {
-                    // Look up the real task ID from the window-task map
                     if let Some(map) = window.try_state::<WindowTaskMap>() {
-                        if let Some((_, task_id)) = map.remove(window.label()) {
+                        if let Some(entry) = map.get(window.label()) {
+                            let task_id = entry.value().clone();
+                            // Check if setup hook is running for this task
+                            if let Some(sip) = window.try_state::<task::SetupInProgress>() {
+                                if sip.contains_key(&task_id) {
+                                    // Setup is running — prevent close and ask frontend to confirm
+                                    api.prevent_close();
+                                    let _ = window.emit("confirm-close-setup", ());
+                                    return;
+                                }
+                            }
+                            // Setup not running — clean up and let close proceed
+                            map.remove(window.label());
                             let _ = window.emit_to(
                                 "main",
                                 "task-window-changed",
@@ -302,6 +313,7 @@ pub fn run() {
             // Window management
             ipc::open_task_window,
             ipc::open_new_task_window,
+            ipc::force_close_task_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")
