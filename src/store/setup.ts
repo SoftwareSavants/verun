@@ -78,7 +78,9 @@ export async function initSetupListeners() {
   try {
     const ids = await ipc.getSetupInProgress()
     for (const id of ids) {
-      setSetupTasks(id, { status: 'running' })
+      if (isTaskOwnedByThisWindow(id)) {
+        setSetupTasks(id, { status: 'running' })
+      }
     }
   } catch {
     // Backend may not be ready yet during startup
