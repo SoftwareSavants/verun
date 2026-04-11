@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Clean DMG installer — removed stray .VolumeIcon.icns file, resized window for better icon centering
 - Setup hooks now stream live output into an xterm.js terminal tab instead of showing a blind spinner — see exactly what your hook is doing as it runs
 - Hook terminal tabs appear first in the terminal panel with status indicators (spinner while running, green check on success, red alert on failure)
 - Stop a running setup hook mid-execution with the new Stop button in the setup banner

@@ -92,6 +92,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target aarch64-apple-darwin
 
+      - name: Clean DMG
+        run: bash scripts/clean-dmg.sh src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
@@ -164,6 +167,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target x86_64-apple-darwin
+
+      - name: Clean DMG
+        run: bash scripts/clean-dmg.sh src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
