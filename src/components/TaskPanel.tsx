@@ -12,7 +12,7 @@ import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { RightPanel } from './RightPanel'
 import { QuickOpen } from './QuickOpen'
-import { CodeEditor } from './CodeEditor'
+import { FileViewer } from './FileViewer'
 import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
@@ -618,7 +618,7 @@ export const TaskPanel: Component = () => {
                     }
                   >
                     <div class="flex-1 overflow-hidden">
-                      <CodeEditor taskId={t().id} relativePath={mainView(t().id)} />
+                      <FileViewer taskId={t().id} relativePath={mainView(t().id)} />
                     </div>
                   </Show>
 

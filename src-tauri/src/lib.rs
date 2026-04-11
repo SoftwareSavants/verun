@@ -266,6 +266,7 @@ pub fn run() {
             // File tree
             ipc::list_directory,
             ipc::read_worktree_file,
+            ipc::resolve_worktree_file_path,
             ipc::write_text_file,
             ipc::watch_worktree,
             ipc::unwatch_worktree,

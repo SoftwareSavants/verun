@@ -1521,6 +1521,30 @@ pub async fn read_worktree_file(
 }
 
 #[tauri::command]
+pub async fn resolve_worktree_file_path(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    relative_path: String,
+) -> Result<String, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    let full_path = std::path::Path::new(&t.worktree_path).join(&relative_path);
+
+    let canonical_base = std::fs::canonicalize(&t.worktree_path)
+        .map_err(|e| format!("Cannot resolve worktree: {e}"))?;
+    let canonical_file = std::fs::canonicalize(&full_path)
+        .map_err(|e| format!("Cannot resolve file: {e}"))?;
+
+    if !canonical_file.starts_with(&canonical_base) {
+        return Err("Path escapes worktree boundary".into());
+    }
+
+    Ok(canonical_file.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 pub async fn write_text_file(
     pool: State<'_, SqlitePool>,
     task_id: String,
