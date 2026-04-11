@@ -250,6 +250,14 @@ pub async fn create_task(
             from_task_window,
         },
     ).await?;
+
+    // For task windows: store label → taskId so the close handler works
+    if from_task_window {
+        if let Some(map) = app.try_state::<crate::WindowTaskMap>() {
+            map.insert(window.label().to_string(), task.id.clone());
+        }
+    }
+
     Ok(TaskWithSession { task, session })
 }
 
@@ -1748,6 +1756,11 @@ pub async fn open_task_window(
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .build()
         .map_err(|e| format!("Failed to create task window: {e}"))?;
+
+    // Track label → taskId so the close handler can emit the right event
+    if let Some(map) = app.try_state::<crate::WindowTaskMap>() {
+        map.insert(label, task_id.clone());
+    }
 
     let _ = app.emit(
         "task-window-changed",

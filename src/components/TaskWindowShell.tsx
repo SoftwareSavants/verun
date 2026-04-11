@@ -39,11 +39,6 @@ export const TaskWindowShell: Component = () => {
     if (taskId) emit('task-window-changed', { taskId, open: true })
   }))
 
-  // Notify when this window closes so the main window un-dims the task
-  getCurrentWindow().onCloseRequested(() => {
-    const taskId = selectedTaskId()
-    if (taskId) emit('task-window-changed', { taskId, open: false })
-  })
 
   // --- Initialization ---
 

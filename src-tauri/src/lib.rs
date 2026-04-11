@@ -12,9 +12,13 @@ mod worktree;
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use dashmap::DashMap;
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_sql::Builder as SqlBuilder;
 use tauri_plugin_updater::UpdaterExt;
+
+/// Maps task window labels → task IDs (for close event emission)
+pub type WindowTaskMap = DashMap<String, String>;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -39,6 +43,7 @@ pub fn run() {
         .manage(pty::new_active_pty_map())
         .manage(watcher::new_file_watcher_map())
         .manage(lsp::new_lsp_map())
+        .manage(WindowTaskMap::new())
         .setup(|app| {
             // Fix PATH for bundled .app / AppImage — the app inherits a minimal
             // system PATH that doesn't include Homebrew, nvm, etc.
@@ -179,6 +184,17 @@ pub fn run() {
                     {
                         let _ = window.emit("confirm-quit", ());
                         api.prevent_close();
+                    }
+                } else if window.label().starts_with("task-") {
+                    // Look up the real task ID from the window-task map
+                    if let Some(map) = window.try_state::<WindowTaskMap>() {
+                        if let Some((_, task_id)) = map.remove(window.label()) {
+                            let _ = window.emit_to(
+                                "main",
+                                "task-window-changed",
+                                serde_json::json!({ "taskId": task_id, "open": false }),
+                            );
+                        }
                     }
                 }
             }
