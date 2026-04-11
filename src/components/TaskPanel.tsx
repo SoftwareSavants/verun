@@ -20,6 +20,7 @@ import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCl
 import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
+import { fileHasErrors, fileHasWarnings } from '../store/problems'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
 import vscodeIcon from '../assets/icons/vscode.svg?raw'
@@ -536,7 +537,12 @@ export const TaskPanel: Component = () => {
                           }}
                         >
                           {(() => { const I = getFileIcon(tab.name); return <I size={10} class="shrink-0" /> })()}
-                          <span class={clsx('truncate max-w-28', tab.preview && 'italic')}>
+                          <span class={clsx(
+                            'truncate max-w-28',
+                            tab.preview && 'italic',
+                            fileHasErrors(t().id, tab.relativePath) && 'text-status-error',
+                            !fileHasErrors(t().id, tab.relativePath) && fileHasWarnings(t().id, tab.relativePath) && 'text-yellow-500',
+                          )}>
                             {tab.dirty ? '\u2022 ' : ''}{tab.name}
                           </span>
                           <button
@@ -683,6 +689,7 @@ export const TaskPanel: Component = () => {
                   >
                     <TerminalPanel taskId={t().id} startCommand={projectById(t().projectId)?.startCommand} autoStart={projectById(t().projectId)?.autoStart} />
                   </div>
+
                 </Show>
               </div>
 

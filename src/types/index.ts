@@ -266,3 +266,19 @@ export interface FileTreeChangedEvent {
   taskId: string
   path: string
 }
+
+// Diagnostics / Problems
+
+export type DiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint'
+
+export interface Problem {
+  file: string           // relative path within worktree
+  line: number           // 1-based for display
+  column: number         // 1-based for display
+  endLine: number
+  endColumn: number
+  severity: DiagnosticSeverity
+  message: string
+  code?: string | number
+  source: string         // 'typescript', 'eslint', etc.
+}

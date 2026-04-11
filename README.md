@@ -14,6 +14,7 @@ Run multiple Claude Code sessions in parallel, each in its own isolated git work
 - **Auto-detect** — Claude analyzes your project and configures hooks, ports, and env files automatically
 - **Code editor** — built-in CodeMirror 6 editor with One Dark syntax highlighting, code folding, and 15+ languages
 - **TypeScript intellisense** — bundled LSP with autocomplete, diagnostics, hover, go-to-definition, find references, and rename
+- **Problems panel** — VS Code-style diagnostics view with real-time error/warning aggregation, click-to-navigate, and file tree highlighting
 - **Unified tabs** — sessions and files share one tab bar; preview tabs replace on click, pin on double-click or edit
 - **Quick Open** — CMD+P to fuzzy-find and jump to any file in the worktree
 - **File tree** — gitignore-aware directory browser with lazy loading and filesystem watching

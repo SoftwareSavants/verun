@@ -120,6 +120,15 @@ export function setTerminalHeightAndPersist(h: number) {
   localStorage.setItem('verun:terminalHeight', String(h))
 }
 
+// Problems panel height (shared, persisted)
+const savedProblemsHeight = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:problemsHeight') : null
+export const [problemsHeight, setProblemsHeight] = createSignal(savedProblemsHeight ? parseInt(savedProblemsHeight, 10) : 200)
+
+export function setProblemsHeightAndPersist(h: number) {
+  setProblemsHeight(h)
+  localStorage.setItem('verun:problemsHeight', String(h))
+}
+
 // Code changes defaults
 const savedWrapDefault = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:defaultWrapLines') : null
 export const [defaultWrapLines, setDefaultWrapLines] = createSignal(savedWrapDefault !== null ? savedWrapDefault === 'true' : true)

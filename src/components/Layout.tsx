@@ -14,6 +14,7 @@ import { projects, projectById } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
 import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView, rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/files'
+import { GlobalCommandPalette, setShowGlobalPalette } from './GlobalCommandPalette'
 
 async function pickAndAddProject() {
   const selected = await openDialog({ directory: true, multiple: false })
@@ -102,6 +103,12 @@ export const Layout: Component = () => {
       if (e.key === 'Escape' && showArchived()) {
         e.preventDefault()
         setShowArchived(false)
+      }
+      // Cmd+Shift+P — command palette
+      if (modPressed(e) && e.shiftKey && e.key === 'p') {
+        e.preventDefault()
+        setShowGlobalPalette(true)
+        return
       }
       // Cmd+P — quick file open (only when a task is selected)
       if (modPressed(e) && e.key === 'p' && selectedTaskId()) {
@@ -271,6 +278,7 @@ export const Layout: Component = () => {
         projectId={newTaskProjectId()}
         onClose={() => setNewTaskProjectId(null)}
       />
+      <GlobalCommandPalette />
     </div>
   )
 }

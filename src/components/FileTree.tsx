@@ -1,6 +1,7 @@
 import { Component, For, Show, createEffect, on, onCleanup, onMount, createSignal } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
 import { Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-solid'
+import { fileHasErrors, fileHasWarnings, pathHasErrors, pathHasWarnings } from '../store/problems'
 import { getFileIcon } from '../lib/fileIcons'
 import {
   getDirContents, loadDirectory, isExpanded, toggleExpanded, collapseDir,
@@ -282,7 +283,13 @@ export const FileTree: Component<Props> = (props) => {
                             />
                           })()}
                         </span>
-                        <span class="truncate ml-1">{n().entry.name}</span>
+                        <span class={`truncate ml-1${
+                          !n().entry.isDir && fileHasErrors(props.taskId, n().entry.relativePath) ? ' text-status-error' :
+                          !n().entry.isDir && fileHasWarnings(props.taskId, n().entry.relativePath) ? ' text-yellow-500' :
+                          n().entry.isDir && pathHasErrors(props.taskId, n().entry.relativePath) ? ' text-status-error' :
+                          n().entry.isDir && pathHasWarnings(props.taskId, n().entry.relativePath) ? ' text-yellow-500' :
+                          ''
+                        }`}>{n().entry.name}</span>
                       </button>
                     </div>
                   )

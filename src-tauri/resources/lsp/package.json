@@ -2,7 +2,6 @@
   "name": "verun-lsp",
   "private": true,
   "dependencies": {
-    "typescript-language-server": "^4",
-    "typescript": "^5"
+    "@vtsls/language-server": "^0"
   }
 }

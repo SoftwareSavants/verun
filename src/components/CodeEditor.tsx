@@ -25,7 +25,7 @@ import { xml } from '@codemirror/lang-xml'
 import { yaml } from '@codemirror/lang-yaml'
 import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
-import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal } from '../store/files'
+import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal, pendingGoToLine, consumeGoToLine } from '../store/files'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 
 interface Props {
@@ -619,6 +619,23 @@ export const CodeEditor: Component<Props> = (props) => {
       editorView.destroy()
       editorView = undefined
     }
+  })
+
+  // Go-to-line navigation from ProblemsPanel
+  createEffect(() => {
+    const req = pendingGoToLine()
+    if (!req || req.taskId !== props.taskId || req.relativePath !== props.relativePath) return
+    if (!editorView) return
+    consumeGoToLine()
+    const line = Math.min(req.line, editorView.state.doc.lines)
+    const lineInfo = editorView.state.doc.line(line)
+    const col = Math.min(req.column - 1, lineInfo.length)
+    const pos = lineInfo.from + col
+    editorView.dispatch({
+      selection: { anchor: pos },
+      effects: EditorView.scrollIntoView(pos, { y: 'center' }),
+    })
+    editorView.focus()
   })
 
   // ── Context menu actions ───────────────────────────────────────────

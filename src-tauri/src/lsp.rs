@@ -84,9 +84,10 @@ fn resolve_lsp_binary(app: &AppHandle) -> Result<std::path::PathBuf, String> {
             .join("resources")
             .join("lsp")
             .join("node_modules")
-            .join("typescript-language-server")
-            .join("lib")
-            .join("cli.mjs");
+            .join("@vtsls")
+            .join("language-server")
+            .join("bin")
+            .join("vtsls.js");
         if bundled.exists() {
             return Ok(bundled);
         }
@@ -97,15 +98,16 @@ fn resolve_lsp_binary(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .join("resources")
         .join("lsp")
         .join("node_modules")
-        .join("typescript-language-server")
-        .join("lib")
-        .join("cli.mjs");
+        .join("@vtsls")
+        .join("language-server")
+        .join("bin")
+        .join("vtsls.js");
     if dev_path.exists() {
         return Ok(dev_path);
     }
 
     // Fallback: try PATH (user has it globally installed)
-    Err("typescript-language-server not found. Reinstall Verun or install it globally.".into())
+    Err("vtsls not found. Reinstall Verun or install @vtsls/language-server globally.".into())
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +125,7 @@ pub async fn start_server(
         return Ok(());
     }
 
-    // Resolve the bundled typescript-language-server path
+    // Resolve the bundled vtsls path
     let lsp_bin = resolve_lsp_binary(&app)?;
 
     let mut child = tokio::process::Command::new("node")
@@ -134,7 +136,7 @@ pub async fn start_server(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("Failed to spawn typescript-language-server: {e}"))?;
+        .map_err(|e| format!("Failed to spawn vtsls: {e}"))?;
 
     let stdin = child
         .stdin

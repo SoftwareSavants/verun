@@ -71,6 +71,10 @@ export function setRightPanelTab(tab: 'changes' | 'files') {
 
 export { rightPanelTab }
 
+// Go-to-line navigation (set by ProblemsPanel, consumed by CodeEditor)
+export const [pendingGoToLine, setPendingGoToLine] = createSignal<{ taskId: string; relativePath: string; line: number; column: number } | null>(null)
+export function consumeGoToLine() { const v = pendingGoToLine(); setPendingGoToLine(null); return v }
+
 // Directory loading
 
 function cacheKey(taskId: string, relativePath: string) {

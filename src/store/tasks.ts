@@ -4,6 +4,7 @@ import type { Task, Session } from '../types'
 import * as ipc from '../lib/ipc'
 import { closeTerminalsForTask } from './terminals'
 import { clearTaskGitState } from './git'
+import { clearProblemsForTask } from './problems'
 
 export const [tasks, setTasks] = createStore<Task[]>([])
 
@@ -147,6 +148,7 @@ export function removePlaceholderTask(id: string) {
 export async function deleteTask(id: string, deleteBranch = true, skipDestroyHook = false) {
   closeTerminalsForTask(id)
   clearTaskGitState(id)
+  clearProblemsForTask(id)
   await ipc.deleteTask(id, deleteBranch, skipDestroyHook)
   setTasks(prev => prev.filter(t => t.id !== id))
 }
@@ -156,6 +158,7 @@ export async function archiveTask(id: string, skipDestroyHook = false) {
   try {
     closeTerminalsForTask(id)
     clearTaskGitState(id)
+    clearProblemsForTask(id)
     await ipc.archiveTask(id, skipDestroyHook)
     setTasks(t => t.id === id, 'archived', true)
   } finally {

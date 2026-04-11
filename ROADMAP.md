@@ -69,6 +69,13 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Worktrees should be under the project folder not Desktop
 - [X] Move default branch to project settings
 - [ ] Resolve conflicts button not showing
+- [ ] Keep cursor placement when navigating between files
+- [ ] Persist undo/redo actions in files
+- [ ] Show path on the top of open file
+- [ ] Type overlay showing on top of error, merge and restyle both overlays
+- [ ] Persists current message in task
+- [ ] Find in session
+- [ ] @mentioned files ship in input and sent messages
 
 ---
 
@@ -84,7 +91,7 @@ High-impact features that engineers are asking for most.
 - [X] Unread / attention-required indicator on tasks in sidebar
 - [X] OS notifications for task completion and approval prompts
 - [ ] Multi window support
-- [-] Setup script: Option/script to auto-copy .env and other files
+- [X] Setup script: Option/script to auto-copy .env and other files
 - [X] Auto-update
 - [X] Session Status on the status tab bar
 
@@ -94,7 +101,7 @@ High-impact features that engineers are asking for most.
 - [X] TS support
 - [X] Mention files in chat (@ references)
 - [ ] Code review comments on diffs
-- [ ] Problems section
+- [X] Problems section
 
 ### CLI Parity
 - [ ] Full Claude CLI parity (skills, slash commands, CLAUDE.md/AGENTS.md, memory)

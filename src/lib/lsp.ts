@@ -5,6 +5,7 @@ import { Text } from '@codemirror/state'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from './ipc'
 import { openFilePinned } from '../store/files'
+import { markProblemsLoading } from '../store/problems'
 import type { FileTreeChangedEvent } from '../types'
 
 interface LspMessagePayload {
@@ -185,6 +186,30 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
 
   await client.initializing
 
+  // Mark loading so the Problems panel shows a spinner
+  markProblemsLoading(taskId)
+
+  // Configure vtsls: enable project-wide diagnostics + use workspace TypeScript
+  const configMsg = JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'workspace/didChangeConfiguration',
+    params: {
+      settings: {
+        typescript: {
+          tsserver: {
+            experimental: {
+              enableProjectDiagnostics: true,
+            },
+          },
+        },
+        vtsls: {
+          autoUseWorkspaceTsdk: true,
+        },
+      },
+    },
+  })
+  ipc.lspSend(taskId, configMsg).catch(() => {})
+
   return client
 }
 
@@ -215,7 +240,7 @@ export async function stopLspClient(taskId: string) {
 /**
  * Restart the LSP server for a task.
  */
-async function restartLspServer(taskId: string) {
+export async function restartLspServer(taskId: string) {
   const worktreePath = worktreePaths.get(taskId)
   if (!worktreePath) return
 

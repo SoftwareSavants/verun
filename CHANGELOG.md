@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- Switched bundled LSP from typescript-language-server to vtsls for project-wide diagnostics support
+- Problems panel — collapsible section at the bottom of the Changes/Files pane showing project-wide TypeScript diagnostics via `enableProjectDiagnostics`, grouped by file with resizable height
+- Click any problem to jump to the exact line and column in the editor
+- Command palette (CMD+Shift+P) with restart TypeScript server, open settings, open archived, and start dev server
+- File tree and open file tabs highlight red for files with errors, yellow for warnings
+- Folders in the file tree highlight when any descendant file has errors
+
 ## 0.4.2 — 2026-04-11
 
 ### Changes

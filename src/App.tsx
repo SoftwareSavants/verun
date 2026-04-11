@@ -10,6 +10,7 @@ import { initSessionListeners, syncSessionStatuses } from './store/sessions'
 import { initTerminalListeners } from './store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from './store/git'
 import { initSetupListeners } from './store/setup'
+import { initProblemsListener } from './store/problems'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
 import { addToast } from './store/ui'
@@ -47,6 +48,7 @@ const App: Component = () => {
     await initGitListeners()
     await initProjectListeners()
     await initSetupListeners()
+    initProblemsListener()
     initWindowFocusRefresh()
     await loadProjects()
     await syncSessionStatuses()
