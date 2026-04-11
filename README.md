@@ -27,11 +27,21 @@ Run multiple Claude Code sessions in parallel, each in its own isolated git work
 - **Persistent history** — all output stored locally in SQLite
 - **Integrated terminal** — drop into any task's worktree with a built-in shell
 - **Shareable config** — `.verun.json` in your repo so teammates get the same setup
+- **Auto-update** — checks for new versions on launch, one-click download and restart
 - **No account required** — works entirely local, no tokens or permissions needed
 
-## Install
+## Download
 
-Download the latest `.dmg` from [Releases](https://github.com/SoftwareSavants/verun/releases), or build from source:
+| Platform | Link |
+|----------|------|
+| macOS (Apple Silicon) | [Download .dmg](https://github.com/SoftwareSavants/verun/releases/latest/download/Verun_aarch64.dmg) |
+| macOS (Intel) | [Download .dmg](https://github.com/SoftwareSavants/verun/releases/latest/download/Verun_x64.dmg) |
+| Windows | [Download .exe](https://github.com/SoftwareSavants/verun/releases/latest/download/Verun_x64-setup.exe) |
+| Linux | [Download .AppImage](https://github.com/SoftwareSavants/verun/releases/latest/download/Verun_amd64.AppImage) |
+
+The app auto-updates after the first install. Or browse all versions on the [Releases](https://github.com/SoftwareSavants/verun/releases) page.
+
+### Build from source
 
 ```bash
 git clone https://github.com/SoftwareSavants/verun.git
@@ -40,7 +50,7 @@ bash scripts/setup.sh
 pnpm tauri build
 ```
 
-Requires macOS, [Rust](https://rustup.rs), Node.js 18+, pnpm, and Xcode Command Line Tools.
+Requires [Rust](https://rustup.rs), Node.js 18+, pnpm, and Xcode Command Line Tools (macOS).
 
 ## How It Works
 

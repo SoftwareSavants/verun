@@ -285,27 +285,27 @@ jobs:
         run: |
           mkdir -p release-assets
 
-          # DMGs (unique names per arch)
-          cp artifacts/macos-arm-dmg/*.dmg release-assets/
-          cp artifacts/macos-intel-dmg/*.dmg release-assets/
+          # DMGs — static names
+          cp artifacts/macos-arm-dmg/*.dmg release-assets/Verun_aarch64.dmg
+          cp artifacts/macos-intel-dmg/*.dmg release-assets/Verun_x64.dmg
 
-          # Windows installer
-          cp artifacts/windows-exe/*.exe release-assets/
+          # Windows installer — static name
+          cp artifacts/windows-exe/*.exe release-assets/Verun_x64-setup.exe
 
-          # Linux AppImage
-          cp artifacts/linux-appimage/*.AppImage release-assets/
+          # Linux AppImage — static name
+          cp artifacts/linux-appimage/*.AppImage release-assets/Verun_amd64.AppImage
 
-          # Updater artifacts — rename macOS tarballs to avoid collision
+          # Updater artifacts — static names
           cp artifacts/macos-arm-updater/*.tar.gz release-assets/Verun_aarch64.app.tar.gz
           cp artifacts/macos-arm-updater/*.tar.gz.sig release-assets/Verun_aarch64.app.tar.gz.sig
           cp artifacts/macos-intel-updater/*.tar.gz release-assets/Verun_x86_64.app.tar.gz
           cp artifacts/macos-intel-updater/*.tar.gz.sig release-assets/Verun_x86_64.app.tar.gz.sig
 
-          # Windows updater signature
-          cp artifacts/windows-updater-sig/*.exe.sig release-assets/
+          # Windows updater signature — static name
+          cp artifacts/windows-updater-sig/*.exe.sig release-assets/Verun_x64-setup.exe.sig
 
-          # Linux updater signature
-          cp artifacts/linux-updater-sig/*.AppImage.sig release-assets/
+          # Linux updater signature — static name
+          cp artifacts/linux-updater-sig/*.AppImage.sig release-assets/Verun_amd64.AppImage.sig
 
       - name: Extract changelog for this version
         id: changelog
@@ -323,28 +323,18 @@ jobs:
           base_url="https://github.com/SoftwareSavants/verun/releases/download/v${version}"
           pub_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Read signatures
-          da_sig=$(cat release-assets/Verun_aarch64.app.tar.gz.sig)
-          dx_sig=$(cat release-assets/Verun_x86_64.app.tar.gz.sig)
-          ws_sig=$(cat release-assets/*-setup.exe.sig)
-          ls_sig=$(cat release-assets/*.AppImage.sig)
-
-          # Get filenames for Windows and Linux
-          win_file=$(basename release-assets/*-setup.exe)
-          linux_file=$(basename release-assets/*.AppImage)
-
           jq -n \
             --arg version "$version" \
             --arg notes "$(cat /tmp/release_notes.md)" \
             --arg pub_date "$pub_date" \
-            --arg da_sig "$da_sig" \
+            --arg da_sig "$(cat release-assets/Verun_aarch64.app.tar.gz.sig)" \
             --arg da_url "${base_url}/Verun_aarch64.app.tar.gz" \
-            --arg dx_sig "$dx_sig" \
+            --arg dx_sig "$(cat release-assets/Verun_x86_64.app.tar.gz.sig)" \
             --arg dx_url "${base_url}/Verun_x86_64.app.tar.gz" \
-            --arg ws_sig "$ws_sig" \
-            --arg wu_url "${base_url}/${win_file}" \
-            --arg ls_sig "$ls_sig" \
-            --arg lu_url "${base_url}/${linux_file}" \
+            --arg ws_sig "$(cat release-assets/Verun_x64-setup.exe.sig)" \
+            --arg wu_url "${base_url}/Verun_x64-setup.exe" \
+            --arg ls_sig "$(cat release-assets/Verun_amd64.AppImage.sig)" \
+            --arg lu_url "${base_url}/Verun_amd64.AppImage" \
             '{
               version: $version,
               notes: $notes,

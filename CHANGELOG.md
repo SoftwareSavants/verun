@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-04-11
+
+### Changes
+
+- Static release filenames — download URLs no longer change between versions
+- Cmd+hover underline in code editor — holding Cmd while hovering over a symbol shows a VS Code-style underline and pointer cursor, signaling it's clickable for go-to-definition
+
 ## 0.4.0 — 2026-04-10
 
 ### Changes
