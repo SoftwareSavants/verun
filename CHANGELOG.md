@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 — 2026-04-11
+
+### Changes
 
 - Clean DMG installer — removed stray .VolumeIcon.icns file, resized window for better icon centering
 - Setup hooks now stream live output into an xterm.js terminal tab instead of showing a blind spinner — see exactly what your hook is doing as it runs
