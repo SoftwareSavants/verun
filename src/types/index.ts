@@ -8,6 +8,7 @@ export interface Project {
   setupHook: string
   destroyHook: string
   startCommand: string
+  autoStart: boolean
   createdAt: number
 }
 
@@ -232,6 +233,8 @@ export interface TerminalInstance {
   id: string
   taskId: string
   name: string
+  hookType?: 'setup' | 'destroy'
+  isStartCommand?: boolean
 }
 
 export interface PtySpawnResult {
@@ -246,6 +249,7 @@ export interface PtyOutputEvent {
 
 export interface PtyExitedEvent {
   terminalId: string
+  exitCode?: number
 }
 
 // File tree types

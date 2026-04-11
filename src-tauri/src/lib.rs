@@ -35,6 +35,7 @@ pub fn run() {
         .manage(task::new_pending_approvals())
         .manage(task::new_pending_approval_meta())
         .manage(task::new_setup_in_progress())
+        .manage(task::new_hook_pty_map())
         .manage(pty::new_active_pty_map())
         .manage(watcher::new_file_watcher_map())
         .manage(lsp::new_lsp_map())
@@ -200,6 +201,8 @@ pub fn run() {
             ipc::restore_task,
             ipc::rename_task,
             ipc::get_setup_in_progress,
+            ipc::run_hook,
+            ipc::stop_hook,
             // Sessions
             ipc::create_session,
             ipc::send_message,

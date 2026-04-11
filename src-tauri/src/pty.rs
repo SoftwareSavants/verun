@@ -39,6 +39,7 @@ pub struct PtyOutputEvent {
 #[serde(rename_all = "camelCase")]
 pub struct PtyExitedEvent {
     pub terminal_id: String,
+    pub exit_code: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +55,8 @@ pub struct SpawnResult {
 
 /// Spawn a new PTY running the user's shell in the given working directory.
 /// If `initial_command` is provided, it will be written to the PTY immediately after spawn.
+/// If `direct_command` is true, the command is run directly via `sh -c` instead of inside
+/// a login shell — the PTY exits when the command exits (good for dev servers / start commands).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_pty(
     app: AppHandle,
@@ -64,6 +67,7 @@ pub fn spawn_pty(
     cols: u16,
     initial_command: Option<String>,
     env_vars: Vec<(String, String)>,
+    direct_command: bool,
 ) -> Result<SpawnResult, String> {
     let terminal_id = Uuid::new_v4().to_string();
     let pty_system = native_pty_system();
@@ -87,14 +91,51 @@ pub fn spawn_pty(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "shell".to_string());
-    let mut cmd = CommandBuilder::new(&shell);
-    #[cfg(not(target_os = "windows"))]
-    cmd.arg("-l"); // login shell for $PATH, aliases, etc.
-    cmd.cwd(&cwd);
-    cmd.env("TERM", "xterm-256color");
-    for (k, v) in &env_vars {
-        cmd.env(k, v);
-    }
+
+    // When direct_command is true, run the command directly via the shell — the PTY
+    // process IS the command, so when it exits (Ctrl+C, crash, etc.) the PTY exits too.
+    let (cmd, write_initial) = if direct_command {
+        if let Some(ref command) = initial_command {
+            let mut c = CommandBuilder::new(&shell);
+            #[cfg(not(target_os = "windows"))]
+            {
+                // -lic: login + interactive + command — sources .zshrc/.bashrc
+                // so nvm/fnm/etc set the correct Node version
+                c.args(["-lic", command]);
+            }
+            #[cfg(target_os = "windows")]
+            {
+                c.args(["-c", command]);
+            }
+            c.cwd(&cwd);
+            c.env("TERM", "xterm-256color");
+            for (k, v) in &env_vars {
+                c.env(k, v);
+            }
+            (c, false) // don't write to stdin — command is an arg
+        } else {
+            // No command, fall back to interactive shell
+            let mut c = CommandBuilder::new(&shell);
+            #[cfg(not(target_os = "windows"))]
+            c.arg("-l");
+            c.cwd(&cwd);
+            c.env("TERM", "xterm-256color");
+            for (k, v) in &env_vars {
+                c.env(k, v);
+            }
+            (c, false)
+        }
+    } else {
+        let mut c = CommandBuilder::new(&shell);
+        #[cfg(not(target_os = "windows"))]
+        c.arg("-l"); // login shell for $PATH, aliases, etc.
+        c.cwd(&cwd);
+        c.env("TERM", "xterm-256color");
+        for (k, v) in &env_vars {
+            c.env(k, v);
+        }
+        (c, initial_command.is_some())
+    };
 
     let child = pair
         .slave
@@ -123,13 +164,15 @@ pub fn spawn_pty(
         },
     );
 
-    // Write initial command if provided
-    if let Some(cmd) = initial_command {
-        if !cmd.is_empty() {
-            if let Some(handle) = map.get(&terminal_id) {
-                if let Ok(mut w) = handle.writer.lock() {
-                    let _ = w.write_all(format!("{cmd}\n").as_bytes());
-                    let _ = w.flush();
+    // Write initial command to stdin (only for non-direct mode)
+    if write_initial {
+        if let Some(ref cmd) = initial_command {
+            if !cmd.is_empty() {
+                if let Some(handle) = map.get(&terminal_id) {
+                    if let Ok(mut w) = handle.writer.lock() {
+                        let _ = w.write_all(format!("{cmd}\n").as_bytes());
+                        let _ = w.flush();
+                    }
                 }
             }
         }
@@ -137,6 +180,7 @@ pub fn spawn_pty(
 
     // Spawn a dedicated OS thread for blocking read
     let tid = terminal_id.clone();
+    let exit_map = map.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -155,7 +199,18 @@ pub fn spawn_pty(
                 Err(_) => break,
             }
         }
-        let _ = app.emit("pty-exited", PtyExitedEvent { terminal_id: tid });
+        // Capture exit code from the child process before emitting pty-exited
+        let exit_code = if let Some(handle) = exit_map.get(&tid) {
+            handle
+                .child
+                .lock()
+                .ok()
+                .and_then(|mut child| child.wait().ok())
+                .map(|status| status.exit_code())
+        } else {
+            None
+        };
+        let _ = app.emit("pty-exited", PtyExitedEvent { terminal_id: tid, exit_code });
     });
 
     Ok(SpawnResult { terminal_id, shell_name })

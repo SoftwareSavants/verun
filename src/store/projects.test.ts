@@ -10,6 +10,7 @@ const makeProject = (overrides: Partial<Project> = {}): Project => ({
   setupHook: '',
   destroyHook: '',
   startCommand: '',
+  autoStart: false,
   createdAt: 1000,
   ...overrides,
 })

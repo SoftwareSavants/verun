@@ -22,6 +22,7 @@ const [activeSection, setActiveSection] = createSignal<SettingsSection>('general
 const [editSetupHook, setEditSetupHook] = createSignal('')
 const [editDestroyHook, setEditDestroyHook] = createSignal('')
 const [editStartCommand, setEditStartCommand] = createSignal('')
+const [editAutoStart, setEditAutoStart] = createSignal(false)
 export const [settingsSaveRequested, setSettingsSaveRequested] = createSignal(0)
 
 export function selectSettingsSection(section: SettingsSection) {
@@ -32,6 +33,7 @@ export function selectSettingsSection(section: SettingsSection) {
     setEditSetupHook(p.setupHook)
     setEditDestroyHook(p.destroyHook)
     setEditStartCommand(p.startCommand)
+    setEditAutoStart(p.autoStart)
   }
 }
 
@@ -53,6 +55,7 @@ export const SettingsPage: Component = () => {
       setEditSetupHook(p.setupHook)
       setEditDestroyHook(p.destroyHook)
       setEditStartCommand(p.startCommand)
+      setEditAutoStart(p.autoStart)
     }
   }
 
@@ -62,6 +65,7 @@ export const SettingsPage: Component = () => {
     return editSetupHook() !== p.setupHook
       || editDestroyHook() !== p.destroyHook
       || editStartCommand() !== p.startCommand
+      || editAutoStart() !== p.autoStart
   }
 
   const current = () => ACCENT_THEMES.find(t => t.name === activeTheme()) ?? ACCENT_THEMES[0]
@@ -84,7 +88,7 @@ export const SettingsPage: Component = () => {
     if (!p) return
     setSaving(true)
     try {
-      await updateHooks(p.id, editSetupHook(), editDestroyHook(), editStartCommand())
+      await updateHooks(p.id, editSetupHook(), editDestroyHook(), editStartCommand(), editAutoStart())
       addToast('Hooks saved', 'success')
     } catch (e) {
       addToast(String(e), 'error')
@@ -420,7 +424,7 @@ export const SettingsPage: Component = () => {
 
                 <div>
                   <label class="block text-sm text-text-primary mb-1.5">Start command</label>
-                  <div class="text-xs text-text-dim mb-2">Auto-runs in terminal for each new task</div>
+                  <div class="text-xs text-text-dim mb-2">Runs in a read-only terminal tab via the Start button or auto-start</div>
                   <CodeTextarea
                     value={editStartCommand()}
                     onInput={setEditStartCommand}
@@ -428,6 +432,14 @@ export const SettingsPage: Component = () => {
                     placeholder="pnpm dev"
                     minRows={1}
                   />
+                </div>
+
+                <div class="flex items-center justify-between">
+                  <div>
+                    <label class="block text-sm text-text-primary">Auto-start</label>
+                    <div class="text-xs text-text-dim mt-0.5">Automatically run the start command when a new task is created</div>
+                  </div>
+                  <Toggle checked={editAutoStart()} onChange={setEditAutoStart} />
                 </div>
               </div>
 

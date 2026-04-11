@@ -1,6 +1,7 @@
 import { Component, createSignal, createEffect, on, Show } from 'solid-js'
 import { Dialog } from './Dialog'
 import { CodeTextarea } from './CodeTextarea'
+import { Toggle } from './Toggle'
 import { Loader2, Sparkles } from 'lucide-solid'
 import { addProject, updateHooks } from '../store/projects'
 import { createTask } from '../store/tasks'
@@ -21,6 +22,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
   const [setupHook, setSetupHook] = createSignal('')
   const [destroyHook, setDestroyHook] = createSignal('')
   const [startCommand, setStartCommand] = createSignal('')
+  const [autoStart, setAutoStart] = createSignal(false)
   const [adding, setAdding] = createSignal(false)
   const [autoDetecting, setAutoDetecting] = createSignal(false)
 
@@ -83,8 +85,9 @@ export const AddProjectDialog: Component<Props> = (props) => {
       const sh = setupHook()
       const dh = destroyHook()
       const sc = startCommand()
-      if (sh || dh || sc) {
-        await updateHooks(project.id, sh, dh, sc)
+      const as_ = autoStart()
+      if (sh || dh || sc || as_) {
+        await updateHooks(project.id, sh, dh, sc, as_)
       }
       addToast(`Added ${project.name}`, 'success')
       props.onAdded(project.id)
@@ -100,6 +103,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
     setSetupHook('')
     setDestroyHook('')
     setStartCommand('')
+    setAutoStart(false)
     props.onClose()
   }
 
@@ -166,6 +170,14 @@ export const AddProjectDialog: Component<Props> = (props) => {
             minRows={1}
             maxRows={4}
           />
+        </div>
+
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="text-xs text-text-muted">Auto-start</label>
+            <div class="text-[10px] text-text-dim mt-0.5">Run start command automatically for new tasks</div>
+          </div>
+          <Toggle checked={autoStart()} onChange={setAutoStart} />
         </div>
       </div>
 

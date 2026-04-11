@@ -8,9 +8,9 @@ import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from '.
 import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, setAddProjectPath } from '../store/ui'
-import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask } from '../store/terminals'
-import { activeTasks } from '../store/tasks'
-import { projects } from '../store/projects'
+import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
+import { activeTasks, taskById } from '../store/tasks'
+import { projects, projectById } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
 import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView, rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/files'
@@ -160,6 +160,24 @@ export const Layout: Component = () => {
         if (tid) {
           if (!showTerminal()) setShowTerminal(true)
           spawnTerminal(tid, 24, 80)
+        }
+      }
+      // Cmd+Shift+B or F5 — toggle start command (start/stop dev server)
+      const isStartStopKey = (modPressed(e) && e.shiftKey && e.key === 'b') || e.key === 'F5'
+      if (isStartStopKey) {
+        e.preventDefault()
+        const tid = selectedTaskId()
+        if (tid) {
+          if (isStartCommandRunning(tid)) {
+            stopStartCommand(tid)
+          } else {
+            const task = taskById(tid)
+            const project = task ? projectById(task.projectId) : undefined
+            if (project?.startCommand) {
+              setShowTerminal(true)
+              spawnStartCommand(tid, project.startCommand)
+            }
+          }
         }
       }
       // Mod+\ — focus terminal (when open)

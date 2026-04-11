@@ -4,7 +4,7 @@ use crate::db::{
 use crate::git_ops;
 use crate::github;
 use crate::pty::{self, ActivePtyMap};
-use crate::task::{self, ActiveMap, ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals, SetupInProgress};
+use crate::task::{self, ActiveMap, ApprovalResponse, HookPtyMap, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals, SetupInProgress};
 use crate::lsp::LspMap;
 use crate::watcher::FileWatcherMap;
 use crate::worktree;
@@ -77,6 +77,7 @@ pub async fn add_project(
         setup_hook,
         destroy_hook,
         start_command,
+        auto_start: false,
         created_at: epoch_ms(),
     };
 
@@ -107,7 +108,7 @@ pub async fn delete_project(
 
     let tasks = db::list_tasks_for_project(pool.inner(), &id).await?;
     for t in &tasks {
-        task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, t, &project.destroy_hook, true).await?;
+        task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, t, &project.destroy_hook, true, false).await?;
     }
 
     db_tx
@@ -137,9 +138,10 @@ pub async fn update_project_hooks(
     setup_hook: String,
     destroy_hook: String,
     start_command: String,
+    auto_start: bool,
 ) -> Result<(), String> {
     db_tx
-        .send(db::DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command })
+        .send(db::DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command, auto_start })
         .await
         .map_err(|e| format!("DB write failed: {e}"))
 }
@@ -192,6 +194,7 @@ pub async fn import_project_config(
             setup_hook: setup.clone(),
             destroy_hook: destroy.clone(),
             start_command: start.clone(),
+            auto_start: project.auto_start,
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
@@ -211,11 +214,14 @@ pub struct ImportedHooks {
 // Tasks
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn create_task(
     app: AppHandle,
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
+    pty_map: State<'_, ActivePtyMap>,
+    hook_pty_map: State<'_, HookPtyMap>,
     setup_in_progress: State<'_, SetupInProgress>,
     project_id: String,
     base_branch: Option<String>,
@@ -229,6 +235,8 @@ pub async fn create_task(
     let (task, session) = task::create_task(
         &app,
         db_tx.inner(),
+        pty_map.inner(),
+        hook_pty_map.inner(),
         setup_in_progress.inner(),
         task::CreateTaskParams {
             project_id,
@@ -246,6 +254,65 @@ pub async fn get_setup_in_progress(
     setup_in_progress: State<'_, SetupInProgress>,
 ) -> Result<Vec<String>, String> {
     Ok(setup_in_progress.iter().map(|e| e.key().clone()).collect())
+}
+
+/// Manually run a hook (setup or destroy) for a task via PTY
+#[tauri::command]
+pub async fn run_hook(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    pty_map: State<'_, ActivePtyMap>,
+    hook_pty_map: State<'_, HookPtyMap>,
+    setup_in_progress: State<'_, SetupInProgress>,
+    task_id: String,
+    hook_type: String,
+) -> Result<pty::SpawnResult, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    let project = db::get_project(pool.inner(), &t.project_id)
+        .await?
+        .ok_or_else(|| format!("Project {} not found", t.project_id))?;
+
+    let (hook_command, ht) = match hook_type.as_str() {
+        "setup" => (project.setup_hook.as_str(), task::HookType::Setup),
+        "destroy" => (project.destroy_hook.as_str(), task::HookType::Destroy),
+        _ => return Err(format!("Invalid hook type: {hook_type}")),
+    };
+
+    task::spawn_hook_pty(
+        &app,
+        pty_map.inner(),
+        hook_pty_map.inner(),
+        setup_in_progress.inner(),
+        &task_id,
+        &t.worktree_path,
+        hook_command,
+        ht,
+        t.port_offset,
+        &project.repo_path,
+    )
+}
+
+/// Stop a running hook for a task
+#[tauri::command]
+pub async fn stop_hook(
+    pty_map: State<'_, ActivePtyMap>,
+    hook_pty_map: State<'_, HookPtyMap>,
+    task_id: String,
+) -> Result<(), String> {
+    let entry = hook_pty_map
+        .remove(&task_id)
+        .ok_or_else(|| "No hook running for this task".to_string())?;
+
+    let terminal_id = entry.1.terminal_id;
+    tokio::task::spawn_blocking({
+        let map = pty_map.inner().clone();
+        move || pty::close_pty(&map, &terminal_id)
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))?
 }
 
 #[tauri::command]
@@ -269,6 +336,7 @@ pub async fn delete_task(
     active: State<'_, ActiveMap>,
     id: String,
     delete_branch: bool,
+    skip_destroy_hook: Option<bool>,
 ) -> Result<(), String> {
     let t = db::get_task(pool.inner(), &id)
         .await?
@@ -278,7 +346,7 @@ pub async fn delete_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
-    task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, &t, &project.destroy_hook, delete_branch).await
+    task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, &t, &project.destroy_hook, delete_branch, skip_destroy_hook.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -288,6 +356,7 @@ pub async fn archive_task(
     db_tx: State<'_, DbWriteTx>,
     active: State<'_, ActiveMap>,
     id: String,
+    skip_destroy_hook: Option<bool>,
 ) -> Result<(), String> {
     let t = db::get_task(pool.inner(), &id)
         .await?
@@ -297,7 +366,7 @@ pub async fn archive_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
-    task::archive_task(&app, db_tx.inner(), active.inner(), &t, &project.destroy_hook, &project.repo_path).await
+    task::archive_task(&app, db_tx.inner(), active.inner(), &t, &project.destroy_hook, &project.repo_path, skip_destroy_hook.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -328,6 +397,8 @@ pub async fn restore_task(
     app: AppHandle,
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
+    pty_map: State<'_, ActivePtyMap>,
+    hook_pty_map: State<'_, HookPtyMap>,
     setup_in_progress: State<'_, task::SetupInProgress>,
     id: String,
 ) -> Result<(), String> {
@@ -347,6 +418,8 @@ pub async fn restore_task(
     // Re-run setup hook
     task::spawn_setup_hook(
         &app,
+        pty_map.inner(),
+        hook_pty_map.inner(),
         setup_in_progress.inner(),
         &t.id,
         &t.worktree_path,
@@ -1127,6 +1200,7 @@ pub async fn has_conflicts(
 // PTY / Terminal
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn pty_spawn(
     app: AppHandle,
@@ -1136,6 +1210,7 @@ pub async fn pty_spawn(
     rows: u16,
     cols: u16,
     initial_command: Option<String>,
+    direct_command: Option<bool>,
 ) -> Result<pty::SpawnResult, String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
@@ -1144,9 +1219,10 @@ pub async fn pty_spawn(
     let repo_path = db::get_repo_path_for_task(pool.inner(), &task_id).await?;
     let env_vars = worktree::verun_env_vars(t.port_offset, &repo_path);
     let map = pty_map.inner().clone();
+    let direct = direct_command.unwrap_or(false);
     flatten_join(
         tokio::task::spawn_blocking(move || {
-            pty::spawn_pty(app, map, task_id, t.worktree_path, rows, cols, initial_command, env_vars)
+            pty::spawn_pty(app, map, task_id, t.worktree_path, rows, cols, initial_command, env_vars, direct)
         })
         .await,
     )

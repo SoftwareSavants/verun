@@ -1,6 +1,6 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread } from '../store/ui'
-import { refitActiveTerminal } from '../store/terminals'
+import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread } from '../store/ui'
+import { refitActiveTerminal, setActiveTerminalForTask, startCommandTerminalId, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
 import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask, restoreTask } from '../store/tasks'
@@ -15,8 +15,9 @@ import { QuickOpen } from './QuickOpen'
 import { CodeEditor } from './CodeEditor'
 import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
+import { selectSettingsSection } from './SettingsPage'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree } from '../store/files'
-import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive } from 'lucide-solid'
+import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
 import * as ipc from '../lib/ipc'
@@ -299,6 +300,89 @@ export const TaskPanel: Component = () => {
                   <Show when={!creating() && !error()}>
                     <div class="flex items-center gap-1 no-drag shrink-0">
                       <OpenInButton path={t().worktreePath} />
+
+                      {/* Start command button */}
+                      {(() => {
+                        const project = () => projectById(t().projectId)
+                        const hasStartCommand = () => !!project()?.startCommand
+                        const isRunning = () => isStartCommandRunning(t().id)
+                        const setupRunning = () => isSetupRunning(t().id)
+                        const [showNoStartCmd, setShowNoStartCmd] = createSignal(false)
+
+                        const handleStart = async () => {
+                          const cmd = project()?.startCommand
+                          if (!cmd) {
+                            setShowNoStartCmd(true)
+                            return
+                          }
+                          setShowTerminal(true)
+                          await spawnStartCommand(t().id, cmd)
+                        }
+                        const handleStop = async () => {
+                          await stopStartCommand(t().id)
+                        }
+                        const focusLogs = () => {
+                          const tid = startCommandTerminalId(t().id)
+                          if (tid) {
+                            setActiveTerminalForTask(t().id, tid)
+                            setShowTerminal(true)
+                            requestAnimationFrame(() => refitActiveTerminal(t().id))
+                          }
+                        }
+
+                        return (
+                          <>
+                            <Show
+                              when={isRunning()}
+                              fallback={
+                                <button
+                                  class="h-6 flex items-center gap-1 px-2 rounded-md text-[11px] text-text-dim border-1 border-solid border-border-active hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                                  onClick={handleStart}
+                                  disabled={setupRunning()}
+                                  title={setupRunning() ? 'Waiting for setup hook…' : hasStartCommand() ? `Run: ${project()!.startCommand} (F5)` : 'Set up a start command'}
+                                >
+                                  <Play size={12} />
+                                  <span>Start</span>
+                                </button>
+                              }
+                            >
+                              <div class="h-6 flex items-stretch rounded-md border-1 border-solid border-accent/30 overflow-hidden">
+                                <button
+                                  class="flex items-center gap-1 px-2 text-[11px] text-accent hover:bg-accent/10 transition-colors"
+                                  onClick={handleStop}
+                                  title="Stop (F5)"
+                                >
+                                  <Square size={10} class="fill-current" />
+                                  <span>Stop</span>
+                                </button>
+                                <span class="w-px self-stretch bg-accent/20" />
+                                <button
+                                  class="flex items-center px-1.5 text-accent/60 hover:text-accent hover:bg-accent/10 transition-colors"
+                                  onClick={focusLogs}
+                                  title="View start command logs"
+                                >
+                                  <TerminalSquare size={12} />
+                                </button>
+                              </div>
+                            </Show>
+
+                            {/* No start command dialog */}
+                            <ConfirmDialog
+                              open={showNoStartCmd()}
+                              title="No start command"
+                              message="Set up a start command in project settings to auto-run a process (e.g. dev server) for each task."
+                              confirmLabel="Go to Settings"
+                              onConfirm={() => {
+                                setShowNoStartCmd(false)
+                                selectSettingsSection(t().projectId)
+                                setShowSettings(true)
+                              }}
+                              onCancel={() => setShowNoStartCmd(false)}
+                            />
+                          </>
+                        )
+                      })()}
+
                       <button
                         class="h-6 w-6 flex items-center justify-center rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
                         onClick={toggleTerminal}
@@ -359,17 +443,17 @@ export const TaskPanel: Component = () => {
 
                 {/* Normal task UI */}
                 <Show when={!creating() && !error()}>
-                  {/* Setup hook progress banner */}
+                  {/* Setup hook progress banner — thin status, controls are in header */}
                   <Show when={isSetupRunning(t().id)}>
-                    <div class="flex items-center gap-2 px-4 py-2 bg-accent-muted/30 border-b border-accent/10 text-xs text-text-secondary">
-                      <Loader2 size={12} class="animate-spin text-accent shrink-0" />
+                    <div class="flex items-center gap-2 px-4 py-1.5 bg-accent-muted/30 border-b border-accent/10 text-xs text-text-secondary">
+                      <Loader2 size={11} class="animate-spin text-accent shrink-0" />
                       <span>Running setup hook…</span>
                     </div>
                   </Show>
                   <Show when={setupFailed(t().id)}>
-                    <div class="flex items-center gap-2 px-4 py-2 bg-status-error/10 border-b border-status-error/10 text-xs text-status-error/80">
-                      <AlertCircle size={12} class="shrink-0" />
-                      <span>Setup hook failed{setupError(t().id) ? `: ${setupError(t().id)}` : ''}</span>
+                    <div class="flex items-center gap-2 px-4 py-1.5 bg-status-error/10 border-b border-status-error/10 text-xs text-status-error/80">
+                      <AlertCircle size={11} class="shrink-0" />
+                      <span>Setup failed{setupError(t().id) ? `: ${setupError(t().id)}` : ''}</span>
                     </div>
                   </Show>
 
@@ -597,7 +681,7 @@ export const TaskPanel: Component = () => {
                     style={{ height: `${terminalHeight()}px`, display: showTerminal() ? 'block' : 'none' }}
                     class="shrink-0 overflow-hidden"
                   >
-                    <TerminalPanel taskId={t().id} startCommand={projectById(t().projectId)?.startCommand} />
+                    <TerminalPanel taskId={t().id} startCommand={projectById(t().projectId)?.startCommand} autoStart={projectById(t().projectId)?.autoStart} />
                   </div>
                 </Show>
               </div>

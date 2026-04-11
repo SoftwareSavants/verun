@@ -14,8 +14,8 @@ export const deleteProject = (id: string) =>
 export const updateProjectBaseBranch = (id: string, baseBranch: string) =>
   invoke<void>('update_project_base_branch', { id, baseBranch })
 
-export const updateProjectHooks = (id: string, setupHook: string, destroyHook: string, startCommand: string) =>
-  invoke<void>('update_project_hooks', { id, setupHook, destroyHook, startCommand })
+export const updateProjectHooks = (id: string, setupHook: string, destroyHook: string, startCommand: string, autoStart: boolean) =>
+  invoke<void>('update_project_hooks', { id, setupHook, destroyHook, startCommand, autoStart })
 
 export const exportProjectConfig = (projectId: string, taskId: string) =>
   invoke<void>('export_project_config', { projectId, taskId })
@@ -33,11 +33,11 @@ export const listTasks = (projectId: string) =>
 export const getTask = (id: string) =>
   invoke<Task | null>('get_task', { id })
 
-export const deleteTask = (id: string, deleteBranch: boolean) =>
-  invoke<void>('delete_task', { id, deleteBranch })
+export const deleteTask = (id: string, deleteBranch: boolean, skipDestroyHook?: boolean) =>
+  invoke<void>('delete_task', { id, deleteBranch, skipDestroyHook })
 
-export const archiveTask = (id: string) =>
-  invoke<void>('archive_task', { id })
+export const archiveTask = (id: string, skipDestroyHook?: boolean) =>
+  invoke<void>('archive_task', { id, skipDestroyHook })
 
 export const checkTaskWorktree = (id: string) =>
   invoke<[boolean, boolean]>('check_task_worktree', { id })
@@ -50,6 +50,12 @@ export const renameTask = (taskId: string, name: string) =>
 
 export const getSetupInProgress = () =>
   invoke<string[]>('get_setup_in_progress')
+
+export const runHook = (taskId: string, hookType: 'setup' | 'destroy') =>
+  invoke<PtySpawnResult>('run_hook', { taskId, hookType })
+
+export const stopHook = (taskId: string) =>
+  invoke<void>('stop_hook', { taskId })
 
 // Sessions
 export const createSession = (taskId: string) =>
@@ -191,8 +197,8 @@ export const openInApp = (path: string, app: string) =>
   invoke<void>('open_in_app', { path, app })
 
 // PTY / Terminal
-export const ptySpawn = (taskId: string, rows: number, cols: number, initialCommand?: string) =>
-  invoke<PtySpawnResult>('pty_spawn', { taskId, rows, cols, initialCommand })
+export const ptySpawn = (taskId: string, rows: number, cols: number, initialCommand?: string, directCommand?: boolean) =>
+  invoke<PtySpawnResult>('pty_spawn', { taskId, rows, cols, initialCommand, directCommand })
 
 export const ptyWrite = (terminalId: string, data: string) =>
   invoke<void>('pty_write', { terminalId, data })

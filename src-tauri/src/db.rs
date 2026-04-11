@@ -147,6 +147,12 @@ pub fn migrations() -> Vec<Migration> {
             ALTER TABLE tasks ADD COLUMN last_commit_message TEXT;
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 11,
+        description: "add auto_start toggle to projects",
+        sql: "ALTER TABLE projects ADD COLUMN auto_start INTEGER NOT NULL DEFAULT 0;",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -164,6 +170,7 @@ pub struct Project {
     pub setup_hook: String,
     pub destroy_hook: String,
     pub start_command: String,
+    pub auto_start: bool,
     pub created_at: i64,
 }
 
@@ -246,7 +253,7 @@ pub enum DbWrite {
     // Projects
     InsertProject(Project),
     UpdateProjectBaseBranch { id: String, base_branch: String },
-    UpdateProjectHooks { id: String, setup_hook: String, destroy_hook: String, start_command: String },
+    UpdateProjectHooks { id: String, setup_hook: String, destroy_hook: String, start_command: String, auto_start: bool },
     DeleteProject { id: String },
 
     // Tasks
@@ -313,8 +320,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Projects --
         DbWrite::InsertProject(p) => {
             sqlx::query(
-                "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, created_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&p.id)
             .bind(&p.name)
@@ -323,6 +330,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(&p.setup_hook)
             .bind(&p.destroy_hook)
             .bind(&p.start_command)
+            .bind(p.auto_start)
             .bind(p.created_at)
             .execute(pool)
             .await?;
@@ -334,11 +342,12 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .execute(pool)
                 .await?;
         }
-        DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command } => {
-            sqlx::query("UPDATE projects SET setup_hook = ?, destroy_hook = ?, start_command = ? WHERE id = ?")
+        DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command, auto_start } => {
+            sqlx::query("UPDATE projects SET setup_hook = ?, destroy_hook = ?, start_command = ?, auto_start = ? WHERE id = ?")
                 .bind(&setup_hook)
                 .bind(&destroy_hook)
                 .bind(&start_command)
+                .bind(auto_start)
                 .bind(&id)
                 .execute(pool)
                 .await?;
@@ -794,9 +803,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_ten_migrations() {
+    fn has_eleven_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 10);
+        assert_eq!(m.len(), 11);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
@@ -807,6 +816,7 @@ mod tests {
         assert_eq!(m[7].version, 8);
         assert_eq!(m[8].version, 9);
         assert_eq!(m[9].version, 10);
+        assert_eq!(m[10].version, 11);
     }
 
     #[test]
@@ -832,6 +842,7 @@ mod tests {
             setup_hook: String::new(),
             destroy_hook: String::new(),
             start_command: String::new(),
+            auto_start: false,
             created_at: 1000,
         }
     }

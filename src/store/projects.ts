@@ -41,11 +41,11 @@ export async function updateBaseBranch(id: string, baseBranch: string) {
   setProjects(p => p.id === id, 'baseBranch', baseBranch)
 }
 
-export async function updateHooks(id: string, setupHook: string, destroyHook: string, startCommand: string) {
-  await ipc.updateProjectHooks(id, setupHook, destroyHook, startCommand)
+export async function updateHooks(id: string, setupHook: string, destroyHook: string, startCommand: string, autoStart: boolean) {
+  await ipc.updateProjectHooks(id, setupHook, destroyHook, startCommand, autoStart)
   setProjects(produce(list => {
     const p = list.find(p => p.id === id)
-    if (p) { p.setupHook = setupHook; p.destroyHook = destroyHook; p.startCommand = startCommand }
+    if (p) { p.setupHook = setupHook; p.destroyHook = destroyHook; p.startCommand = startCommand; p.autoStart = autoStart }
   }))
 }
 

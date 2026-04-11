@@ -74,10 +74,173 @@ pub fn new_setup_in_progress() -> SetupInProgress {
     Arc::new(DashMap::new())
 }
 
-/// Run a setup hook in the background, emitting events to the frontend.
+// ---------------------------------------------------------------------------
+// Hook PTY tracking — maps task_id to active hook terminal
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookType {
+    Setup,
+    Destroy,
+}
+
+impl HookType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HookType::Setup => "setup",
+            HookType::Destroy => "destroy",
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub struct HookPtyEntry {
+    pub terminal_id: String,
+    pub hook_type: HookType,
+}
+
+/// task_id → currently running hook PTY (setup or destroy)
+pub type HookPtyMap = Arc<DashMap<String, HookPtyEntry>>;
+
+pub fn new_hook_pty_map() -> HookPtyMap {
+    Arc::new(DashMap::new())
+}
+
+/// Spawn a hook command via PTY so output streams to the frontend in real-time.
+/// Returns the terminal_id on success.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_hook_pty(
+    app: &AppHandle,
+    pty_map: &crate::pty::ActivePtyMap,
+    hook_pty_map: &HookPtyMap,
+    setup_in_progress: &SetupInProgress,
+    task_id: &str,
+    worktree_path: &str,
+    hook_command: &str,
+    hook_type: HookType,
+    port_offset: i64,
+    repo_path: &str,
+) -> Result<crate::pty::SpawnResult, String> {
+    if hook_command.is_empty() {
+        return Err(format!("No {} hook configured", hook_type.as_str()));
+    }
+
+    if hook_pty_map.contains_key(task_id) {
+        return Err("A hook is already running for this task".to_string());
+    }
+
+    let env_vars = worktree::verun_env_vars(port_offset, repo_path);
+
+    let result = crate::pty::spawn_pty(
+        app.clone(),
+        pty_map.clone(),
+        task_id.to_string(),
+        worktree_path.to_string(),
+        24,
+        80,
+        Some(hook_command.to_string()),
+        env_vars,
+        true, // direct_command — PTY exits when hook exits
+    )?;
+
+    hook_pty_map.insert(
+        task_id.to_string(),
+        HookPtyEntry {
+            terminal_id: result.terminal_id.clone(),
+            hook_type,
+        },
+    );
+
+    if hook_type == HookType::Setup {
+        setup_in_progress.insert(task_id.to_string(), true);
+    }
+
+    let _ = app.emit(
+        "setup-hook",
+        crate::stream::SetupHookEvent {
+            task_id: task_id.to_string(),
+            status: "running".to_string(),
+            error: None,
+            terminal_id: Some(result.terminal_id.clone()),
+            hook_type: Some(hook_type.as_str().to_string()),
+        },
+    );
+
+    // Listen for pty-exited to detect hook completion and emit status
+    let bg_app = app.clone();
+    let bg_task_id = task_id.to_string();
+    let bg_terminal_id = result.terminal_id.clone();
+    let bg_hook_pty_map = hook_pty_map.clone();
+    let bg_sip = setup_in_progress.clone();
+    let bg_hook_type = hook_type;
+
+    tokio::spawn(async move {
+        use tauri::Listener;
+        let (tx, rx) = tokio::sync::oneshot::channel::<Option<u32>>();
+        let tx = std::sync::Mutex::new(Some(tx));
+        let target_tid = bg_terminal_id.clone();
+
+        let unlisten_id = bg_app.listen("pty-exited", move |event| {
+            if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                if payload.get("terminalId").and_then(|v| v.as_str()) == Some(&target_tid) {
+                    let exit_code = payload
+                        .get("exitCode")
+                        .and_then(|v| v.as_u64())
+                        .map(|c| c as u32);
+                    if let Some(sender) = tx.lock().ok().and_then(|mut s| s.take()) {
+                        let _ = sender.send(exit_code);
+                    }
+                }
+            }
+        });
+
+        let exit_code = rx.await.unwrap_or(None);
+
+        bg_app.unlisten(unlisten_id);
+
+        // Clean up tracking maps
+        bg_hook_pty_map.remove(&bg_task_id);
+        if bg_hook_type == HookType::Setup {
+            bg_sip.remove(&bg_task_id);
+        }
+
+        let (status, error) = match exit_code {
+            Some(0) => ("completed".to_string(), None),
+            Some(code) => {
+                eprintln!("[verun] {} hook failed with exit code {code}", bg_hook_type.as_str());
+                ("failed".to_string(), Some(format!("Exit code: {code}")))
+            }
+            None => {
+                eprintln!("[verun] {} hook terminated", bg_hook_type.as_str());
+                ("failed".to_string(), Some("Process terminated".to_string()))
+            }
+        };
+
+        let _ = bg_app.emit(
+            "setup-hook",
+            crate::stream::SetupHookEvent {
+                task_id: bg_task_id.clone(),
+                status,
+                error,
+                terminal_id: Some(bg_terminal_id),
+                hook_type: Some(bg_hook_type.as_str().to_string()),
+            },
+        );
+
+        // If setup completed, auto-send queued messages
+        // (the frontend handles this via the setup-hook event listener)
+    });
+
+    Ok(result)
+}
+
+/// Run a setup hook in the background via PTY, emitting events to the frontend.
 /// Shared by task creation and task restoration.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_setup_hook(
     app: &AppHandle,
+    pty_map: &crate::pty::ActivePtyMap,
+    hook_pty_map: &HookPtyMap,
     setup_in_progress: &SetupInProgress,
     task_id: &str,
     worktree_path: &str,
@@ -89,49 +252,31 @@ pub fn spawn_setup_hook(
         return;
     }
 
-    setup_in_progress.insert(task_id.to_string(), true);
-    let _ = app.emit(
-        "setup-hook",
-        crate::stream::SetupHookEvent {
-            task_id: task_id.to_string(),
-            status: "running".to_string(),
-            error: None,
-        },
-    );
-
-    let bg_app = app.clone();
-    let bg_task_id = task_id.to_string();
-    let bg_wt = worktree_path.to_string();
-    let bg_env = worktree::verun_env_vars(port_offset, repo_path);
-    let bg_sip = setup_in_progress.clone();
-    let hook = setup_hook.to_string();
-
-    tokio::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
-            worktree::run_hook(&bg_wt, &hook, &bg_env)
-        })
-        .await;
-
-        bg_sip.remove(&bg_task_id);
-
-        let (status, error) = match result {
-            Ok(Ok(())) => ("completed".to_string(), None),
-            Ok(Err(e)) => {
-                eprintln!("[verun] setup hook failed: {e}");
-                ("failed".to_string(), Some(e))
-            }
-            Err(e) => ("failed".to_string(), Some(format!("Join error: {e}"))),
-        };
-
-        let _ = bg_app.emit(
+    if let Err(e) = spawn_hook_pty(
+        app,
+        pty_map,
+        hook_pty_map,
+        setup_in_progress,
+        task_id,
+        worktree_path,
+        setup_hook,
+        HookType::Setup,
+        port_offset,
+        repo_path,
+    ) {
+        eprintln!("[verun] failed to spawn setup hook PTY: {e}");
+        // Fall back: emit failed event so frontend isn't stuck
+        let _ = app.emit(
             "setup-hook",
             crate::stream::SetupHookEvent {
-                task_id: bg_task_id,
-                status,
-                error,
+                task_id: task_id.to_string(),
+                status: "failed".to_string(),
+                error: Some(e),
+                terminal_id: None,
+                hook_type: Some("setup".to_string()),
             },
         );
-    });
+    }
 }
 
 pub fn get_active_session_ids(active: &ActiveMap) -> Vec<String> {
@@ -188,6 +333,8 @@ pub struct CreateTaskParams {
 pub async fn create_task(
     app: &AppHandle,
     db_tx: &DbWriteTx,
+    pty_map: &crate::pty::ActivePtyMap,
+    hook_pty_map: &HookPtyMap,
     setup_in_progress: &SetupInProgress,
     params: CreateTaskParams,
 ) -> Result<(Task, Session), String> {
@@ -231,11 +378,12 @@ pub async fn create_task(
     let session = create_session(db_tx, task.id.clone()).await?;
 
     // Phase 2: Run setup hook in background (if non-empty)
-    spawn_setup_hook(app, setup_in_progress, &task.id, &worktree_path, &setup_hook, port_offset, &repo_path);
+    spawn_setup_hook(app, pty_map, hook_pty_map, setup_in_progress, &task.id, &worktree_path, &setup_hook, port_offset, &repo_path);
 
     Ok((task, session))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_task(
     app: &AppHandle,
     db_tx: &DbWriteTx,
@@ -244,6 +392,7 @@ pub async fn delete_task(
     task: &Task,
     destroy_hook: &str,
     delete_branch: bool,
+    skip_destroy_hook: bool,
 ) -> Result<(), String> {
     // Kill any active processes for this task's sessions
     let keys: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
@@ -261,9 +410,14 @@ pub async fn delete_task(
         .await;
     }
 
+    // Clean up hook tracking
+    if let Some(hook_map) = app.try_state::<HookPtyMap>() {
+        hook_map.remove(&task.id);
+    }
+
     let rp = repo_path.to_string();
     let wtp = task.worktree_path.clone();
-    let hook = destroy_hook.to_string();
+    let hook = if skip_destroy_hook { String::new() } else { destroy_hook.to_string() };
     let branch = task.branch.clone();
     let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
     let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -296,6 +450,7 @@ pub async fn archive_task(
     task: &Task,
     destroy_hook: &str,
     repo_path: &str,
+    skip_destroy_hook: bool,
 ) -> Result<(), String> {
     // Kill any active processes for this task's sessions
     let keys: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
@@ -313,10 +468,15 @@ pub async fn archive_task(
         .await;
     }
 
-    // Run destroy hook and capture last commit message (but keep worktree and branch)
+    // Clean up hook tracking
+    if let Some(hook_map) = app.try_state::<HookPtyMap>() {
+        hook_map.remove(&task.id);
+    }
+
+    // Run destroy hook (unless skipped) and capture last commit message
     let rp = repo_path.to_string();
     let branch = task.branch.clone();
-    let hook = destroy_hook.to_string();
+    let hook = if skip_destroy_hook { String::new() } else { destroy_hook.to_string() };
     let wtp = task.worktree_path.clone();
     let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
     let last_commit_message = tokio::task::spawn_blocking(move || {
@@ -654,12 +814,24 @@ pub async fn send_message(
         // Check for .verun.json config written by Claude auto-detect
         let config_path = format!("{wt_for_hooks}/.verun.json");
         if let Some((setup, destroy, start)) = parse_verun_config_file(&config_path) {
+            // Look up existing auto_start so auto-detect doesn't reset it
+            let auto_start = if let Some(pool) = monitor_app.try_state::<sqlx::sqlite::SqlitePool>() {
+                db::get_project(pool.inner(), &monitor_pid)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|p| p.auto_start)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
             let _ = monitor_db_tx
                 .send(db::DbWrite::UpdateProjectHooks {
                     id: monitor_pid.clone(),
                     setup_hook: setup.clone(),
                     destroy_hook: destroy.clone(),
                     start_command: start.clone(),
+                    auto_start,
                 })
                 .await;
             let _ = monitor_app.emit("project-hooks-updated", serde_json::json!({

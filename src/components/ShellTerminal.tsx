@@ -1,4 +1,4 @@
-import { Component, onMount, onCleanup } from 'solid-js'
+import { Component, onMount, onCleanup, type Accessor } from 'solid-js'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -34,7 +34,7 @@ const THEME = {
 }
 
 /** Capture-phase keydown on the container — fires before xterm's textarea gets it */
-function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string) {
+function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>) {
   container.addEventListener('keydown', (e: KeyboardEvent) => {
     const mod = modPressed(e)
     if (mod && e.key === 'c') {
@@ -44,19 +44,21 @@ function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId:
       if (selection) navigator.clipboard.writeText(selection)
       return
     }
+    if (mod && e.key === 'a') { e.preventDefault(); term.selectAll(); return }
+    if (mod && e.key === 'k') { e.preventDefault(); term.clear(); return }
+    if (mod && e.key === 'ArrowUp') { e.preventDefault(); term.scrollToTop(); return }
+    if (mod && e.key === 'ArrowDown') { e.preventDefault(); term.scrollToBottom(); return }
+    // Block PTY writes when stopped
+    if (isStopped?.()) return
     if (mod && e.key === 'v') {
       e.preventDefault()
       e.stopImmediatePropagation()
       ipc.readClipboard().then(text => { if (text) ipc.ptyWrite(terminalId, text) })
       return
     }
-    if (mod && e.key === 'a') { e.preventDefault(); term.selectAll(); return }
-    if (mod && e.key === 'k') { e.preventDefault(); term.clear(); return }
     if (mod && e.key === 'ArrowLeft') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x01'); return }
     if (mod && e.key === 'ArrowRight') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x05'); return }
     if (mod && e.key === 'Backspace') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x15'); return }
-    if (mod && e.key === 'ArrowUp') { e.preventDefault(); term.scrollToTop(); return }
-    if (mod && e.key === 'ArrowDown') { e.preventDefault(); term.scrollToBottom(); return }
     if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x1bb'); return }
     if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x1bf'); return }
     if (e.altKey && e.key === 'Backspace') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x17'); return }
@@ -99,6 +101,8 @@ function initialFit(entry: XtermEntry, terminalId: string) {
 
 interface Props {
   terminalId: string
+  /** Reactive accessor — when true, keyboard input to the PTY is blocked (scrolling still works) */
+  isStopped?: Accessor<boolean>
 }
 
 export const ShellTerminal: Component<Props> = (props) => {
@@ -114,7 +118,7 @@ export const ShellTerminal: Component<Props> = (props) => {
       // Reparent the existing xterm DOM into this new container (task switch)
       const el = existing.term.element
       if (el) containerRef.appendChild(el)
-      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId)
+      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped)
       initialFit(existing, props.terminalId)
       resizeObserver = attachResizeObserver(containerRef, existing, props.terminalId)
       return
@@ -144,8 +148,11 @@ export const ShellTerminal: Component<Props> = (props) => {
     term.loadAddon(unicode11)
     term.unicode.activeVersion = '11'
     setupXtermPassthrough(term)
-    setupCaptureKeyHandler(containerRef, term, props.terminalId)
-    term.onData((data) => ipc.ptyWrite(props.terminalId, data))
+    setupCaptureKeyHandler(containerRef, term, props.terminalId, props.isStopped)
+    term.onData((data) => {
+      if (props.isStopped?.()) return
+      ipc.ptyWrite(props.terminalId, data)
+    })
     registerXterm(props.terminalId, term, fitAddon)
 
     term.open(containerRef)

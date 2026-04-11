@@ -144,19 +144,19 @@ export function removePlaceholderTask(id: string) {
   setTasks(prev => prev.filter(t => t.id !== id))
 }
 
-export async function deleteTask(id: string, deleteBranch = true) {
+export async function deleteTask(id: string, deleteBranch = true, skipDestroyHook = false) {
   closeTerminalsForTask(id)
   clearTaskGitState(id)
-  await ipc.deleteTask(id, deleteBranch)
+  await ipc.deleteTask(id, deleteBranch, skipDestroyHook)
   setTasks(prev => prev.filter(t => t.id !== id))
 }
 
-export async function archiveTask(id: string) {
+export async function archiveTask(id: string, skipDestroyHook = false) {
   addArchiving(id)
   try {
     closeTerminalsForTask(id)
     clearTaskGitState(id)
-    await ipc.archiveTask(id)
+    await ipc.archiveTask(id, skipDestroyHook)
     setTasks(t => t.id === id, 'archived', true)
   } finally {
     removeArchiving(id)

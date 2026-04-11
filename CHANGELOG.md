@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Setup hooks now stream live output into an xterm.js terminal tab instead of showing a blind spinner — see exactly what your hook is doing as it runs
+- Hook terminal tabs appear first in the terminal panel with status indicators (spinner while running, green check on success, red alert on failure)
+- Stop a running setup hook mid-execution with the new Stop button in the setup banner
+- Re-run failed or completed setup hooks from the banner or terminal tab
+- Manual hook execution via new run_hook/stop_hook IPC commands for both setup and destroy hooks
+- PTY exit events now include the process exit code for richer status reporting
+- Start/Stop button in the task header to run the start command in a read-only "Dev Server" terminal tab (always first tab)
+- Start command terminals detect when the process exits (Ctrl+C, crash) and transition to stopped state — input is blocked after exit
+- Auto-start toggle in project settings and add-project dialog (off by default) — when enabled, the start command runs automatically for new tasks
 - Adding a project via manual config now auto-opens the new task dialog so you can start working immediately
 - Fix deleting a project not clearing the selected task/session when the open task belonged to that project
 - Rename tasks from the right-click context menu
