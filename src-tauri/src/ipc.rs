@@ -10,7 +10,7 @@ use crate::watcher::FileWatcherMap;
 use crate::worktree;
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::task::JoinError;
 use uuid::Uuid;
 
@@ -358,6 +358,31 @@ pub async fn restore_task(
     Ok(())
 }
 
+/// Rename a task (persists to DB and emits event to frontend)
+#[tauri::command]
+pub async fn rename_task(
+    app: AppHandle,
+    db_tx: State<'_, DbWriteTx>,
+    task_id: String,
+    name: String,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::UpdateTaskName {
+            id: task_id.clone(),
+            name: name.clone(),
+        })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+    let _ = app.emit(
+        "task-name",
+        crate::stream::TaskNameEvent {
+            task_id,
+            name,
+        },
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
@@ -423,6 +448,7 @@ pub async fn send_message(
             plan_mode: plan_mode.unwrap_or(false),
             thinking_mode: thinking_mode.unwrap_or(false),
             fast_mode: fast_mode.unwrap_or(false),
+            task_name: t.name,
         },
     )
     .await

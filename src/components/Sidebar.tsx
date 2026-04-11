@@ -18,6 +18,7 @@ import {
   isTaskCreating,
   isTaskArchiving,
   getTaskError,
+  updateTaskName,
 } from "../store/tasks";
 import {
   selectedProjectId,
@@ -31,6 +32,8 @@ import {
   isTaskUnread,
   isTaskAttention,
   clearTaskIndicators,
+  addProjectPath,
+  setAddProjectPath,
 } from "../store/ui";
 import { sessionsForTask, loadSessions } from "../store/sessions";
 import { deleteProject } from "../store/projects";
@@ -149,7 +152,7 @@ export const Sidebar: Component = () => {
   } | null>(null);
   const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null);
   const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null);
-  const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null);
+  const [renamingTaskId, setRenamingTaskId] = createSignal<string | null>(null);
 
   // Clear unread/attention indicators when user selects a task
   createEffect(
@@ -228,6 +231,10 @@ export const Sidebar: Component = () => {
     setContextMenu({
       pos: { x: e.clientX, y: e.clientY },
       items: [
+        {
+          label: "Rename",
+          action: () => setRenamingTaskId(taskId),
+        },
         {
           label: "Open in Finder",
           action: () => ipc.openInFinder(task.worktreePath),
@@ -374,9 +381,32 @@ export const Sidebar: Component = () => {
                               {disabled() ? <Loader2 size={12} class="animate-spin" /> : hasError() ? <AlertCircle size={12} /> : <PhaseIcon phase={phase()} />}
                             </span>
                             <div class="flex-1 min-w-0">
-                              <div class={clsx("text-xs truncate", hasIndicator() ? "text-text-primary font-medium" : "text-text-secondary")}>
-                                {task.name || "New task"}
-                              </div>
+                              <Show when={renamingTaskId() === task.id} fallback={
+                                <div class={clsx("text-xs truncate", hasIndicator() ? "text-text-primary font-medium" : "text-text-secondary")}>
+                                  {task.name || "New task"}
+                                </div>
+                              }>
+                                <input
+                                  class="text-xs bg-bg-secondary text-text-primary border border-border-active rounded px-1 py-0 w-full outline-none"
+                                  value={task.name || ""}
+                                  ref={(el) => requestAnimationFrame(() => { el.focus(); el.select() })}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      const val = e.currentTarget.value.trim()
+                                      if (val) updateTaskName(task.id, val)
+                                      setRenamingTaskId(null)
+                                    } else if (e.key === 'Escape') {
+                                      setRenamingTaskId(null)
+                                    }
+                                  }}
+                                  onBlur={(e) => {
+                                    const val = e.currentTarget.value.trim()
+                                    if (val) updateTaskName(task.id, val)
+                                    setRenamingTaskId(null)
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              </Show>
                               <div class={clsx("text-[10px] truncate", hasIndicator() ? "text-text-muted" : "text-text-dim")}>
                                 {task.branch}
                               </div>
@@ -500,7 +530,7 @@ export const Sidebar: Component = () => {
         open={!!addProjectPath()}
         repoPath={addProjectPath()}
         onClose={() => setAddProjectPath(null)}
-        onAdded={(id) => setSelectedProjectId(id)}
+        onAdded={(id) => { setSelectedProjectId(id); setNewTaskProjectId(id) }}
       />
     </>
   );

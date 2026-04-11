@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Adding a project via manual config now auto-opens the new task dialog so you can start working immediately
+- Fix deleting a project not clearing the selected task/session when the open task belonged to that project
+- Rename tasks from the right-click context menu
+- Auto-name tasks on every new message while the name is still blank, not just the first message
+- Add project dialog pre-populates hook fields from .verun.json when one exists in the repo
+
 ## 0.4.1 — 2026-04-11
 
 ### Changes

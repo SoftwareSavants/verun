@@ -397,6 +397,7 @@ pub struct SendMessageParams {
     pub plan_mode: bool,
     pub thinking_mode: bool,
     pub fast_mode: bool,
+    pub task_name: Option<String>,
 }
 
 /// Send a message to Claude in this session's worktree.
@@ -410,7 +411,7 @@ pub async fn send_message(
     pending_approval_meta: PendingApprovalMeta,
     params: SendMessageParams,
 ) -> Result<(), String> {
-    let SendMessageParams { session_id, task_id, project_id, worktree_path, repo_path, port_offset, trust_level, message, claude_session_id, attachments, model, plan_mode, thinking_mode, fast_mode } = params;
+    let SendMessageParams { session_id, task_id, project_id, worktree_path, repo_path, port_offset, trust_level, message, claude_session_id, attachments, model, plan_mode, thinking_mode, fast_mode, task_name } = params;
     // Don't allow concurrent messages on the same session
     if active.contains_key(&session_id) {
         return Err("Session is already processing a message".to_string());
@@ -419,7 +420,9 @@ pub async fn send_message(
     let is_first_turn = claude_session_id.as_ref().is_none_or(|s| s.is_empty());
 
     // Generate AI title in background (non-blocking, tab shows "New session" until it arrives)
-    if is_first_turn && !message.is_empty() {
+    let needs_session_name = is_first_turn && !message.is_empty();
+    let needs_task_name = task_name.is_none() && !message.is_empty();
+    if needs_session_name || needs_task_name {
         let title_app = app.clone();
         let title_db = db_tx.clone();
         let title_sid = session_id.clone();
@@ -428,32 +431,36 @@ pub async fn send_message(
         let title_wt = worktree_path.clone();
         tokio::spawn(async move {
             if let Some(title) = generate_session_title(&title_msg, &title_wt).await {
-                let _ = title_db
-                    .send(db::DbWrite::UpdateSessionName {
-                        id: title_sid.clone(),
-                        name: title.clone(),
-                    })
-                    .await;
-                let _ = title_app.emit(
-                    "session-name",
-                    stream::SessionNameEvent {
-                        session_id: title_sid,
-                        name: title.clone(),
-                    },
-                );
-                let _ = title_db
-                    .send(db::DbWrite::UpdateTaskName {
-                        id: title_tid.clone(),
-                        name: title.clone(),
-                    })
-                    .await;
-                let _ = title_app.emit(
-                    "task-name",
-                    stream::TaskNameEvent {
-                        task_id: title_tid,
-                        name: title,
-                    },
-                );
+                if needs_session_name {
+                    let _ = title_db
+                        .send(db::DbWrite::UpdateSessionName {
+                            id: title_sid.clone(),
+                            name: title.clone(),
+                        })
+                        .await;
+                    let _ = title_app.emit(
+                        "session-name",
+                        stream::SessionNameEvent {
+                            session_id: title_sid,
+                            name: title.clone(),
+                        },
+                    );
+                }
+                if needs_task_name {
+                    let _ = title_db
+                        .send(db::DbWrite::UpdateTaskName {
+                            id: title_tid.clone(),
+                            name: title.clone(),
+                        })
+                        .await;
+                    let _ = title_app.emit(
+                        "task-name",
+                        stream::TaskNameEvent {
+                            task_id: title_tid,
+                            name: title,
+                        },
+                    );
+                }
             }
         });
     }
@@ -740,7 +747,7 @@ pub async fn abort_message(
 /// Generate a short title using a standalone Haiku call (fast, doesn't affect session).
 async fn generate_session_title(first_message: &str, worktree_path: &str) -> Option<String> {
     let prompt = format!(
-        "Generate a 3-5 word title for this coding task. Reply with ONLY the title, nothing else.\n\nUser message: {}",
+        "Generate a 3-5 word title summarizing what the user wants. Reply with ONLY the title, nothing else. If the message is too vague or unclear to summarize (e.g. just a greeting), reply with exactly NONE.\n\nUser message: {}",
         first_message.chars().take(300).collect::<String>()
     );
     let output = tokio::process::Command::new("claude")
@@ -763,7 +770,7 @@ async fn generate_session_title(first_message: &str, worktree_path: &str) -> Opt
         .trim()
         .trim_matches('"')
         .to_string();
-    if title.is_empty() || title.len() > 60 {
+    if title.is_empty() || title.len() > 60 || title.eq_ignore_ascii_case("NONE") {
         None
     } else {
         Some(title)

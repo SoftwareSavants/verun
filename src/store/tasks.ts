@@ -170,6 +170,7 @@ export async function restoreTask(id: string) {
 
 export async function updateTaskName(id: string, name: string) {
   setTasks(t => t.id === id, 'name', name)
+  ipc.renameTask(id, name)
 }
 
 export const taskById = (id: string) =>

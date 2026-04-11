@@ -198,6 +198,7 @@ pub fn run() {
             ipc::archive_task,
             ipc::check_task_worktree,
             ipc::restore_task,
+            ipc::rename_task,
             ipc::get_setup_in_progress,
             // Sessions
             ipc::create_session,

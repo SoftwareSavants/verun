@@ -45,6 +45,9 @@ export const checkTaskWorktree = (id: string) =>
 export const restoreTask = (id: string) =>
   invoke<void>('restore_task', { id })
 
+export const renameTask = (taskId: string, name: string) =>
+  invoke<void>('rename_task', { taskId, name })
+
 export const getSetupInProgress = () =>
   invoke<string[]>('get_setup_in_progress')
 
