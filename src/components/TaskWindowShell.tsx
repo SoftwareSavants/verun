@@ -1,11 +1,12 @@
 import { Component, createSignal, onMount, onCleanup } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useWindowContext } from '../lib/windowContext'
 import { initTheme } from '../lib/theme'
 import { loadProjects, initProjectListeners } from '../store/projects'
 import { initSessionListeners, syncSessionStatuses } from '../store/sessions'
 import { initTerminalListeners } from '../store/terminals'
-import { initGitListeners } from '../store/git'
+import { initGitListeners, initWindowFocusRefresh, refreshTaskGit } from '../store/git'
 import { initSetupListeners } from '../store/setup'
 import { loadTasks, taskById } from '../store/tasks'
 import {
@@ -52,6 +53,7 @@ export const TaskWindowShell: Component = () => {
     await initGitListeners()
     await initProjectListeners()
     await initSetupListeners()
+    initWindowFocusRefresh() // Fix #8: refresh git state on window focus
     await loadProjects()
     await syncSessionStatuses()
 
@@ -62,9 +64,10 @@ export const TaskWindowShell: Component = () => {
         setSelectedProjectId(task.projectId)
       }
       setSelectedTaskId(ctx.taskId)
+      // Fix #7: load git state for this task
+      refreshTaskGit(ctx.taskId)
     } else if (ctx.projectId) {
       setSelectedProjectId(ctx.projectId)
-      // Load tasks so the new task dialog can work
       await loadTasks(ctx.projectId)
     }
 
@@ -85,19 +88,28 @@ export const TaskWindowShell: Component = () => {
     }
   })
 
-  // Listen for task deletion — close this window if our task gets deleted
+  // Fix #1: Listen for task deletion/archival — close this window
   onMount(() => {
-    const unlistenDelete = listen<{ taskId: string }>('task-deleted', (event) => {
-      if (event.payload.taskId === (ctx.taskId || selectedTaskId())) {
-        addToast('Task was deleted', 'info')
-        setTimeout(() => {
-          import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
-            getCurrentWindow().close()
-          })
-        }, 1500)
+    const unlistenRemoved = listen<{ taskId: string; reason: string }>('task-removed', (event) => {
+      const myTaskId = ctx.taskId || selectedTaskId()
+      if (event.payload.taskId === myTaskId) {
+        const label = event.payload.reason === 'archived' ? 'Task was archived' : 'Task was deleted'
+        addToast(label, 'info')
+        setTimeout(() => getCurrentWindow().close(), 1500)
       }
     })
-    onCleanup(() => { unlistenDelete.then(fn => fn()) })
+    onCleanup(() => { unlistenRemoved.then(fn => fn()) })
+  })
+
+  // Fix #4: Update window title when task is auto-named or renamed
+  onMount(() => {
+    const unlistenName = listen<{ taskId: string; name: string }>('task-name', (event) => {
+      const myTaskId = ctx.taskId || selectedTaskId()
+      if (event.payload.taskId === myTaskId && event.payload.name) {
+        getCurrentWindow().setTitle(event.payload.name)
+      }
+    })
+    onCleanup(() => { unlistenName.then(fn => fn()) })
   })
 
   // When new task is created via dialog, update the selected task
@@ -105,9 +117,7 @@ export const TaskWindowShell: Component = () => {
     setShowNewTask(false)
     // If no task was selected (dialog was cancelled), close the window
     if (!selectedTaskId()) {
-      import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
-        getCurrentWindow().close()
-      })
+      getCurrentWindow().close()
     }
   }
 
@@ -124,16 +134,19 @@ export const TaskWindowShell: Component = () => {
         e.preventDefault()
         setRightPanelTab(rightPanelTab() === 'files' ? 'changes' : 'files')
       }
-      // Cmd+W — close active editor tab (or close window if no tab)
+      // Fix #10: Cmd+W — close editor tab, or close the window if no tab is open
       if (modPressed(e) && e.key === 'w' && !e.shiftKey) {
+        e.preventDefault()
         const tid = selectedTaskId()
         if (tid) {
           const path = activeTabPath(tid)
           if (path && mainView(tid) !== 'session') {
-            e.preventDefault()
             requestCloseTab(tid, path)
+            return
           }
         }
+        // No editor tab to close — close the window
+        getCurrentWindow().close()
       }
       // Cmd+Shift+T — reopen closed tab
       if (modPressed(e) && e.shiftKey && e.key === 't') {

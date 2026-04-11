@@ -180,6 +180,13 @@ pub fn run() {
                         let _ = window.emit("confirm-quit", ());
                         api.prevent_close();
                     }
+                } else if let Some(task_id) = window.label().strip_prefix("task-") {
+                    // Notify that a task window is closing
+                    let _ = window.emit_to(
+                        "main",
+                        "task-window-changed",
+                        serde_json::json!({ "taskId": task_id, "open": false }),
+                    );
                 }
             }
         })

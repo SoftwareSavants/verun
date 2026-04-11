@@ -440,6 +440,11 @@ pub async fn delete_task(
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
 
+    let _ = app.emit(
+        "task-removed",
+        serde_json::json!({ "taskId": task.id, "reason": "deleted" }),
+    );
+
     Ok(())
 }
 
@@ -503,6 +508,11 @@ pub async fn archive_task(
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
+
+    let _ = app.emit(
+        "task-removed",
+        serde_json::json!({ "taskId": task.id, "reason": "archived" }),
+    );
 
     Ok(())
 }

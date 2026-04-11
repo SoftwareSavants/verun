@@ -7,6 +7,8 @@ import {
   createSignal,
   createEffect,
   on,
+  onMount,
+  onCleanup,
 } from "solid-js";
 import { taskGit, refreshTaskGit } from "../store/git";
 import { projects } from "../store/projects";
@@ -57,8 +59,10 @@ import {
 } from "lucide-solid";
 import { clsx } from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import * as ipc from "../lib/ipc";
 import { hasOverlayTitlebar } from "../lib/platform";
+import { ExternalLink } from "lucide-solid";
 
 // ---------------------------------------------------------------------------
 // Composite task status — richer than just session status
@@ -153,6 +157,20 @@ export const Sidebar: Component = () => {
   const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null);
   const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null);
   const [renamingTaskId, setRenamingTaskId] = createSignal<string | null>(null);
+  const [windowedTasks, setWindowedTasks] = createSignal<Set<string>>(new Set());
+
+  // Track which tasks have open windows
+  onMount(() => {
+    const unlisten = listen<{ taskId: string; open: boolean }>("task-window-changed", (event) => {
+      setWindowedTasks(prev => {
+        const next = new Set(prev);
+        if (event.payload.open) next.add(event.payload.taskId);
+        else next.delete(event.payload.taskId);
+        return next;
+      });
+    });
+    onCleanup(() => { unlisten.then(fn => fn()) });
+  });
 
   // Clear unread/attention indicators when user selects a task
   createEffect(
@@ -412,8 +430,11 @@ export const Sidebar: Component = () => {
                                   onClick={(e) => e.stopPropagation()}
                                 />
                               </Show>
-                              <div class={clsx("text-[10px] truncate", hasIndicator() ? "text-text-muted" : "text-text-dim")}>
+                              <div class={clsx("text-[10px] truncate flex items-center gap-1", hasIndicator() ? "text-text-muted" : "text-text-dim")}>
                                 {task.branch}
+                                <Show when={windowedTasks().has(task.id)}>
+                                  <ExternalLink size={9} class="shrink-0 text-accent/60" />
+                                </Show>
                               </div>
                             </div>
                             <Show when={!archiving()}>

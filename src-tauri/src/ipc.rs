@@ -1745,6 +1745,11 @@ pub async fn open_task_window(
         .build()
         .map_err(|e| format!("Failed to create task window: {e}"))?;
 
+    let _ = app.emit(
+        "task-window-changed",
+        serde_json::json!({ "taskId": task_id, "open": true }),
+    );
+
     Ok(())
 }
 

@@ -59,7 +59,7 @@ export const Layout: Component = () => {
         e.preventDefault()
         pickAndAddProject()
       }
-      if (modPressed(e) && e.shiftKey && e.key === 'n') {
+      if (modPressed(e) && e.shiftKey && (e.key === 'n' || e.key === 'N')) {
         e.preventDefault()
         const pid = selectedProjectId() || (projects.length > 0 ? projects[projects.length - 1].id : null)
         if (pid) ipc.openNewTaskWindow(pid)
