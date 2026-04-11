@@ -378,7 +378,13 @@ pub async fn create_task(
     // Auto-create the first session
     let session = create_session(db_tx, task.id.clone()).await?;
 
-    // If created from a task window, notify all windows BEFORE spawning the hook
+    // Notify all windows about the new task so other windows can reload
+    let _ = app.emit(
+        "task-created",
+        serde_json::json!({ "taskId": task.id, "projectId": task.project_id }),
+    );
+
+    // If created from a task window, also mark it as windowed BEFORE spawning the hook
     // so the main window knows to ignore this task's setup events
     if from_task_window {
         let _ = app.emit(

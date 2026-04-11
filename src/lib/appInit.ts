@@ -5,6 +5,9 @@ import { initSessionListeners, syncSessionStatuses } from '../store/sessions'
 import { initTerminalListeners } from '../store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from '../store/git'
 import { initSetupListeners } from '../store/setup'
+import { loadTasks } from '../store/tasks'
+import { loadSessions } from '../store/sessions'
+import { refreshTaskGit } from '../store/git'
 import { addToast } from '../store/ui'
 import * as ipc from './ipc'
 
@@ -18,6 +21,18 @@ export async function initStores() {
   initWindowFocusRefresh()
   await loadProjects()
   await syncSessionStatuses()
+
+  // Reload tasks when a task is created or removed in another window
+  listen<{ taskId: string; projectId: string }>('task-created', (event) => {
+    loadTasks(event.payload.projectId)
+    loadSessions(event.payload.taskId)
+    refreshTaskGit(event.payload.taskId)
+  })
+  listen('task-removed', () => {
+    ipc.listProjects().then(projects => {
+      for (const p of projects) loadTasks(p.id)
+    })
+  })
 }
 
 /** Dismiss the splash screen and reveal the app */
