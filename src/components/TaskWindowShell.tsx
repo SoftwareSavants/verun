@@ -2,7 +2,7 @@ import { Component, createSignal, createEffect, on, onMount, onCleanup } from 's
 import { listen, emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useWindowContext } from '../lib/windowContext'
-import { initStores, dismissSplash, checkCli, installContextMenu, initQuitListener, showQuitConfirm, closeQuitDialog } from '../lib/appInit'
+import { initListeners, dismissSplash, installContextMenu, initQuitListener, showQuitConfirm, closeQuitDialog } from '../lib/appInit'
 import { initTheme } from '../lib/theme'
 import { refreshTaskGit } from '../store/git'
 import { loadTasks, taskById } from '../store/tasks'
@@ -47,21 +47,24 @@ export const TaskWindowShell: Component = () => {
     initTheme()
     initQuitListener()
     installContextMenu(setSelMenu)
-    await initStores()
 
-    if (ctx.taskId) {
-      const task = await ipc.getTask(ctx.taskId)
-      if (task) {
-        setSelectedProjectId(task.projectId)
-        await loadTasks(task.projectId)
-      }
-      refreshTaskGit(ctx.taskId)
-    } else if (ctx.projectId) {
-      await loadTasks(ctx.projectId)
-    }
+    // Register listeners and load task data in parallel for fast startup
+    const taskDataPromise = ctx.taskId
+      ? ipc.getTask(ctx.taskId).then(async (task) => {
+          if (task) {
+            setSelectedProjectId(task.projectId)
+            await loadTasks(task.projectId)
+          }
+          refreshTaskGit(ctx.taskId!)
+        })
+      : ctx.projectId
+        ? loadTasks(ctx.projectId)
+        : Promise.resolve()
+
+    await Promise.all([initListeners(), taskDataPromise])
 
     dismissSplash()
-    await checkCli()
+    getCurrentWindow().show()
   })
 
   // --- Task lifecycle listeners ---

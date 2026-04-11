@@ -25,6 +25,7 @@
     "core:event:allow-emit",
     "core:event:allow-listen",
     "core:window:allow-close",
+    "core:window:allow-show",
     "core:window:allow-set-title",
     "core:window:allow-set-focus",
     "core:window:allow-toggle-maximize",

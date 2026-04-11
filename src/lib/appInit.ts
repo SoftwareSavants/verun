@@ -11,18 +11,18 @@ import { refreshTaskGit } from '../store/git'
 import { addToast } from '../store/ui'
 import * as ipc from './ipc'
 
-/** Shared store + listener initialization for all window types */
-export async function initStores() {
-  await initSessionListeners()
-  await initTerminalListeners()
-  await initGitListeners()
-  await initProjectListeners()
-  await initSetupListeners()
+/** Register all event listeners (parallel — these just register callbacks) */
+export async function initListeners() {
+  await Promise.all([
+    initSessionListeners(),
+    initTerminalListeners(),
+    initGitListeners(),
+    initProjectListeners(),
+    initSetupListeners(),
+  ])
   initWindowFocusRefresh()
-  await loadProjects()
-  await syncSessionStatuses()
 
-  // Reload tasks when a task is created or removed in another window
+  // Cross-window sync: reload when tasks change in another window
   listen<{ taskId: string; projectId: string }>('task-created', (event) => {
     loadTasks(event.payload.projectId)
     loadSessions(event.payload.taskId)
@@ -33,6 +33,11 @@ export async function initStores() {
       for (const p of projects) loadTasks(p.id)
     })
   })
+}
+
+/** Load initial data from the database */
+export async function loadInitialData() {
+  await Promise.all([loadProjects(), syncSessionStatuses()])
 }
 
 /** Dismiss the splash screen and reveal the app */

@@ -1754,6 +1754,7 @@ pub async fn open_task_window(
         .min_inner_size(800.0, 600.0)
         .hidden_title(true)
         .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .visible(false)
         .build()
         .map_err(|e| format!("Failed to create task window: {e}"))?;
 
@@ -1787,6 +1788,7 @@ pub async fn open_new_task_window(
         .min_inner_size(800.0, 600.0)
         .hidden_title(true)
         .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .visible(false)
         .build()
         .map_err(|e| format!("Failed to create new task window: {e}"))?;
 

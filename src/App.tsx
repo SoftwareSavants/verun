@@ -1,6 +1,6 @@
 import { Component, Show, onMount, createSignal } from 'solid-js'
 import { parseWindowContext, WindowContextProvider } from './lib/windowContext'
-import { initStores, dismissSplash, checkCli, installContextMenu, initQuitListener, showQuitConfirm, closeQuitDialog } from './lib/appInit'
+import { initListeners, loadInitialData, dismissSplash, checkCli, installContextMenu, initQuitListener, showQuitConfirm, closeQuitDialog } from './lib/appInit'
 import { Layout } from './components/Layout'
 import { TaskWindowShell } from './components/TaskWindowShell'
 import { SelectionMenu } from './components/SelectionMenu'
@@ -22,8 +22,9 @@ const MainApp: Component = () => {
     initTheme()
     initQuitListener()
     installContextMenu(setSelMenu)
-    await initStores()
+    await initListeners()
     initProblemsListener()
+    await loadInitialData()
     dismissSplash()
 
     await checkCli()
