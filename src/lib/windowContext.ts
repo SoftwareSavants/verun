@@ -33,3 +33,32 @@ export function parseWindowContext(): WindowContext {
 
   return { windowType, windowLabel, taskId, projectId }
 }
+
+/** Module-level parsed context — safe to import from stores (outside component tree) */
+export const windowContext = parseWindowContext()
+
+/**
+ * Returns true if this window should handle events for the given taskId.
+ * Task windows own their specific task (or the task they created).
+ * Main window owns everything (windowed-task filtering happens at call site).
+ *
+ * For new-task windows (Cmd+Shift+N) where taskId starts null, pass the
+ * current selectedTaskId as `currentTaskId` so the check works after creation.
+ */
+let _isTaskWindowedFn: ((taskId: string) => boolean) | null = null
+
+/** Register the windowed-task checker (called once from store/ui.ts to avoid circular deps) */
+export function registerWindowedTaskChecker(fn: (taskId: string) => boolean) {
+  _isTaskWindowedFn = fn
+}
+
+export function isTaskOwnedByThisWindow(taskId: string, currentTaskId?: string | null): boolean {
+  if (windowContext.windowType === 'task') {
+    if (windowContext.taskId) return windowContext.taskId === taskId
+    // New-task window: fall back to currentTaskId (the task created in this window)
+    return currentTaskId != null && currentTaskId === taskId
+  }
+  // Main window: own all tasks except those open in a separate window
+  if (_isTaskWindowedFn && _isTaskWindowedFn(taskId)) return false
+  return true
+}

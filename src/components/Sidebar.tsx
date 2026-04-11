@@ -36,6 +36,8 @@ import {
   clearTaskIndicators,
   addProjectPath,
   setAddProjectPath,
+  isTaskWindowed,
+  markTaskWindowed,
 } from "../store/ui";
 import { sessionsForTask, loadSessions } from "../store/sessions";
 import { deleteProject } from "../store/projects";
@@ -157,22 +159,11 @@ export const Sidebar: Component = () => {
   const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null);
   const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null);
   const [renamingTaskId, setRenamingTaskId] = createSignal<string | null>(null);
-  const [windowedTasks, setWindowedTasks] = createSignal<Set<string>>(new Set());
 
-  // Track which tasks have open windows — deselect in main when popped out
+  // Track which tasks have open windows
   onMount(() => {
     const unlisten = listen<{ taskId: string; open: boolean }>("task-window-changed", (event) => {
-      const { taskId, open } = event.payload;
-      setWindowedTasks(prev => {
-        const next = new Set(prev);
-        if (open) next.add(taskId);
-        else next.delete(taskId);
-        return next;
-      });
-      // Deselect in main when a task is popped out
-      if (open && selectedTaskId() === taskId) {
-        setSelectedTaskId(null);
-      }
+      markTaskWindowed(event.payload.taskId, event.payload.open);
     });
     onCleanup(() => { unlisten.then(fn => fn()) });
   });
@@ -382,7 +373,7 @@ export const Sidebar: Component = () => {
                         const unread = () => !attention() && isTaskUnread(task.id);
                         const hasIndicator = () => attention() || unread();
                         const disabled = () => creating() || archiving();
-                        const windowed = () => windowedTasks().has(task.id);
+                        const windowed = () => isTaskWindowed(task.id);
 
                         const handleClick = () => {
                           if (windowed()) {
@@ -452,7 +443,7 @@ export const Sidebar: Component = () => {
                               </Show>
                               <div class={clsx("text-[10px] truncate flex items-center gap-1", hasIndicator() ? "text-text-muted" : "text-text-dim")}>
                                 {task.branch}
-                                <Show when={windowedTasks().has(task.id)}>
+                                <Show when={isTaskWindowed(task.id)}>
                                   <ExternalLink size={9} class="shrink-0 text-accent/60" />
                                 </Show>
                               </div>

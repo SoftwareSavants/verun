@@ -3,7 +3,8 @@ import { listen } from '@tauri-apps/api/event'
 import type { Attachment } from '../types'
 import * as ipc from '../lib/ipc'
 import { registerHookTerminal } from './terminals'
-import { setShowTerminal } from './ui'
+import { selectedTaskId, setShowTerminal } from './ui'
+import { isTaskOwnedByThisWindow } from '../lib/windowContext'
 
 interface SetupState {
   status: 'running' | 'failed'
@@ -46,6 +47,9 @@ export async function initSetupListeners() {
 
   await listen<{ taskId: string; status: string; error?: string; terminalId?: string; hookType?: string }>('setup-hook', (event) => {
     const { taskId, status, error, terminalId, hookType } = event.payload
+
+    // Only handle setup events for tasks owned by this window
+    if (!isTaskOwnedByThisWindow(taskId, selectedTaskId())) return
 
     if (status === 'running') {
       setSetupTasks(taskId, { status: 'running', terminalId, hookType: hookType as 'setup' | 'destroy' })

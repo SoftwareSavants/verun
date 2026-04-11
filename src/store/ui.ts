@@ -1,5 +1,6 @@
 import { createSignal } from 'solid-js'
 import type { ModelId } from '../types'
+import { registerWindowedTaskChecker } from '../lib/windowContext'
 
 export const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
 export const [selectedTaskId, setSelectedTaskId] = createSignal<string | null>(null)
@@ -166,3 +167,24 @@ export function dismissToast(id: string) {
 
 // Shared edit-step signal — set by StepList edit button, consumed by MessageInput
 export const [editStepRequest, setEditStepRequest] = createSignal<{ sessionId: string; stepId: string; message: string; attachmentsJson?: string | null } | null>(null)
+
+// Tracks which tasks are currently open in a separate window
+const [_windowedTaskIds, _setWindowedTaskIds] = createSignal<Set<string>>(new Set())
+export const isTaskWindowed = (id: string) => _windowedTaskIds().has(id)
+export const windowedTaskIds = () => _windowedTaskIds()
+
+export function markTaskWindowed(taskId: string, open: boolean) {
+  _setWindowedTaskIds(prev => {
+    const next = new Set(prev)
+    if (open) next.add(taskId)
+    else next.delete(taskId)
+    return next
+  })
+  // Deselect in main when a task is popped out
+  if (open && selectedTaskId() === taskId) {
+    setSelectedTaskId(null)
+  }
+}
+
+// Register the windowed-task checker so windowContext can use it without circular deps
+registerWindowedTaskChecker(isTaskWindowed)
