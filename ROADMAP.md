@@ -72,11 +72,13 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [ ] Keep cursor placement when navigating between files
 - [ ] Persist undo/redo actions in files
 - [ ] Show path on the top of open file
-- [ ] Type overlay showing on top of error, merge and restyle both overlays
+- [ ] Type overlay showing on top of error, merge and restyle both overlays and editor errors
 - [ ] Persists current message in task
 - [X] Find in session
 - [X] @mentioned files ship in input and sent messages
-- [ ] Media viewer
+- [ ] Media viewer & markdown preview (WYSIWYG)
+- [ ] Show file errors in warnings in the scrollbar
+the typescript server seems to need me to call it (by clicking on get definition or something) to start working. is that true?
 
 ---
 

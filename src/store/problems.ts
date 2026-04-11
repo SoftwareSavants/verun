@@ -49,8 +49,7 @@ function flushBatch() {
   setProblemMap(prev => {
     let next = prev
     for (const { taskId, relativePath, problems } of updates) {
-      const taskProblems = next[taskId] || {}
-      const existing = taskProblems[relativePath]
+      const existing = (next[taskId] || {})[relativePath]
 
       // Skip if identical
       if (problems.length > 0 && existing && existing.length === problems.length &&
@@ -64,15 +63,19 @@ function flushBatch() {
       // Skip noop (empty incoming, nothing stored)
       if (problems.length === 0 && !existing) continue
 
-      // Clone on first actual change
+      // Ensure mutable top-level map
       if (next === prev) next = { ...prev }
-      const newTaskProblems = next[taskId] === taskProblems ? { ...taskProblems } : next[taskId]
-      if (problems.length > 0) {
-        newTaskProblems[relativePath] = problems
-      } else {
-        delete newTaskProblems[relativePath]
+
+      // Ensure mutable task entry (clone once per task per batch)
+      if (!next[taskId] || next[taskId] === prev[taskId]) {
+        next[taskId] = { ...(prev[taskId] || {}) }
       }
-      next[taskId] = newTaskProblems
+
+      if (problems.length > 0) {
+        next[taskId][relativePath] = problems
+      } else {
+        delete next[taskId][relativePath]
+      }
     }
     return next
   })
@@ -180,6 +183,12 @@ export function initProblemsListener() {
   if (initialized) return
   initialized = true
 
+  // Import lsp helpers here (not at module level) to avoid pulling in lsp.ts
+  // side effects during module evaluation — other test files import this store
+  // transitively and lsp.ts has a module-level listen() call.
+  let lspHelpers: { isFileOpenInEditor: (w: string, r: string) => boolean; isFileRecentlyOpened: (w: string, r: string) => boolean; clearFileOpened: (uri: string) => void } | null = null
+  import('../lib/lsp').then(m => { lspHelpers = m })
+
   // Listen for all LSP messages and extract publishDiagnostics.
   // With vtsls + enableProjectDiagnostics, the server sends diagnostics
   // for all project files automatically — not just open ones.
@@ -223,6 +232,20 @@ export function initProblemsListener() {
       code: typeof d.code === 'object' ? d.code?.value : d.code,
       source: d.source || 'unknown',
     }))
+
+    // Suppress transient empty diagnostics that don't reflect real state:
+    // 1. didClose: vtsls clears diagnostics for closed files — suppress if file not in editor
+    // 2. didOpen: vtsls clears then re-sends — suppress if file was just opened
+    // In both cases, the project diagnostics server will re-report real errors.
+    if (lspHelpers && problems.length === 0) {
+      if (!lspHelpers.isFileOpenInEditor(task.worktreePath!, relativePath)) return
+      if (lspHelpers.isFileRecentlyOpened(task.worktreePath!, relativePath)) return
+    }
+
+    // First non-empty diagnostic after didOpen — clear the recently-opened flag
+    if (lspHelpers && problems.length > 0) {
+      lspHelpers.clearFileOpened(`file://${task.worktreePath}/${relativePath}`)
+    }
 
     // Queue the update — will be flushed on the next animation frame.
     // This batches rapid remove→add cycles from the LSP into a single

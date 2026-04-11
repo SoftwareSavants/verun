@@ -42,6 +42,31 @@ export function unregisterEditorView(fileUri: string) {
   editorViews.delete(fileUri)
 }
 
+/** Check if a file is currently open in an editor (by relative path + worktree) */
+export function isFileOpenInEditor(worktreePath: string, relativePath: string): boolean {
+  return editorViews.has(`file://${worktreePath}/${relativePath}`)
+}
+
+// ── didOpen suppression ──────────────────────────────────────────────
+// When didOpen is sent, vtsls clears diagnostics (empty publishDiagnostics)
+// then re-analyzes (real diagnostics). We suppress the transient empty.
+const recentlyOpenedFiles = new Set<string>()
+
+/** Mark a file as recently opened — suppresses the next empty diagnostic */
+export function markFileOpened(uri: string) {
+  recentlyOpenedFiles.add(uri)
+}
+
+/** Clear the recently-opened flag (called when real diagnostics arrive) */
+export function clearFileOpened(uri: string) {
+  recentlyOpenedFiles.delete(uri)
+}
+
+/** Check if a file was just didOpen'd (transient empty should be suppressed) */
+export function isFileRecentlyOpened(worktreePath: string, relativePath: string): boolean {
+  return recentlyOpenedFiles.has(`file://${worktreePath}/${relativePath}`)
+}
+
 // ── Custom Workspace with cross-file support ──────────────────────────
 
 class VerunWorkspaceFile implements WorkspaceFile {
@@ -93,6 +118,7 @@ class VerunWorkspace extends Workspace {
     // If already open, just update the view reference
     const existing = this.getFile(uri)
     if (existing) return
+    markFileOpened(uri)
     const file = new VerunWorkspaceFile(uri, languageId, this.nextVersion(uri), view.state.doc, view)
     this.files.push(file)
     this.client.didOpen(file)
@@ -138,15 +164,45 @@ class VerunWorkspace extends Workspace {
   }
 }
 
+// ── vtsls settings ───────────────────────────────────────────────────
+// Returned when vtsls sends a workspace/configuration request during init.
+// This is how enableProjectDiagnostics gets set BEFORE the service spawns
+// its diagnostics server — sending didChangeConfiguration after init is too late.
+const VTSLS_SETTINGS = {
+  typescript: {
+    tsserver: {
+      experimental: { enableProjectDiagnostics: true },
+    },
+  },
+  vtsls: {
+    autoUseWorkspaceTsdk: true,
+  },
+}
+
 // ── Transport ─────────────────────────────────────────────────────────
 function createTauriTransport(taskId: string): Transport {
   const handlers: Array<(msg: string) => void> = []
 
   listen<LspMessagePayload>('lsp-message', (event) => {
-    if (event.payload.taskId === taskId) {
-      for (const h of handlers) {
-        h(event.payload.message)
+    if (event.payload.taskId !== taskId) return
+
+    // Intercept workspace/configuration requests from vtsls.
+    // vtsls sends this during initialization to pull settings (enableProjectDiagnostics, etc).
+    // @codemirror/lsp-client doesn't handle server→client requests — it responds with
+    // MethodNotFound, which crashes vtsls. We handle it here at the transport level.
+    try {
+      const msg = JSON.parse(event.payload.message)
+      if (msg.id != null && msg.method === 'workspace/configuration') {
+        const items = msg.params?.items || []
+        const result = items.map(() => VTSLS_SETTINGS)
+        console.log('[LSP] Responding to workspace/configuration with enableProjectDiagnostics=true')
+        ipc.lspSend(taskId, JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }))
+        return
       }
+    } catch { /* parse error — fall through to handlers */ }
+
+    for (const h of handlers) {
+      h(event.payload.message)
     }
   })
 
@@ -178,7 +234,12 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
   const client = new LSPClient({
     rootUri: `file://${worktreePath}`,
     workspace: (c) => new VerunWorkspace(c, worktreePath, taskId),
-    extensions: languageServerExtensions(),
+    extensions: [
+      ...languageServerExtensions(),
+      // Advertise workspace.configuration so vtsls sends a ConfigurationRequest
+      // during initialization (handled by the transport interceptor above).
+      { clientCapabilities: { workspace: { configuration: true } } },
+    ],
   })
 
   client.connect(createTauriTransport(taskId))
@@ -188,27 +249,6 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
 
   // Mark loading so the Problems panel shows a spinner
   markProblemsLoading(taskId)
-
-  // Configure vtsls: enable project-wide diagnostics + use workspace TypeScript
-  const configMsg = JSON.stringify({
-    jsonrpc: '2.0',
-    method: 'workspace/didChangeConfiguration',
-    params: {
-      settings: {
-        typescript: {
-          tsserver: {
-            experimental: {
-              enableProjectDiagnostics: true,
-            },
-          },
-        },
-        vtsls: {
-          autoUseWorkspaceTsdk: true,
-        },
-      },
-    },
-  })
-  ipc.lspSend(taskId, configMsg).catch(() => {})
 
   return client
 }
