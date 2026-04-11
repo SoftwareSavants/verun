@@ -12,15 +12,16 @@ import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { RightPanel } from './RightPanel'
 import { QuickOpen } from './QuickOpen'
-import { CodeEditor } from './CodeEditor'
+import { FileViewer } from './FileViewer'
 import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
-import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree } from '../store/files'
+import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/files'
 import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
 import { fileHasErrors, fileHasWarnings } from '../store/problems'
+import { getLspClient } from '../lib/lsp'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
 import vscodeIcon from '../assets/icons/vscode.svg?raw'
@@ -140,12 +141,22 @@ function OpenInButton(props: { path: string }) {
 export const TaskPanel: Component = () => {
   createEffect(on(selectedTaskId, async (taskId) => {
     if (taskId) {
+      restoreTabState(taskId)
       await loadSessions(taskId)
       const taskSessions = sessionsForTask(taskId)
       if (taskSessions.length > 0) {
         setSelectedSessionId(taskSessions[0].id)
       } else {
         setSelectedSessionId(null)
+      }
+      // Start LSP eagerly so project-wide diagnostics populate the problems
+      // panel without waiting for the user to open a file in the editor.
+      // Wait until setup is done — node_modules must exist for vtsls.
+      if (!isSetupRunning(taskId) && !setupFailed(taskId)) {
+        const t = taskById(taskId)
+        if (t?.worktreePath) {
+          getLspClient(taskId, t.worktreePath).catch(() => {})
+        }
       }
     }
   }))
@@ -618,7 +629,7 @@ export const TaskPanel: Component = () => {
                     }
                   >
                     <div class="flex-1 overflow-hidden">
-                      <CodeEditor taskId={t().id} relativePath={mainView(t().id)} />
+                      <FileViewer taskId={t().id} relativePath={mainView(t().id)} />
                     </div>
                   </Show>
 

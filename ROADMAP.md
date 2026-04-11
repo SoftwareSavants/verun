@@ -69,14 +69,16 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Worktrees should be under the project folder not Desktop
 - [X] Move default branch to project settings
 - [-] Resolve conflicts button not showing
-- [ ] Keep cursor placement when navigating between files
-- [ ] Persist undo/redo actions in files
-- [ ] Show path on the top of open file
-- [ ] Type overlay showing on top of error, merge and restyle both overlays
+- [X] Keep cursor placement when navigating between files
+- [X] Persist undo/redo actions in files
+- [X] Show path on the top of open file
+- [ ] Type overlay showing on top of error, merge and restyle both overlays and editor errors
 - [ ] Persists current message in task
 - [X] Find in session
 - [X] @mentioned files ship in input and sent messages
-- [ ] Media viewer
+- [X] Media viewer & markdown preview (WYSIWYG)
+- [ ] Show file errors in warnings in the scrollbar
+- [ ] Reload open(ed) files cache on app lifecycle change
 
 ---
 

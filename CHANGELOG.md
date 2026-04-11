@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Draft message, attachments, mode switches (plan/thinking/fast), and last selected task now persist across app restarts
 - Switched bundled LSP from typescript-language-server to vtsls for project-wide diagnostics support
 - Problems panel — collapsible section at the bottom of the Changes/Files pane showing project-wide TypeScript diagnostics via `enableProjectDiagnostics`, grouped by file with resizable height
 - Click any problem to jump to the exact line and column in the editor
@@ -11,7 +12,20 @@
 - File tree and open file tabs highlight red for files with errors, yellow for warnings
 - Folders in the file tree highlight when any descendant file has errors
 - Find in session (Cmd+F) — search through chat messages with match highlighting and navigation
+- Fix project-wide diagnostics not loading — transport-level handling of vtsls `workspace/configuration` requests so `enableProjectDiagnostics` takes effect during initialization, not after
+- Fix diagnostics batch crash when first problems arrive for a task
+- Problems panel skips gitignored files — uses `git check-ignore` to respect `.gitignore`, `.git/info/exclude`, and global ignore patterns
 - @mentioned files render as inline badges in the input and sent messages — hover to preview with syntax highlighting, click to open in the editor
+- Media viewer — images, video, and audio files open natively from the file tree with proper rendering instead of failing as binary
+- Markdown preview — `.md` files render as styled WYSIWYG with a preview/edit toggle to switch between rendered output and the code editor
+- SVG viewer — `.svg` files render visually with a preview/edit toggle for the XML source
+- Hover previews on @mentioned files now support media (images, video, audio), rendered markdown, and SVG visual previews
+- Cursor position, selection, and scroll position are preserved when switching between file tabs
+- Undo/redo history persists across tab switches — Cmd+Z works on the full edit history after switching back
+- Breadcrumb path bar at the top of the editor — click any segment to see sibling files/folders and jump to them
+- Open tabs, active file, and MRU stack persist to localStorage per task — survives app restart
+- Editor auto-focuses when switching tabs so the cursor is visible and keyboard input works immediately
+- Fix closing a dirty tab without saving showing stale edits when reopened
 - Multi-window support — pop out any task into its own window via double-click, right-click "Open in New Window", or Cmd+Shift+N to create a new task in a dedicated window (setup hooks in task windows coming later)
 
 ## 0.4.2 — 2026-04-11

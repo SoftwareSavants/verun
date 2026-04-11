@@ -17,9 +17,24 @@ export const [autoApprovedCounts, setAutoApprovedCounts] = createStore<Record<st
 export const [sessionCosts, setSessionCosts] = createStore<Record<string, number>>({})
 export const [sessionTokens, setSessionTokens] = createStore<Record<string, { input: number; output: number }>>({})
 export const [rateLimitInfo, setRateLimitInfo] = createSignal<RateLimitInfo | null>(null)
-export const [taskPlanMode, setTaskPlanMode] = createStore<Record<string, boolean>>({})
-export const [taskThinkingMode, setTaskThinkingMode] = createStore<Record<string, boolean>>({})
-export const [taskFastMode, setTaskFastMode] = createStore<Record<string, boolean>>({})
+const [_taskPlanMode, _setTaskPlanMode] = createStore<Record<string, boolean>>({})
+const [_taskThinkingMode, _setTaskThinkingMode] = createStore<Record<string, boolean>>({})
+const [_taskFastMode, _setTaskFastMode] = createStore<Record<string, boolean>>({})
+export const taskPlanMode = _taskPlanMode
+export const taskThinkingMode = _taskThinkingMode
+export const taskFastMode = _taskFastMode
+export function setTaskPlanMode(taskId: string, v: boolean) {
+  _setTaskPlanMode(taskId, v)
+  localStorage.setItem(`verun:planMode:${taskId}`, String(v))
+}
+export function setTaskThinkingMode(taskId: string, v: boolean) {
+  _setTaskThinkingMode(taskId, v)
+  localStorage.setItem(`verun:thinkingMode:${taskId}`, String(v))
+}
+export function setTaskFastMode(taskId: string, v: boolean) {
+  _setTaskFastMode(taskId, v)
+  localStorage.setItem(`verun:fastMode:${taskId}`, String(v))
+}
 export const [taskPlanFilePath, setTaskPlanFilePath] = createStore<Record<string, string | null>>({})
 
 export async function loadSessions(taskId: string) {
@@ -30,6 +45,13 @@ export async function loadSessions(taskId: string) {
   for (const s of list) {
     if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
   }
+  // Restore mode switches from localStorage (output_lines parsing may override these later)
+  const savedPlan = localStorage.getItem(`verun:planMode:${taskId}`)
+  const savedThinking = localStorage.getItem(`verun:thinkingMode:${taskId}`)
+  const savedFast = localStorage.getItem(`verun:fastMode:${taskId}`)
+  if (savedPlan !== null) _setTaskPlanMode(taskId, savedPlan === 'true')
+  if (savedThinking !== null) _setTaskThinkingMode(taskId, savedThinking === 'true')
+  if (savedFast !== null) _setTaskFastMode(taskId, savedFast === 'true')
 }
 
 export async function createSession(taskId: string): Promise<Session> {

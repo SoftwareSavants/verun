@@ -5,6 +5,7 @@ import * as ipc from '../lib/ipc'
 import { closeTerminalsForTask } from './terminals'
 import { clearTaskGitState } from './git'
 import { clearProblemsForTask } from './problems'
+import { fireTaskCleanup } from './files'
 
 export const [tasks, setTasks] = createStore<Task[]>([])
 
@@ -149,6 +150,8 @@ export async function deleteTask(id: string, deleteBranch = true, skipDestroyHoo
   closeTerminalsForTask(id)
   clearTaskGitState(id)
   clearProblemsForTask(id)
+  fireTaskCleanup(id)
+  cleanupTaskStorage(id)
   await ipc.deleteTask(id, deleteBranch, skipDestroyHook)
   setTasks(prev => prev.filter(t => t.id !== id))
 }
@@ -159,6 +162,7 @@ export async function archiveTask(id: string, skipDestroyHook = false) {
     closeTerminalsForTask(id)
     clearTaskGitState(id)
     clearProblemsForTask(id)
+    cleanupTaskStorage(id)
     await ipc.archiveTask(id, skipDestroyHook)
     setTasks(t => t.id === id, 'archived', true)
   } finally {
@@ -178,3 +182,19 @@ export async function updateTaskName(id: string, name: string) {
 
 export const taskById = (id: string) =>
   tasks.find(t => t.id === id)
+
+/** Remove all localStorage keys associated with a task */
+export function cleanupTaskStorage(id: string) {
+  const keys = [
+    `verun:draft-msg:${id}`,
+    `verun:draft-att:${id}`,
+    `verun:planMode:${id}`,
+    `verun:thinkingMode:${id}`,
+    `verun:fastMode:${id}`,
+    `verun:task-model:${id}`,
+  ]
+  for (const k of keys) localStorage.removeItem(k)
+  if (localStorage.getItem('verun:selectedTaskId') === id) {
+    localStorage.removeItem('verun:selectedTaskId')
+  }
+}

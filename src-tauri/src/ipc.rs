@@ -1391,6 +1391,52 @@ pub async fn list_worktree_files(
 }
 
 #[tauri::command]
+pub async fn check_gitignored(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.current_dir(&t.worktree_path)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_WORK_TREE")
+                .args(["check-ignore", "--stdin"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+
+            let mut child =
+                cmd.spawn().map_err(|e| format!("Failed to run git check-ignore: {e}"))?;
+            {
+                use std::io::Write;
+                let stdin = child.stdin.as_mut().unwrap();
+                for p in &paths {
+                    writeln!(stdin, "{p}").ok();
+                }
+            }
+
+            let output = child
+                .wait_with_output()
+                .map_err(|e| format!("git check-ignore failed: {e}"))?;
+
+            // git check-ignore exits 1 if no paths are ignored — not an error
+            Ok(String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|l| l.to_string())
+                .collect())
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
 pub async fn read_text_file(path: String) -> Result<String, String> {
     tokio::fs::read_to_string(&path)
         .await
@@ -1530,6 +1576,30 @@ pub async fn read_worktree_file(
     } else {
         Ok(text)
     }
+}
+
+#[tauri::command]
+pub async fn resolve_worktree_file_path(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    relative_path: String,
+) -> Result<String, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    let full_path = std::path::Path::new(&t.worktree_path).join(&relative_path);
+
+    let canonical_base = std::fs::canonicalize(&t.worktree_path)
+        .map_err(|e| format!("Cannot resolve worktree: {e}"))?;
+    let canonical_file = std::fs::canonicalize(&full_path)
+        .map_err(|e| format!("Cannot resolve file: {e}"))?;
+
+    if !canonical_file.starts_with(&canonical_base) {
+        return Err("Path escapes worktree boundary".into());
+    }
+
+    Ok(canonical_file.to_string_lossy().into_owned())
 }
 
 #[tauri::command]

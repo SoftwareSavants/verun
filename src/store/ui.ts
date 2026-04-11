@@ -3,7 +3,16 @@ import type { ModelId } from '../types'
 import { registerWindowedTaskChecker } from '../lib/windowContext'
 
 export const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
-export const [selectedTaskId, setSelectedTaskId] = createSignal<string | null>(null)
+
+const savedTaskId = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:selectedTaskId') : null
+const [_selectedTaskId, _setSelectedTaskId] = createSignal<string | null>(savedTaskId)
+export const selectedTaskId = _selectedTaskId
+export function setSelectedTaskId(id: string | null) {
+  _setSelectedTaskId(id)
+  if (id) localStorage.setItem('verun:selectedTaskId', id)
+  else localStorage.removeItem('verun:selectedTaskId')
+}
+
 export const [selectedSessionId, setSelectedSessionId] = createSignal<string | null>(null)
 
 // Unread / attention-required indicators for sidebar tasks

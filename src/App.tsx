@@ -7,9 +7,12 @@ import { SelectionMenu } from './components/SelectionMenu'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { ToastContainer } from './components/ToastContainer'
 import { initTheme } from './lib/theme'
+import { projects } from './store/projects'
+import { loadTasks, taskById } from './store/tasks'
 import { initProblemsListener } from './store/problems'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
+import { selectedTaskId, setSelectedTaskId, setSelectedProjectId } from './store/ui'
 import { initNotifications, showNotificationDialog, onNotificationDialogConfirm, onNotificationDialogCancel } from './lib/notifications'
 import { initUpdateListener } from './lib/updater'
 
@@ -25,6 +28,19 @@ const MainApp: Component = () => {
     await initListeners()
     initProblemsListener()
     await loadInitialData()
+
+    // Restore last selected task — validate it still exists and isn't archived
+    const savedTid = selectedTaskId()
+    if (savedTid) {
+      await Promise.all(projects.map(p => loadTasks(p.id)))
+      const task = taskById(savedTid)
+      if (task && !task.archived) {
+        setSelectedProjectId(task.projectId)
+      } else {
+        setSelectedTaskId(null)
+      }
+    }
+
     dismissSplash()
 
     await checkCli()

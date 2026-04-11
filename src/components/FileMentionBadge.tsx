@@ -1,9 +1,12 @@
-import { Component, Show, createSignal, onCleanup } from 'solid-js'
+import { Component, Show, Switch, Match, createSignal, onCleanup } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import { computePosition, flip, shift, offset } from '@floating-ui/dom'
+import { convertFileSrc } from '@tauri-apps/api/core'
+import { marked } from 'marked'
 import { getFileIcon } from '../lib/fileIcons'
 import { highlightCode, langFromPath } from '../lib/highlighter'
-import { readWorktreeFile } from '../lib/ipc'
+import { getPreviewType, isMediaType } from '../lib/fileTypes'
+import { readWorktreeFile, resolveWorktreeFilePath } from '../lib/ipc'
 import { openFile } from '../store/files'
 import { X, ExternalLink } from 'lucide-solid'
 
@@ -14,13 +17,20 @@ interface Props {
   size?: 'sm' | 'md'
 }
 
-// Module-level cache: taskId:relativePath → content + highlighted HTML or error
-const contentCache = new Map<string, { content?: string; html?: string; error?: string }>()
+type PreviewData =
+  | { type: 'code'; html: string }
+  | { type: 'markdown'; html: string }
+  | { type: 'svg'; dataUrl: string }
+  | { type: 'media'; mediaType: 'image' | 'video' | 'audio'; assetUrl: string }
+  | { type: 'error'; error: string }
+
+// Module-level cache: taskId:relativePath → preview data
+const contentCache = new Map<string, PreviewData>()
 
 export const FileMentionBadge: Component<Props> = (props) => {
   const [hovered, setHovered] = createSignal(false)
   const [loading, setLoading] = createSignal(false)
-  const [preview, setPreview] = createSignal<{ content?: string; html?: string; error?: string } | null>(null)
+  const [preview, setPreview] = createSignal<PreviewData | null>(null)
   const [floatingStyle, setFloatingStyle] = createSignal<{ top: string; left: string }>({ top: '0px', left: '0px' })
 
   let leaveTimer: ReturnType<typeof setTimeout> | undefined
@@ -59,15 +69,33 @@ export const FileMentionBadge: Component<Props> = (props) => {
 
     setLoading(true)
     try {
-      const content = await readWorktreeFile(props.taskId, props.filePath)
-      const lang = langFromPath(props.filePath)
-      const html = await highlightCode(content, lang)
-      const result = { content, html }
+      const pvType = getPreviewType(props.filePath)
+
+      let result: PreviewData
+
+      if (isMediaType(pvType)) {
+        const absPath = await resolveWorktreeFilePath(props.taskId, props.filePath)
+        const assetUrl = convertFileSrc(absPath)
+        result = { type: 'media', mediaType: pvType as 'image' | 'video' | 'audio', assetUrl }
+      } else if (pvType === 'svg') {
+        const content = await readWorktreeFile(props.taskId, props.filePath)
+        const dataUrl = `data:image/svg+xml,${encodeURIComponent(content)}`
+        result = { type: 'svg', dataUrl }
+      } else if (pvType === 'markdown') {
+        const content = await readWorktreeFile(props.taskId, props.filePath)
+        const html = marked.parse(content, { async: false }) as string
+        result = { type: 'markdown', html }
+      } else {
+        const content = await readWorktreeFile(props.taskId, props.filePath)
+        const lang = langFromPath(props.filePath)
+        const html = await highlightCode(content, lang)
+        result = { type: 'code', html }
+      }
+
       contentCache.set(key, result)
       setPreview(result)
     } catch (e) {
-      const error = String(e)
-      const result = { error }
+      const result: PreviewData = { type: 'error', error: String(e) }
       contentCache.set(key, result)
       setPreview(result)
     } finally {
@@ -92,6 +120,13 @@ export const FileMentionBadge: Component<Props> = (props) => {
   }
 
   const Icon = getFileIcon(filename())
+
+  // Derived accessors for clean type narrowing
+  const previewCode = () => { const p = preview(); return p?.type === 'code' ? p : null }
+  const previewMd = () => { const p = preview(); return p?.type === 'markdown' ? p : null }
+  const previewSvg = () => { const p = preview(); return p?.type === 'svg' ? p : null }
+  const previewMedia = () => { const p = preview(); return p?.type === 'media' ? p : null }
+  const previewError = () => { const p = preview(); return p?.type === 'error' ? p : null }
 
   return (
     <>
@@ -150,19 +185,86 @@ export const FileMentionBadge: Component<Props> = (props) => {
                 <div class="px-3 py-4 text-[11px] text-text-dim text-center">Loading…</div>
               }
             >
-              <Show
-                when={preview()?.html}
-                fallback={
-                  <div class="px-3 py-4 text-[11px] text-text-dim text-center">
-                    {preview()?.error ?? 'No preview available'}
-                  </div>
-                }
-              >
-                <div
-                  class="overflow-auto max-h-80 [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:px-3 [&_pre]:py-2 [&_code]:!text-[11px] [&_code]:!leading-relaxed"
-                  innerHTML={preview()!.html}
-                />
-              </Show>
+              <Switch fallback={
+                <div class="px-3 py-4 text-[11px] text-text-dim text-center">No preview available</div>
+              }>
+                <Match when={previewCode()}>
+                  {(p) => (
+                    <div
+                      class="overflow-auto max-h-80 [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:px-3 [&_pre]:py-2 [&_code]:!text-[11px] [&_code]:!leading-relaxed"
+                      innerHTML={p().html}
+                    />
+                  )}
+                </Match>
+
+                <Match when={previewMd()}>
+                  {(p) => (
+                    <div
+                      class="overflow-auto max-h-80 px-3 py-2 text-xs text-text-primary leading-relaxed prose-verun select-text break-words"
+                      innerHTML={p().html}
+                    />
+                  )}
+                </Match>
+
+                <Match when={previewSvg()}>
+                  {(p) => (
+                    <div class="overflow-auto max-h-80 flex items-center justify-center p-3 bg-[#0a0a0a]">
+                      <img
+                        src={p().dataUrl}
+                        alt={filename()}
+                        class="max-w-full max-h-72 object-contain"
+                      />
+                    </div>
+                  )}
+                </Match>
+
+                <Match when={previewMedia()?.mediaType === 'image' && previewMedia()}>
+                  {(p) => (
+                    <div class="overflow-auto max-h-80 flex items-center justify-center p-2 bg-[#0a0a0a]">
+                      <img
+                        src={p().assetUrl}
+                        alt={filename()}
+                        class="max-w-full max-h-72 object-contain rounded"
+                        loading="lazy"
+                      />
+                    </div>
+                  )}
+                </Match>
+
+                <Match when={previewMedia()?.mediaType === 'video' && previewMedia()}>
+                  {(p) => (
+                    <div class="overflow-hidden max-h-80 p-2">
+                      <video
+                        src={p().assetUrl}
+                        controls
+                        preload="metadata"
+                        class="max-w-full max-h-72 rounded"
+                      />
+                    </div>
+                  )}
+                </Match>
+
+                <Match when={previewMedia()?.mediaType === 'audio' && previewMedia()}>
+                  {(p) => (
+                    <div class="px-3 py-4 flex items-center justify-center">
+                      <audio
+                        src={p().assetUrl}
+                        controls
+                        preload="metadata"
+                        class="w-full"
+                      />
+                    </div>
+                  )}
+                </Match>
+
+                <Match when={previewError()}>
+                  {(p) => (
+                    <div class="px-3 py-4 text-[11px] text-text-dim text-center">
+                      {p().error}
+                    </div>
+                  )}
+                </Match>
+              </Switch>
             </Show>
           </div>
         </Portal>
