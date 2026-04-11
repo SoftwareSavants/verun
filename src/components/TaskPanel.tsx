@@ -513,6 +513,17 @@ export const TaskPanel: Component = () => {
                       )}
                     </For>
 
+                    {/* New session button */}
+                    <button
+                      class="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-40"
+                      onClick={handleNewSession}
+                      disabled={creatingSession()}
+                      title="New Session"
+                    >
+                      <Plus size={12} class={creatingSession() ? 'animate-spin' : ''} />
+                      <span>{creatingSession() ? '...' : 'New'}</span>
+                    </button>
+
                     {/* Separator between sessions and files */}
                     <Show when={openTabs(t().id).length > 0}>
                       <span class="w-px h-4 bg-border-subtle mx-0.5 shrink-0" />
@@ -561,17 +572,6 @@ export const TaskPanel: Component = () => {
                         </div>
                       )}
                     </For>
-
-                    {/* New session button */}
-                    <button
-                      class="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-40"
-                      onClick={handleNewSession}
-                      disabled={creatingSession()}
-                      title="New Session"
-                    >
-                      <Plus size={12} class={creatingSession() ? 'animate-spin' : ''} />
-                      <span>{creatingSession() ? '...' : 'New'}</span>
-                    </button>
                   </div>
 
                   {/* Main content — chat or editor */}
