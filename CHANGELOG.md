@@ -26,6 +26,7 @@
 - Open tabs, active file, and MRU stack persist to localStorage per task — survives app restart
 - Editor auto-focuses when switching tabs so the cursor is visible and keyboard input works immediately
 - Fix closing a dirty tab without saving showing stale edits when reopened
+- Multi-window support — pop out any task into its own window via double-click, right-click "Open in New Window", or Cmd+Shift+N to create a new task in a dedicated window (setup hooks in task windows coming later)
 
 ## 0.4.2 — 2026-04-11
 

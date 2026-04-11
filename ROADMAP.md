@@ -93,7 +93,7 @@ High-impact features that engineers are asking for most.
 - [X] Steer & queue interaction modes (send follow-ups while the agent is working)
 - [X] Unread / attention-required indicator on tasks in sidebar
 - [X] OS notifications for task completion and approval prompts
-- [ ] Multi window support
+- [X] Multi window support
 - [X] Setup script: Option/script to auto-copy .env and other files
 - [X] Auto-update
 - [X] Session Status on the status tab bar

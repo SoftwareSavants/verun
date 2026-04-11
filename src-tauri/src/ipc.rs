@@ -10,7 +10,7 @@ use crate::watcher::FileWatcherMap;
 use crate::worktree;
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::task::JoinError;
 use uuid::Uuid;
 
@@ -218,6 +218,7 @@ pub struct ImportedHooks {
 #[tauri::command]
 pub async fn create_task(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     pty_map: State<'_, ActivePtyMap>,
@@ -229,6 +230,8 @@ pub async fn create_task(
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or_else(|| format!("Project {project_id} not found"))?;
+
+    let from_task_window = window.label().starts_with("task-");
 
     let branch = base_branch.unwrap_or(project.base_branch);
     let port_offset = db::next_port_offset(pool.inner(), &project_id).await?;
@@ -244,8 +247,17 @@ pub async fn create_task(
             base_branch: branch,
             setup_hook: project.setup_hook,
             port_offset,
+            from_task_window,
         },
     ).await?;
+
+    // For task windows: store label → taskId so the close handler works
+    if from_task_window {
+        if let Some(map) = app.try_state::<crate::WindowTaskMap>() {
+            map.insert(window.label().to_string(), task.id.clone());
+        }
+    }
+
     Ok(TaskWithSession { task, session })
 }
 
@@ -1784,6 +1796,91 @@ pub async fn disarm_all_steps(
         .send(db::DbWrite::DisarmAllSteps { session_id })
         .await
         .map_err(|e| format!("DB write failed: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Window management
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn open_task_window(
+    app: AppHandle,
+    task_id: String,
+    task_name: Option<String>,
+) -> Result<(), String> {
+    let label = format!("task-{task_id}");
+
+    if let Some(win) = app.get_webview_window(&label) {
+        win.set_focus().map_err(|e| format!("Failed to focus window: {e}"))?;
+        return Ok(());
+    }
+
+    let title = task_name.unwrap_or_else(|| "Task".into());
+    let url = format!("index.html?windowType=task&taskId={task_id}&windowLabel={label}");
+
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .title(&title)
+        .inner_size(1200.0, 800.0)
+        .min_inner_size(800.0, 600.0)
+        .hidden_title(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .visible(false)
+        .build()
+        .map_err(|e| format!("Failed to create task window: {e}"))?;
+
+    // Track label → taskId so the close handler can emit the right event
+    if let Some(map) = app.try_state::<crate::WindowTaskMap>() {
+        map.insert(label, task_id.clone());
+    }
+
+    let _ = app.emit(
+        "task-window-changed",
+        serde_json::json!({ "taskId": task_id, "open": true }),
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_new_task_window(
+    app: AppHandle,
+    project_id: String,
+) -> Result<(), String> {
+    let id = Uuid::new_v4().to_string();
+    let label = format!("task-new-{id}");
+    let url = format!(
+        "index.html?windowType=task&projectId={project_id}&windowLabel={label}"
+    );
+
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .title("New Task")
+        .inner_size(1200.0, 800.0)
+        .min_inner_size(800.0, 600.0)
+        .hidden_title(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .visible(false)
+        .build()
+        .map_err(|e| format!("Failed to create new task window: {e}"))?;
+
+    Ok(())
+}
+
+/// Force-close a task window, cleaning up the window-task map and notifying the main window.
+/// Used when the user confirms closing while a setup hook is running.
+#[tauri::command]
+pub async fn force_close_task_window(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    if let Some(map) = app.try_state::<crate::WindowTaskMap>() {
+        if let Some((_, task_id)) = map.remove(window.label()) {
+            let _ = app.emit(
+                "task-window-changed",
+                serde_json::json!({ "taskId": task_id, "open": false }),
+            );
+        }
+    }
+    window.destroy().map_err(|e| format!("Failed to destroy window: {e}"))
 }
 
 #[cfg(test)]

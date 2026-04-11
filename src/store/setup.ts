@@ -4,6 +4,7 @@ import type { Attachment } from '../types'
 import * as ipc from '../lib/ipc'
 import { registerHookTerminal } from './terminals'
 import { setShowTerminal } from './ui'
+import { isTaskOwnedByThisWindow } from '../lib/windowContext'
 
 interface SetupState {
   status: 'running' | 'failed'
@@ -47,6 +48,8 @@ export async function initSetupListeners() {
   await listen<{ taskId: string; status: string; error?: string; terminalId?: string; hookType?: string }>('setup-hook', (event) => {
     const { taskId, status, error, terminalId, hookType } = event.payload
 
+    if (!isTaskOwnedByThisWindow(taskId)) return
+
     if (status === 'running') {
       setSetupTasks(taskId, { status: 'running', terminalId, hookType: hookType as 'setup' | 'destroy' })
       // Register the hook terminal tab and auto-show the terminal panel
@@ -75,7 +78,9 @@ export async function initSetupListeners() {
   try {
     const ids = await ipc.getSetupInProgress()
     for (const id of ids) {
-      setSetupTasks(id, { status: 'running' })
+      if (isTaskOwnedByThisWindow(id)) {
+        setSetupTasks(id, { status: 'running' })
+      }
     }
   } catch {
     // Backend may not be ready yet during startup

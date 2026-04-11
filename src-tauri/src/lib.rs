@@ -12,9 +12,13 @@ mod worktree;
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use dashmap::DashMap;
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_sql::Builder as SqlBuilder;
 use tauri_plugin_updater::UpdaterExt;
+
+/// Maps task window labels → task IDs (for close event emission)
+pub type WindowTaskMap = DashMap<String, String>;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -39,6 +43,7 @@ pub fn run() {
         .manage(pty::new_active_pty_map())
         .manage(watcher::new_file_watcher_map())
         .manage(lsp::new_lsp_map())
+        .manage(WindowTaskMap::new())
         .setup(|app| {
             // Fix PATH for bundled .app / AppImage — the app inherits a minimal
             // system PATH that doesn't include Homebrew, nvm, etc.
@@ -169,16 +174,39 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                #[cfg(target_os = "macos")]
-                {
-                    // CMD+W: hide the window instead of closing the app
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let _ = window.emit("confirm-quit", ());
-                    api.prevent_close();
+                if window.label() == "main" {
+                    #[cfg(target_os = "macos")]
+                    {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let _ = window.emit("confirm-quit", ());
+                        api.prevent_close();
+                    }
+                } else if window.label().starts_with("task-") {
+                    if let Some(map) = window.try_state::<WindowTaskMap>() {
+                        // Look up task ID for this window (clone + drop the Ref to release the read lock)
+                        let task_id = map.get(window.label()).map(|e| e.value().clone());
+                        if let Some(task_id) = task_id {
+                            // Check if setup hook is running for this task
+                            if let Some(sip) = window.try_state::<task::SetupInProgress>() {
+                                if sip.contains_key(&task_id) {
+                                    api.prevent_close();
+                                    let _ = window.emit("confirm-close-setup", ());
+                                    return;
+                                }
+                            }
+                            // Setup not running — clean up and let close proceed
+                            map.remove(window.label());
+                            let _ = window.emit_to(
+                                "main",
+                                "task-window-changed",
+                                serde_json::json!({ "taskId": task_id, "open": false }),
+                            );
+                        }
+                    }
                 }
             }
         })
@@ -284,6 +312,10 @@ pub fn run() {
             ipc::delete_step,
             ipc::reorder_steps,
             ipc::disarm_all_steps,
+            // Window management
+            ipc::open_task_window,
+            ipc::open_new_task_window,
+            ipc::force_close_task_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

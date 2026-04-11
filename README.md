@@ -24,6 +24,7 @@ Run multiple Claude Code sessions in parallel, each in its own isolated git work
 - **Plan mode** — review implementation plans before Claude starts coding
 - **Desktop notifications** — get notified when tasks complete, fail, or need approval
 - **Tool approval** — configurable trust levels (Normal, Supervised, Full Auto)
+- **Multi-window** — pop tasks into their own windows for side-by-side work across monitors
 - **Resumable** — sessions survive app restarts via `claude --resume`
 - **Persistent history** — all output stored locally in SQLite
 - **Integrated terminal** — drop into any task's worktree with a built-in shell
