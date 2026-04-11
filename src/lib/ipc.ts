@@ -223,6 +223,9 @@ export const listDirectory = (taskId: string, relativePath: string) =>
 export const readWorktreeFile = (taskId: string, relativePath: string, maxBytes?: number) =>
   invoke<string>('read_worktree_file', { taskId, relativePath, maxBytes })
 
+export const resolveWorktreeFilePath = (taskId: string, relativePath: string) =>
+  invoke<string>('resolve_worktree_file_path', { taskId, relativePath })
+
 export const writeTextFile = (taskId: string, relativePath: string, content: string) =>
   invoke<void>('write_text_file', { taskId, relativePath, content })
 

@@ -14,6 +14,16 @@
 - Fix project-wide diagnostics not loading — transport-level handling of vtsls `workspace/configuration` requests so `enableProjectDiagnostics` takes effect during initialization, not after
 - Fix diagnostics batch crash when first problems arrive for a task
 - @mentioned files render as inline badges in the input and sent messages — hover to preview with syntax highlighting, click to open in the editor
+- Media viewer — images, video, and audio files open natively from the file tree with proper rendering instead of failing as binary
+- Markdown preview — `.md` files render as styled WYSIWYG with a preview/edit toggle to switch between rendered output and the code editor
+- SVG viewer — `.svg` files render visually with a preview/edit toggle for the XML source
+- Hover previews on @mentioned files now support media (images, video, audio), rendered markdown, and SVG visual previews
+- Cursor position, selection, and scroll position are preserved when switching between file tabs
+- Undo/redo history persists across tab switches — Cmd+Z works on the full edit history after switching back
+- Breadcrumb path bar at the top of the editor — click any segment to see sibling files/folders and jump to them
+- Open tabs, active file, and MRU stack persist to localStorage per task — survives app restart
+- Editor auto-focuses when switching tabs so the cursor is visible and keyboard input works immediately
+- Fix closing a dirty tab without saving showing stale edits when reopened
 
 ## 0.4.2 — 2026-04-11
 
