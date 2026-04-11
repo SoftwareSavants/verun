@@ -328,6 +328,7 @@ pub struct CreateTaskParams {
     pub base_branch: String,
     pub setup_hook: String,
     pub port_offset: i64,
+    pub from_task_window: bool,
 }
 
 pub async fn create_task(
@@ -338,7 +339,7 @@ pub async fn create_task(
     setup_in_progress: &SetupInProgress,
     params: CreateTaskParams,
 ) -> Result<(Task, Session), String> {
-    let CreateTaskParams { project_id, repo_path, base_branch, setup_hook, port_offset } = params;
+    let CreateTaskParams { project_id, repo_path, base_branch, setup_hook, port_offset, from_task_window } = params;
     let id = Uuid::new_v4().to_string();
     let branch = funny_branch_name();
     let now = epoch_ms();
@@ -376,6 +377,15 @@ pub async fn create_task(
 
     // Auto-create the first session
     let session = create_session(db_tx, task.id.clone()).await?;
+
+    // If created from a task window, notify all windows BEFORE spawning the hook
+    // so the main window knows to ignore this task's setup events
+    if from_task_window {
+        let _ = app.emit(
+            "task-window-changed",
+            serde_json::json!({ "taskId": task.id, "open": true }),
+        );
+    }
 
     // Phase 2: Run setup hook in background (if non-empty)
     spawn_setup_hook(app, pty_map, hook_pty_map, setup_in_progress, &task.id, &worktree_path, &setup_hook, port_offset, &repo_path);

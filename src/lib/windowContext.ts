@@ -54,12 +54,26 @@ export function registerWindowedTaskChecker(fn: (taskId: string) => boolean) {
   _isTaskWindowedFn = fn
 }
 
+// For new-task windows: tracks the real task ID once we learn it
+let _createdTaskId: string | null = null
+
+/** Called from TaskWindowShell when a new-task window's selected task changes to a real ID */
+export function setCreatedTaskId(taskId: string) {
+  _createdTaskId = taskId
+  console.log('[ownership] setCreatedTaskId:', taskId)
+}
+
 export function isTaskOwnedByThisWindow(taskId: string, currentTaskId?: string | null): boolean {
   if (windowContext.windowType === 'task') {
-    const owned = windowContext.taskId
-      ? windowContext.taskId === taskId
-      : currentTaskId != null && currentTaskId === taskId
-    console.log('[ownership]', windowContext.windowLabel, 'task window, taskId:', taskId, 'ctx.taskId:', windowContext.taskId, 'currentTaskId:', currentTaskId, '→', owned)
+    if (windowContext.taskId) {
+      // Existing task window: exact match
+      const owned = windowContext.taskId === taskId
+      console.log('[ownership]', windowContext.windowLabel, 'taskId:', taskId, 'ctx.taskId:', windowContext.taskId, '→', owned)
+      return owned
+    }
+    // New-task window: own the task we created (once known), or match by selectedTaskId
+    const owned = _createdTaskId === taskId || (currentTaskId != null && currentTaskId === taskId)
+    console.log('[ownership]', windowContext.windowLabel, 'new-task, taskId:', taskId, '_createdTaskId:', _createdTaskId, 'currentTaskId:', currentTaskId, '→', owned)
     return owned
   }
   // Main window: own all tasks except those open in a separate window

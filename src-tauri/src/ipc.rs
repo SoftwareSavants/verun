@@ -218,6 +218,7 @@ pub struct ImportedHooks {
 #[tauri::command]
 pub async fn create_task(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     pty_map: State<'_, ActivePtyMap>,
@@ -229,6 +230,8 @@ pub async fn create_task(
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or_else(|| format!("Project {project_id} not found"))?;
+
+    let from_task_window = window.label().starts_with("task-");
 
     let branch = base_branch.unwrap_or(project.base_branch);
     let port_offset = db::next_port_offset(pool.inner(), &project_id).await?;
@@ -244,6 +247,7 @@ pub async fn create_task(
             base_branch: branch,
             setup_hook: project.setup_hook,
             port_offset,
+            from_task_window,
         },
     ).await?;
     Ok(TaskWithSession { task, session })

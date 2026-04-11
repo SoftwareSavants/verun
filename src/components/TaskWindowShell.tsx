@@ -1,5 +1,5 @@
-import { Component, createSignal, onMount, onCleanup } from 'solid-js'
-import { listen } from '@tauri-apps/api/event'
+import { Component, createSignal, createEffect, on, onMount, onCleanup } from 'solid-js'
+import { listen, emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useWindowContext } from '../lib/windowContext'
 import { initTheme } from '../lib/theme'
@@ -54,6 +54,16 @@ export const TaskWindowShell: Component = () => {
   } else if (ctx.projectId) {
     setSelectedProjectId(ctx.projectId)
   }
+
+  // Notify the main window that this task is open here.
+  // For existing tasks this fires immediately; for new-task windows it fires
+  // when selectedTaskId changes from the placeholder to the real task ID.
+  createEffect(on(selectedTaskId, (taskId) => {
+    if (taskId) {
+      console.log('[task-window] emitting task-window-changed for', taskId)
+      emit('task-window-changed', { taskId, open: true })
+    }
+  }))
 
   onMount(async () => {
     initTheme()
