@@ -12,7 +12,7 @@
 - Folders in the file tree highlight when any descendant file has errors
 - Find in session (Cmd+F) — search through chat messages with match highlighting and navigation
 - @mentioned files render as inline badges in the input and sent messages — hover to preview with syntax highlighting, click to open in the editor
-- Multi-window support — pop out any task into its own window via double-click, right-click "Open in New Window", or Cmd+Shift+N to create a new task in a dedicated window
+- Multi-window support — pop out any task into its own window via double-click, right-click "Open in New Window", or Cmd+Shift+N to create a new task in a dedicated window (setup hooks in task windows coming later)
 
 ## 0.4.2 — 2026-04-11
 
