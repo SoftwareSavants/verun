@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { Attachment } from '../types'
 import * as ipc from '../lib/ipc'
 import { registerHookTerminal } from './terminals'
-import { selectedTaskId, setShowTerminal } from './ui'
+import { setShowTerminal } from './ui'
 import { isTaskOwnedByThisWindow } from '../lib/windowContext'
 
 interface SetupState {
@@ -48,10 +48,10 @@ export async function initSetupListeners() {
   await listen<{ taskId: string; status: string; error?: string; terminalId?: string; hookType?: string }>('setup-hook', (event) => {
     const { taskId, status, error, terminalId, hookType } = event.payload
 
-    console.log('[setup-hook]', status, 'taskId:', taskId, 'terminalId:', terminalId, 'selectedTaskId:', selectedTaskId())
+    console.log('[setup-hook]', status, 'taskId:', taskId, 'terminalId:', terminalId)
 
     // Only handle setup events for tasks owned by this window
-    if (!isTaskOwnedByThisWindow(taskId, selectedTaskId())) {
+    if (!isTaskOwnedByThisWindow(taskId)) {
       console.log('[setup-hook] SKIPPED — not owned by this window')
       return
     }
