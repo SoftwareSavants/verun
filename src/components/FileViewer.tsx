@@ -3,6 +3,7 @@ import { convertFileSrc } from '@tauri-apps/api/core'
 import { marked } from 'marked'
 import { Image, Film, Music, Eye, Code2, Loader2, AlertCircle } from 'lucide-solid'
 import { CodeEditor } from './CodeEditor'
+import { BreadcrumbBar } from './BreadcrumbBar'
 import { getPreviewType } from '../lib/fileTypes'
 import * as ipc from '../lib/ipc'
 import { getCachedContent, setCachedContent, setCachedOriginal } from '../store/files'
@@ -18,7 +19,16 @@ export const FileViewer: Component<Props> = (props) => {
   const type = () => getPreviewType(props.relativePath)
 
   return (
-    <Switch fallback={<CodeEditor taskId={props.taskId} relativePath={props.relativePath} />}>
+    <Switch fallback={
+      <div class="flex flex-col h-full">
+        <div class="flex items-center px-3 py-1 bg-[#1e1e1e] border-b border-border-subtle shrink-0">
+          <BreadcrumbBar taskId={props.taskId} currentPath={props.relativePath} />
+        </div>
+        <div class="flex-1 overflow-hidden">
+          <CodeEditor taskId={props.taskId} relativePath={props.relativePath} />
+        </div>
+      </div>
+    }>
       <Match when={type() === 'image'}>
         <ImageViewer taskId={props.taskId} relativePath={props.relativePath} />
       </Match>
@@ -41,7 +51,8 @@ export const FileViewer: Component<Props> = (props) => {
 // ── Shared toolbar for viewers ─────────────────────────────────────────
 
 const ViewerToolbar: Component<{
-  filename: string
+  taskId: string
+  relativePath: string
   icon?: Component<{ size: number; class?: string }>
   children?: any
 }> = (props) => (
@@ -49,7 +60,7 @@ const ViewerToolbar: Component<{
     <Show when={props.icon}>
       {(() => { const I = props.icon!; return <I size={14} class="text-text-dim shrink-0" /> })()}
     </Show>
-    <span class="text-xs font-mono text-text-secondary truncate">{props.filename}</span>
+    <BreadcrumbBar taskId={props.taskId} currentPath={props.relativePath} />
     <div class="flex-1" />
     {props.children}
   </div>
@@ -87,7 +98,7 @@ const ImageViewer: Component<Props> = (props) => {
 
   return (
     <div class="flex flex-col h-full">
-      <ViewerToolbar filename={filename()} icon={Image}>
+      <ViewerToolbar taskId={props.taskId} relativePath={props.relativePath} icon={Image}>
         <Show when={dimensions()}>
           <span class="text-[11px] text-text-dim">{dimensions()!.w} × {dimensions()!.h}</span>
         </Show>
@@ -122,11 +133,10 @@ const ImageViewer: Component<Props> = (props) => {
 
 const VideoViewer: Component<Props> = (props) => {
   const { url, error, loading } = useAssetUrl(() => props.taskId, () => props.relativePath)
-  const filename = () => props.relativePath.split('/').pop() ?? props.relativePath
 
   return (
     <div class="flex flex-col h-full">
-      <ViewerToolbar filename={filename()} icon={Film} />
+      <ViewerToolbar taskId={props.taskId} relativePath={props.relativePath} icon={Film} />
       <div class="flex-1 overflow-auto flex items-center justify-center bg-[#0a0a0a]">
         <Show when={loading()}>
           <Loader2 size={24} class="animate-spin text-text-dim" />
@@ -158,7 +168,7 @@ const AudioViewer: Component<Props> = (props) => {
 
   return (
     <div class="flex flex-col h-full">
-      <ViewerToolbar filename={filename()} icon={Music} />
+      <ViewerToolbar taskId={props.taskId} relativePath={props.relativePath} icon={Music} />
       <div class="flex-1 flex flex-col items-center justify-center gap-4 bg-surface-0">
         <Show when={loading()}>
           <Loader2 size={24} class="animate-spin text-text-dim" />
@@ -186,7 +196,6 @@ const MarkdownViewer: Component<Props> = (props) => {
   const [content, setContent] = createSignal('')
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
-  const filename = () => props.relativePath.split('/').pop() ?? props.relativePath
 
   let previewScrollFraction = 0
   let previewEl: HTMLDivElement | undefined
@@ -261,7 +270,7 @@ const MarkdownViewer: Component<Props> = (props) => {
 
   return (
     <div class="flex flex-col h-full">
-      <ViewerToolbar filename={filename()}>
+      <ViewerToolbar taskId={props.taskId} relativePath={props.relativePath}>
         <div class="flex items-center bg-surface-2 rounded-md p-0.5 gap-0.5">
           <button
             class={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] transition-colors ${
@@ -394,7 +403,7 @@ const SvgViewer: Component<Props> = (props) => {
 
   return (
     <div class="flex flex-col h-full">
-      <ViewerToolbar filename={filename()} icon={Image}>
+      <ViewerToolbar taskId={props.taskId} relativePath={props.relativePath} icon={Image}>
         <div class="flex items-center bg-surface-2 rounded-md p-0.5 gap-0.5">
           <button
             class={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] transition-colors ${

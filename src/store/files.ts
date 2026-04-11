@@ -139,6 +139,51 @@ export function collapseDir(taskId: string, path: string) {
   })
 }
 
+// ── Tab persistence via localStorage ─────────────────────────────────
+
+interface PersistedTabState {
+  tabs: EditorTab[]
+  activeTab: string | null
+  mainView: string
+  mruStack: string[]
+}
+
+function tabStorageKey(taskId: string) { return `verun:editorTabs:${taskId}` }
+
+function persistTabState(taskId: string) {
+  const state: PersistedTabState = {
+    // Strip dirty flag — unsaved edits don't survive restart
+    tabs: (taskOpenTabs()[taskId] ?? []).map(t => ({ ...t, dirty: false })),
+    activeTab: taskActiveTab()[taskId] ?? null,
+    mainView: taskMainView()[taskId] ?? 'session',
+    mruStack: taskMruStack()[taskId] ?? [],
+  }
+  try { localStorage.setItem(tabStorageKey(taskId), JSON.stringify(state)) } catch { /* quota */ }
+}
+
+/** Restore tabs from localStorage when a task is first accessed. Returns true if restored. */
+export function restoreTabState(taskId: string): boolean {
+  // Already loaded in memory — don't overwrite
+  if ((taskOpenTabs()[taskId] ?? []).length > 0) return false
+
+  try {
+    const raw = localStorage.getItem(tabStorageKey(taskId))
+    if (!raw) return false
+    const state: PersistedTabState = JSON.parse(raw)
+    if (!state.tabs?.length) return false
+
+    setTaskOpenTabs(prev => ({ ...prev, [taskId]: state.tabs }))
+    setTaskActiveTab(prev => ({ ...prev, [taskId]: state.activeTab }))
+    setTaskMainView(prev => ({ ...prev, [taskId]: state.mainView }))
+    setTaskMruStack(prev => ({ ...prev, [taskId]: state.mruStack ?? [] }))
+    return true
+  } catch { return false }
+}
+
+function clearPersistedTabs(taskId: string) {
+  try { localStorage.removeItem(tabStorageKey(taskId)) } catch { /* */ }
+}
+
 // ── Per-task editor tabs ──────────────────────────────────────────────
 
 export function openTabs(taskId: string | null): EditorTab[] {
@@ -165,6 +210,7 @@ export function openFile(taskId: string, relativePath: string, name: string) {
     setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
     setMainView(taskId, relativePath)
     pushMru(taskId, relativePath)
+    persistTabState(taskId)
     return
   }
 
@@ -176,6 +222,7 @@ export function openFile(taskId: string, relativePath: string, name: string) {
   setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
+  persistTabState(taskId)
 }
 
 /** Open a file as a permanent tab (double-click, or programmatic). */
@@ -195,6 +242,7 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
       setMainView(taskId, relativePath)
     }
     pushMru(taskId, relativePath)
+    persistTabState(taskId)
     return
   }
 
@@ -207,6 +255,7 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
   setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
+  persistTabState(taskId)
 }
 
 /** Pin the current preview tab (called on edit or double-click). */
@@ -215,6 +264,7 @@ export function pinTab(taskId: string, relativePath: string) {
     const tabs = prev[taskId] ?? []
     return { ...prev, [taskId]: tabs.map(t => t.relativePath === relativePath ? { ...t, preview: false } : t) }
   })
+  persistTabState(taskId)
 }
 
 /** Try to close a tab. If dirty, sets pendingClose instead. */
@@ -233,6 +283,9 @@ export function forceCloseTab(taskId: string, relativePath: string) {
   const tabs = openTabs(taskId)
   const tab = tabs.find(t => t.relativePath === relativePath)
   if (tab) {
+    // If closing a dirty tab without saving, clear the content cache
+    // so reopening loads fresh from disk instead of stale edits
+    if (tab.dirty) clearCachedContent(taskId, relativePath)
     setTaskRecentlyClosed(prev => ({
       ...prev,
       [taskId]: [{ ...tab, dirty: false }, ...(prev[taskId] ?? [])].slice(0, MAX_CLOSED),
@@ -241,6 +294,7 @@ export function forceCloseTab(taskId: string, relativePath: string) {
   const filtered = tabs.filter(t => t.relativePath !== relativePath)
   setTaskOpenTabs(prev => ({ ...prev, [taskId]: filtered }))
   removeMru(taskId, relativePath)
+  for (const fn of tabCloseListeners) fn(taskId, relativePath)
 
   if (activeTabPath(taskId) === relativePath) {
     // Fall back to the most recently used tab
@@ -251,6 +305,7 @@ export function forceCloseTab(taskId: string, relativePath: string) {
     else setMainView(taskId, newActive)
   }
   setPendingClose(null)
+  persistTabState(taskId)
 }
 
 /** Cancel a pending close. */
@@ -285,6 +340,7 @@ export function setActiveTab(taskId: string, relativePath: string) {
   setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
+  persistTabState(taskId)
 }
 
 // File content cache — avoids reload flicker when switching tabs
@@ -311,6 +367,35 @@ export function setCachedOriginal(taskId: string, relativePath: string, content:
 export function clearCachedContent(taskId: string, relativePath: string) {
   fileContentCache.delete(`${taskId}:${relativePath}`)
   fileOriginalCache.delete(`${taskId}:${relativePath}`)
+}
+
+// Tab-close listeners — lets CodeEditor clear its state cache without circular imports
+type TabCloseListener = (taskId: string, relativePath: string) => void
+const tabCloseListeners: TabCloseListener[] = []
+
+export function onTabClose(listener: TabCloseListener): () => void {
+  tabCloseListeners.push(listener)
+  return () => {
+    const idx = tabCloseListeners.indexOf(listener)
+    if (idx >= 0) tabCloseListeners.splice(idx, 1)
+  }
+}
+
+// Task-level cleanup listeners — fired when an entire task is deleted/archived
+type TaskCleanupListener = (taskId: string) => void
+const taskCleanupListeners: TaskCleanupListener[] = []
+
+export function onTaskCleanup(listener: TaskCleanupListener): () => void {
+  taskCleanupListeners.push(listener)
+  return () => {
+    const idx = taskCleanupListeners.indexOf(listener)
+    if (idx >= 0) taskCleanupListeners.splice(idx, 1)
+  }
+}
+
+export function fireTaskCleanup(taskId: string) {
+  clearPersistedTabs(taskId)
+  for (const fn of taskCleanupListeners) fn(taskId)
 }
 
 // ── Reveal file in tree ──────────────────────────────────────────────
@@ -354,12 +439,12 @@ export function nextTab(taskId: string) {
   if (tabs.length < 2) return
   const mru = taskMruStack()[taskId] ?? []
   const active = activeTabPath(taskId)
-  // Find the next entry in MRU that isn't the current one
   const next = mru.find(p => p !== active && tabs.some(t => t.relativePath === p))
   if (next) {
     setTaskActiveTab(prev => ({ ...prev, [taskId]: next }))
     setMainView(taskId, next)
     pushMru(taskId, next)
+    persistTabState(taskId)
     revealFileInTree(taskId, next)
   }
 }
@@ -370,13 +455,13 @@ export function prevTab(taskId: string) {
   if (tabs.length < 2) return
   const mru = taskMruStack()[taskId] ?? []
   const active = activeTabPath(taskId)
-  // Find the oldest MRU entry that's still open
   const candidates = mru.filter(p => p !== active && tabs.some(t => t.relativePath === p))
   const prev = candidates.length > 0 ? candidates[candidates.length - 1] : null
   if (prev) {
     setTaskActiveTab(p => ({ ...p, [taskId]: prev }))
     setMainView(taskId, prev)
     pushMru(taskId, prev)
+    persistTabState(taskId)
     revealFileInTree(taskId, prev)
   }
 }

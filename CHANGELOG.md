@@ -18,6 +18,12 @@
 - Markdown preview — `.md` files render as styled WYSIWYG with a preview/edit toggle to switch between rendered output and the code editor
 - SVG viewer — `.svg` files render visually with a preview/edit toggle for the XML source
 - Hover previews on @mentioned files now support media (images, video, audio), rendered markdown, and SVG visual previews
+- Cursor position, selection, and scroll position are preserved when switching between file tabs
+- Undo/redo history persists across tab switches — Cmd+Z works on the full edit history after switching back
+- Breadcrumb path bar at the top of the editor — click any segment to see sibling files/folders and jump to them
+- Open tabs, active file, and MRU stack persist to localStorage per task — survives app restart
+- Editor auto-focuses when switching tabs so the cursor is visible and keyboard input works immediately
+- Fix closing a dirty tab without saving showing stale edits when reopened
 
 ## 0.4.2 — 2026-04-11
 

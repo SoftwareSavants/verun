@@ -16,7 +16,7 @@ import { FileViewer } from './FileViewer'
 import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
-import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree } from '../store/files'
+import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/files'
 import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
@@ -140,6 +140,7 @@ function OpenInButton(props: { path: string }) {
 export const TaskPanel: Component = () => {
   createEffect(on(selectedTaskId, async (taskId) => {
     if (taskId) {
+      restoreTabState(taskId)
       await loadSessions(taskId)
       const taskSessions = sessionsForTask(taskId)
       if (taskSessions.length > 0) {

@@ -5,6 +5,7 @@ import * as ipc from '../lib/ipc'
 import { closeTerminalsForTask } from './terminals'
 import { clearTaskGitState } from './git'
 import { clearProblemsForTask } from './problems'
+import { fireTaskCleanup } from './files'
 
 export const [tasks, setTasks] = createStore<Task[]>([])
 
@@ -149,6 +150,7 @@ export async function deleteTask(id: string, deleteBranch = true, skipDestroyHoo
   closeTerminalsForTask(id)
   clearTaskGitState(id)
   clearProblemsForTask(id)
+  fireTaskCleanup(id)
   await ipc.deleteTask(id, deleteBranch, skipDestroyHook)
   setTasks(prev => prev.filter(t => t.id !== id))
 }

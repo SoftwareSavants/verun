@@ -25,7 +25,7 @@ import { xml } from '@codemirror/lang-xml'
 import { yaml } from '@codemirror/lang-yaml'
 import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
-import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal, pendingGoToLine, consumeGoToLine } from '../store/files'
+import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal, pendingGoToLine, consumeGoToLine, onTabClose, onTaskCleanup } from '../store/files'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 
 interface Props {
@@ -503,6 +503,31 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
   return exts
 }
 
+// ── Editor state cache — preserves cursor, selection, and undo/redo across tab switches ──
+const editorStateCache = new Map<string, EditorState>()
+const scrollPositionCache = new Map<string, { top: number; left: number }>()
+
+function cacheKey(taskId: string, relativePath: string) {
+  return `${taskId}:${relativePath}`
+}
+
+export function clearEditorStateCache(taskId: string, relativePath: string) {
+  const key = cacheKey(taskId, relativePath)
+  editorStateCache.delete(key)
+  scrollPositionCache.delete(key)
+}
+
+/** Clear all cached editor state for a task (call on task deletion/archive). */
+export function clearAllEditorStateForTask(taskId: string) {
+  const prefix = `${taskId}:`
+  for (const key of editorStateCache.keys()) {
+    if (key.startsWith(prefix)) editorStateCache.delete(key)
+  }
+  for (const key of scrollPositionCache.keys()) {
+    if (key.startsWith(prefix)) scrollPositionCache.delete(key)
+  }
+}
+
 // ── Component ──────────────────────────────────────────────────────────
 export const CodeEditor: Component<Props> = (props) => {
   const [originalContent, setOriginalContent] = createSignal('')
@@ -519,6 +544,13 @@ export const CodeEditor: Component<Props> = (props) => {
   let currentContent = ''
   // Current file URI for LSP view registration
   let currentFileUri = ''
+  // Current cache key for saving/restoring editor state
+  let currentFileKey = ''
+
+  // Clear editor state cache when a tab is closed or task is deleted
+  const unsubTabClose = onTabClose(clearEditorStateCache)
+  const unsubTaskCleanup = onTaskCleanup(clearAllEditorStateForTask)
+  onCleanup(() => { unsubTabClose(); unsubTaskCleanup() })
 
   const save = async () => {
     try {
@@ -557,6 +589,16 @@ export const CodeEditor: Component<Props> = (props) => {
 
   // ── Editor lifecycle ──────────────────────────────────────────────
   const createEditor = async (doc: string, path: string, worktreePath: string) => {
+    // Save outgoing editor state (cursor, selection, undo history, scroll)
+    if (editorView && currentFileKey) {
+      editorStateCache.set(currentFileKey, editorView.state)
+      scrollPositionCache.set(currentFileKey, {
+        top: editorView.scrollDOM.scrollTop,
+        left: editorView.scrollDOM.scrollLeft,
+      })
+    }
+
+    // Destroy previous instance
     if (editorView) {
       if (currentFileUri) unregisterEditorView(currentFileUri)
       editorView.destroy()
@@ -565,28 +607,48 @@ export const CodeEditor: Component<Props> = (props) => {
 
     if (!editorParentRef) return
 
-    const extensions = buildExtensions(
-      path,
-      (content) => {
-        currentContent = content
-        setCachedContent(props.taskId, props.relativePath, content)
-        setTabDirty(props.taskId, props.relativePath, content !== originalContent())
-      },
-      save,
-    )
+    const newKey = cacheKey(props.taskId, path)
+    currentFileKey = newKey
 
-    if (isLspSupported(path)) {
-      try {
-        const client = await getLspClient(props.taskId, worktreePath)
-        const fileUri = `file://${worktreePath}/${path}`
-        extensions.push(client.plugin(fileUri, 'typescript'))
-      } catch (e) {
-        console.warn('LSP not available:', e)
+    // Try to restore cached EditorState (preserves cursor + undo/redo)
+    const cachedState = editorStateCache.get(newKey)
+    if (cachedState && cachedState.doc.toString() === doc) {
+      editorView = new EditorView({ state: cachedState, parent: editorParentRef })
+
+      // Restore scroll position after DOM layout
+      const savedScroll = scrollPositionCache.get(newKey)
+      if (savedScroll) {
+        requestAnimationFrame(() => {
+          editorView?.scrollDOM.scrollTo(savedScroll.left, savedScroll.top)
+        })
       }
-    }
+    } else {
+      // Fresh state — first open or after cache was cleared
+      const extensions = buildExtensions(
+        path,
+        (content) => {
+          currentContent = content
+          setCachedContent(props.taskId, props.relativePath, content)
+          setTabDirty(props.taskId, props.relativePath, content !== originalContent())
+        },
+        save,
+      )
 
-    const state = EditorState.create({ doc, extensions })
-    editorView = new EditorView({ state, parent: editorParentRef })
+      // Add LSP plugin for JS/TS files
+      if (isLspSupported(path)) {
+        try {
+          const client = await getLspClient(props.taskId, worktreePath)
+          const fileUri = `file://${worktreePath}/${path}`
+          extensions.push(client.plugin(fileUri, 'typescript'))
+        } catch (e) {
+          console.warn('LSP not available:', e)
+          // Editor works fine without LSP
+        }
+      }
+
+      const state = EditorState.create({ doc, extensions })
+      editorView = new EditorView({ state, parent: editorParentRef })
+    }
 
     if (worktreePath) {
       currentFileUri = `file://${worktreePath}/${path}`
@@ -595,6 +657,9 @@ export const CodeEditor: Component<Props> = (props) => {
 
     // Apply any pending go-to-line now that the editor is ready
     drainPendingGoToLine()
+
+    // Auto-focus the editor so the cursor is visible and keyboard input works
+    editorView.focus()
   }
 
   // Load file content and (re)create the editor when the file changes
@@ -618,6 +683,8 @@ export const CodeEditor: Component<Props> = (props) => {
     try {
       const task = await ipc.getTask(props.taskId)
       if (!task) return
+      // Loading from disk — clear any stale editor state
+      clearEditorStateCache(props.taskId, path)
       const fullPath = `${task.worktreePath}/${path}`
       const text = await ipc.readTextFile(fullPath)
       currentContent = text
@@ -635,7 +702,15 @@ export const CodeEditor: Component<Props> = (props) => {
     }
   }))
 
+  // Cleanup — save state before destroying so it survives component remount
   onCleanup(() => {
+    if (editorView && currentFileKey) {
+      editorStateCache.set(currentFileKey, editorView.state)
+      scrollPositionCache.set(currentFileKey, {
+        top: editorView.scrollDOM.scrollTop,
+        left: editorView.scrollDOM.scrollLeft,
+      })
+    }
     if (currentFileUri) unregisterEditorView(currentFileUri)
     if (editorView) {
       editorView.destroy()
