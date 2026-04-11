@@ -183,6 +183,9 @@ export const hasConflicts = (taskId: string) =>
 export const listWorktreeFiles = (taskId: string) =>
   invoke<string[]>('list_worktree_files', { taskId })
 
+export const checkGitignored = (taskId: string, paths: string[]) =>
+  invoke<string[]>('check_gitignored', { taskId, paths })
+
 // Utility
 export const listClaudeSkills = () =>
   invoke<ClaudeSkill[]>('list_claude_skills')

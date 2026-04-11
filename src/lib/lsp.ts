@@ -180,8 +180,20 @@ const VTSLS_SETTINGS = {
 }
 
 // ── Transport ─────────────────────────────────────────────────────────
-function createTauriTransport(taskId: string): Transport {
+// Per-task injectors — lets us push synthetic messages into the transport
+// so @codemirror/lsp-client processes them as if they came from vtsls.
+const transportInjectors = new Map<string, (msg: string) => void>()
+
+/** Inject a message into a task's transport handlers (for replaying cached diagnostics) */
+export function injectLspMessage(taskId: string, message: string) {
+  transportInjectors.get(taskId)?.(message)
+}
+
+function createTauriTransport(taskId: string, worktreePath: string, workspaceFolders?: Array<{ uri: string; name: string }>): Transport {
   const handlers: Array<(msg: string) => void> = []
+  transportInjectors.set(taskId, (msg: string) => {
+    for (const h of handlers) h(msg)
+  })
 
   listen<LspMessagePayload>('lsp-message', (event) => {
     if (event.payload.taskId !== taskId) return
@@ -195,7 +207,6 @@ function createTauriTransport(taskId: string): Transport {
       if (msg.id != null && msg.method === 'workspace/configuration') {
         const items = msg.params?.items || []
         const result = items.map(() => VTSLS_SETTINGS)
-        console.log('[LSP] Responding to workspace/configuration with enableProjectDiagnostics=true')
         ipc.lspSend(taskId, JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }))
         return
       }
@@ -208,6 +219,20 @@ function createTauriTransport(taskId: string): Transport {
 
   return {
     send(message: string) {
+      try {
+        const msg = JSON.parse(message)
+        // Inject workspaceFolders into the initialize request for monorepo support
+        if (msg.method === 'initialize' && workspaceFolders?.length) {
+          msg.params.workspaceFolders = workspaceFolders
+          message = JSON.stringify(msg)
+        }
+        // When initialized is sent, vtsls starts initializeService() which spawns
+        // tsserver. After 3s (enough for tsserver to start), auto-open one file
+        // to trigger geterrForProject and populate the problems panel.
+        if (msg.method === 'initialized') {
+          setTimeout(() => autoOpenProjectFile(taskId, worktreePath), 3000)
+        }
+      } catch { /* not JSON — send as-is */ }
       ipc.lspSend(taskId, message)
     },
     subscribe(handler: (msg: string) => void) {
@@ -221,6 +246,57 @@ function createTauriTransport(taskId: string): Transport {
 }
 
 /**
+ * Find all tsconfig.json directories and build workspace folder entries for
+ * the LSP initialize request. In monorepos, this tells vtsls about all
+ * sub-projects so it can discover and analyze them from the start.
+ */
+async function findWorkspaceFolders(taskId: string, worktreePath: string): Promise<Array<{ uri: string; name: string }>> {
+  try {
+    const allFiles = await ipc.listWorktreeFiles(taskId)
+    const folders: Array<{ uri: string; name: string }> = [
+      { uri: `file://${worktreePath}`, name: worktreePath.split('/').pop() || 'root' },
+    ]
+    for (const f of allFiles) {
+      if (f.endsWith('/tsconfig.json')) {
+        const dir = f.slice(0, f.lastIndexOf('/'))
+        folders.push({
+          uri: `file://${worktreePath}/${dir}`,
+          name: dir.split('/').pop() || dir,
+        })
+      }
+    }
+    return folders
+  } catch {
+    return [{ uri: `file://${worktreePath}`, name: worktreePath.split('/').pop() || 'root' }]
+  }
+}
+
+/**
+ * Auto-open one .ts/.tsx file from the root project to trigger geterrForProject.
+ * Called from the transport's send interceptor when it sees the outgoing
+ * `initialized` notification — timed 3s after to let vtsls finish spawning tsserver.
+ */
+async function autoOpenProjectFile(taskId: string, worktreePath: string) {
+  if (!clients.has(taskId)) return
+  try {
+    const allFiles = await ipc.listWorktreeFiles(taskId)
+    const file = allFiles.find(f =>
+      /\.(ts|tsx)$/.test(f) && !f.includes('node_modules') && !f.includes('.next/')
+    )
+    if (!file) return
+    const content = await ipc.readTextFile(`${worktreePath}/${file}`)
+    const uri = `file://${worktreePath}/${file}`
+    const ext = file.split('.').pop() || ''
+    const languageId = ext === 'tsx' ? 'typescriptreact' : 'typescript'
+    ipc.lspSend(taskId, JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'textDocument/didOpen',
+      params: { textDocument: { uri, languageId, version: 0, text: content } },
+    }))
+  } catch { /* worktree not ready or no TS files */ }
+}
+
+/**
  * Get or create an LSP client for a task's worktree.
  */
 export async function getLspClient(taskId: string, worktreePath: string): Promise<LSPClient> {
@@ -231,24 +307,37 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
   await ipc.lspStart(taskId, worktreePath)
   worktreePaths.set(taskId, worktreePath)
 
+  // Find tsconfig.json directories for monorepo workspace folder support
+  const workspaceFolders = await findWorkspaceFolders(taskId, worktreePath)
+
   const client = new LSPClient({
     rootUri: `file://${worktreePath}`,
     workspace: (c) => new VerunWorkspace(c, worktreePath, taskId),
     extensions: [
       ...languageServerExtensions(),
-      // Advertise workspace.configuration so vtsls sends a ConfigurationRequest
-      // during initialization (handled by the transport interceptor above).
-      { clientCapabilities: { workspace: { configuration: true } } },
+      // Advertise capabilities so vtsls sends ConfigurationRequest during init
+      // (handled by the transport interceptor) and accepts workspace folder updates.
+      { clientCapabilities: { workspace: { configuration: true, workspaceFolders: true } } },
     ],
   })
 
-  client.connect(createTauriTransport(taskId))
+  client.connect(createTauriTransport(taskId, worktreePath, workspaceFolders))
   clients.set(taskId, client)
 
   await client.initializing
 
   // Mark loading so the Problems panel shows a spinner
   markProblemsLoading(taskId)
+
+  // Also send didChangeConfiguration — the transport interceptor handles the
+  // init-time workspace/configuration request (setting enableProjectDiagnostics),
+  // but this notification triggers vtsls to re-analyze open files and emit
+  // publishDiagnostics, which @codemirror/lsp-client needs for inline rendering.
+  ipc.lspSend(taskId, JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'workspace/didChangeConfiguration',
+    params: { settings: VTSLS_SETTINGS },
+  })).catch(() => {})
 
   return client
 }
@@ -271,6 +360,7 @@ export async function stopLspClient(taskId: string) {
     clients.delete(taskId)
   }
   worktreePaths.delete(taskId)
+  transportInjectors.delete(taskId)
   const timer = restartTimers.get(taskId)
   if (timer) clearTimeout(timer)
   restartTimers.delete(taskId)

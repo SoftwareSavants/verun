@@ -81,6 +81,71 @@ function flushBatch() {
   })
 }
 
+// ── Gitignore filtering ─────────────────────────────────────────────
+// With enableProjectDiagnostics, vtsls scans gitignored dirs (.next, dist, etc).
+// We batch-check unknown paths via git check-ignore and cache the results.
+
+const ignoredPaths = new Map<string, Set<string>>()   // taskId → known-ignored paths
+const checkedPaths = new Map<string, Set<string>>()   // taskId → paths we've already checked
+const pendingIgnoreChecks = new Map<string, Set<string>>() // taskId → paths needing a check
+let ignoreCheckScheduled = false
+
+function isKnownIgnored(taskId: string, relativePath: string): boolean {
+  return ignoredPaths.get(taskId)?.has(relativePath) ?? false
+}
+
+function queueIgnoreCheck(taskId: string, relativePath: string) {
+  const checked = checkedPaths.get(taskId)
+  if (checked?.has(relativePath)) return
+
+  let batch = pendingIgnoreChecks.get(taskId)
+  if (!batch) { batch = new Set(); pendingIgnoreChecks.set(taskId, batch) }
+  batch.add(relativePath)
+
+  if (!ignoreCheckScheduled) {
+    ignoreCheckScheduled = true
+    requestAnimationFrame(flushIgnoreChecks)
+  }
+}
+
+async function flushIgnoreChecks() {
+  ignoreCheckScheduled = false
+  const { checkGitignored } = await import('../lib/ipc')
+
+  for (const [taskId, paths] of pendingIgnoreChecks) {
+    const pathArray = [...paths]
+
+    // Mark all as checked so we don't re-check
+    let checked = checkedPaths.get(taskId)
+    if (!checked) { checked = new Set(); checkedPaths.set(taskId, checked) }
+    for (const p of pathArray) checked.add(p)
+
+    try {
+      const ignoredResults = await checkGitignored(taskId, pathArray)
+      if (ignoredResults.length > 0) {
+        let ignored = ignoredPaths.get(taskId)
+        if (!ignored) { ignored = new Set(); ignoredPaths.set(taskId, ignored) }
+        for (const p of ignoredResults) ignored.add(p)
+
+        // Remove ignored files that already made it into the store
+        setProblemMap(prev => {
+          const taskProblems = prev[taskId]
+          if (!taskProblems) return prev
+          let changed = false
+          const next = { ...taskProblems }
+          for (const p of ignoredResults) {
+            if (next[p]) { delete next[p]; changed = true }
+          }
+          return changed ? { ...prev, [taskId]: next } : prev
+        })
+      }
+    } catch {
+      // git check-ignore failed — let diagnostics through rather than hiding them
+    }
+  }
+  pendingIgnoreChecks.clear()
+}
+
 // Track which tasks have received their first diagnostics (LSP still loading)
 const [loadingTasks, setLoadingTasks] = createSignal<Set<string>>(new Set())
 
@@ -88,11 +153,22 @@ export function isProblemsLoading(taskId: string): boolean {
   return loadingTasks().has(taskId)
 }
 
+const loadingTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+
 export function markProblemsLoading(taskId: string) {
   setLoadingTasks(prev => { const s = new Set(prev); s.add(taskId); return s })
+  // Auto-clear loading if no diagnostics arrive within 15s (e.g. vtsls crashed)
+  const existing = loadingTimeouts.get(taskId)
+  if (existing) clearTimeout(existing)
+  loadingTimeouts.set(taskId, setTimeout(() => {
+    loadingTimeouts.delete(taskId)
+    markProblemsReady(taskId)
+  }, 15_000))
 }
 
 function markProblemsReady(taskId: string) {
+  const t = loadingTimeouts.get(taskId)
+  if (t) { clearTimeout(t); loadingTimeouts.delete(taskId) }
   setLoadingTasks(prev => {
     if (!prev.has(taskId)) return prev
     const s = new Set(prev); s.delete(taskId); return s
@@ -173,6 +249,9 @@ export function clearProblemsForTask(taskId: string) {
     return next
   })
   markProblemsReady(taskId)
+  ignoredPaths.delete(taskId)
+  checkedPaths.delete(taskId)
+  pendingIgnoreChecks.delete(taskId)
 }
 
 // ── Initialization ───────────────────────────────────────────────────
@@ -220,6 +299,10 @@ export function initProblemsListener() {
 
     // Skip node_modules diagnostics
     if (relativePath.startsWith('node_modules/')) return
+
+    // Skip gitignored files (checked async, cached for future diagnostics)
+    if (isKnownIgnored(taskId, relativePath)) return
+    queueIgnoreCheck(taskId, relativePath)
 
     const problems: Problem[] = params.diagnostics.map((d: any) => ({
       file: relativePath,

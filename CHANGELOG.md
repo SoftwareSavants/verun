@@ -13,6 +13,7 @@
 - Find in session (Cmd+F) — search through chat messages with match highlighting and navigation
 - Fix project-wide diagnostics not loading — transport-level handling of vtsls `workspace/configuration` requests so `enableProjectDiagnostics` takes effect during initialization, not after
 - Fix diagnostics batch crash when first problems arrive for a task
+- Problems panel skips gitignored files — uses `git check-ignore` to respect `.gitignore`, `.git/info/exclude`, and global ignore patterns
 - @mentioned files render as inline badges in the input and sent messages — hover to preview with syntax highlighting, click to open in the editor
 - Media viewer — images, video, and audio files open natively from the file tree with proper rendering instead of failing as binary
 - Markdown preview — `.md` files render as styled WYSIWYG with a preview/edit toggle to switch between rendered output and the code editor
