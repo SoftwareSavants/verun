@@ -47,6 +47,13 @@ export const TaskWindowShell: Component = () => {
     clearTimeout(quitDismissTimer)
   }
 
+  // Set selection eagerly so TaskPanel renders the right task immediately
+  if (ctx.taskId) {
+    setSelectedTaskId(ctx.taskId)
+  } else if (ctx.projectId) {
+    setSelectedProjectId(ctx.projectId)
+  }
+
   onMount(async () => {
     initTheme()
 
@@ -73,21 +80,19 @@ export const TaskWindowShell: Component = () => {
     await initGitListeners()
     await initProjectListeners()
     await initSetupListeners()
-    initWindowFocusRefresh() // Fix #8: refresh git state on window focus
+    initWindowFocusRefresh()
     await loadProjects()
     await syncSessionStatuses()
 
-    // If we have a taskId, select it and load its data
+    // Load tasks for this project so taskById() can resolve
     if (ctx.taskId) {
-      const task = taskById(ctx.taskId)
+      const task = await ipc.getTask(ctx.taskId)
       if (task) {
         setSelectedProjectId(task.projectId)
+        await loadTasks(task.projectId)
       }
-      setSelectedTaskId(ctx.taskId)
-      // Fix #7: load git state for this task
       refreshTaskGit(ctx.taskId)
     } else if (ctx.projectId) {
-      setSelectedProjectId(ctx.projectId)
       await loadTasks(ctx.projectId)
     }
 
