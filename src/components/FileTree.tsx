@@ -4,7 +4,7 @@ import { Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-solid'
 import { fileHasErrors, fileHasWarnings, pathHasErrors, pathHasWarnings } from '../store/problems'
 import { getFileIcon } from '../lib/fileIcons'
 import {
-  getDirContents, loadDirectory, isExpanded, toggleExpanded, collapseDir,
+  getDirContents, loadDirectory, isExpanded, toggleExpanded, expandDir, collapseDir,
   invalidateDirectory, openFile, openFilePinned, revealRequest, mainView
 } from '../store/files'
 import { listen } from '@tauri-apps/api/event'
@@ -31,6 +31,7 @@ interface ContextMenuState {
 export const FileTree: Component<Props> = (props) => {
   let scrollRef: HTMLDivElement | undefined
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null)
+  const [selectedIndex, setSelectedIndex] = createSignal(-1)
 
   // Load root directory on mount
   onMount(() => {
@@ -217,8 +218,101 @@ export const FileTree: Component<Props> = (props) => {
     setContextMenu(null)
   }
 
+  const scrollToIndex = (idx: number) => {
+    if (!scrollRef) return
+    const rowHeight = 24
+    const containerHeight = scrollRef.clientHeight
+    const targetTop = idx * rowHeight
+    const visibleTop = scrollRef.scrollTop
+    const visibleBottom = visibleTop + containerHeight
+    if (targetTop >= visibleTop && targetTop + rowHeight <= visibleBottom) return
+    scrollRef.scrollTop = targetTop - containerHeight / 2 + rowHeight / 2
+  }
+
+  const parentDir = (relativePath: string) => {
+    const lastSlash = relativePath.lastIndexOf('/')
+    return lastSlash > 0 ? relativePath.substring(0, lastSlash) : ''
+  }
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    const nodes = flatNodes()
+    if (nodes.length === 0) return
+    const idx = selectedIndex()
+    const node = idx >= 0 && idx < nodes.length ? nodes[idx] : null
+
+    switch (e.key) {
+      case 'ArrowDown': {
+        e.preventDefault()
+        const next = Math.min(idx + 1, nodes.length - 1)
+        setSelectedIndex(next)
+        scrollToIndex(next)
+        break
+      }
+      case 'ArrowUp': {
+        e.preventDefault()
+        const next = Math.max(idx - 1, 0)
+        setSelectedIndex(next)
+        scrollToIndex(next)
+        break
+      }
+      case 'ArrowLeft': {
+        e.preventDefault()
+        if (!node) break
+        if (node.entry.isDir && isExpanded(props.taskId, node.entry.relativePath)) {
+          // Expanded dir — collapse it
+          collapseDir(props.taskId, node.entry.relativePath)
+        } else {
+          // File or collapsed dir — jump to parent dir
+          const parent = parentDir(node.entry.relativePath)
+          const parentIdx = nodes.findIndex(n => n.entry.relativePath === parent && n.entry.isDir)
+          if (parentIdx >= 0) {
+            setSelectedIndex(parentIdx)
+            scrollToIndex(parentIdx)
+          }
+        }
+        break
+      }
+      case 'ArrowRight': {
+        e.preventDefault()
+        if (!node || !node.entry.isDir) break
+        if (!isExpanded(props.taskId, node.entry.relativePath)) {
+          // Collapsed — expand it
+          expandDir(props.taskId, node.entry.relativePath)
+          if (!getDirContents(props.taskId, node.entry.relativePath)) {
+            loadDirectory(props.taskId, node.entry.relativePath)
+          }
+        } else {
+          // Already expanded — move to first child
+          const next = idx + 1
+          if (next < flatNodes().length) {
+            setSelectedIndex(next)
+            scrollToIndex(next)
+          }
+        }
+        break
+      }
+      case 'Enter': {
+        e.preventDefault()
+        if (!node) break
+        handleClick(node.entry)
+        break
+      }
+      case ' ': {
+        e.preventDefault()
+        if (!node) break
+        if (node.entry.isDir) {
+          toggleExpanded(props.taskId, node.entry.relativePath)
+          if (!getDirContents(props.taskId, node.entry.relativePath)) {
+            loadDirectory(props.taskId, node.entry.relativePath)
+          }
+        }
+        break
+      }
+    }
+  }
+
   return (
-    <div ref={scrollRef} class="h-full overflow-auto relative">
+    <div ref={scrollRef} class="h-full overflow-auto relative outline-none" tabIndex={0} onKeyDown={handleKeyDown}>
       <div
         style={{
           height: `${virtualizer.getTotalSize()}px`,
@@ -254,10 +348,12 @@ export const FileTree: Component<Props> = (props) => {
                         class={`w-full h-full flex items-center gap-1 px-2 py-1 text-[12px] transition-colors text-left truncate${
                           !n().entry.isDir && mainView(props.taskId) === n().entry.relativePath
                             ? ' bg-surface-3 text-text-primary'
-                            : ' text-text-secondary hover:bg-surface-2'
+                            : selectedIndex() === virtualRow.index
+                              ? ' bg-surface-2 text-text-secondary'
+                              : ' text-text-secondary hover:bg-surface-2'
                         }`}
                         style={{ "padding-left": `${n().depth * 16 + 8}px` }}
-                        onClick={() => handleClick(n().entry)}
+                        onClick={() => { setSelectedIndex(virtualRow.index); handleClick(n().entry) }}
                         onDblClick={() => handleDoubleClick(n().entry)}
                         onContextMenu={(e) => {
                           e.preventDefault()
