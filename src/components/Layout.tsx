@@ -8,6 +8,7 @@ import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from '.
 import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, setAddProjectPath } from '../store/ui'
+import * as ipc from '../lib/ipc'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
 import { activeTasks, taskById } from '../store/tasks'
 import { projects, projectById } from '../store/projects'
@@ -57,6 +58,12 @@ export const Layout: Component = () => {
       if (modPressed(e) && e.key === 'o') {
         e.preventDefault()
         pickAndAddProject()
+      }
+      if (modPressed(e) && e.shiftKey && e.key === 'n') {
+        e.preventDefault()
+        const pid = selectedProjectId() || (projects.length > 0 ? projects[projects.length - 1].id : null)
+        if (pid) ipc.openNewTaskWindow(pid)
+        return
       }
       if (modPressed(e) && e.key === 'n') {
         e.preventDefault()

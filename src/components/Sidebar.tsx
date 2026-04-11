@@ -232,6 +232,10 @@ export const Sidebar: Component = () => {
       pos: { x: e.clientX, y: e.clientY },
       items: [
         {
+          label: "Open in New Window",
+          action: () => ipc.openTaskWindow(task.id, task.name || undefined),
+        },
+        {
           label: "Rename",
           action: () => setRenamingTaskId(taskId),
         },
@@ -372,6 +376,7 @@ export const Sidebar: Component = () => {
                               "border-radius": (attention() || unread()) ? "0 6px 6px 0" : undefined,
                             }}
                             onClick={() => { setSelectedTaskId(task.id); setSelectedProjectId(task.projectId); setShowSettings(false); setShowArchived(false) }}
+                            onDblClick={() => { if (!disabled() && !hasError()) ipc.openTaskWindow(task.id, task.name || undefined) }}
                             onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
                             title={archiving() ? 'Archiving…' : creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
                           >

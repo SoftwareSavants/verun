@@ -169,16 +169,17 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                #[cfg(target_os = "macos")]
-                {
-                    // CMD+W: hide the window instead of closing the app
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let _ = window.emit("confirm-quit", ());
-                    api.prevent_close();
+                if window.label() == "main" {
+                    #[cfg(target_os = "macos")]
+                    {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let _ = window.emit("confirm-quit", ());
+                        api.prevent_close();
+                    }
                 }
             }
         })
@@ -282,6 +283,9 @@ pub fn run() {
             ipc::delete_step,
             ipc::reorder_steps,
             ipc::disarm_all_steps,
+            // Window management
+            ipc::open_task_window,
+            ipc::open_new_task_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

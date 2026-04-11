@@ -10,7 +10,7 @@ use crate::watcher::FileWatcherMap;
 use crate::worktree;
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::task::JoinError;
 use uuid::Uuid;
 
@@ -1714,6 +1714,61 @@ pub async fn disarm_all_steps(
         .send(db::DbWrite::DisarmAllSteps { session_id })
         .await
         .map_err(|e| format!("DB write failed: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Window management
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn open_task_window(
+    app: AppHandle,
+    task_id: String,
+    task_name: Option<String>,
+) -> Result<(), String> {
+    let label = format!("task-{task_id}");
+
+    if let Some(win) = app.get_webview_window(&label) {
+        win.set_focus().map_err(|e| format!("Failed to focus window: {e}"))?;
+        return Ok(());
+    }
+
+    let title = task_name.unwrap_or_else(|| "Task".into());
+    let url = format!("index.html?windowType=task&taskId={task_id}&windowLabel={label}");
+
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .title(&title)
+        .inner_size(1200.0, 800.0)
+        .min_inner_size(800.0, 600.0)
+        .hidden_title(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .build()
+        .map_err(|e| format!("Failed to create task window: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_new_task_window(
+    app: AppHandle,
+    project_id: String,
+) -> Result<(), String> {
+    let id = Uuid::new_v4().to_string();
+    let label = format!("task-new-{id}");
+    let url = format!(
+        "index.html?windowType=task&projectId={project_id}&windowLabel={label}"
+    );
+
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .title("New Task")
+        .inner_size(1200.0, 800.0)
+        .min_inner_size(800.0, 600.0)
+        .hidden_title(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .build()
+        .map_err(|e| format!("Failed to create new task window: {e}"))?;
+
+    Ok(())
 }
 
 #[cfg(test)]

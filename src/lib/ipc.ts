@@ -268,3 +268,10 @@ export const disarmAllSteps = (sessionId: string) =>
 // App lifecycle
 export const quitApp = () =>
   invoke<void>('quit_app')
+
+// Window management
+export const openTaskWindow = (taskId: string, taskName?: string) =>
+  invoke<void>('open_task_window', { taskId, taskName })
+
+export const openNewTaskWindow = (projectId: string) =>
+  invoke<void>('open_new_task_window', { projectId })

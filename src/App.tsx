@@ -1,6 +1,8 @@
-import { Component, onMount, createSignal } from 'solid-js'
+import { Component, Show, onMount, createSignal } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
+import { parseWindowContext, WindowContextProvider } from './lib/windowContext'
 import { Layout } from './components/Layout'
+import { TaskWindowShell } from './components/TaskWindowShell'
 import { SelectionMenu } from './components/SelectionMenu'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { ToastContainer } from './components/ToastContainer'
@@ -17,21 +19,18 @@ import { addToast } from './store/ui'
 import { initNotifications, showNotificationDialog, onNotificationDialogConfirm, onNotificationDialogCancel } from './lib/notifications'
 import { initUpdateListener } from './lib/updater'
 
-const App: Component = () => {
+const ctx = parseWindowContext()
+
+const MainApp: Component = () => {
   const [selMenu, setSelMenu] = createSignal<{ x: number; y: number; text: string } | null>(null)
   const [showQuitConfirm, setShowQuitConfirm] = createSignal(false)
 
   onMount(async () => {
-    // Listen for quit confirmation request from backend (CMD+Q)
     listen('confirm-quit', () => setShowQuitConfirm(true))
     initTheme()
-    // Replace default context menu with custom selection menu
     document.addEventListener('contextmenu', (e) => {
-      // Allow custom context menus (sidebar, code editor, file tree)
       if ((e.target as HTMLElement).closest('[data-context-menu]') || (e.target as HTMLElement).closest('.cm-editor') || (e.target as HTMLElement).closest('.code-editor-wrapper')) return
-
       e.preventDefault()
-
       const selection = window.getSelection()?.toString().trim()
       if (selection) {
         setSelMenu({ x: e.clientX, y: e.clientY, text: selection })
@@ -39,8 +38,6 @@ const App: Component = () => {
         setSelMenu(null)
       }
     })
-
-    // Dismiss on click anywhere
     document.addEventListener('click', () => setSelMenu(null))
 
     await initSessionListeners()
@@ -53,7 +50,6 @@ const App: Component = () => {
     await loadProjects()
     await syncSessionStatuses()
 
-    // Dismiss splash screen, reveal app
     const splash = document.getElementById('splash')
     const root = document.getElementById('root')
     if (root) root.style.opacity = '1'
@@ -62,15 +58,13 @@ const App: Component = () => {
       splash.addEventListener('transitionend', () => splash.remove())
     }
 
-    // Check Claude CLI availability and load skills
     try {
       await ipc.checkClaude()
-      loadClaudeSkills() // fire and forget
+      loadClaudeSkills()
     } catch {
       addToast('Claude CLI not found. Install with: npm i -g @anthropic-ai/claude-code', 'error')
     }
 
-    // Prompt for notification permission on first launch
     initNotifications()
     initUpdateListener()
   })
@@ -101,6 +95,16 @@ const App: Component = () => {
         onCancel={onNotificationDialogCancel}
       />
     </>
+  )
+}
+
+const App: Component = () => {
+  return (
+    <WindowContextProvider value={ctx}>
+      <Show when={ctx.windowType === 'main'} fallback={<TaskWindowShell />}>
+        <MainApp />
+      </Show>
+    </WindowContextProvider>
   )
 }
 
