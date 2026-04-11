@@ -413,7 +413,8 @@ export const CodeChanges: Component<Props> = (props) => {
       </div>
 
       {/* Branch commits — collapsible, bottom-aligned like VS Code */}
-      <div class="shrink-0 border-t border-border-subtle">
+      <div class="h-px bg-border-subtle shrink-0" />
+      <div class="shrink-0">
         <button
           class="w-full h-8 flex items-center gap-1.5 px-3 text-xs hover:bg-surface-2 transition-colors"
           onClick={toggleCommitsPanel}

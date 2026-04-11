@@ -1,7 +1,7 @@
 import { Component, For, Show, createSignal, createMemo, createEffect, onCleanup } from 'solid-js'
 import { ChevronRight, ChevronDown, CircleCheck, Loader2 } from 'lucide-solid'
 import { problemsByFileForTask, problemCountForTask, isProblemsLoading } from '../store/problems'
-import { openFilePinned, setMainView, setPendingGoToLine, revealFileInTree } from '../store/files'
+import { openFilePinned, setMainView, setPendingGoToLine, revealFileInTree, mainView } from '../store/files'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
 import type { Problem, DiagnosticSeverity } from '../types'
@@ -93,11 +93,13 @@ export const ProblemsPanel: Component<Props> = (props) => {
   }
 
   const handleProblemClick = (problem: Problem) => {
-    const name = problem.file.split('/').pop() || problem.file
     setPendingGoToLine({ taskId: props.taskId, relativePath: problem.file, line: problem.line, column: problem.column })
-    openFilePinned(props.taskId, problem.file, name)
-    setMainView(props.taskId, problem.file)
-    revealFileInTree(props.taskId, problem.file)
+    if (mainView(props.taskId) !== problem.file) {
+      const name = problem.file.split('/').pop() || problem.file
+      openFilePinned(props.taskId, problem.file, name)
+      setMainView(props.taskId, problem.file)
+      revealFileInTree(props.taskId, problem.file)
+    }
   }
 
   const scrollSelectedIntoView = (idx: number) => {

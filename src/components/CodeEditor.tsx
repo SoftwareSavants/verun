@@ -531,8 +531,32 @@ export const CodeEditor: Component<Props> = (props) => {
     }
   }
 
+  // ── Go-to-line ──────────────────────────────────────────────────────
+  // Scrolls the editor to a specific line/column and focuses it.
+  const goToLine = (line: number, column: number) => {
+    if (!editorView) return
+    const l = Math.min(line, editorView.state.doc.lines)
+    const lineInfo = editorView.state.doc.line(l)
+    const col = Math.min(column - 1, lineInfo.length)
+    const pos = lineInfo.from + col
+    editorView.dispatch({
+      selection: { anchor: pos },
+      effects: EditorView.scrollIntoView(pos, { y: 'center' }),
+    })
+    editorView.focus()
+  }
+
+  // Drains the pendingGoToLine signal if it targets this file.
+  const drainPendingGoToLine = () => {
+    const req = pendingGoToLine()
+    if (!req || req.taskId !== props.taskId || req.relativePath !== props.relativePath) return
+    if (!editorView) return
+    consumeGoToLine()
+    goToLine(req.line, req.column)
+  }
+
+  // ── Editor lifecycle ──────────────────────────────────────────────
   const createEditor = async (doc: string, path: string, worktreePath: string) => {
-    // Destroy previous instance
     if (editorView) {
       if (currentFileUri) unregisterEditorView(currentFileUri)
       editorView.destroy()
@@ -551,7 +575,6 @@ export const CodeEditor: Component<Props> = (props) => {
       save,
     )
 
-    // Add LSP plugin for JS/TS files
     if (isLspSupported(path)) {
       try {
         const client = await getLspClient(props.taskId, worktreePath)
@@ -559,23 +582,23 @@ export const CodeEditor: Component<Props> = (props) => {
         extensions.push(client.plugin(fileUri, 'typescript'))
       } catch (e) {
         console.warn('LSP not available:', e)
-        // Editor works fine without LSP
       }
     }
 
     const state = EditorState.create({ doc, extensions })
     editorView = new EditorView({ state, parent: editorParentRef })
 
-    // Register the view for cross-file go-to-definition
     if (worktreePath) {
       currentFileUri = `file://${worktreePath}/${path}`
       registerEditorView(currentFileUri, editorView)
     }
+
+    // Apply any pending go-to-line now that the editor is ready
+    drainPendingGoToLine()
   }
 
-  // Load file and create editor — uses cache to avoid flicker on tab switch
+  // Load file content and (re)create the editor when the file changes
   createEffect(on(() => props.relativePath, async (path) => {
-    // Check cache first for instant tab switching
     const cached = getCachedContent(props.taskId, path)
     const cachedOriginal = getCachedOriginal(props.taskId, path)
     if (cached !== undefined && cachedOriginal !== undefined) {
@@ -612,7 +635,6 @@ export const CodeEditor: Component<Props> = (props) => {
     }
   }))
 
-  // Cleanup
   onCleanup(() => {
     if (currentFileUri) unregisterEditorView(currentFileUri)
     if (editorView) {
@@ -621,21 +643,12 @@ export const CodeEditor: Component<Props> = (props) => {
     }
   })
 
-  // Go-to-line navigation from ProblemsPanel
+  // React to go-to-line requests for the file already shown (no editor recreation)
   createEffect(() => {
     const req = pendingGoToLine()
-    if (!req || req.taskId !== props.taskId || req.relativePath !== props.relativePath) return
-    if (!editorView) return
-    consumeGoToLine()
-    const line = Math.min(req.line, editorView.state.doc.lines)
-    const lineInfo = editorView.state.doc.line(line)
-    const col = Math.min(req.column - 1, lineInfo.length)
-    const pos = lineInfo.from + col
-    editorView.dispatch({
-      selection: { anchor: pos },
-      effects: EditorView.scrollIntoView(pos, { y: 'center' }),
-    })
-    editorView.focus()
+    void props.relativePath // track so effect re-fires on file switch
+    if (!req || !editorView) return
+    drainPendingGoToLine()
   })
 
   // ── Context menu actions ───────────────────────────────────────────

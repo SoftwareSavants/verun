@@ -68,14 +68,15 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Option + arrow to move in terminal command isn't working
 - [X] Worktrees should be under the project folder not Desktop
 - [X] Move default branch to project settings
-- [ ] Resolve conflicts button not showing
+- [Z] Resolve conflicts button not showing
 - [ ] Keep cursor placement when navigating between files
 - [ ] Persist undo/redo actions in files
 - [ ] Show path on the top of open file
 - [ ] Type overlay showing on top of error, merge and restyle both overlays
 - [ ] Persists current message in task
-- [ ] Find in session
+- [X] Find in session
 - [ ] @mentioned files ship in input and sent messages
+- [ ] Images viewer
 
 ---
 

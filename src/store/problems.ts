@@ -19,8 +19,64 @@ interface LspMessagePayload {
 // taskId → { relativePath → Problem[] }
 const [problemMap, setProblemMap] = createSignal<Record<string, Record<string, Problem[]>>>({})
 
-// Debounce timers for clearing diagnostics (prevents flicker on file open)
-const clearTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// ── Batched updates ──────────────────────────────────────────────────
+// The LSP often sends remove→add for the same file in quick succession
+// (e.g. during file open). We batch all updates and flush once per frame
+// so they collapse into a single store write.
+
+interface PendingUpdate {
+  taskId: string
+  relativePath: string
+  problems: Problem[]
+}
+
+const pendingUpdates = new Map<string, PendingUpdate>()
+let flushScheduled = false
+
+function scheduleBatchFlush() {
+  if (flushScheduled) return
+  flushScheduled = true
+  requestAnimationFrame(flushBatch)
+}
+
+function flushBatch() {
+  flushScheduled = false
+  if (pendingUpdates.size === 0) return
+
+  const updates = [...pendingUpdates.values()]
+  pendingUpdates.clear()
+
+  setProblemMap(prev => {
+    let next = prev
+    for (const { taskId, relativePath, problems } of updates) {
+      const taskProblems = next[taskId] || {}
+      const existing = taskProblems[relativePath]
+
+      // Skip if identical
+      if (problems.length > 0 && existing && existing.length === problems.length &&
+        existing.every((e, i) =>
+          e.line === problems[i].line &&
+          e.column === problems[i].column &&
+          e.message === problems[i].message &&
+          e.severity === problems[i].severity
+        )) continue
+
+      // Skip noop (empty incoming, nothing stored)
+      if (problems.length === 0 && !existing) continue
+
+      // Clone on first actual change
+      if (next === prev) next = { ...prev }
+      const newTaskProblems = next[taskId] === taskProblems ? { ...taskProblems } : next[taskId]
+      if (problems.length > 0) {
+        newTaskProblems[relativePath] = problems
+      } else {
+        delete newTaskProblems[relativePath]
+      }
+      next[taskId] = newTaskProblems
+    }
+    return next
+  })
+}
 
 // Track which tasks have received their first diagnostics (LSP still loading)
 const [loadingTasks, setLoadingTasks] = createSignal<Set<string>>(new Set())
@@ -168,49 +224,10 @@ export function initProblemsListener() {
       source: d.source || 'unknown',
     }))
 
-    // Skip update if diagnostics haven't changed (prevents flicker on file open)
-    const existing = problemMap()[taskId]?.[relativePath]
-    if (problems.length === 0 && !existing) return
-    if (existing && existing.length === problems.length &&
-      existing.every((e, i) =>
-        e.line === problems[i].line &&
-        e.column === problems[i].column &&
-        e.message === problems[i].message &&
-        e.severity === problems[i].severity
-      )) return
-
-    // Debounce clearing: when the LSP sends empty diagnostics (e.g. during
-    // file open), wait briefly — real diagnostics usually follow immediately.
-    if (problems.length === 0 && existing && existing.length > 0) {
-      const key = `${taskId}:${relativePath}`
-      if (clearTimers.has(key)) return
-      clearTimers.set(key, setTimeout(() => {
-        clearTimers.delete(key)
-        // Re-check: if still no diagnostics arrived, clear for real
-        const current = problemMap()[taskId]?.[relativePath]
-        if (current === existing) {
-          setProblemMap(prev => {
-            const taskProblems = { ...(prev[taskId] || {}) }
-            delete taskProblems[relativePath]
-            return { ...prev, [taskId]: taskProblems }
-          })
-        }
-      }, 2000))
-      return
-    }
-
-    // Cancel any pending clear for this file
-    const clearKey = `${taskId}:${relativePath}`
-    const pendingClear = clearTimers.get(clearKey)
-    if (pendingClear) {
-      clearTimeout(pendingClear)
-      clearTimers.delete(clearKey)
-    }
-
-    setProblemMap(prev => {
-      const taskProblems = { ...(prev[taskId] || {}) }
-      taskProblems[relativePath] = problems
-      return { ...prev, [taskId]: taskProblems }
-    })
+    // Queue the update — will be flushed on the next animation frame.
+    // This batches rapid remove→add cycles from the LSP into a single
+    // store update, preventing flicker.
+    pendingUpdates.set(`${taskId}:${relativePath}`, { taskId, relativePath, problems })
+    scheduleBatchFlush()
   })
 }

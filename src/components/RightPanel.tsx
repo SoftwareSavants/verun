@@ -1,6 +1,6 @@
 import { Component, Show, createSignal } from 'solid-js'
 import { clsx } from 'clsx'
-import { ChevronDown, ChevronRight, Loader2 } from 'lucide-solid'
+import { ChevronDown, ChevronRight, Loader2, AlertCircle } from 'lucide-solid'
 import { CodeChanges } from './CodeChanges'
 import { FilesPanel } from './FilesPanel'
 import { ProblemsPanel } from './ProblemsPanel'
@@ -65,46 +65,45 @@ export const RightPanel: Component<Props> = (props) => {
         </Show>
       </div>
 
-      {/* Resize handle */}
-      <Show when={problemsOpen()}>
-        <div
-          class="h-1 cursor-row-resize bg-border-subtle hover:bg-accent/50 transition-colors shrink-0"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            const startY = e.clientY
-            const startH = problemsHeight()
-            const onMove = (ev: MouseEvent) => {
-              const delta = startY - ev.clientY
-              setProblemsHeightAndPersist(Math.max(60, Math.min(400, startH + delta)))
-            }
-            const onUp = () => {
-              document.removeEventListener('mousemove', onMove)
-              document.removeEventListener('mouseup', onUp)
-            }
-            document.addEventListener('mousemove', onMove)
-            document.addEventListener('mouseup', onUp)
-          }}
-        />
-      </Show>
+      {/* Resize handle — always visible as a thin border, draggable when open */}
+      <div
+        class={`h-px bg-border-subtle shrink-0 ${problemsOpen() ? 'cursor-row-resize hover:bg-accent/50 transition-colors' : ''}`}
+        onMouseDown={problemsOpen() ? (e: MouseEvent) => {
+          e.preventDefault()
+          const startY = e.clientY
+          const startH = problemsHeight()
+          const onMove = (ev: MouseEvent) => {
+            const delta = startY - ev.clientY
+            setProblemsHeightAndPersist(Math.max(60, Math.min(400, startH + delta)))
+          }
+          const onUp = () => {
+            document.removeEventListener('mousemove', onMove)
+            document.removeEventListener('mouseup', onUp)
+          }
+          document.addEventListener('mousemove', onMove)
+          document.addEventListener('mouseup', onUp)
+        } : undefined}
+      />
 
-      {/* Problems — collapsible bottom section */}
-      <div class="shrink-0 border-t border-border-subtle">
+      {/* Problems — collapsible bottom section (matches Branch Commits bar) */}
+      <div class="shrink-0">
         <button
-          class="w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-text-dim hover:text-text-muted transition-colors"
+          class="w-full h-8 flex items-center gap-1.5 px-3 text-xs hover:bg-surface-2 transition-colors"
           onClick={toggleProblems}
         >
           {problemsOpen()
-            ? <ChevronDown size={10} class="shrink-0" />
-            : <ChevronRight size={10} class="shrink-0" />}
-          <span class="font-medium">Problems</span>
-          <Show when={isProblemsLoading(props.taskId)}>
-            <Loader2 size={10} class="animate-spin text-text-dim/50 shrink-0" />
+            ? <ChevronDown size={12} class="text-text-dim shrink-0" />
+            : <ChevronRight size={12} class="text-text-dim shrink-0" />}
+          <Show when={isProblemsLoading(props.taskId)} fallback={
+            <AlertCircle size={12} class="text-text-dim shrink-0" />
+          }>
+            <Loader2 size={12} class="animate-spin text-text-dim shrink-0" />
           </Show>
-          <Show when={!isProblemsLoading(props.taskId) && counts().errors > 0}>
-            <span class="text-status-error">{counts().errors}</span>
-          </Show>
-          <Show when={!isProblemsLoading(props.taskId) && counts().warnings > 0}>
-            <span class="text-text-dim">{counts().warnings}</span>
+          <span class="font-medium text-text-secondary">Problems</span>
+          <Show when={!isProblemsLoading(props.taskId) && (counts().errors > 0 || counts().warnings > 0)}>
+            <span class="px-1.5 py-0.5 rounded bg-surface-3 text-text-dim text-[10px] leading-none">
+              {counts().errors + counts().warnings}
+            </span>
           </Show>
         </button>
         <Show when={problemsOpen()}>
