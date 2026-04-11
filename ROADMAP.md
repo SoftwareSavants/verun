@@ -64,11 +64,11 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Delete task option to also delete the branch
 - [X] Loading state when deleting / archiving a task
 - [X] Timestamp on each turn / run
-- [ ] Interrupting turn causes a scroll movement
+- [X] Interrupting turn causes a scroll movement
 - [X] Option + arrow to move in terminal command isn't working
 - [X] Worktrees should be under the project folder not Desktop
 - [X] Move default branch to project settings
-- [Z] Resolve conflicts button not showing
+- [-] Resolve conflicts button not showing
 - [ ] Keep cursor placement when navigating between files
 - [ ] Persist undo/redo actions in files
 - [ ] Show path on the top of open file
@@ -76,7 +76,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [ ] Persists current message in task
 - [X] Find in session
 - [X] @mentioned files ship in input and sent messages
-- [ ] Images viewer
+- [ ] Media viewer
 
 ---
 
