@@ -187,12 +187,12 @@ pub fn run() {
                     }
                 } else if window.label().starts_with("task-") {
                     if let Some(map) = window.try_state::<WindowTaskMap>() {
-                        if let Some(entry) = map.get(window.label()) {
-                            let task_id = entry.value().clone();
+                        // Look up task ID for this window (clone + drop the Ref to release the read lock)
+                        let task_id = map.get(window.label()).map(|e| e.value().clone());
+                        if let Some(task_id) = task_id {
                             // Check if setup hook is running for this task
                             if let Some(sip) = window.try_state::<task::SetupInProgress>() {
                                 if sip.contains_key(&task_id) {
-                                    // Setup is running — prevent close and ask frontend to confirm
                                     api.prevent_close();
                                     let _ = window.emit("confirm-close-setup", ());
                                     return;
