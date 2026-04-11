@@ -1,84 +1,33 @@
 import { Component, Show, onMount, createSignal } from 'solid-js'
-import { listen } from '@tauri-apps/api/event'
 import { parseWindowContext, WindowContextProvider } from './lib/windowContext'
+import { initStores, dismissSplash, checkCli, installContextMenu, initQuitListener, showQuitConfirm, closeQuitDialog } from './lib/appInit'
 import { Layout } from './components/Layout'
 import { TaskWindowShell } from './components/TaskWindowShell'
 import { SelectionMenu } from './components/SelectionMenu'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { ToastContainer } from './components/ToastContainer'
 import { initTheme } from './lib/theme'
-import { loadProjects, initProjectListeners } from './store/projects'
-import { initSessionListeners, syncSessionStatuses } from './store/sessions'
-import { initTerminalListeners } from './store/terminals'
-import { initGitListeners, initWindowFocusRefresh } from './store/git'
-import { initSetupListeners } from './store/setup'
 import { initProblemsListener } from './store/problems'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
-import { addToast } from './store/ui'
 import { initNotifications, showNotificationDialog, onNotificationDialogConfirm, onNotificationDialogCancel } from './lib/notifications'
 import { initUpdateListener } from './lib/updater'
 
 const ctx = parseWindowContext()
 
-const QUIT_DISMISS_MS = 8000
-
 const MainApp: Component = () => {
   const [selMenu, setSelMenu] = createSignal<{ x: number; y: number; text: string } | null>(null)
-  const [showQuitConfirm, setShowQuitConfirm] = createSignal(false)
-  let quitDismissTimer: ReturnType<typeof setTimeout> | undefined
-
-  const openQuitDialog = () => {
-    setShowQuitConfirm(true)
-    clearTimeout(quitDismissTimer)
-    quitDismissTimer = setTimeout(() => setShowQuitConfirm(false), QUIT_DISMISS_MS)
-  }
-  const closeQuitDialog = () => {
-    setShowQuitConfirm(false)
-    clearTimeout(quitDismissTimer)
-  }
 
   onMount(async () => {
-    listen('confirm-quit', () => {
-      if (document.hasFocus()) openQuitDialog()
-    })
     initTheme()
-    document.addEventListener('contextmenu', (e) => {
-      if ((e.target as HTMLElement).closest('[data-context-menu]') || (e.target as HTMLElement).closest('.cm-editor') || (e.target as HTMLElement).closest('.code-editor-wrapper')) return
-      e.preventDefault()
-      const selection = window.getSelection()?.toString().trim()
-      if (selection) {
-        setSelMenu({ x: e.clientX, y: e.clientY, text: selection })
-      } else {
-        setSelMenu(null)
-      }
-    })
-    document.addEventListener('click', () => setSelMenu(null))
-
-    await initSessionListeners()
-    await initTerminalListeners()
-    await initGitListeners()
-    await initProjectListeners()
-    await initSetupListeners()
+    initQuitListener()
+    installContextMenu(setSelMenu)
+    await initStores()
     initProblemsListener()
-    initWindowFocusRefresh()
-    await loadProjects()
-    await syncSessionStatuses()
+    dismissSplash()
 
-    const splash = document.getElementById('splash')
-    const root = document.getElementById('root')
-    if (root) root.style.opacity = '1'
-    if (splash) {
-      splash.style.opacity = '0'
-      splash.addEventListener('transitionend', () => splash.remove())
-    }
-
-    try {
-      await ipc.checkClaude()
-      loadClaudeSkills()
-    } catch {
-      addToast('Claude CLI not found. Install with: npm i -g @anthropic-ai/claude-code', 'error')
-    }
+    await checkCli()
+    loadClaudeSkills()
 
     initNotifications()
     initUpdateListener()
@@ -88,10 +37,7 @@ const MainApp: Component = () => {
     <>
       <Layout />
       <ToastContainer />
-      <SelectionMenu
-        pos={selMenu()}
-        onClose={() => setSelMenu(null)}
-      />
+      <SelectionMenu pos={selMenu()} onClose={() => setSelMenu(null)} />
       <ConfirmDialog
         open={showQuitConfirm()}
         title="Quit Verun?"
@@ -113,14 +59,12 @@ const MainApp: Component = () => {
   )
 }
 
-const App: Component = () => {
-  return (
-    <WindowContextProvider value={ctx}>
-      <Show when={ctx.windowType === 'main'} fallback={<TaskWindowShell />}>
-        <MainApp />
-      </Show>
-    </WindowContextProvider>
-  )
-}
+const App: Component = () => (
+  <WindowContextProvider value={ctx}>
+    <Show when={ctx.windowType === 'main'} fallback={<TaskWindowShell />}>
+      <MainApp />
+    </Show>
+  </WindowContextProvider>
+)
 
 export default App

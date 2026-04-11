@@ -48,13 +48,7 @@ export async function initSetupListeners() {
   await listen<{ taskId: string; status: string; error?: string; terminalId?: string; hookType?: string }>('setup-hook', (event) => {
     const { taskId, status, error, terminalId, hookType } = event.payload
 
-    console.log('[setup-hook]', status, 'taskId:', taskId, 'terminalId:', terminalId)
-
-    // Only handle setup events for tasks owned by this window
-    if (!isTaskOwnedByThisWindow(taskId)) {
-      console.log('[setup-hook] SKIPPED — not owned by this window')
-      return
-    }
+    if (!isTaskOwnedByThisWindow(taskId)) return
 
     if (status === 'running') {
       setSetupTasks(taskId, { status: 'running', terminalId, hookType: hookType as 'setup' | 'destroy' })

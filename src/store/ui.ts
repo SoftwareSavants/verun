@@ -171,20 +171,17 @@ export const [editStepRequest, setEditStepRequest] = createSignal<{ sessionId: s
 // Tracks which tasks are currently open in a separate window
 const [_windowedTaskIds, _setWindowedTaskIds] = createSignal<Set<string>>(new Set())
 export const isTaskWindowed = (id: string) => _windowedTaskIds().has(id)
-export const windowedTaskIds = () => _windowedTaskIds()
 
 export function markTaskWindowed(taskId: string, open: boolean) {
-  console.log('[windowed]', open ? 'OPENED' : 'CLOSED', 'taskId:', taskId)
   _setWindowedTaskIds(prev => {
     const next = new Set(prev)
     if (open) next.add(taskId)
     else next.delete(taskId)
     return next
   })
-  // Deselect in main when a task is popped out
-  if (open && selectedTaskId() === taskId) {
-    console.log('[windowed] deselecting task in main window')
-    setSelectedTaskId(null)
+  if (open) {
+    clearTaskIndicators(taskId)
+    if (selectedTaskId() === taskId) setSelectedTaskId(null)
   }
 }
 

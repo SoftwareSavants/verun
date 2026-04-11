@@ -34,43 +34,37 @@ export function parseWindowContext(): WindowContext {
   return { windowType, windowLabel, taskId, projectId }
 }
 
-/** Module-level parsed context — safe to import from stores (outside component tree) */
+/** Module-level parsed context — importable from stores outside the component tree */
 export const windowContext = parseWindowContext()
 
-console.log('[window-context]', windowContext.windowType, windowContext.windowLabel, { taskId: windowContext.taskId, projectId: windowContext.projectId })
+export const isMainWindow = windowContext.windowType === 'main'
+export const isTaskWindow = windowContext.windowType === 'task'
+export const isNewTaskWindow = isTaskWindow && !windowContext.taskId
 
-/**
- * Returns true if this window should handle events for the given taskId.
- * Task windows own their specific task (or the task they created).
- * Main window owns everything (windowed-task filtering happens at call site).
- *
- * For new-task windows (Cmd+Shift+N) where taskId starts null, pass the
- * current selectedTaskId as `currentTaskId` so the check works after creation.
- */
+// ---------------------------------------------------------------------------
+// Task ownership — determines which window handles events for a given taskId
+// ---------------------------------------------------------------------------
+
 let _isTaskWindowedFn: ((taskId: string) => boolean) | null = null
 
-/** Register the windowed-task checker (called once from store/ui.ts to avoid circular deps) */
+/** Register the windowed-task checker (called from store/ui.ts to avoid circular deps) */
 export function registerWindowedTaskChecker(fn: (taskId: string) => boolean) {
   _isTaskWindowedFn = fn
 }
 
+/**
+ * Returns true if this window should handle events for the given taskId.
+ *
+ * - Existing task window: only owns its specific task (exact ID match)
+ * - New-task window: owns everything (only one task can be created here,
+ *   and the real ID isn't known until after the setup hook fires)
+ * - Main window: owns all tasks except those open in a separate window
+ */
 export function isTaskOwnedByThisWindow(taskId: string): boolean {
-  if (windowContext.windowType === 'task') {
-    if (windowContext.taskId) {
-      // Existing task window: exact match
-      const owned = windowContext.taskId === taskId
-      console.log('[ownership]', windowContext.windowLabel, 'taskId:', taskId, 'ctx.taskId:', windowContext.taskId, '→', owned)
-      return owned
-    }
-    // New-task window: accept all events — this window can only ever have one task,
-    // and the real task ID may not be known yet when events arrive (setup hook fires
-    // before the IPC response reaches the frontend)
-    console.log('[ownership]', windowContext.windowLabel, 'new-task window, accepting taskId:', taskId)
-    return true
+  if (isTaskWindow) {
+    if (windowContext.taskId) return windowContext.taskId === taskId
+    return true // new-task window — accept all
   }
-  // Main window: own all tasks except those open in a separate window
-  const windowed = _isTaskWindowedFn ? _isTaskWindowedFn(taskId) : false
-  const owned = !windowed
-  console.log('[ownership]', 'main', 'taskId:', taskId, 'windowed:', windowed, '→', owned)
-  return owned
+  // Main window
+  return !_isTaskWindowedFn?.(taskId)
 }
