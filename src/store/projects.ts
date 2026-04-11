@@ -2,6 +2,8 @@ import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { Project } from '../types'
 import * as ipc from '../lib/ipc'
+import { selectedTaskId, selectedProjectId, setSelectedProjectId, setSelectedTaskId, setSelectedSessionId } from './ui'
+import { taskById } from './tasks'
 
 export const [projects, setProjects] = createStore<Project[]>([])
 
@@ -19,6 +21,19 @@ export async function addProject(repoPath: string): Promise<Project> {
 export async function deleteProject(id: string) {
   await ipc.deleteProject(id)
   setProjects(prev => prev.filter(p => p.id !== id))
+
+  // Clear selection if the selected task belongs to the deleted project
+  const tid = selectedTaskId()
+  if (tid) {
+    const task = taskById(tid)
+    if (!task || task.projectId === id) {
+      setSelectedTaskId(null)
+      setSelectedSessionId(null)
+    }
+  }
+  if (selectedProjectId() === id) {
+    setSelectedProjectId(null)
+  }
 }
 
 export async function updateBaseBranch(id: string, baseBranch: string) {

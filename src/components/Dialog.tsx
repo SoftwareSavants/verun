@@ -29,8 +29,8 @@ export const Dialog: Component<Props> = (props) => {
         onClick={(e) => { if (e.target === e.currentTarget) props.onClose() }}
       >
         <div
-          class="bg-surface-2 border border-border rounded-xl shadow-2xl p-5 animate-in"
-          style={{ width: props.width || '20rem' }}
+          class="bg-surface-2 border border-border rounded-xl shadow-2xl p-5 animate-in overflow-y-auto"
+          style={{ width: props.width || '20rem', 'max-height': 'calc(100vh - 6rem)' }}
         >
           {props.children}
         </div>

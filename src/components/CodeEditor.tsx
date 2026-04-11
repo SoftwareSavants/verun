@@ -1,6 +1,6 @@
 import { Component, createEffect, on, createSignal, Show, onCleanup, onMount } from 'solid-js'
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, type Tooltip } from '@codemirror/view'
-import { EditorState, StateField, StateEffect, type Extension } from '@codemirror/state'
+import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, Decoration, type DecorationSet, type Tooltip } from '@codemirror/view'
+import { EditorState, StateField, StateEffect, RangeSet, type Extension } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit } from '@codemirror/language'
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search'
@@ -276,6 +276,32 @@ const renameWidgetTheme = EditorView.theme({
   },
 }, { dark: true })
 
+// ── Cmd+hover underline (VS Code style) ─────────────────────────────
+const setHoverRange = StateEffect.define<{ from: number; to: number } | null>()
+
+const hoverUnderlineField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(decos, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setHoverRange)) {
+        if (!e.value) return Decoration.none
+        return RangeSet.of([
+          Decoration.mark({ class: 'cm-definition-hover' }).range(e.value.from, e.value.to),
+        ])
+      }
+    }
+    return decos.map(tr.changes)
+  },
+  provide: f => EditorView.decorations.from(f),
+})
+
+const hoverUnderlineTheme = EditorView.theme({
+  '.cm-definition-hover': {
+    textDecoration: 'underline',
+    cursor: 'pointer',
+  },
+}, { dark: true })
+
 // ── Language detection ─────────────────────────────────────────────────
 function langFromExt(path: string): Extension | null {
   const ext = path.split('.').pop()?.toLowerCase() || ''
@@ -337,6 +363,8 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
     searchPanelTheme,
     renameWidgetTheme,
     renameTooltipField,
+    hoverUnderlineTheme,
+    hoverUnderlineField,
     syntaxHighlighting(verunHighlightStyle),
     syntaxHighlighting(oneDarkHighlightStyle, { fallback: true }),
 
@@ -381,21 +409,65 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
       { key: 'Mod-s', run: () => { onSave(); return true } },
     ]),
 
-    // Cmd+Click → go to definition
-    EditorView.domEventHandlers({
-      click: (event, view) => {
-        if (event.metaKey || event.ctrlKey) {
-          event.preventDefault()
-          const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
-          if (pos != null) {
-            view.dispatch({ selection: { anchor: pos } })
-            jumpToDefinition(view)
-          }
-          return true
+    // Cmd+Click → go to definition, Cmd+hover → underline
+    (() => {
+      let lastMouse: { x: number; y: number } | null = null
+
+      const updateHover = (view: EditorView, x: number, y: number, mod: boolean) => {
+        if (!mod) {
+          view.dispatch({ effects: setHoverRange.of(null) })
+          return
         }
-        return false
-      },
-    }),
+        const pos = view.posAtCoords({ x, y })
+        if (pos == null) { view.dispatch({ effects: setHoverRange.of(null) }); return }
+        const word = view.state.wordAt(pos)
+        if (!word) { view.dispatch({ effects: setHoverRange.of(null) }); return }
+
+        // Only update if the range actually changed
+        const cur = view.state.field(hoverUnderlineField)
+        let same = false
+        cur.between(word.from, word.to, (f, t) => { if (f === word.from && t === word.to) same = true })
+        if (!same) view.dispatch({ effects: setHoverRange.of({ from: word.from, to: word.to }) })
+      }
+
+      return EditorView.domEventHandlers({
+        click: (event, view) => {
+          if (event.metaKey || event.ctrlKey) {
+            event.preventDefault()
+            view.dispatch({ effects: setHoverRange.of(null) })
+            const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+            if (pos != null) {
+              view.dispatch({ selection: { anchor: pos } })
+              jumpToDefinition(view)
+            }
+            return true
+          }
+          return false
+        },
+        mousemove: (event, view) => {
+          lastMouse = { x: event.clientX, y: event.clientY }
+          updateHover(view, event.clientX, event.clientY, event.metaKey || event.ctrlKey)
+          return false
+        },
+        mouseleave: (_event, view) => {
+          lastMouse = null
+          view.dispatch({ effects: setHoverRange.of(null) })
+          return false
+        },
+        keydown: (event, view) => {
+          if ((event.key === 'Meta' || event.key === 'Control') && lastMouse) {
+            updateHover(view, lastMouse.x, lastMouse.y, true)
+          }
+          return false
+        },
+        keyup: (event, view) => {
+          if (event.key === 'Meta' || event.key === 'Control') {
+            view.dispatch({ effects: setHoverRange.of(null) })
+          }
+          return false
+        },
+      })
+    })(),
 
     // Doc change listener
     EditorView.updateListener.of((update) => {

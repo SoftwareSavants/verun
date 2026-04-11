@@ -1,13 +1,14 @@
-import { Component, createSignal, Show } from 'solid-js'
+import { Component, createSignal, createEffect, on, Show } from 'solid-js'
 import { Dialog } from './Dialog'
 import { CodeTextarea } from './CodeTextarea'
 import { Loader2, Sparkles } from 'lucide-solid'
 import { addProject, updateHooks } from '../store/projects'
 import { createTask } from '../store/tasks'
 import { sendMessage, setSessions, setOutputItems } from '../store/sessions'
-import { addToast, setSelectedTaskId, setSelectedSessionId, setShowSettings } from '../store/ui'
+import { addToast, setSelectedProjectId, setSelectedTaskId, setSelectedSessionId, setShowSettings } from '../store/ui'
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
 import { produce } from 'solid-js/store'
+import * as ipc from '../lib/ipc'
 
 interface Props {
   open: boolean
@@ -23,6 +24,19 @@ export const AddProjectDialog: Component<Props> = (props) => {
   const [adding, setAdding] = createSignal(false)
   const [autoDetecting, setAutoDetecting] = createSignal(false)
 
+  // Pre-populate hooks from .verun.json if it exists
+  createEffect(on(() => props.repoPath, (path) => {
+    if (!path) return
+    ipc.readTextFile(`${path}/.verun.json`).then((content) => {
+      try {
+        const config = JSON.parse(content)
+        if (config.hooks?.setup) setSetupHook(config.hooks.setup)
+        if (config.hooks?.destroy) setDestroyHook(config.hooks.destroy)
+        if (config.startCommand) setStartCommand(config.startCommand)
+      } catch { /* ignore invalid JSON */ }
+    }).catch(() => { /* no config file, leave fields empty */ })
+  }))
+
   const projectName = () => {
     if (!props.repoPath) return ''
     const parts = props.repoPath.split('/')
@@ -35,7 +49,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
     try {
       // Add the project first
       const project = await addProject(props.repoPath)
-      props.onAdded(project.id)
+      setSelectedProjectId(project.id)
 
       // Create a task for auto-detection
       const { task, session } = await createTask(project.id)
@@ -126,6 +140,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
             onSave={handleAdd}
             placeholder='cp "$VERUN_REPO_PATH/.env" .env && pnpm install'
             minRows={2}
+            maxRows={6}
           />
         </div>
 
@@ -137,6 +152,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
             onSave={handleAdd}
             placeholder="cleanup commands"
             minRows={1}
+            maxRows={4}
           />
         </div>
 
@@ -148,6 +164,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
             onSave={handleAdd}
             placeholder="pnpm dev"
             minRows={1}
+            maxRows={4}
           />
         </div>
       </div>

@@ -7,24 +7,17 @@ import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
-import { sidebarWidth, setSidebarWidth, addToast, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, setAddProjectPath } from '../store/ui'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask } from '../store/terminals'
 import { activeTasks } from '../store/tasks'
-import { addProject, projects } from '../store/projects'
+import { projects } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
 import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView, rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/files'
 
 async function pickAndAddProject() {
   const selected = await openDialog({ directory: true, multiple: false })
-  if (!selected) return
-  try {
-    const project = await addProject(selected as string)
-    setSelectedProjectId(project.id)
-    addToast(`Added ${project.name}`, 'success')
-  } catch (e) {
-    addToast(String(e), 'error')
-  }
+  if (selected) setAddProjectPath(selected as string)
 }
 
 export const Layout: Component = () => {

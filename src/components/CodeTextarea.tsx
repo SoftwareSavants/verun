@@ -7,6 +7,7 @@ interface Props {
   onSave?: () => void
   placeholder?: string
   minRows?: number
+  maxRows?: number
 }
 
 /**
@@ -19,8 +20,13 @@ export const CodeTextarea: Component<Props> = (props) => {
   const resize = () => {
     if (!textareaRef) return
     textareaRef.style.height = 'auto'
-    const minHeight = (props.minRows ?? 1) * 20 + 16 // line-height ~20px + padding
-    textareaRef.style.height = `${Math.max(textareaRef.scrollHeight, minHeight)}px`
+    const lineH = 20 // line-height ~20px
+    const pad = 16   // vertical padding
+    const minHeight = (props.minRows ?? 1) * lineH + pad
+    const maxHeight = props.maxRows ? props.maxRows * lineH + pad : Infinity
+    const clamped = Math.min(Math.max(textareaRef.scrollHeight, minHeight), maxHeight)
+    textareaRef.style.height = `${clamped}px`
+    textareaRef.style.overflowY = textareaRef.scrollHeight > maxHeight ? 'auto' : 'hidden'
   }
 
   onMount(resize)
@@ -33,7 +39,7 @@ export const CodeTextarea: Component<Props> = (props) => {
   return (
     <textarea
       ref={textareaRef}
-      class="w-full px-3 py-2 rounded-lg bg-[#0d1117] border border-[#30363d] text-[13px] text-[#c9d1d9] placeholder:text-[#484f58] focus:outline-none focus:border-[#58a6ff] resize-none font-mono leading-5 overflow-hidden"
+      class="w-full px-3 py-2 rounded-lg bg-[#0d1117] border border-[#30363d] text-[13px] text-[#c9d1d9] placeholder:text-[#484f58] focus:outline-none focus:border-[#58a6ff] resize-none font-mono leading-5"
       placeholder={props.placeholder}
       value={props.value}
       onInput={(e) => {

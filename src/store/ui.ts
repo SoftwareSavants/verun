@@ -91,7 +91,7 @@ export function effectiveModel(taskId: string | null): ModelId {
   if (pid) return (localStorage.getItem(`verun:model:${pid}`) as ModelId | null) || 'sonnet'
   return 'sonnet'
 }
-export const [showAddProjectDialog, setShowAddProjectDialog] = createSignal(false)
+export const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null)
 export const [showSettings, setShowSettings] = createSignal(false)
 export const [showArchived, setShowArchived] = createSignal(false)
 
