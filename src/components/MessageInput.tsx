@@ -958,84 +958,92 @@ export const MessageInput: Component<Props> = (props) => {
       }
     }
 
-    // Arrow keys — intercept to skip over ZWS nodes and badges
-    // We prevent default and move the cursor manually when near a badge.
-    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey && inputRef) {
-      const sel = window.getSelection()
-      if (sel && sel.isCollapsed && sel.rangeCount > 0) {
+    // Arrow keys — skip over ZWS nodes and badges.
+    // Given cursor position, find where to jump to skip the badge group.
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey && !e.metaKey && inputRef) {
+      const right = e.key === 'ArrowRight'
+
+      const findSkipTarget = (): { node: Node; offset: number } | null => {
+        const sel = window.getSelection()
+        if (!sel || !sel.isCollapsed || sel.rangeCount === 0) return null
         const range = sel.getRangeAt(0)
         const node = range.startContainer
         const off = range.startOffset
-        const right = e.key === 'ArrowRight'
 
-        // Find the target to skip to, if we're about to enter or are inside a ZWS/badge
-        let target: { node: Node; offset: number } | null = null
-
-        if (node.nodeType === Node.TEXT_NODE && node.textContent === ZWS) {
-          // Currently on a ZWS — skip in the arrow direction
-          const sib = right ? node.nextSibling : node.previousSibling
-          if (sib) {
-            if (sib.nodeType === Node.TEXT_NODE && sib.textContent !== ZWS) {
-              target = { node: sib, offset: right ? 0 : (sib.textContent?.length ?? 0) }
-            } else if (sib instanceof HTMLElement && sib.dataset.mention) {
-              // Badge — skip over it and its far-side ZWS
-              const far = right ? sib.nextSibling : sib.previousSibling
-              if (far?.nodeType === Node.TEXT_NODE && far.textContent === ZWS) {
-                const realSib = right ? far.nextSibling : far.previousSibling
-                if (realSib?.nodeType === Node.TEXT_NODE) {
-                  target = { node: realSib, offset: right ? 0 : (realSib.textContent?.length ?? 0) }
-                } else {
-                  target = { node: inputRef, offset: right ? Array.from(inputRef.childNodes).indexOf(far as ChildNode) + 1 : Array.from(inputRef.childNodes).indexOf(far as ChildNode) }
-                }
+        // Helper: given a ZWS node, find the real text node past the badge group
+        const skipFromZws = (zwsNode: Node): { node: Node; offset: number } | null => {
+          const sib = right ? zwsNode.nextSibling : zwsNode.previousSibling
+          if (!sib) return null
+          if (sib.nodeType === Node.TEXT_NODE && sib.textContent !== ZWS) {
+            return { node: sib, offset: right ? 0 : (sib.textContent?.length ?? 0) }
+          }
+          if (sib instanceof HTMLElement && sib.dataset.mention) {
+            const far = right ? sib.nextSibling : sib.previousSibling
+            if (far?.nodeType === Node.TEXT_NODE && far.textContent === ZWS) {
+              const real = right ? far.nextSibling : far.previousSibling
+              if (real?.nodeType === Node.TEXT_NODE) {
+                return { node: real, offset: right ? 0 : (real.textContent?.length ?? 0) }
               }
-            } else if (sib.nodeType === Node.TEXT_NODE && sib.textContent === ZWS) {
-              // Another ZWS (shouldn't happen often) — skip it too
-              const next = right ? sib.nextSibling : sib.previousSibling
-              if (next?.nodeType === Node.TEXT_NODE) {
-                target = { node: next, offset: right ? 0 : (next.textContent?.length ?? 0) }
-              }
+              const idx = Array.from(inputRef.childNodes).indexOf(far as ChildNode)
+              return { node: inputRef, offset: right ? idx + 1 : idx }
             }
           }
-        } else if (node.nodeType === Node.TEXT_NODE) {
-          // In a regular text node — check if we're about to step into a ZWS
+          if (sib.nodeType === Node.TEXT_NODE && sib.textContent === ZWS) {
+            return skipFromZws(sib)
+          }
+          return null
+        }
+
+        // Case 1: cursor is on a ZWS
+        if (node.nodeType === Node.TEXT_NODE && node.textContent === ZWS) {
+          return skipFromZws(node)
+        }
+        // Case 2: cursor at edge of a text node, about to enter ZWS
+        if (node.nodeType === Node.TEXT_NODE) {
           const atEdge = right ? off === (node.textContent?.length ?? 0) : off === 0
           if (atEdge) {
             const sib = right ? node.nextSibling : node.previousSibling
             if (sib?.nodeType === Node.TEXT_NODE && sib.textContent === ZWS) {
-              // About to enter ZWS — skip over it and the badge
-              const badge = right ? sib.nextSibling : sib.previousSibling
-              if (badge instanceof HTMLElement && badge.dataset.mention) {
-                const farZws = right ? badge.nextSibling : badge.previousSibling
-                if (farZws?.nodeType === Node.TEXT_NODE && farZws.textContent === ZWS) {
-                  const realSib = right ? farZws.nextSibling : farZws.previousSibling
-                  if (realSib?.nodeType === Node.TEXT_NODE) {
-                    target = { node: realSib, offset: right ? 0 : (realSib.textContent?.length ?? 0) }
-                  } else {
-                    target = { node: inputRef, offset: right ? Array.from(inputRef.childNodes).indexOf(farZws as ChildNode) + 1 : Array.from(inputRef.childNodes).indexOf(farZws as ChildNode) }
-                  }
-                }
-              }
-            }
-          }
-        } else if (node === inputRef) {
-          // Cursor is at the container level — check child at offset
-          const child = right ? inputRef.childNodes[off] : inputRef.childNodes[off - 1]
-          if (child?.nodeType === Node.TEXT_NODE && child.textContent === ZWS) {
-            const badge = right ? child.nextSibling : child.previousSibling
-            if (badge instanceof HTMLElement && badge.dataset.mention) {
-              const farZws = right ? badge.nextSibling : badge.previousSibling
-              if (farZws?.nodeType === Node.TEXT_NODE && farZws.textContent === ZWS) {
-                const realSib = right ? farZws.nextSibling : farZws.previousSibling
-                if (realSib?.nodeType === Node.TEXT_NODE) {
-                  target = { node: realSib, offset: right ? 0 : (realSib.textContent?.length ?? 0) }
-                }
-              }
+              return skipFromZws(sib)
             }
           }
         }
+        // Case 3: cursor at container level
+        if (node === inputRef) {
+          const child = right ? inputRef.childNodes[off] : inputRef.childNodes[off - 1]
+          if (child?.nodeType === Node.TEXT_NODE && child.textContent === ZWS) {
+            return skipFromZws(child)
+          }
+        }
+        return null
+      }
 
+      if (e.altKey) {
+        // Option+Arrow: let browser handle word jump natively, then fix up
+        // if the cursor landed on or crossed a ZWS/badge zone.
+        requestAnimationFrame(() => {
+          const sel = window.getSelection()
+          if (!sel || !sel.isCollapsed || sel.rangeCount === 0) return
+          const range = sel.getRangeAt(0)
+          const node = range.startContainer
+          // If landed on a ZWS, skip past the badge group
+          if (node.nodeType === Node.TEXT_NODE && node.textContent === ZWS) {
+            const target = findSkipTarget()
+            if (target) {
+              const newRange = document.createRange()
+              newRange.setStart(target.node, target.offset)
+              newRange.collapse(true)
+              sel.removeAllRanges()
+              sel.addRange(newRange)
+            }
+          }
+        })
+      } else {
+        // Plain arrow: intercept synchronously
+        const target = findSkipTarget()
         if (target) {
           e.preventDefault()
+          const sel = window.getSelection()!
           const newRange = document.createRange()
           newRange.setStart(target.node, target.offset)
           newRange.collapse(true)
