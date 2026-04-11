@@ -17,6 +17,7 @@ import {
 } from '../store/ui'
 import { TaskPanel } from './TaskPanel'
 import { NewTaskDialog } from './NewTaskDialog'
+import { ConfirmDialog } from './ConfirmDialog'
 import { ToastContainer } from './ToastContainer'
 import { SelectionMenu } from './SelectionMenu'
 import { UpdateBanner } from './UpdateBanner'
@@ -27,13 +28,32 @@ import { projectById } from '../store/projects'
 import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView, rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/files'
 import * as ipc from '../lib/ipc'
 
+const QUIT_DISMISS_MS = 8000
+
 export const TaskWindowShell: Component = () => {
   const ctx = useWindowContext()
   const [showNewTask, setShowNewTask] = createSignal(!ctx.taskId && !!ctx.projectId)
   const [selMenu, setSelMenu] = createSignal<{ x: number; y: number; text: string } | null>(null)
+  const [showQuitConfirm, setShowQuitConfirm] = createSignal(false)
+  let quitDismissTimer: ReturnType<typeof setTimeout> | undefined
+
+  const openQuitDialog = () => {
+    setShowQuitConfirm(true)
+    clearTimeout(quitDismissTimer)
+    quitDismissTimer = setTimeout(() => setShowQuitConfirm(false), QUIT_DISMISS_MS)
+  }
+  const closeQuitDialog = () => {
+    setShowQuitConfirm(false)
+    clearTimeout(quitDismissTimer)
+  }
 
   onMount(async () => {
     initTheme()
+
+    // Show quit dialog only if this window is focused
+    listen('confirm-quit', () => {
+      if (document.hasFocus()) openQuitDialog()
+    })
 
     // Context menu
     document.addEventListener('contextmenu', (e) => {
@@ -264,6 +284,15 @@ export const TaskWindowShell: Component = () => {
         open={showNewTask()}
         projectId={ctx.projectId}
         onClose={handleNewTaskClose}
+      />
+      <ConfirmDialog
+        open={showQuitConfirm()}
+        title="Quit Verun?"
+        message="Any running sessions will be stopped."
+        confirmLabel="Quit"
+        danger
+        onConfirm={() => ipc.quitApp()}
+        onCancel={closeQuitDialog}
       />
     </>
   )

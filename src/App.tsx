@@ -21,12 +21,27 @@ import { initUpdateListener } from './lib/updater'
 
 const ctx = parseWindowContext()
 
+const QUIT_DISMISS_MS = 8000
+
 const MainApp: Component = () => {
   const [selMenu, setSelMenu] = createSignal<{ x: number; y: number; text: string } | null>(null)
   const [showQuitConfirm, setShowQuitConfirm] = createSignal(false)
+  let quitDismissTimer: ReturnType<typeof setTimeout> | undefined
+
+  const openQuitDialog = () => {
+    setShowQuitConfirm(true)
+    clearTimeout(quitDismissTimer)
+    quitDismissTimer = setTimeout(() => setShowQuitConfirm(false), QUIT_DISMISS_MS)
+  }
+  const closeQuitDialog = () => {
+    setShowQuitConfirm(false)
+    clearTimeout(quitDismissTimer)
+  }
 
   onMount(async () => {
-    listen('confirm-quit', () => setShowQuitConfirm(true))
+    listen('confirm-quit', () => {
+      if (document.hasFocus()) openQuitDialog()
+    })
     initTheme()
     document.addEventListener('contextmenu', (e) => {
       if ((e.target as HTMLElement).closest('[data-context-menu]') || (e.target as HTMLElement).closest('.cm-editor') || (e.target as HTMLElement).closest('.code-editor-wrapper')) return
@@ -84,7 +99,7 @@ const MainApp: Component = () => {
         confirmLabel="Quit"
         danger
         onConfirm={() => ipc.quitApp()}
-        onCancel={() => setShowQuitConfirm(false)}
+        onCancel={closeQuitDialog}
       />
       <ConfirmDialog
         open={showNotificationDialog()}
