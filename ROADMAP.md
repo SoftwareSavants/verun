@@ -78,6 +78,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] @mentioned files ship in input and sent messages
 - [X] Media viewer & markdown preview (WYSIWYG)
 - [ ] Show file errors in warnings in the scrollbar
+- [ ] Right-clicking selected code in the editor deselects it, making "Copy" from the context menu impossible without keyboard shortcut
 - [X] Reload open(ed) files cach on app lifecycle change
 - [X] Speed up the hover over files/list tiles everywhere
 - [X] esc to close all context menus
@@ -120,10 +121,12 @@ High-impact features that engineers are asking for most.
 Important but not blocking daily use.
 
 ### UX Polish
-- [ ] Keybindings (customizable keyboard shortcuts)
-- [ ] Micro animations and transitions
-- [ ] Scroll affordance when session tabs overflow
 - [ ] Better plan mode
+- [ ] Micro animations and transitions
+- [ ] Keybindings (customizable keyboard shortcuts)
+- [ ] Scroll affordance when session tabs overflow
+- [ ] "Open in…" context menu submenu listing all configured editors instead of hardcoded "Open in VS Code"
+- [ ] "Reveal in Finder" should open the parent folder with the file highlighted, not open the file itself
 
 ### Quality & Accessibility
 - [ ] Error recovery with guided messages (replace raw technical strings)

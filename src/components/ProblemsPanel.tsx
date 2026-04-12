@@ -1,29 +1,29 @@
-import { Component, For, Show, createSignal, createMemo, createEffect, onCleanup } from 'solid-js'
-import { ChevronRight, ChevronDown, CircleCheck, Loader2 } from 'lucide-solid'
+import { Component, For, Show, createSignal, createMemo } from 'solid-js'
+import { ChevronRight, ChevronDown, CircleCheck, Loader2, XCircle, AlertTriangle, Info, ClipboardCopy } from 'lucide-solid'
 import { problemsByFileForTask, problemCountForTask, isProblemsLoading } from '../store/problems'
 import { openFilePinned, setMainView, setPendingGoToLine, revealFileInTree, mainView } from '../store/files'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
-import { registerDismissable } from '../lib/dismissable'
+import { ContextMenu } from './ContextMenu'
 import type { Problem, DiagnosticSeverity } from '../types'
 
 interface Props {
   taskId: string
 }
 
-function severityChar(severity: DiagnosticSeverity): string {
+function severityIcon(severity: DiagnosticSeverity): Component<{ size: number; class?: string }> {
   switch (severity) {
-    case 'error': return '\u2715'
-    case 'warning': return '\u25B3'
+    case 'error': return XCircle
+    case 'warning': return AlertTriangle
     case 'info':
-    case 'hint': return '\u2139'
+    case 'hint': return Info
   }
 }
 
 function severityColor(severity: DiagnosticSeverity): string {
   switch (severity) {
     case 'error': return 'text-status-error'
-    case 'warning': return 'text-yellow-500/70'
+    case 'warning': return 'text-amber-400/80'
     case 'info':
     case 'hint': return 'text-text-dim'
   }
@@ -41,7 +41,7 @@ export const ProblemsPanel: Component<Props> = (props) => {
   const [collapsedFiles, setCollapsedFiles] = createSignal<Set<string>>(new Set())
   const [selectedIndex, setSelectedIndex] = createSignal(-1)
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null)
-  let menuRef: HTMLDivElement | undefined
+  const closeMenu = () => setContextMenu(null)
   let listRef: HTMLDivElement | undefined
 
   const counts = () => problemCountForTask(props.taskId)
@@ -186,36 +186,11 @@ export const ProblemsPanel: Component<Props> = (props) => {
     }
   }
 
-  // Close context menu on outside click
-  const closeMenu = (e: MouseEvent) => {
-    if (menuRef && menuRef.contains(e.target as Node)) return
-    setContextMenu(null)
-  }
-  createEffect(() => {
-    if (contextMenu()) {
-      document.addEventListener('mousedown', closeMenu, true)
-      const unregister = registerDismissable(() => setContextMenu(null))
-      onCleanup(() => {
-        document.removeEventListener('mousedown', closeMenu, true)
-        unregister()
-      })
-    }
-  })
-
-  const copyMessage = (p: Problem) => {
-    navigator.clipboard.writeText(p.message)
-    setContextMenu(null)
-  }
-
-  const copyLine = (p: Problem) => {
-    navigator.clipboard.writeText(`${p.file}:${p.line}:${p.column}`)
-    setContextMenu(null)
-  }
-
+  const copyMessage = (p: Problem) => navigator.clipboard.writeText(p.message)
+  const copyLine = (p: Problem) => navigator.clipboard.writeText(`${p.file}:${p.line}:${p.column}`)
   const copyAll = (p: Problem) => {
     const text = `${p.file}(${p.line},${p.column}): ${p.severity} ${p.code || ''}: ${p.message}`
     navigator.clipboard.writeText(text)
-    setContextMenu(null)
   }
 
   const loading = () => isProblemsLoading(props.taskId)
@@ -269,8 +244,8 @@ export const ProblemsPanel: Component<Props> = (props) => {
                   <button
                     data-idx={fileIdx()}
                     class={clsx(
-                      'w-full flex items-center gap-1.5 px-3 py-1 text-[11px] transition-colors text-left',
-                      selectedIndex() === fileIdx() ? 'bg-surface-3' : 'hover:bg-surface-2'
+                      'w-full flex items-center gap-1.5 px-3 py-1 text-[11px] text-left',
+                      selectedIndex() === fileIdx() ? 'bg-surface-2' : 'hover:bg-surface-2'
                     )}
                     onClick={() => { setSelectedIndex(fileIdx()); toggleCollapsed(file) }}
                   >
@@ -279,8 +254,13 @@ export const ProblemsPanel: Component<Props> = (props) => {
                       : <ChevronDown size={10} class="shrink-0 text-text-dim" />}
                     <FileIcon />
                     <span class="text-text-muted truncate">{file}</span>
-                    <span class="text-[10px] text-text-dim ml-auto shrink-0">
-                      {errorCount() > 0 && errorCount()}{errorCount() > 0 && warnCount() > 0 && ' / '}{warnCount() > 0 && warnCount()}
+                    <span class="ml-auto shrink-0 flex items-center gap-1.5 text-[10px] tabular-nums">
+                      <Show when={errorCount() > 0}>
+                        <span class="text-status-error">{errorCount()}</span>
+                      </Show>
+                      <Show when={warnCount() > 0}>
+                        <span class="text-amber-400/80">{warnCount()}</span>
+                      </Show>
                     </span>
                   </button>
 
@@ -288,12 +268,13 @@ export const ProblemsPanel: Component<Props> = (props) => {
                     <For each={problems()}>
                       {(problem) => {
                         const pIdx = () => indexOfProblem(file, problem)
+                        const SeverityIcon = severityIcon(problem.severity)
                         return (
                           <button
                             data-idx={pIdx()}
                             class={clsx(
-                              'w-full flex items-start gap-2 pl-8 pr-3 py-0.5 text-[11px] transition-colors text-left cursor-pointer',
-                              selectedIndex() === pIdx() ? 'bg-surface-3' : 'hover:bg-surface-1'
+                              'w-full flex items-start gap-2 pl-7 pr-3 py-0.5 text-[11px] text-left cursor-pointer',
+                              selectedIndex() === pIdx() ? 'bg-surface-2' : 'hover:bg-surface-2'
                             )}
                             onClick={() => { setSelectedIndex(pIdx()); handleProblemClick(problem) }}
                             onContextMenu={(e) => {
@@ -302,15 +283,13 @@ export const ProblemsPanel: Component<Props> = (props) => {
                               setContextMenu({ x: e.clientX, y: e.clientY, problem })
                             }}
                           >
-                            <span class={clsx('shrink-0 text-[10px] leading-relaxed font-mono', severityColor(problem.severity))}>
-                              {severityChar(problem.severity)}
-                            </span>
+                            <SeverityIcon size={12} class={clsx('shrink-0 mt-0.5', severityColor(problem.severity))} />
                             <span class="text-text-muted flex-1 min-w-0 break-words leading-relaxed">{problem.message}</span>
-                            <span class="text-text-dim/60 shrink-0 text-[10px] tabular-nums">
+                            <span class="text-text-dim/60 shrink-0 text-[10px] tabular-nums mt-0.5">
                               {problem.line}:{problem.column}
                             </span>
                             <Show when={problem.code != null}>
-                              <span class="text-text-dim/40 shrink-0 font-mono text-[10px]">{problem.code}</span>
+                              <span class="text-text-dim/40 shrink-0 font-mono text-[10px] mt-0.5">{problem.code}</span>
                             </Show>
                           </button>
                         )
@@ -326,34 +305,16 @@ export const ProblemsPanel: Component<Props> = (props) => {
       </div>
 
       {/* Context menu */}
-      <Show when={contextMenu()}>
-        {(menu) => (
-          <div
-            ref={menuRef}
-            class="fixed z-100 bg-[#21252b] border border-[#181a1f] rounded-lg py-1 min-w-40"
-            style={{ left: `${menu().x}px`, top: `${menu().y}px`, 'box-shadow': '0 6px 24px rgba(0,0,0,0.5)' }}
-          >
-            <button
-              class="w-full flex items-center px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left"
-              onClick={() => copyMessage(menu().problem)}
-            >
-              Copy Message
-            </button>
-            <button
-              class="w-full flex items-center px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left"
-              onClick={() => copyLine(menu().problem)}
-            >
-              Copy Path
-            </button>
-            <button
-              class="w-full flex items-center px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left"
-              onClick={() => copyAll(menu().problem)}
-            >
-              Copy All
-            </button>
-          </div>
-        )}
-      </Show>
+      <ContextMenu
+        open={!!contextMenu()}
+        onClose={closeMenu}
+        pos={contextMenu() ? { x: contextMenu()!.x, y: contextMenu()!.y } : undefined}
+        items={contextMenu() ? [
+          { label: 'Copy Message', icon: ClipboardCopy, action: () => copyMessage(contextMenu()!.problem) },
+          { label: 'Copy Path', icon: ClipboardCopy, action: () => copyLine(contextMenu()!.problem) },
+          { label: 'Copy All', icon: ClipboardCopy, action: () => copyAll(contextMenu()!.problem) },
+        ] : []}
+      />
     </div>
   )
 }

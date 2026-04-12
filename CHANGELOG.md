@@ -13,7 +13,11 @@
 - Breadcrumb bar in the file viewer no longer paints its own grey background — it now sits on the editor's `surface-0`
 - Left sidebar redesigned: redundant "PROJECTS" header removed, project rows turned into uppercase section labels with a per-project colored chip (deterministic 18-color palette hashed from project id), task tiles got a single inset accent strip on selection (replacing the previous border + tinted bg + radius hacks), the archive button absolute-positioned so the title row uses the full width, and the footer collapsed from two rows of icon+label into a compact icon-only strip
 - Hover transitions stripped from dense list elements (tabs, sidebar rows, file tree) — feedback is now instant instead of fading over 150ms
-- Shared `ContextMenu` component (and `ContextMenuItem` type) replaces five hand-rolled context menu blocks across Sidebar, TaskPanel (file tabs), CodeEditor, and FileTree; supports `icon`, `shortcut`, `danger`, `disabled`, and `separator` items, all sharing the new `surface-2` + `white/8` ring chrome
+- Shared `ContextMenu` component (and `ContextMenuItem` type) replaces five hand-rolled context menu blocks across Sidebar, TaskPanel (file tabs), CodeEditor, FileTree, and ProblemsPanel; supports `icon`, `shortcut`, `danger`, `disabled`, and `separator` items, all sharing the new `surface-2` + `white/8` ring chrome
+- Problems pane redesigned: lucide severity icons (`XCircle`/`AlertTriangle`/`Info`) replace ASCII chars, error/warning counts in file headers are now color-tinted, hover surfaces unified to `surface-2`, severity icons aligned with the file icon column, and the context menu uses the shared component
+- File tree: active (currently-open) file gets the same inset accent strip as the selected sidebar task, selected and active rows share `surface-2` instead of stacking two different greys, folder icons toned down from accent green to `text-text-dim`, and the indent step tightened from 16px to 12px
+- Top-bar git divider/section now hides when there's nothing to ship (no PR, no commits, no dirty files) — no more orphaned divider pair
+- Top-bar control gap bumped from `gap-1` to `gap-2` so the editor / Start / Terminal cluster has breathing room
 
 ## 0.4.3 — 2026-04-12
 

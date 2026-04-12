@@ -333,14 +333,19 @@ export const FileTree: Component<Props> = (props) => {
                       }}
                     >
                       <button
-                        class={`w-full h-full flex items-center gap-1 px-2 py-1 text-[12px] text-left truncate${
+                        class={`relative w-full h-full flex items-center gap-1 px-2 py-1 text-[12px] text-left truncate${
                           !n().entry.isDir && mainView(props.taskId) === n().entry.relativePath
-                            ? ' bg-surface-3 text-text-primary'
+                            ? ' bg-surface-2 text-text-primary'
                             : selectedIndex() === virtualRow.index
                               ? ' bg-surface-2 text-text-secondary'
                               : ' text-text-secondary hover:bg-surface-2'
                         }`}
-                        style={{ "padding-left": `${n().depth * 16 + 8}px` }}
+                        style={{
+                          "padding-left": `${n().depth * 12 + 8}px`,
+                          "box-shadow": !n().entry.isDir && mainView(props.taskId) === n().entry.relativePath
+                            ? 'inset 2px 0 0 #2d6e4f'
+                            : undefined,
+                        }}
                         onClick={() => { setSelectedIndex(virtualRow.index); handleClick(n().entry) }}
                         onDblClick={() => handleDoubleClick(n().entry)}
                         onContextMenu={(e) => {
@@ -363,15 +368,15 @@ export const FileTree: Component<Props> = (props) => {
                             const I = Icon()
                             return <I
                               size={14}
-                              class={n().entry.isDir ? 'text-accent' : undefined}
+                              class={n().entry.isDir ? 'text-text-dim' : undefined}
                             />
                           })()}
                         </span>
                         <span class={`truncate ml-1${
                           !n().entry.isDir && fileHasErrors(props.taskId, n().entry.relativePath) ? ' text-status-error' :
-                          !n().entry.isDir && fileHasWarnings(props.taskId, n().entry.relativePath) ? ' text-yellow-500' :
+                          !n().entry.isDir && fileHasWarnings(props.taskId, n().entry.relativePath) ? ' text-amber-400' :
                           n().entry.isDir && pathHasErrors(props.taskId, n().entry.relativePath) ? ' text-status-error' :
-                          n().entry.isDir && pathHasWarnings(props.taskId, n().entry.relativePath) ? ' text-yellow-500' :
+                          n().entry.isDir && pathHasWarnings(props.taskId, n().entry.relativePath) ? ' text-amber-400' :
                           ''
                         }`}>{n().entry.name}</span>
                       </button>

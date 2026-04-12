@@ -21,6 +21,18 @@ interface Props {
   isRunning?: boolean
 }
 
+/** Reactive: does this task have any git status worth showing in the toolbar? */
+export function hasGitActionsContent(taskId: string): boolean {
+  const git = taskGit(taskId)
+  return !!(
+    git.pr ||
+    (git.checks && git.checks.length > 0) ||
+    git.commits.length > 0 ||
+    git.branchStatus.behind > 0 ||
+    (git.status?.files.length ?? 0) > 0
+  )
+}
+
 export const GitActions: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [confirming, setConfirming] = createSignal<string | null>(null)

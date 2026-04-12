@@ -18,7 +18,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/files'
 import { Square, Plus, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy } from 'lucide-solid'
-import { GitActions } from './GitActions'
+import { GitActions, hasGitActionsContent } from './GitActions'
 import { ContextMenu } from './ContextMenu'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
@@ -305,7 +305,7 @@ export const TaskPanel: Component = () => {
                     {t().name || 'New task'}
                   </h2>
                   <Show when={!creating() && !error()}>
-                    <div class="flex items-center gap-1 no-drag shrink-0">
+                    <div class="flex items-center gap-2 no-drag shrink-0">
                       <OpenInButton path={t().worktreePath} />
 
                       {/* Start command button */}
@@ -400,13 +400,15 @@ export const TaskPanel: Component = () => {
                       >
                         <Terminal size={13} />
                       </button>
-                      <span class="w-px h-4 bg-white/8 mx-1" />
-                      <GitActions
-                        taskId={t().id}
-                        sessionId={selectedSessionId()}
-                        isRunning={currentSession()?.status === 'running'}
-                      />
-                      <span class="w-px h-4 bg-white/8 mx-1" />
+                      <Show when={hasGitActionsContent(t().id)}>
+                        <span class="w-px h-4 bg-white/8 mx-1" />
+                        <GitActions
+                          taskId={t().id}
+                          sessionId={selectedSessionId()}
+                          isRunning={currentSession()?.status === 'running'}
+                        />
+                        <span class="w-px h-4 bg-white/8 mx-1" />
+                      </Show>
                       <button
                         class="toolbar-btn w-6 justify-center"
                         onClick={toggleChanges}
