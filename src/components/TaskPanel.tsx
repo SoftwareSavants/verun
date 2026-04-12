@@ -1,5 +1,5 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread } from '../store/ui'
+import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth } from '../store/ui'
 import { refitActiveTerminal, setActiveTerminalForTask, startCommandTerminalId, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
 import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
@@ -237,6 +237,7 @@ export const TaskPanel: Component = () => {
   const [showChanges, setShowChanges] = createSignal(
     localStorage.getItem('verun:showChanges') !== 'false'
   )
+  const [rightPanelDragging, setRightPanelDragging] = createSignal(false)
   const toggleChanges = () => {
     const next = !showChanges()
     setShowChanges(next)
@@ -309,7 +310,7 @@ export const TaskPanel: Component = () => {
           return (
             <>
               {/* Chat column */}
-              <div class="flex flex-col w-0 flex-[3] overflow-hidden">
+              <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
                 {/* Header — drag region for titlebar */}
                 <div class={`px-4 ${hasOverlayTitlebar ? 'pt-10' : 'pt-2'} pb-2 flex items-center justify-between bg-surface-0 drag-region`} data-tauri-drag-region>
                   <h2 class="text-sm font-semibold text-text-primary truncate min-w-0 no-drag">
@@ -713,7 +714,33 @@ export const TaskPanel: Component = () => {
 
               {/* Right panel — collapsible, contains Changes + Files tabs */}
               <Show when={showChanges() && !creating() && !error()}>
-                <div class="w-0 flex-[2] border-l border-border-subtle overflow-hidden">
+                <div
+                  class="w-px cursor-col-resize shrink-0 bg-border-subtle hover:bg-accent/20 transition-colors relative z-10"
+                  classList={{ '!bg-accent/40': rightPanelDragging() }}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setRightPanelDragging(true)
+                    const startX = e.clientX
+                    const startW = rightPanelWidth()
+                    const onMove = (ev: MouseEvent) => {
+                      const next = Math.max(220, Math.min(700, startW + (startX - ev.clientX)))
+                      setRightPanelWidth(next)
+                    }
+                    const onUp = () => {
+                      setRightPanelDragging(false)
+                      localStorage.setItem('verun:rightPanelWidth', String(rightPanelWidth()))
+                      window.removeEventListener('mousemove', onMove)
+                      window.removeEventListener('mouseup', onUp)
+                    }
+                    window.addEventListener('mousemove', onMove)
+                    window.addEventListener('mouseup', onUp)
+                  }}
+                  style={{ "margin-left": "-3px", "margin-right": "-3px", padding: "0 3px", "background-clip": "content-box" }}
+                />
+                <div
+                  style={{ width: `${rightPanelWidth()}px` }}
+                  class="shrink-0 overflow-hidden"
+                >
                   <RightPanel
                     taskId={t().id}
                     sessionId={selectedSessionId()}

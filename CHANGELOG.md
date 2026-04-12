@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 — 2026-04-12
 
 ### Changes
 
+- Right sidepane (Changes/Files) now defaults to a narrower width and is drag-resizable like the left sidebar, with width persisted across launches
 - Merged editor hover into a single tooltip — diagnostic message on top, type info below — instead of stacking the LSP type popup on top of the error popup
 - "Ask agent to fix" button in the diagnostic hover — prefills the message input with a templated request referencing the current file, switches to the session tab, and focuses the input; sending is left manual
 - LSP server start failures, `window/showMessage` errors, and unexpected vtsls process exits now surface as 10s dismissible toasts instead of being silent

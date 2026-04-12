@@ -74,6 +74,10 @@ export function clearSessionUnread(sessionId: string) {
 }
 
 export const [sidebarWidth, setSidebarWidth] = createSignal(280)
+
+const savedRightPanelWidth = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:rightPanelWidth') : null
+export const [rightPanelWidth, setRightPanelWidth] = createSignal(savedRightPanelWidth ? parseInt(savedRightPanelWidth, 10) : 280)
+
 export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
 
 // Model selection — per task, persisted per project as the default for new tasks
