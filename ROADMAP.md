@@ -72,7 +72,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Keep cursor placement when navigating between files
 - [X] Persist undo/redo actions in files
 - [X] Show path on the top of open file
-- [ ] Type overlay showing on top of error, merge and restyle both overlays and editor errors
+- [X] Type overlay showing on top of error, merge and restyle both overlays and editor errors
 - [X] Persist current message in task
 - [X] Find in session
 - [X] @mentioned files ship in input and sent messages
@@ -123,6 +123,7 @@ Important but not blocking daily use.
 - [ ] Keybindings (customizable keyboard shortcuts)
 - [ ] Micro animations and transitions
 - [ ] Scroll affordance when session tabs overflow
+- [ ] Better plan mode
 
 ### Quality & Accessibility
 - [ ] Error recovery with guided messages (replace raw technical strings)
