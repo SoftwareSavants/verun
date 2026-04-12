@@ -61,7 +61,7 @@ export const RightPanel: Component<Props> = (props) => {
 
       {/* Resize handle — always visible as a thin border, draggable when open */}
       <div
-        class={`h-px bg-border-subtle shrink-0 ${problemsOpen() ? 'cursor-row-resize hover:bg-accent/50 transition-colors' : ''}`}
+        class={`h-px bg-white/8 shrink-0 ${problemsOpen() ? 'cursor-row-resize hover:bg-accent/50' : ''}`}
         onMouseDown={problemsOpen() ? (e: MouseEvent) => {
           e.preventDefault()
           const startY = e.clientY

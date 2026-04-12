@@ -18,6 +18,7 @@
 - File tree: active (currently-open) file gets the same inset accent strip as the selected sidebar task, selected and active rows share `surface-2` instead of stacking two different greys, folder icons toned down from accent green to `text-text-dim`, and the indent step tightened from 16px to 12px
 - Top-bar git divider/section now hides when there's nothing to ship (no PR, no commits, no dirty files) — no more orphaned divider pair
 - Top-bar control gap bumped from `gap-1` to `gap-2` so the editor / Start / Terminal cluster has breathing room
+- Changes pane redesigned: header rows merged into a single h-9 strip with stats on the left and view toggles on the right, borders unified to `white/8`, open file row now uses `surface-2` plus an inset accent strip (matching the file tree's open file and the sidebar's selected task), selected commit and "Uncommitted changes" tile use the same accent-strip pattern instead of the heavy `bg-accent-muted`, file rows now follow VS Code's source-control style (file type icon on the left, status letter `M`/`A`/`D`/`R`/`U` on the right with the status color, no font-mono path), `transition-colors` removed from rows, and the uncommitted-changes circle no longer flashes amber
 
 ## 0.4.3 — 2026-04-12
 

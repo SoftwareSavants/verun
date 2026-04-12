@@ -1,5 +1,7 @@
 import { Component, createSignal, createEffect, on, Show, For } from 'solid-js'
-import { ChevronDown, ChevronRight, FileText, FilePlus, FileX, FileEdit, RefreshCw, X, WrapText, EyeOff, GitCommit, Circle } from 'lucide-solid'
+import { ChevronDown, ChevronRight, RefreshCw, X, WrapText, EyeOff, GitCommit, Circle } from 'lucide-solid'
+import { clsx } from 'clsx'
+import { getFileIcon } from '../lib/fileIcons'
 import { defaultWrapLines, defaultHideWhitespace } from '../store/ui'
 import { taskGit, refreshTaskGit } from '../store/git'
 import * as ipc from '../lib/ipc'
@@ -10,12 +12,12 @@ interface Props {
   taskId: string
 }
 
-const STATUS_ICONS: Record<string, Component<{ size: number }>> = {
-  M: FileEdit,
-  A: FilePlus,
-  D: FileX,
-  R: FileEdit,
-  '?': FilePlus,
+const STATUS_LETTERS: Record<string, string> = {
+  M: 'M',
+  A: 'A',
+  D: 'D',
+  R: 'R',
+  '?': 'U',
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -23,7 +25,7 @@ const STATUS_COLORS: Record<string, string> = {
   A: 'text-emerald-400',
   D: 'text-red-400',
   R: 'text-blue-400',
-  '?': 'text-text-dim',
+  '?': 'text-emerald-400',
 }
 
 export const CodeChanges: Component<Props> = (props) => {
@@ -270,8 +272,8 @@ export const CodeChanges: Component<Props> = (props) => {
 
   return (
     <div class="flex flex-col h-full overflow-hidden min-w-0">
-      {/* Header row: title + stats + git action — fixed height */}
-      <div class="flex items-center justify-between px-3 h-9 border-b border-border-subtle bg-surface-1">
+      {/* Header — title + stats on the left, view toggles on the right */}
+      <div class="flex items-center justify-between px-3 h-9 border-b-1 border-b-solid border-b-white/8 bg-surface-1">
         <div class="flex items-center gap-2 text-xs text-text-muted min-w-0">
           <span class="font-medium text-text-secondary shrink-0">
             {selectedCommit() ? 'Commit' : 'Changes'}
@@ -280,49 +282,47 @@ export const CodeChanges: Component<Props> = (props) => {
             <span class="font-mono text-text-dim truncate">{selectedCommitInfo()!.shortHash}</span>
           </Show>
           <Show when={status()}>
-            <span class="px-1.5 py-0.5 rounded bg-surface-3 text-text-dim shrink-0">
+            <span class="text-text-dim shrink-0 tabular-nums">
               {status()!.files.length} file{status()!.files.length !== 1 ? 's' : ''}
             </span>
             <Show when={status()!.totalInsertions > 0}>
-              <span class="text-emerald-400 shrink-0">+{status()!.totalInsertions}</span>
+              <span class="text-emerald-400 shrink-0 tabular-nums">+{status()!.totalInsertions}</span>
             </Show>
             <Show when={status()!.totalDeletions > 0}>
-              <span class="text-red-400 shrink-0">-{status()!.totalDeletions}</span>
+              <span class="text-red-400 shrink-0 tabular-nums">-{status()!.totalDeletions}</span>
             </Show>
           </Show>
         </div>
 
-      </div>
-
-      {/* Formatting toolbar */}
-      <div class="flex items-center justify-end gap-1 px-3 py-1 border-b border-border-subtle">
-        <button
-          class={`p-1 rounded transition-colors ${wordWrap() ? 'text-accent bg-accent-muted' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3'}`}
-          onClick={() => setWordWrap(!wordWrap())}
-          title="Word wrap"
-        >
-          <WrapText size={12} />
-        </button>
-        <button
-          class={`p-1 rounded transition-colors ${hideWhitespace() ? 'text-accent bg-accent-muted' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3'}`}
-          onClick={() => setHideWhitespace(!hideWhitespace())}
-          title="Hide whitespace changes"
-        >
-          <EyeOff size={12} />
-        </button>
-        <button
-          class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 transition-colors"
-          onClick={refresh}
-          disabled={loading()}
-          title="Refresh"
-        >
-          <RefreshCw size={12} class={loading() ? 'animate-spin' : ''} />
-        </button>
+        <div class="flex items-center gap-0.5 shrink-0">
+          <button
+            class={clsx('p-1 rounded', wordWrap() ? 'text-accent bg-accent/10' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3')}
+            onClick={() => setWordWrap(!wordWrap())}
+            title="Word wrap"
+          >
+            <WrapText size={12} />
+          </button>
+          <button
+            class={clsx('p-1 rounded', hideWhitespace() ? 'text-accent bg-accent/10' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3')}
+            onClick={() => setHideWhitespace(!hideWhitespace())}
+            title="Hide whitespace changes"
+          >
+            <EyeOff size={12} />
+          </button>
+          <button
+            class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 disabled:opacity-40"
+            onClick={refresh}
+            disabled={loading()}
+            title="Refresh"
+          >
+            <RefreshCw size={12} class={loading() ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       {/* Error */}
       <Show when={error()}>
-        <div class="px-3 py-2 text-xs text-red-400 bg-red-400/5 border-b border-border-subtle flex items-center justify-between">
+        <div class="px-3 py-2 text-xs text-red-400 bg-red-400/5 border-b-1 border-b-solid border-b-white/8 flex items-center justify-between">
           <span class="truncate">{error()}</span>
           <button class="shrink-0 ml-2" onClick={() => setError(null)}><X size={12} /></button>
         </div>
@@ -343,8 +343,10 @@ export const CodeChanges: Component<Props> = (props) => {
 
         <For each={status()?.files || []}>
           {(file) => {
-            const Icon = STATUS_ICONS[file.status] || FileText
-            const color = STATUS_COLORS[file.status] || 'text-text-muted'
+            const fileName = file.path.split('/').pop() || file.path
+            const FileIcon = getFileIcon(fileName)
+            const statusLetter = STATUS_LETTERS[file.status] || '?'
+            const statusColor = STATUS_COLORS[file.status] || 'text-text-muted'
             const stats = () => statsForFile(file.path)
             const isOpen = () => openFiles().has(file.path)
             const diff = () => fileDiffs().get(file.path)
@@ -353,11 +355,12 @@ export const CodeChanges: Component<Props> = (props) => {
               <div>
                 {/* File row */}
                 <div
-                  class={`flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs transition-colors ${
+                  class={`relative flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs ${
                     isOpen()
-                      ? 'bg-surface-1 text-text-primary sticky top-0 z-10 border-b border-border-subtle'
+                      ? 'bg-surface-2 text-text-primary sticky top-0 z-10 border-b-1 border-b-solid border-b-white/8'
                       : 'hover:bg-surface-2 text-text-secondary'
                   }`}
+                  style={isOpen() ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
                   onClick={() => toggleFile(file.path)}
                 >
                   {/* Expand chevron */}
@@ -365,19 +368,19 @@ export const CodeChanges: Component<Props> = (props) => {
                     {isOpen() ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   </span>
 
-                  {/* Status icon */}
-                  <span class={`shrink-0 ${color}`}>
-                    <Icon size={13} />
+                  {/* File type icon */}
+                  <span class="shrink-0 text-text-dim">
+                    <FileIcon size={12} />
                   </span>
 
                   {/* File path */}
-                  <span class="truncate flex-1 font-mono">
+                  <span class="truncate flex-1">
                     {file.path}
                   </span>
 
                   {/* Stats */}
                   <Show when={stats()}>
-                    <span class="shrink-0 flex items-center gap-1.5 text-[10px] font-mono">
+                    <span class="shrink-0 flex items-center gap-1.5 text-[10px] tabular-nums">
                       <Show when={stats()!.insertions > 0}>
                         <span class="text-emerald-400">+{stats()!.insertions}</span>
                       </Show>
@@ -386,6 +389,11 @@ export const CodeChanges: Component<Props> = (props) => {
                       </Show>
                     </span>
                   </Show>
+
+                  {/* Status letter (VS Code style) */}
+                  <span class={`shrink-0 text-[11px] font-medium tabular-nums w-3 text-center ${statusColor}`}>
+                    {statusLetter}
+                  </span>
                 </div>
 
                 {/* Inline diff */}
@@ -405,17 +413,17 @@ export const CodeChanges: Component<Props> = (props) => {
       </div>
 
       {/* Branch commits — collapsible, bottom-aligned like VS Code */}
-      <div class="h-px bg-border-subtle shrink-0" />
+      <div class="h-px bg-white/8 shrink-0" />
       <div class="shrink-0">
         <button
-          class="w-full h-8 flex items-center gap-1.5 px-3 text-xs hover:bg-surface-2 transition-colors"
+          class="w-full h-8 flex items-center gap-1.5 px-3 text-xs hover:bg-surface-2"
           onClick={toggleCommitsPanel}
         >
           {commitsOpen() ? <ChevronDown size={12} class="text-text-dim shrink-0" /> : <ChevronRight size={12} class="text-text-dim shrink-0" />}
           <GitCommit size={12} class="text-text-dim shrink-0" />
           <span class="font-medium text-text-secondary">Branch Commits</span>
           <Show when={commits().length > 0}>
-            <span class="px-1.5 py-0.5 rounded bg-surface-3 text-text-dim text-[10px] leading-none">
+            <span class="text-text-dim text-[10px] tabular-nums">
               {commits().length}
             </span>
           </Show>
@@ -426,14 +434,16 @@ export const CodeChanges: Component<Props> = (props) => {
           <div class="max-h-48 overflow-auto">
             {/* Uncommitted changes tile */}
             <button
-              class={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors ${
+              class={clsx(
+                'relative w-full flex items-center gap-2 px-3 py-1.5 text-xs',
                 selectedCommit() === null
-                  ? 'bg-accent-muted text-accent-hover'
-                  : 'hover:bg-surface-2 text-text-secondary'
-              }`}
+                  ? 'bg-surface-2 text-text-primary'
+                  : 'hover:bg-surface-2 text-text-secondary',
+              )}
+              style={selectedCommit() === null ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
               onClick={() => selectCommit(null)}
             >
-              <Circle size={11} class={`shrink-0 ${uncommittedCount() > 0 ? 'text-amber-400' : 'text-text-dim'}`} />
+              <Circle size={11} class="shrink-0 text-text-dim" />
               <span class="truncate flex-1 text-left">Uncommitted changes</span>
               <Show when={uncommittedCount() > 0}>
                 <span class="text-[10px] text-text-dim shrink-0">{uncommittedCount()} file{uncommittedCount() !== 1 ? 's' : ''}</span>
@@ -441,20 +451,23 @@ export const CodeChanges: Component<Props> = (props) => {
             </button>
 
             <For each={commits()}>
-              {(commit) => (
-                <button
-                  class={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors ${
-                    selectedCommit() === commit.hash
-                      ? 'bg-accent-muted text-accent-hover'
-                      : 'hover:bg-surface-2 text-text-secondary'
-                  }`}
-                  onClick={() => selectCommit(commit.hash)}
-                >
-                  <span class="font-mono text-text-dim text-[10px] shrink-0">{commit.shortHash}</span>
-                  <span class="truncate flex-1 text-left">{commit.message}</span>
-                  <span class="text-[10px] text-text-dim shrink-0">{formatTime(commit.timestamp)}</span>
-                </button>
-              )}
+              {(commit) => {
+                const isSelected = () => selectedCommit() === commit.hash
+                return (
+                  <button
+                    class={clsx(
+                      'relative w-full flex items-center gap-2 px-3 py-1.5 text-xs',
+                      isSelected() ? 'bg-surface-2 text-text-primary' : 'hover:bg-surface-2 text-text-secondary',
+                    )}
+                    style={isSelected() ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
+                    onClick={() => selectCommit(commit.hash)}
+                  >
+                    <span class="font-mono text-text-dim text-[10px] shrink-0">{commit.shortHash}</span>
+                    <span class="truncate flex-1 text-left">{commit.message}</span>
+                    <span class="text-[10px] text-text-dim shrink-0">{formatTime(commit.timestamp)}</span>
+                  </button>
+                )
+              }}
             </For>
 
             <Show when={commits().length === 0 && !loading()}>

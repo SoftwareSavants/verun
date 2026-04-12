@@ -79,6 +79,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Media viewer & markdown preview (WYSIWYG)
 - [ ] Show file errors in warnings in the scrollbar
 - [ ] Right-clicking selected code in the editor deselects it, making "Copy" from the context menu impossible without keyboard shortcut
+- [ ] "Copy Absolute Path" in the file tree context menu is broken
 - [X] Reload open(ed) files cach on app lifecycle change
 - [X] Speed up the hover over files/list tiles everywhere
 - [X] esc to close all context menus
