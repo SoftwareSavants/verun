@@ -6,6 +6,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import type { OutputItem, SessionStatus } from '../types'
 import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
+import { ImageViewer } from './ImageViewer'
 import { parseMentions } from '../lib/mentions'
 
 marked.setOptions({ breaks: true, gfm: true })
@@ -462,6 +463,9 @@ export const ChatView: Component<Props> = (props) => {
   const [blocks, setBlocks] = createStore<DisplayBlock[]>([])
   let lastItemCount = 0
 
+  // Image viewer state
+  const [viewerImage, setViewerImage] = createSignal<{ mimeType: string; dataBase64: string } | null>(null)
+
   // Search state
   const [showSearch, setShowSearch] = createSignal(false)
   const [searchQuery, setSearchQuery] = createSignal('')
@@ -699,10 +703,17 @@ export const ChatView: Component<Props> = (props) => {
                       <div class="flex flex-wrap justify-end gap-1 max-w-[75%]">
                         <For each={block.images || []}>
                           {(img) => (
-                            <img
-                              src={`data:${img.mimeType};base64,${img.dataBase64}`}
-                              class="h-16 w-16 rounded-md object-cover border border-border"
-                            />
+                            <button
+                              type="button"
+                              class="block rounded-md overflow-hidden border border-border hover:border-border-active transition-colors cursor-zoom-in"
+                              onClick={() => setViewerImage({ mimeType: img.mimeType, dataBase64: img.dataBase64 })}
+                              title="Open image"
+                            >
+                              <img
+                                src={`data:${img.mimeType};base64,${img.dataBase64}`}
+                                class="h-16 w-16 object-cover"
+                              />
+                            </button>
                           )}
                         </For>
                       </div>
@@ -791,6 +802,16 @@ export const ChatView: Component<Props> = (props) => {
         </Show>
       </div>
       </div>
+      <Show when={viewerImage()}>
+        {(img) => (
+          <ImageViewer
+            open={true}
+            mimeType={img().mimeType}
+            dataBase64={img().dataBase64}
+            onClose={() => setViewerImage(null)}
+          />
+        )}
+      </Show>
     </div>
   )
 }

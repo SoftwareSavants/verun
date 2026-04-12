@@ -1295,6 +1295,67 @@ pub async fn read_clipboard() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn ext_for_mime(mime_type: &str) -> &'static str {
+    match mime_type {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "png",
+    }
+}
+
+#[tauri::command]
+pub async fn copy_image_to_clipboard(mime_type: String, data_base64: String) -> Result<(), String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|e| format!("Invalid base64: {e}"))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let ext = ext_for_mime(&mime_type);
+        let tmp = std::env::temp_dir().join(format!("verun-clip-{}.{}", Uuid::new_v4(), ext));
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("Failed to write temp file: {e}"))?;
+        let posix = tmp.to_string_lossy().replace('"', "\\\"");
+        // PNGf is the universal pasteboard image flavor on macOS; AppKit will
+        // accept jpeg/gif/webp bytes flagged this way for the standard image pasteboards
+        // we whitelist on the frontend.
+        let script = format!(
+            "set the clipboard to (read (POSIX file \"{}\") as «class PNGf»)",
+            posix
+        );
+        let result = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output();
+        let _ = std::fs::remove_file(&tmp);
+        let output = result.map_err(|e| format!("Failed to run osascript: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "osascript failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (bytes, mime_type);
+        Err("Image clipboard copy is only supported on macOS".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn write_binary_file(path: String, data_base64: String) -> Result<(), String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|e| format!("Invalid base64: {e}"))?;
+    tokio::fs::write(&path, &bytes)
+        .await
+        .map_err(|e| format!("Failed to write file: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------

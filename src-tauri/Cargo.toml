@@ -33,6 +33,7 @@ portable-pty = "0.8"
 ignore = "0.4"
 notify = "7"
 notify-debouncer-mini = "0.5"
+base64 = "0.22"
 
 [dev-dependencies]
 rstest = "0.18"

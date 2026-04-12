@@ -219,6 +219,12 @@ export const ptyClose = (terminalId: string) =>
 export const readClipboard = () =>
   invoke<string>('read_clipboard')
 
+export const copyImageToClipboard = (mimeType: string, dataBase64: string) =>
+  invoke<void>('copy_image_to_clipboard', { mimeType, dataBase64 })
+
+export const writeBinaryFile = (path: string, dataBase64: string) =>
+  invoke<void>('write_binary_file', { path, dataBase64 })
+
 export const readTextFile = (path: string) =>
   invoke<string>('read_text_file', { path })
 

@@ -15,6 +15,7 @@ import { clsx } from 'clsx'
 import type { Attachment, ModelId, TrustLevel } from '../types'
 import * as ipc from '../lib/ipc'
 import { Popover } from './Popover'
+import { ImageViewer } from './ImageViewer'
 
 interface Props {
   sessionId: string | null
@@ -295,6 +296,7 @@ export const MessageInput: Component<Props> = (props) => {
   }
   const [taskMessages, setTaskMessages] = createSignal<Record<string, string>>({})
   const [taskAttachments, setTaskAttachments] = createSignal<Record<string, Attachment[]>>({})
+  const [viewerAttachment, setViewerAttachment] = createSignal<Attachment | null>(null)
   const message = () => taskMessages()[selectedTaskId() ?? ''] ?? ''
 
   // Debounced localStorage persistence for drafts
@@ -1932,11 +1934,18 @@ export const MessageInput: Component<Props> = (props) => {
                       </div>
                     }
                   >
-                    <img
-                      src={`data:${att.mimeType};base64,${att.dataBase64}`}
-                      alt={att.name}
-                      class="w-16 h-16 rounded-lg object-cover border border-border"
-                    />
+                    <button
+                      type="button"
+                      class="block rounded-lg overflow-hidden border border-border hover:border-border-active transition-colors cursor-zoom-in"
+                      onClick={() => setViewerAttachment(att)}
+                      title="Open image"
+                    >
+                      <img
+                        src={`data:${att.mimeType};base64,${att.dataBase64}`}
+                        alt={att.name}
+                        class="w-16 h-16 object-cover"
+                      />
+                    </button>
                   </Show>
                   <button
                     class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-surface-3 border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
@@ -2225,6 +2234,17 @@ export const MessageInput: Component<Props> = (props) => {
           </div>
         </div>
       </div>
+      <Show when={viewerAttachment()}>
+        {(att) => (
+          <ImageViewer
+            open={true}
+            mimeType={att().mimeType}
+            dataBase64={att().dataBase64}
+            name={att().name}
+            onClose={() => setViewerAttachment(null)}
+          />
+        )}
+      </Show>
     </div>
   )
 }
