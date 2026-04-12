@@ -482,7 +482,7 @@ export const TaskPanel: Component = () => {
                       {(session) => (
                         <div
                           class={clsx(
-                            'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap cursor-pointer',
+                            'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-none whitespace-nowrap cursor-pointer',
                             mainView(t().id) === 'session' && selectedSessionId() === session.id
                               ? 'bg-accent-muted text-accent-hover border border-accent/20'
                               : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
@@ -552,7 +552,7 @@ export const TaskPanel: Component = () => {
                         <div
                           data-tab-path={tab.relativePath}
                           class={clsx(
-                            'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-all whitespace-nowrap cursor-pointer',
+                            'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-none whitespace-nowrap cursor-pointer',
                             mainView(t().id) === tab.relativePath
                               ? 'bg-surface-3 text-text-secondary border border-border-active'
                               : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'

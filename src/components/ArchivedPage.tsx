@@ -103,7 +103,7 @@ export const ArchivedPage: Component = () => {
       header: '',
       cell: info => (
         <button
-          class="opacity-0 group-hover/row:opacity-100 px-2 py-1 text-[10px] font-medium rounded bg-accent/10 text-accent hover:bg-accent/20 transition-all inline-flex items-center gap-1"
+          class="opacity-0 group-hover/row:opacity-100 px-2 py-1 text-[10px] font-medium rounded bg-accent/10 text-accent hover:bg-accent/20 inline-flex items-center gap-1"
           onClick={(e) => handleRestore(e as MouseEvent, info.row.original.id)}
           title="Restore task"
         >

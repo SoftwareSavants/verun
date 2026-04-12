@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Instant hover feedback on list rows and tiles — removed the 150ms fade
 - Escape key closes any open context menu, dropdown, or popover
 - Fix CMD+Number task selection order to match the sidebar when multiple projects are open (iterate projects then tasks within each, instead of flat insertion order)
 - Draft message, attachments, mode switches (plan/thinking/fast), and last selected task now persist across app restarts

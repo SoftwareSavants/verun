@@ -88,7 +88,7 @@ export const TerminalPanel: Component<Props> = (props) => {
             return (
               <div
                 class={clsx(
-                  'group flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[11px] transition-all whitespace-nowrap cursor-pointer',
+                  'group flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[11px] transition-none whitespace-nowrap cursor-pointer',
                   activeId() === t.id
                     ? 'bg-surface-3 text-text-secondary'
                     : 'text-text-dim hover:text-text-muted hover:bg-surface-2'

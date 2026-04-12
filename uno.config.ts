@@ -90,6 +90,9 @@ export default defineConfig({
         /* Smooth transitions */
         * { -webkit-font-smoothing: antialiased; }
 
+        /* Instant hover on list rows and tiles — no fade */
+        .transition-colors { transition-duration: 0ms !important; }
+
         /* Drag region for titlebar */
         .drag-region { -webkit-app-region: drag; }
         .no-drag { -webkit-app-region: no-drag; }
