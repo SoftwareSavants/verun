@@ -1929,7 +1929,7 @@ export const MessageInput: Component<Props> = (props) => {
                   >
                     <button
                       type="button"
-                      class="block rounded-2xl overflow-hidden border border-border hover:border-border-active transition-colors cursor-pointer"
+                      class="block cursor-pointer"
                       onClick={() => setViewerAttachment(att)}
                       title="Open image"
                     >
@@ -1937,7 +1937,7 @@ export const MessageInput: Component<Props> = (props) => {
                         data={att.data}
                         mimeType={att.mimeType}
                         alt={att.name}
-                        class="w-16 h-16 object-cover"
+                        class="w-16 h-16 object-cover rounded-xl border border-border transition-all duration-150 hover:border-border-active hover:brightness-110 hover:scale-[1.03]"
                       />
                     </button>
                   </Show>
