@@ -10,7 +10,7 @@ import { NewTaskDialog } from './NewTaskDialog'
 import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, setAddProjectPath } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
-import { activeTasks, taskById } from '../store/tasks'
+import { activeTasksForProject, taskById } from '../store/tasks'
 import { projects, projectById } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
@@ -84,10 +84,11 @@ export const Layout: Component = () => {
             selectSettingsSection(projects[idx - 1].id)
           }
         } else {
-          const active = activeTasks()
-          if (idx < active.length) {
-            setSelectedTaskId(active[idx].id)
-            setSelectedProjectId(active[idx].projectId)
+          // Match sidebar ordering: iterate projects, then tasks within each project
+          const ordered = projects.flatMap(p => activeTasksForProject(p.id))
+          if (idx < ordered.length) {
+            setSelectedTaskId(ordered[idx].id)
+            setSelectedProjectId(ordered[idx].projectId)
             setShowArchived(false)
           }
         }
