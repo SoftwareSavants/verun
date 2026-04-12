@@ -481,6 +481,49 @@ pub async fn create_session(
     task::create_session(db_tx.inner(), task_id).await
 }
 
+/// Fork an existing session at a specific assistant message uuid into a new
+/// session inside the SAME task. The worktree is unchanged.
+#[tauri::command]
+pub async fn fork_session_in_task(
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+    fork_after_message_uuid: String,
+) -> Result<Session, String> {
+    task::fork_session_in_task(
+        pool.inner(),
+        db_tx.inner(),
+        session_id,
+        fork_after_message_uuid,
+    )
+    .await
+}
+
+/// Fork an existing session at a specific assistant message uuid into a new
+/// task with its own worktree. `worktree_state` controls whether the new
+/// worktree is restored to the per-turn snapshot ("snapshot") or seeded from
+/// the parent's current code ("current").
+#[tauri::command]
+pub async fn fork_session_to_new_task(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+    fork_after_message_uuid: String,
+    worktree_state: task::WorktreeForkState,
+) -> Result<TaskWithSession, String> {
+    let (task, session) = task::fork_session_to_new_task(
+        &app,
+        pool.inner(),
+        db_tx.inner(),
+        session_id,
+        fork_after_message_uuid,
+        worktree_state,
+    )
+    .await?;
+    Ok(TaskWithSession { task, session })
+}
+
 /// Send a message to Claude in this session.
 /// Spawns claude -p with --resume if we have a prior session_id.
 #[allow(clippy::too_many_arguments)]

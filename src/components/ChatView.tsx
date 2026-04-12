@@ -1,14 +1,19 @@
 import { Component, For, Show, createEffect, on, createSignal, onMount, onCleanup } from 'solid-js'
-import { createStore } from 'solid-js/store'
+import { createStore, produce, reconcile } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { marked } from 'marked'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import type { OutputItem, SessionStatus } from '../types'
-import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X } from 'lucide-solid'
+import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
 import { parseMentions } from '../lib/mentions'
+import { Popover } from './Popover'
+import * as ipc from '../lib/ipc'
+import { addToast, setSelectedTaskId, setSelectedSessionId } from '../store/ui'
+import { setSessions, loadOutputLines } from '../store/sessions'
+import { setTasks } from '../store/tasks'
 
 marked.setOptions({ breaks: true, gfm: true })
 
@@ -61,6 +66,8 @@ interface AssistantBlock {
   turnCost?: number
   turnTokens?: { input: number; output: number }
   isLastInTurn?: boolean
+  /** On-disk message uuid attached at turn end via verun_turn_snapshot. Used as the fork point. */
+  messageUuid?: string
 }
 interface ThinkingBlock {
   type: 'thinking'
@@ -181,6 +188,19 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         turnStartTs = undefined
         break
       }
+      case 'turnSnapshot': {
+        // Attach the message uuid to the most recent assistant block, walking
+        // back past tools/thinking. This is the stable id for "fork from here".
+        for (let i = blocks.length - 1; i >= 0; i--) {
+          const b = blocks[i]
+          if (b.type === 'assistant') {
+            ;(b as AssistantBlock).messageUuid = item.messageUuid
+            break
+          }
+          if (b.type === 'user') break
+        }
+        break
+      }
       case 'raw':
         break
     }
@@ -220,6 +240,121 @@ const CopyButton: Component<{ text: string }> = (props) => {
         <Check size={13} class="text-status-running" />
       </Show>
     </button>
+  )
+}
+
+const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props) => {
+  const [open, setOpen] = createSignal(false)
+  const [submenuOpen, setSubmenuOpen] = createSignal(false)
+  const [busy, setBusy] = createSignal(false)
+  const [error, setError] = createSignal<string | null>(null)
+
+  const close = () => {
+    setOpen(false)
+    setSubmenuOpen(false)
+    setError(null)
+  }
+
+  const forkInTask = async () => {
+    setBusy(true)
+    try {
+      const session = await ipc.forkSessionInTask(props.sessionId, props.messageUuid)
+      setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
+      await loadOutputLines(session.id, session.taskId)
+      setSelectedSessionId(session.id)
+      addToast('Forked in this task', 'success')
+      close()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const forkToNewTask = async (worktreeState: 'snapshot' | 'current') => {
+    setBusy(true)
+    try {
+      const tws = await ipc.forkSessionToNewTask(props.sessionId, props.messageUuid, worktreeState)
+      setTasks(produce(t => { if (!t.find(x => x.id === tws.task.id)) t.unshift(tws.task) }))
+      setSessions(produce(s => { if (!s.find(x => x.id === tws.session.id)) s.push(tws.session) }))
+      await loadOutputLines(tws.session.id, tws.task.id)
+      setSelectedTaskId(tws.task.id)
+      setSelectedSessionId(tws.session.id)
+      addToast('Forked to new task', 'success')
+      close()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div class="relative">
+      <button
+        class="p-1 rounded-md text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors"
+        onClick={() => setOpen(o => !o)}
+        title="Fork from this message"
+        disabled={busy()}
+      >
+        <GitBranch size={13} />
+      </button>
+      <Popover
+        open={open()}
+        onClose={close}
+        class="py-1 min-w-44 absolute bottom-full left-0 mb-1"
+      >
+        <button
+          class="w-full flex items-center gap-2 text-left px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-35 disabled:pointer-events-none"
+          disabled={busy()}
+          onMouseEnter={() => setSubmenuOpen(false)}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={forkInTask}
+        >
+          <span class="flex-1 truncate">Fork in this task</span>
+        </button>
+        <div
+          class="relative"
+          onMouseEnter={() => setSubmenuOpen(true)}
+        >
+          <button
+            class="w-full flex items-center gap-2 text-left px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-35 disabled:pointer-events-none"
+            disabled={busy()}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setSubmenuOpen(v => !v)}
+          >
+            <span class="flex-1 truncate">Fork in a new task</span>
+            <ChevronRight size={11} class="text-text-dim shrink-0" />
+          </button>
+          <Show when={submenuOpen()}>
+            <div
+              class="absolute -top-1 left-[calc(100%-4px)] py-1 min-w-48 bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl animate-in"
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              <button
+                class="w-full flex items-center gap-2 text-left px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-35 disabled:pointer-events-none"
+                disabled={busy()}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => forkToNewTask('snapshot')}
+              >
+                <span class="flex-1 truncate">Code as of this message</span>
+              </button>
+              <button
+                class="w-full flex items-center gap-2 text-left px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-35 disabled:pointer-events-none"
+                disabled={busy()}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => forkToNewTask('current')}
+              >
+                <span class="flex-1 truncate">Current code</span>
+              </button>
+            </div>
+          </Show>
+        </div>
+        <Show when={error()}>
+          <div class="mt-1 px-2.5 py-1 text-[10px] text-status-error border-t border-white/8">{error()}</div>
+        </Show>
+      </Popover>
+    </div>
   )
 }
 
@@ -582,7 +717,7 @@ export const ChatView: Component<Props> = (props) => {
     }
     if (len !== lastItemCount) {
       const newBlocks = rebuildBlocks(props.output)
-      setBlocks(newBlocks)
+      setBlocks(reconcile(newBlocks, { merge: true }))
       lastItemCount = len
       // Re-apply search highlights after block rebuild
       if (showSearch() && searchQuery()) {
@@ -766,6 +901,12 @@ export const ChatView: Component<Props> = (props) => {
                           })()}
                         </Show>
                         <CopyButton text={block.text} />
+                        <Show when={(block as AssistantBlock).messageUuid && props.sessionId}>
+                          <ForkButton
+                            sessionId={props.sessionId!}
+                            messageUuid={(block as AssistantBlock).messageUuid!}
+                          />
+                        </Show>
                       </div>
                     </Show>
                   </div>

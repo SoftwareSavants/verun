@@ -21,6 +21,7 @@ Run multiple Claude Code sessions in parallel, each in its own isolated git work
 - **Inline diffs** — see exactly what Claude changed with syntax-highlighted diffs
 - **Git actions** — commit, push, create PR, merge — all without leaving the app
 - **Steps** — plan follow-up messages while Claude works; fire manually or arm for auto-send
+- **Fork from any message** — hover any past assistant reply to fork the conversation: rewind in place keeping the current code, or branch into a new task with the worktree restored to the code as it was at that exact turn
 - **Plan mode** — review implementation plans before Claude starts coding
 - **Desktop notifications** — get notified when tasks complete, fail, or need approval
 - **Tool approval** — configurable trust levels (Normal, Supervised, Full Auto)

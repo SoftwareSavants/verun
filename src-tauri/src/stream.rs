@@ -1,7 +1,10 @@
+use crate::claude_jsonl;
 use crate::db::{DbWrite, DbWriteTx};
 use crate::policy::{self, PolicyDecision, TrustLevel};
+use crate::snapshots;
 use crate::task::{ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals};
 use serde::Serialize;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -56,6 +59,12 @@ pub enum OutputItem {
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
     },
+
+    /// Per-turn snapshot marker — frontend attaches the message uuid to the
+    /// most recent assistant block so the "fork from here" affordance has a
+    /// stable identifier to send back to the backend.
+    #[serde(rename_all = "camelCase")]
+    TurnSnapshot { message_uuid: String },
 
     /// Raw line (fallback for unrecognized events)
     #[serde(rename_all = "camelCase")]
@@ -368,6 +377,139 @@ pub struct StreamResult {
 /// When a `control_request` (tool approval) is detected, we emit it to the
 /// frontend and block until the user responds via `respond_to_approval`.
 #[allow(clippy::too_many_arguments)]
+/// After a turn ends, snapshot the worktree and persist a `turn_snapshots`
+/// row keyed to the latest assistant message uuid in the on-disk JSONL.
+///
+/// All failures are logged and swallowed — the snapshot machinery is
+/// best-effort and must never break the streaming hot path.
+async fn snapshot_turn_best_effort(
+    verun_session_id: &str,
+    worktree_path: &str,
+    claude_session_id: Option<&str>,
+    db_tx: &DbWriteTx,
+    app: &AppHandle,
+) {
+    let csid = match claude_session_id {
+        Some(s) => s.to_string(),
+        None => return,
+    };
+    let worktree = worktree_path.to_string();
+    let verun_sid = verun_session_id.to_string();
+    let db_tx = db_tx.clone();
+    let app = app.clone();
+
+    // Do all blocking I/O off the runtime thread.
+    let result = tokio::task::spawn_blocking(move || {
+        let wt_path = Path::new(&worktree);
+        let jsonl = match claude_jsonl::session_path(wt_path, &csid) {
+            Some(p) => p,
+            None => return Err("no $HOME for jsonl path".to_string()),
+        };
+        if !jsonl.exists() {
+            return Err(format!("jsonl not found: {}", jsonl.display()));
+        }
+        let last_uuid = latest_assistant_text_uuid(&jsonl)
+            .ok_or_else(|| "no assistant text uuid in jsonl".to_string())?;
+        let sha = snapshots::snapshot_turn(wt_path, &verun_sid, &last_uuid)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "snapshot returned None (no HEAD?)".to_string())?;
+        Ok::<(String, String), String>((last_uuid, sha))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((message_uuid, stash_sha))) => {
+            let now = now_ms();
+            let _ = db_tx
+                .send(DbWrite::InsertTurnSnapshot {
+                    session_id: verun_session_id.to_string(),
+                    message_uuid: message_uuid.clone(),
+                    stash_sha,
+                    created_at: now,
+                })
+                .await;
+
+            // Persist a synthetic marker line into output_lines so the frontend
+            // can attach the message uuid to the most recent assistant block on
+            // session reload, and so the fork operation can find the truncation
+            // boundary in output_lines without having to re-parse stream state.
+            let marker = serde_json::json!({
+                "type": "verun_turn_snapshot",
+                "sessionId": verun_session_id,
+                "messageUuid": message_uuid,
+            })
+            .to_string();
+            let _ = db_tx
+                .send(DbWrite::InsertOutputLines {
+                    session_id: verun_session_id.to_string(),
+                    lines: vec![(marker.clone(), now)],
+                })
+                .await;
+
+            // Also push the marker as a live event so any open chat view picks
+            // it up immediately without a session reload.
+            let _ = app.emit(
+                "session-output",
+                SessionOutputEvent {
+                    session_id: verun_session_id.to_string(),
+                    items: vec![OutputItem::TurnSnapshot {
+                        message_uuid: message_uuid.clone(),
+                    }],
+                },
+            );
+        }
+        Ok(Err(e)) => eprintln!("[verun] snapshot_turn skipped: {e}"),
+        Err(e) => eprintln!("[verun] snapshot_turn join error: {e}"),
+    }
+}
+
+/// Walk a Claude Code session JSONL and return the uuid of the most recent
+/// `type=assistant` line whose message content contains a `text` block.
+fn latest_assistant_text_uuid(jsonl_path: &Path) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let f = std::fs::File::open(jsonl_path).ok()?;
+    let reader = BufReader::new(f);
+    let mut last: Option<String> = None;
+    for line in reader.lines().map_while(Result::ok) {
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+        let content = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array());
+        let has_text = match content {
+            Some(arr) => arr
+                .iter()
+                .any(|c| c.get("type").and_then(|t| t.as_str()) == Some("text")),
+            None => false,
+        };
+        if !has_text {
+            continue;
+        }
+        if let Some(uuid) = v.get("uuid").and_then(|u| u.as_str()) {
+            last = Some(uuid.to_string());
+        }
+    }
+    last
+}
+
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn stream_and_capture(
     app: AppHandle,
     session_id: String,
@@ -387,6 +529,8 @@ pub async fn stream_and_capture(
     let mut last_flush = Instant::now();
     let mut total_persisted: usize = 0;
     let mut total_cost: f64 = 0.0;
+    // Captured from `system.init` events for the per-turn snapshot hook.
+    let mut claude_session_id_for_snapshot: Option<String> = None;
 
     loop {
         let deadline = tokio::time::sleep(FLUSH_INTERVAL);
@@ -412,6 +556,20 @@ pub async fn stream_and_capture(
                                 }
                                 persist_line(&db_tx, &session_id, &line, &mut total_persisted);
                                 continue;
+                            }
+                        }
+
+                        // Capture claude session_id from `system.init` so the snapshot hook
+                        // at turn end can locate the on-disk JSONL transcript.
+                        if claude_session_id_for_snapshot.is_none() {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                                if v.get("type").and_then(|t| t.as_str()) == Some("system")
+                                    && v.get("subtype").and_then(|t| t.as_str()) == Some("init")
+                                {
+                                    if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
+                                        claude_session_id_for_snapshot = Some(sid.to_string());
+                                    }
+                                }
                             }
                         }
 
@@ -472,10 +630,37 @@ pub async fn stream_and_capture(
                             drop(guard.take());
                         }
 
-                        // Flush non-streaming buffer periodically
-                        if !buffer.is_empty() && (has_immediate || last_flush.elapsed() >= FLUSH_INTERVAL) {
+                        // Flush buffer. On turn end we ALWAYS flush so the TurnEnd
+                        // event reaches the frontend before any subsequent turn-snapshot
+                        // marker — otherwise the marker walks back to find an assistant
+                        // block that hasn't been created yet.
+                        if !buffer.is_empty()
+                            && (has_immediate || is_turn_end || last_flush.elapsed() >= FLUSH_INTERVAL)
+                        {
                             flush_buffer(&app, &session_id, &mut buffer);
                             last_flush = Instant::now();
+                        }
+
+                        // Fire-and-forget: snapshot the worktree and persist a turn_snapshots
+                        // row keyed to the latest assistant message uuid in the on-disk JSONL.
+                        // Used by the "fork from this message" feature. We deliberately do
+                        // NOT await this so the stream loop is never blocked on git I/O.
+                        if is_turn_end {
+                            let sid = session_id.clone();
+                            let wt = worktree_path.clone();
+                            let csid = claude_session_id_for_snapshot.clone();
+                            let dbtx = db_tx.clone();
+                            let app2 = app.clone();
+                            tokio::spawn(async move {
+                                snapshot_turn_best_effort(
+                                    &sid,
+                                    &wt,
+                                    csid.as_deref(),
+                                    &dbtx,
+                                    &app2,
+                                )
+                                .await;
+                            });
                         }
                     }
                     Ok(None) => break,

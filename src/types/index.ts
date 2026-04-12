@@ -24,6 +24,7 @@ export interface Task {
   archived: boolean
   archivedAt: number | null
   lastCommitMessage: string | null
+  parentTaskId: string | null
 }
 
 export interface Session {
@@ -35,6 +36,8 @@ export interface Session {
   startedAt: number
   endedAt: number | null
   totalCost: number
+  parentSessionId: string | null
+  forkedAtMessageUuid: string | null
 }
 
 export interface OutputLine {
@@ -97,6 +100,7 @@ export type OutputItem =
   | { kind: 'toolResult'; text: string; isError: boolean }
   | { kind: 'system'; text: string }
   | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number }
+  | { kind: 'turnSnapshot'; messageUuid: string }
   | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; data: Uint8Array }>; timestamp?: number }
   | { kind: 'raw'; text: string }
 

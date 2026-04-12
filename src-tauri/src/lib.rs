@@ -1,3 +1,4 @@
+mod claude_jsonl;
 mod db;
 mod env_path;
 mod git_ops;
@@ -6,6 +7,7 @@ mod ipc;
 mod lsp;
 mod policy;
 mod pty;
+mod snapshots;
 mod stream;
 mod task;
 mod watcher;
@@ -234,6 +236,8 @@ pub fn run() {
             ipc::list_sessions,
             ipc::get_session,
             ipc::get_output_lines,
+            ipc::fork_session_in_task,
+            ipc::fork_session_to_new_task,
             // Policy / Trust levels
             ipc::set_trust_level,
             ipc::get_trust_level,

@@ -81,6 +81,7 @@ export function startTaskCreation(projectId: string, baseBranch: string): string
     archived: false,
     archivedAt: null,
     lastCommitMessage: null,
+    parentTaskId: null,
   }
 
   setTasks(produce(t => t.unshift(placeholder)))

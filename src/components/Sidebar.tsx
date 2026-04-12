@@ -66,7 +66,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import * as ipc from "../lib/ipc";
 import { hasOverlayTitlebar } from "../lib/platform";
-import { ExternalLink } from "lucide-solid";
+import { ExternalLink, GitBranch } from "lucide-solid";
 
 // ---------------------------------------------------------------------------
 // Per-project chip color — deterministic hash → palette index. Subtle bg
@@ -472,6 +472,9 @@ export const Sidebar: Component = () => {
                                 />
                               </Show>
                               <div class={clsx("text-[10px] truncate flex items-center gap-1", hasIndicator() || isSelected() ? "text-text-muted" : "text-text-dim")}>
+                                <Show when={task.parentTaskId}>
+                                  <GitBranch size={9} class="shrink-0 text-text-dim/70" />
+                                </Show>
                                 {task.branch}
                                 <Show when={isTaskWindowed(task.id)}>
                                   <ExternalLink size={9} class="shrink-0 text-accent/60" />

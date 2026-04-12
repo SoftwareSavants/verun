@@ -368,6 +368,7 @@ pub async fn create_task(
         archived: false,
         archived_at: None,
         last_commit_message: None,
+        parent_task_id: None,
     };
 
     db_tx
@@ -548,6 +549,8 @@ pub async fn create_session(db_tx: &DbWriteTx, task_id: String) -> Result<Sessio
         started_at: epoch_ms(),
         ended_at: None,
         total_cost: 0.0,
+        parent_session_id: None,
+        forked_at_message_uuid: None,
     };
 
     db_tx
@@ -1031,6 +1034,368 @@ pub fn epoch_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
+}
+
+// ---------------------------------------------------------------------------
+// Fork from a past message
+// ---------------------------------------------------------------------------
+
+/// Worktree state to use when forking to a new task. The "in this task" fork
+/// path always preserves the parent's worktree as-is and is not gated by this
+/// enum.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorktreeForkState {
+    /// Use the per-turn snapshot of the worktree taken at the chosen message.
+    Snapshot,
+    /// Copy the parent's current worktree state (HEAD + uncommitted changes).
+    Current,
+}
+
+/// Fork a session at a specific assistant message uuid into a NEW session
+/// inside the SAME task (the worktree is unchanged).
+///
+/// The new session has a fresh claude session id; we hand-craft a truncated
+/// JSONL transcript at `~/.claude/projects/<dir>/<new-uuid>.jsonl` so
+/// `claude --resume <new-uuid>` picks up exactly the prefix the user chose.
+///
+/// We also copy the parent's `output_lines` rows up to and including the
+/// `verun_turn_snapshot` marker for `fork_after_message_uuid` so the new
+/// session's chat view shows the inherited history.
+pub async fn fork_session_in_task(
+    pool: &sqlx::sqlite::SqlitePool,
+    db_tx: &DbWriteTx,
+    source_session_id: String,
+    fork_after_message_uuid: String,
+) -> Result<Session, String> {
+    let parent = db::get_session(pool, &source_session_id)
+        .await?
+        .ok_or_else(|| format!("Session {source_session_id} not found"))?;
+    let parent_csid = parent
+        .claude_session_id
+        .clone()
+        .ok_or_else(|| "Parent session has no claude session id (never started?)".to_string())?;
+
+    let task = db::get_task(pool, &parent.task_id)
+        .await?
+        .ok_or_else(|| format!("Task {} not found", parent.task_id))?;
+
+    let new_csid = Uuid::new_v4().to_string();
+    let new_verun_sid = Uuid::new_v4().to_string();
+    let now = epoch_ms();
+
+    // Truncate the on-disk JSONL transcript.
+    let worktree_path = task.worktree_path.clone();
+    let parent_csid_for_blocking = parent_csid.clone();
+    let new_csid_for_blocking = new_csid.clone();
+    let fork_uuid_for_blocking = fork_after_message_uuid.clone();
+    tokio::task::spawn_blocking(move || {
+        let wt = std::path::Path::new(&worktree_path);
+        let src = crate::claude_jsonl::session_path(wt, &parent_csid_for_blocking)
+            .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
+        let dest = crate::claude_jsonl::session_path(wt, &new_csid_for_blocking)
+            .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
+        crate::claude_jsonl::truncate_after_message(
+            &src,
+            &dest,
+            &new_csid_for_blocking,
+            &fork_uuid_for_blocking,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))??;
+
+    // Insert the new session row + copied output_lines synchronously via the
+    // pool. If we used the async DbWrite queue here the IPC would return
+    // before persistence completed and the frontend's immediate
+    // loadOutputLines call would see an empty session.
+    let _ = db_tx; // intentionally unused on this path
+    let new_session = Session {
+        id: new_verun_sid.clone(),
+        task_id: parent.task_id.clone(),
+        name: parent.name.as_ref().map(|n| format!("{n} (fork)")),
+        claude_session_id: Some(new_csid),
+        status: "idle".to_string(),
+        started_at: now,
+        ended_at: None,
+        total_cost: 0.0,
+        parent_session_id: Some(parent.id.clone()),
+        forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
+    };
+    insert_session_row(pool, &new_session).await?;
+
+    // Copy parent's output_lines up to and including the matching
+    // verun_turn_snapshot marker.
+    let parent_lines = db::get_output_lines(pool, &parent.id).await?;
+    let needle = format!("\"messageUuid\":\"{fork_after_message_uuid}\"");
+    let mut copied: Vec<(String, i64)> = Vec::new();
+    for ol in &parent_lines {
+        copied.push((ol.line.clone(), ol.emitted_at));
+        if ol.line.contains("\"verun_turn_snapshot\"") && ol.line.contains(&needle) {
+            break;
+        }
+    }
+    if !copied.is_empty() {
+        insert_output_lines_sync(pool, &new_verun_sid, &copied).await?;
+    }
+
+    Ok(new_session)
+}
+
+async fn insert_session_row(
+    pool: &sqlx::sqlite::SqlitePool,
+    s: &Session,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&s.id)
+    .bind(&s.task_id)
+    .bind(&s.name)
+    .bind(&s.claude_session_id)
+    .bind(&s.status)
+    .bind(s.started_at)
+    .bind(s.ended_at)
+    .bind(s.total_cost)
+    .bind(&s.parent_session_id)
+    .bind(&s.forked_at_message_uuid)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("insert session: {e}"))?;
+    Ok(())
+}
+
+async fn insert_task_row(
+    pool: &sqlx::sqlite::SqlitePool,
+    t: &Task,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&t.id)
+    .bind(&t.project_id)
+    .bind(&t.name)
+    .bind(&t.worktree_path)
+    .bind(&t.branch)
+    .bind(t.created_at)
+    .bind(t.port_offset)
+    .bind(&t.parent_task_id)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("insert task: {e}"))?;
+    Ok(())
+}
+
+async fn insert_output_lines_sync(
+    pool: &sqlx::sqlite::SqlitePool,
+    session_id: &str,
+    lines: &[(String, i64)],
+) -> Result<(), String> {
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for (line, emitted_at) in lines {
+        sqlx::query("INSERT INTO output_lines (session_id, line, emitted_at) VALUES (?, ?, ?)")
+            .bind(session_id)
+            .bind(line)
+            .bind(emitted_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("insert output_line: {e}"))?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Fork a session into a NEW task with its OWN worktree.
+///
+/// `worktree_state` controls whether the new worktree starts from the
+/// per-turn snapshot taken at the chosen message (true counterfactual) or
+/// from the parent's current worktree state (HEAD + any uncommitted edits).
+#[allow(clippy::too_many_arguments)]
+pub async fn fork_session_to_new_task(
+    app: &AppHandle,
+    pool: &sqlx::sqlite::SqlitePool,
+    db_tx: &DbWriteTx,
+    source_session_id: String,
+    fork_after_message_uuid: String,
+    worktree_state: WorktreeForkState,
+) -> Result<(Task, Session), String> {
+    let parent_session = db::get_session(pool, &source_session_id)
+        .await?
+        .ok_or_else(|| format!("Session {source_session_id} not found"))?;
+    let parent_csid = parent_session
+        .claude_session_id
+        .clone()
+        .ok_or_else(|| "Parent session has no claude session id (never started?)".to_string())?;
+    let parent_task = db::get_task(pool, &parent_session.task_id)
+        .await?
+        .ok_or_else(|| format!("Task {} not found", parent_session.task_id))?;
+    let project = db::get_project(pool, &parent_task.project_id)
+        .await?
+        .ok_or_else(|| format!("Project {} not found", parent_task.project_id))?;
+
+    // Snapshot SHA lookup for "code as it was at this message" mode.
+    let snapshot_sha = match worktree_state {
+        WorktreeForkState::Snapshot => Some(
+            db::get_turn_snapshot(pool, &parent_session.id, &fork_after_message_uuid)
+                .await?
+                .ok_or_else(|| {
+                    "no snapshot exists for this message — try 'current code' instead".to_string()
+                })?
+                .stash_sha,
+        ),
+        WorktreeForkState::Current => None,
+    };
+
+    // Create the new worktree (off the runtime).
+    let branch = funny_branch_name();
+    let repo_path = project.repo_path.clone();
+    let parent_worktree = parent_task.worktree_path.clone();
+    let base_branch = project.base_branch.clone();
+    let branch_for_blocking = branch.clone();
+    let snapshot_for_blocking = snapshot_sha.clone();
+    let new_worktree_path = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        match snapshot_for_blocking {
+            Some(sha) => {
+                // Build the new worktree path manually so we can hand it to
+                // restore_into_new_worktree, then add a branch label after.
+                let new_path = std::path::Path::new(&repo_path)
+                    .join(".verun")
+                    .join("worktrees")
+                    .join(&branch_for_blocking);
+                let new_path_str = new_path
+                    .to_str()
+                    .ok_or_else(|| "non-utf8 worktree path".to_string())?
+                    .to_string();
+                crate::snapshots::restore_into_new_worktree(
+                    std::path::Path::new(&repo_path),
+                    &new_path,
+                    &sha,
+                )
+                .map_err(|e| e.to_string())?;
+                // Attach the funny branch name pointing at the snapshot's HEAD
+                // parent so subsequent commits go on a real branch (not detached).
+                let _ = std::process::Command::new("git")
+                    .current_dir(&new_path_str)
+                    .args(["checkout", "-b", &branch_for_blocking])
+                    .output();
+                Ok(new_path_str)
+            }
+            None => {
+                // Plain worktree creation, then overlay the parent's current
+                // tracked + untracked changes via the snapshot mechanism so
+                // we don't lose uncommitted work.
+                let new_path = crate::worktree::create_worktree(
+                    &repo_path,
+                    &branch_for_blocking,
+                    &base_branch,
+                )?;
+                let parent_wt = std::path::Path::new(&parent_worktree);
+                if let Ok(Some(temp_sha)) =
+                    crate::snapshots::snapshot_turn(parent_wt, "fork-current", "transient")
+                {
+                    let new_pb = std::path::PathBuf::from(&new_path);
+                    let tree_ref = format!("{temp_sha}^{{tree}}");
+                    let _ = std::process::Command::new("git")
+                        .current_dir(&new_pb)
+                        .args(["read-tree", "--reset", "-u", &tree_ref])
+                        .output();
+                }
+                Ok(new_path)
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))??;
+
+    // Insert the new task row.
+    let new_task = Task {
+        id: Uuid::new_v4().to_string(),
+        project_id: parent_task.project_id.clone(),
+        name: parent_task.name.as_ref().map(|n| format!("{n} (fork)")),
+        worktree_path: new_worktree_path,
+        branch,
+        created_at: epoch_ms(),
+        merge_base_sha: None,
+        port_offset: db::next_port_offset(pool, &parent_task.project_id).await?,
+        archived: false,
+        archived_at: None,
+        last_commit_message: None,
+        parent_task_id: Some(parent_task.id.clone()),
+    };
+    insert_task_row(pool, &new_task).await?;
+
+    // Now build a forked session attached to the new task. Reuse
+    // fork_session_in_task's machinery but override the destination task_id
+    // by directly calling the same logic.
+    let new_csid = Uuid::new_v4().to_string();
+    let new_verun_sid = Uuid::new_v4().to_string();
+    let now = epoch_ms();
+
+    let parent_csid_for_blocking = parent_csid.clone();
+    let new_csid_for_blocking = new_csid.clone();
+    let fork_uuid_for_blocking = fork_after_message_uuid.clone();
+    let new_wt_for_blocking = new_task.worktree_path.clone();
+    let parent_wt_for_blocking = parent_task.worktree_path.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        // The on-disk JSONL is keyed by cwd. Claude wrote the parent's
+        // transcript under the parent's cwd; the new session will run in the
+        // new worktree's cwd, so we have to write the truncated JSONL into
+        // the NEW cwd's projects dir.
+        let parent_wt = std::path::Path::new(&parent_wt_for_blocking);
+        let new_wt = std::path::Path::new(&new_wt_for_blocking);
+        let src = crate::claude_jsonl::session_path(parent_wt, &parent_csid_for_blocking)
+            .ok_or_else(|| "no $HOME for src jsonl".to_string())?;
+        let dest = crate::claude_jsonl::session_path(new_wt, &new_csid_for_blocking)
+            .ok_or_else(|| "no $HOME for dest jsonl".to_string())?;
+        crate::claude_jsonl::truncate_after_message(
+            &src,
+            &dest,
+            &new_csid_for_blocking,
+            &fork_uuid_for_blocking,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))??;
+
+    let new_session = Session {
+        id: new_verun_sid.clone(),
+        task_id: new_task.id.clone(),
+        name: parent_session.name.as_ref().map(|n| format!("{n} (fork)")),
+        claude_session_id: Some(new_csid),
+        status: "idle".to_string(),
+        started_at: now,
+        ended_at: None,
+        total_cost: 0.0,
+        parent_session_id: Some(parent_session.id.clone()),
+        forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
+    };
+    insert_session_row(pool, &new_session).await?;
+
+    // Copy parent output lines up to the boundary into the new session.
+    let parent_lines = db::get_output_lines(pool, &parent_session.id).await?;
+    let needle = format!("\"messageUuid\":\"{fork_after_message_uuid}\"");
+    let mut copied: Vec<(String, i64)> = Vec::new();
+    for ol in &parent_lines {
+        copied.push((ol.line.clone(), ol.emitted_at));
+        if ol.line.contains("\"verun_turn_snapshot\"") && ol.line.contains(&needle) {
+            break;
+        }
+    }
+    if !copied.is_empty() {
+        insert_output_lines_sync(pool, &new_verun_sid, &copied).await?;
+    }
+
+    let _ = db_tx;
+    let _ = app.emit(
+        "task-created",
+        serde_json::json!({ "taskId": new_task.id, "projectId": new_task.project_id }),
+    );
+
+    Ok((new_task, new_session))
 }
 
 #[cfg(test)]
