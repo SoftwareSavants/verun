@@ -1343,6 +1343,15 @@ pub async fn list_claude_skills() -> Result<Vec<ClaudeSkill>, String> {
 }
 
 #[tauri::command]
+pub async fn reload_env_path() -> Result<(), String> {
+    // Run on a blocking thread so we don't stall the tokio runtime — the
+    // shell capture is ~50ms but a hostile .zshrc could take longer.
+    tokio::task::spawn_blocking(crate::env_path::reload_now)
+        .await
+        .map_err(|e| format!("reload task failed: {e}"))
+}
+
+#[tauri::command]
 pub async fn check_claude() -> Result<String, String> {
     let output = std::process::Command::new("claude")
         .arg("--version")

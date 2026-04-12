@@ -19,6 +19,8 @@
 - Top-bar git divider/section now hides when there's nothing to ship (no PR, no commits, no dirty files) — no more orphaned divider pair
 - Top-bar control gap bumped from `gap-1` to `gap-2` so the editor / Start / Terminal cluster has breathing room
 - Changes pane redesigned: header rows merged into a single h-9 strip with stats on the left and view toggles on the right, borders unified to `white/8`, open file row now uses `surface-2` plus an inset accent strip (matching the file tree's open file and the sidebar's selected task), selected commit and "Uncommitted changes" tile use the same accent-strip pattern instead of the heavy `bg-accent-muted`, file rows now follow VS Code's source-control style (file type icon on the left, status letter `M`/`A`/`D`/`R`/`U` on the right with the status color, no font-mono path), `transition-colors` removed from rows, and the uncommitted-changes circle no longer flashes amber
+- Shell PATH capture upgraded from `-lc` to `-lic` so `.zshrc` (where nvm/fnm/asdf/mise live) is sourced — claude, the language server, git, and gh now see the user's nvm-default node version instead of an outdated system one
+- New `env_path` module with a background watcher that reloads PATH when the integrated terminal goes idle after a user-committed command (tmux-style: tracks the last PTY output byte and waits for 500ms of silence after a `\n`/`\r` from the user). Window focus also triggers a debounced reload (≥30s) to catch installs done in an external terminal. Both auto-paths funnel through the same `reload_env_path` IPC command, so a manual escape hatch is one wire away
 
 ## 0.4.3 — 2026-04-12
 

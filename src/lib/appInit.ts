@@ -12,6 +12,24 @@ import { refreshTaskGit } from '../store/git'
 import { addToast } from '../store/ui'
 import * as ipc from './ipc'
 
+/**
+ * Re-capture the user's shell PATH on window focus, debounced to once per 30s
+ * so normal alt-tab activity doesn't spawn a shell over and over. The Rust
+ * side already does this on integrated-terminal idle; this covers the case
+ * where the user installed something in an external terminal.
+ */
+function initEnvPathFocusRefresh() {
+  let lastReloadAt = 0
+  const DEBOUNCE_MS = 30_000
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    const now = Date.now()
+    if (now - lastReloadAt < DEBOUNCE_MS) return
+    lastReloadAt = now
+    ipc.reloadEnvPath().catch(() => { /* best effort */ })
+  })
+}
+
 /** Register all event listeners (parallel — these just register callbacks) */
 export async function initListeners() {
   await Promise.all([
@@ -22,6 +40,7 @@ export async function initListeners() {
     initSetupListeners(),
   ])
   initWindowFocusRefresh()
+  initEnvPathFocusRefresh()
   initOpenFilesRefresh()
 
   // Cross-window sync: reload when tasks change in another window

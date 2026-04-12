@@ -1,3 +1,4 @@
+use crate::env_path;
 use dashmap::DashMap;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
@@ -187,6 +188,7 @@ pub fn spawn_pty(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    env_path::record_pty_output();
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
                     let _ = app.emit(
                         "pty-output",
@@ -231,6 +233,12 @@ pub fn write_pty(map: &ActivePtyMap, terminal_id: &str, data: &[u8]) -> Result<(
     writer
         .flush()
         .map_err(|e| format!("PTY flush failed: {e}"))?;
+    // Mark the user as having committed a command if their input contains a
+    // newline / carriage return — the idle watcher will reload PATH once the
+    // PTY output stream goes quiet.
+    if data.iter().any(|&b| b == b'\n' || b == b'\r') {
+        env_path::mark_user_committed_command();
+    }
     Ok(())
 }
 

@@ -193,6 +193,9 @@ export const listClaudeSkills = () =>
 export const checkClaude = () =>
   invoke<string>('check_claude')
 
+export const reloadEnvPath = () =>
+  invoke<void>('reload_env_path')
+
 export const openInFinder = (path: string) =>
   invoke<void>('open_in_finder', { path })
 

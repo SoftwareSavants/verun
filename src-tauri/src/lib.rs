@@ -1,4 +1,5 @@
 mod db;
+mod env_path;
 mod git_ops;
 mod github;
 mod ipc;
@@ -45,26 +46,12 @@ pub fn run() {
         .manage(lsp::new_lsp_map())
         .manage(WindowTaskMap::new())
         .setup(|app| {
-            // Fix PATH for bundled .app / AppImage — the app inherits a minimal
-            // system PATH that doesn't include Homebrew, nvm, etc.
-            // -lic (login + interactive + command) so .zshrc is sourced — that's
-            // where nvm lives, and a plain login shell (-lc) would only source
-            // .zprofile/.profile and miss the nvm-set PATH entirely. Spawned
-            // children (claude, gh, lsp) inherit this PATH via the process env.
-            #[cfg(not(target_os = "windows"))]
-            if let Ok(shell) = std::env::var("SHELL").or_else(|_| Ok::<_, std::env::VarError>("/bin/sh".to_string())) {
-                if let Ok(output) = std::process::Command::new(&shell)
-                    .args(["-lic", "echo $PATH"])
-                    .output()
-                {
-                    if output.status.success() {
-                        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        if !path.is_empty() {
-                            std::env::set_var("PATH", &path);
-                        }
-                    }
-                }
-            }
+            // Capture the user's full PATH from their interactive shell so
+            // children (claude, lsp, git, gh, …) inherit nvm/homebrew/etc.
+            // Then start the background watcher that re-captures whenever
+            // the integrated terminal looks idle after a user command.
+            env_path::reload_now();
+            env_path::start_idle_watcher();
 
             // Menu setup
             #[cfg(target_os = "macos")]
@@ -290,6 +277,7 @@ pub fn run() {
             // Utility
             ipc::list_claude_skills,
             ipc::check_claude,
+            ipc::reload_env_path,
             ipc::list_worktree_files,
             ipc::check_gitignored,
             ipc::read_text_file,
