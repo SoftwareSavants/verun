@@ -12,8 +12,32 @@ const [updateAvailable, setUpdateAvailable] = createSignal<UpdateInfo | null>(nu
 const [updateProgress, setUpdateProgress] = createSignal<number | null>(null)
 const [updateReady, setUpdateReady] = createSignal(false)
 const [updateError, setUpdateError] = createSignal<string | null>(null)
+const [updateChecking, setUpdateChecking] = createSignal(false)
+const [updateUpToDate, setUpdateUpToDate] = createSignal(false)
 
-export { updateAvailable, updateProgress, updateReady, updateError }
+export {
+  updateAvailable,
+  updateProgress,
+  updateReady,
+  updateError,
+  updateChecking,
+  updateUpToDate,
+}
+
+let upToDateTimer: number | null = null
+let errorTimer: number | null = null
+
+function flashUpToDate() {
+  setUpdateUpToDate(true)
+  if (upToDateTimer !== null) clearTimeout(upToDateTimer)
+  upToDateTimer = setTimeout(() => setUpdateUpToDate(false), 4000) as unknown as number
+}
+
+function flashError(message: string) {
+  setUpdateError(message)
+  if (errorTimer !== null) clearTimeout(errorTimer)
+  errorTimer = setTimeout(() => setUpdateError(null), 6000) as unknown as number
+}
 
 let currentUpdate: Update | null = null
 
@@ -28,8 +52,11 @@ export function initUpdateListener() {
 }
 
 export async function checkForUpdate() {
+  if (updateChecking()) return
   try {
     setUpdateError(null)
+    setUpdateUpToDate(false)
+    setUpdateChecking(true)
     const update = await check()
     if (update) {
       currentUpdate = update
@@ -37,9 +64,13 @@ export async function checkForUpdate() {
         version: update.version,
         body: update.body ?? '',
       })
+    } else {
+      flashUpToDate()
     }
   } catch (e) {
-    setUpdateError(String(e))
+    flashError(String(e))
+  } finally {
+    setUpdateChecking(false)
   }
 }
 
@@ -71,7 +102,7 @@ export async function downloadAndInstall() {
       }
     })
   } catch (e) {
-    setUpdateError(String(e))
+    flashError(String(e))
     setUpdateProgress(null)
   }
 }
@@ -85,4 +116,5 @@ export function dismissUpdate() {
   setUpdateProgress(null)
   setUpdateReady(false)
   setUpdateError(null)
+  setUpdateUpToDate(false)
 }

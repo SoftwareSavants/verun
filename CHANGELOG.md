@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Update banner now reflects checking / up-to-date / error states so "Check for Updates…" gives visible feedback instead of silently doing nothing when already on the latest version
 - User message image attachments now render as small thumbnails above the chat bubble instead of inside it
 - File editor background now matches the session chat background (`--surface-0`), and the surface palette is exposed as CSS variables so a future light theme can swap them at runtime without rebuilding
 - Right pane (Changes/Files) background now matches the left sidebar (`--surface-1`) instead of blending into the editor
