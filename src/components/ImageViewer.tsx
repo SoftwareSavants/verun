@@ -1,4 +1,5 @@
 import { Component, Show, createEffect, onCleanup } from 'solid-js'
+import { Portal } from 'solid-js/web'
 import { Copy, Download, X } from 'lucide-solid'
 import { save } from '@tauri-apps/plugin-dialog'
 import * as ipc from '../lib/ipc'
@@ -66,8 +67,9 @@ export const ImageViewer: Component<Props> = (props) => {
 
   return (
     <Show when={props.open}>
+      <Portal>
       <div
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/85"
+        class="fixed inset-0 z-[1000] flex items-center justify-center bg-black/85"
         onClick={(e) => { if (e.target === e.currentTarget) props.onClose() }}
       >
         <div class="absolute top-3 right-3 flex items-center gap-1 bg-surface-2/90 backdrop-blur border border-border rounded-lg px-1 py-1 shadow-lg">
@@ -101,6 +103,7 @@ export const ImageViewer: Component<Props> = (props) => {
           onClick={(e) => e.stopPropagation()}
         />
       </div>
+      </Portal>
     </Show>
   )
 }
