@@ -26,6 +26,7 @@ import { yaml } from '@codemirror/lang-yaml'
 import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
 import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal, pendingGoToLine, consumeGoToLine, onTabClose, onTaskCleanup } from '../store/files'
+import { reloadNonce, checkBeforeSave } from '../store/fileSync'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 import { registerDismissable } from '../lib/dismissable'
 
@@ -559,6 +560,11 @@ export const CodeEditor: Component<Props> = (props) => {
 
   const save = async () => {
     try {
+      const task = await ipc.getTask(props.taskId)
+      if (task) {
+        const ok = await checkBeforeSave(props.taskId, props.relativePath, task.worktreePath, currentContent)
+        if (!ok) return // conflict dialog is now showing; resolution writes the file
+      }
       await ipc.writeTextFile(props.taskId, props.relativePath, currentContent)
       setOriginalContent(currentContent)
       setCachedOriginal(props.taskId, props.relativePath, currentContent)
@@ -684,7 +690,10 @@ export const CodeEditor: Component<Props> = (props) => {
   }
 
   // Load file content and (re)create the editor when the file changes
-  createEffect(on(() => props.relativePath, async (path) => {
+  // Also reruns when fileSync bumps the reload nonce after an external edit.
+  createEffect(on(
+    [() => props.relativePath, () => reloadNonce(props.taskId, props.relativePath)],
+    async ([path]) => {
     const cached = getCachedContent(props.taskId, path)
     const cachedOriginal = getCachedOriginal(props.taskId, path)
     if (cached !== undefined && cachedOriginal !== undefined) {

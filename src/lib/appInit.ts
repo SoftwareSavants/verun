@@ -4,6 +4,7 @@ import { loadProjects, initProjectListeners } from '../store/projects'
 import { initSessionListeners, syncSessionStatuses } from '../store/sessions'
 import { initTerminalListeners } from '../store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from '../store/git'
+import { initOpenFilesRefresh } from '../store/fileSync'
 import { initSetupListeners } from '../store/setup'
 import { loadTasks } from '../store/tasks'
 import { loadSessions } from '../store/sessions'
@@ -21,6 +22,7 @@ export async function initListeners() {
     initSetupListeners(),
   ])
   initWindowFocusRefresh()
+  initOpenFilesRefresh()
 
   // Cross-window sync: reload when tasks change in another window
   listen<{ taskId: string; projectId: string }>('task-created', (event) => {

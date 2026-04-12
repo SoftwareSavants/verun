@@ -191,6 +191,11 @@ export function openTabs(taskId: string | null): EditorTab[] {
   return taskOpenTabs()[taskId] ?? []
 }
 
+/** All open tabs across every task — used by the focus-based external-change check. */
+export function allOpenTabs(): Record<string, EditorTab[]> {
+  return taskOpenTabs()
+}
+
 export function activeTabPath(taskId: string | null): string | null {
   if (!taskId) return null
   return taskActiveTab()[taskId] ?? null

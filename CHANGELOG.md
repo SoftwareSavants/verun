@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Reload open file tabs from disk when Verun regains focus; toast for dirty tabs that diverged externally, and prompt to overwrite or discard at save time
 - Instant hover feedback on list rows and tiles — removed the 150ms fade
 - Escape key closes any open context menu, dropdown, or popover
 - Fix CMD+Number task selection order to match the sidebar when multiple projects are open (iterate projects then tasks within each, instead of flat insertion order)

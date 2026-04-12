@@ -73,13 +73,13 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Persist undo/redo actions in files
 - [X] Show path on the top of open file
 - [ ] Type overlay showing on top of error, merge and restyle both overlays and editor errors
-- [ ] Persists current message in task
+- [X] Persist current message in task
 - [X] Find in session
 - [X] @mentioned files ship in input and sent messages
 - [X] Media viewer & markdown preview (WYSIWYG)
 - [ ] Show file errors in warnings in the scrollbar
-- [ ] Reload open(ed) files cach on app lifecycle change
-- [-] Speed up the hover over files/list tiles everywhere
+- [X] Reload open(ed) files cach on app lifecycle change
+- [X] Speed up the hover over files/list tiles everywhere
 - [X] esc to close all context menus
 - [X] CMD+Number not same order as ui
 

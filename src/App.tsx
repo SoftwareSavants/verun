@@ -5,6 +5,7 @@ import { Layout } from './components/Layout'
 import { TaskWindowShell } from './components/TaskWindowShell'
 import { SelectionMenu } from './components/SelectionMenu'
 import { ConfirmDialog } from './components/ConfirmDialog'
+import { FileConflictDialog } from './components/FileConflictDialog'
 import { ToastContainer } from './components/ToastContainer'
 import { initTheme } from './lib/theme'
 import { projects } from './store/projects'
@@ -72,6 +73,7 @@ const MainApp: Component = () => {
         onConfirm={onNotificationDialogConfirm}
         onCancel={onNotificationDialogCancel}
       />
+      <FileConflictDialog />
     </>
   )
 }

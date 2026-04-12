@@ -156,18 +156,48 @@ export function setDefaultHideWhitespaceAndPersist(v: boolean) {
   localStorage.setItem('verun:defaultHideWhitespace', String(v))
 }
 
+export interface ToastAction {
+  label: string
+  variant?: 'primary' | 'danger' | 'ghost'
+  onClick: () => void | Promise<void>
+}
+
 export interface Toast {
   id: string
   message: string
   type: 'info' | 'error' | 'success'
+  persistent?: boolean
+  actions?: ToastAction[]
+}
+
+export interface AddToastOptions {
+  id?: string
+  persistent?: boolean
+  actions?: ToastAction[]
 }
 
 export const [toasts, setToasts] = createSignal<Toast[]>([])
 
-export function addToast(message: string, type: Toast['type'] = 'info') {
-  const id = crypto.randomUUID()
-  setToasts(prev => [...prev, { id, message, type }])
-  setTimeout(() => dismissToast(id), 5000)
+export function addToast(
+  message: string,
+  type: Toast['type'] = 'info',
+  opts: AddToastOptions = {},
+): string {
+  const id = opts.id ?? crypto.randomUUID()
+  const toast: Toast = { id, message, type, persistent: opts.persistent, actions: opts.actions }
+  setToasts(prev => {
+    const existing = prev.findIndex(t => t.id === id)
+    if (existing >= 0) {
+      const next = prev.slice()
+      next[existing] = toast
+      return next
+    }
+    return [...prev, toast]
+  })
+  if (!opts.persistent) {
+    setTimeout(() => dismissToast(id), 5000)
+  }
+  return id
 }
 
 export function dismissToast(id: string) {
