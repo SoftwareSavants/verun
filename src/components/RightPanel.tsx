@@ -11,8 +11,6 @@ import { hasOverlayTitlebar } from '../lib/platform'
 
 interface Props {
   taskId: string
-  sessionId: string | null
-  isRunning?: boolean
 }
 
 const TABS = [
@@ -54,11 +52,7 @@ export const RightPanel: Component<Props> = (props) => {
       {/* Content */}
       <div class="flex-1 overflow-hidden">
         <Show when={rightPanelTab() === 'changes'}>
-          <CodeChanges
-            taskId={props.taskId}
-            sessionId={props.sessionId}
-            isRunning={props.isRunning}
-          />
+          <CodeChanges taskId={props.taskId} />
         </Show>
         <Show when={rightPanelTab() === 'files'}>
           <FilesPanel taskId={props.taskId} />

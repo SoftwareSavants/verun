@@ -4,6 +4,13 @@
 
 - User message image attachments now render as small thumbnails above the chat bubble instead of inside it
 - File editor background now matches the session chat background (`--surface-0`), and the surface palette is exposed as CSS variables so a future light theme can swap them at runtime without rebuilding
+- Right pane (Changes/Files) background now matches the left sidebar (`--surface-1`) instead of blending into the editor
+- Task top bar redesigned: smaller title, editor button collapsed to an icon-only control with a picker caret, git actions promoted from inside the Changes pane so they're always reachable, and the terminal toggle now uses an actual terminal icon with an active-state tint
+- Top-bar controls share a `toolbar-btn` / `toolbar-chrome` UnoCSS shortcut and use a 1px `white/8` ring instead of borders, so future controls plug into the same chrome
+- Tab bar redesigned: pill-shaped session/file tabs replaced with flat slabs that share a baseline with the editor panel, plus button collapsed to an icon and pinned to the start of the row, "+ New" label removed, scrollbar hidden, and the active tab gets a rounded `surface-0` body framed by an inset `white/8` outline that breaks into the editor panel below
+- Editor/chat panel below the tab bar now has its own rounded `surface-0` chrome with `white/8` borders on three sides, framing the active tab as a continuous "tab pane"
+- Session tabs render the official Claude mark from simple-icons (`#D97757`); unread non-running sessions get a slow accent pulse instead of a dot
+- Breadcrumb bar in the file viewer no longer paints its own grey background — it now sits on the editor's `surface-0`
 
 ## 0.4.3 — 2026-04-12
 

@@ -1,5 +1,5 @@
 import { defineConfig } from 'unocss'
-import presetWind from '@unocss/preset-wind'
+import presetWind from '@unocss/preset-wind3'
 import presetIcons from '@unocss/preset-icons'
 
 export default defineConfig({
@@ -51,6 +51,8 @@ export default defineConfig({
     'animate-spin', 'border-l-2',
   ],
   shortcuts: [
+    ['toolbar-chrome', 'h-6 rounded-md ring-1 ring-white/8'],
+    ['toolbar-btn', 'toolbar-chrome flex items-center text-[11px] text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-30 disabled:pointer-events-none'],
     ['btn', 'px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer'],
     ['btn-primary', 'btn bg-accent text-white hover:bg-accent-hover active:scale-98 disabled:opacity-40 disabled:cursor-not-allowed'],
     ['btn-ghost', 'btn text-text-secondary hover:text-text-primary hover:bg-surface-3'],
@@ -68,6 +70,39 @@ export default defineConfig({
           --surface-2: #17171c;
           --surface-3: #1e1e24;
           --surface-4: #26262e;
+        }
+
+        /* Active tab frame — inset box-shadow so it doesn't shift layout and doesn't
+           get clipped by the tab bar's overflow-x-auto (which implicitly clips overflow-y) */
+        .tab-active-frame {
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.08),
+            inset 1px 0 0 rgba(255, 255, 255, 0.08),
+            inset -1px 0 0 rgba(255, 255, 255, 0.08);
+        }
+
+        /* Subtle unread-session pulse */
+        @keyframes tabUnreadPulse {
+          0%, 100% { background-color: rgba(0, 0, 0, 0.30); }
+          50%      { background-color: rgba(45, 110, 79, 0.12); }
+        }
+        .tab-unread-pulse {
+          animation: tabUnreadPulse 3s ease-in-out infinite;
+        }
+
+        /* Hide scrollbar but keep scrolling */
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { scrollbar-width: none; }
+
+        /* Tab-bar background — surface-1 everywhere except the bottom 1px, which is
+           transparent so the editor panel's border-t can show through and the active
+           tab (which fills its full h-8 with surface-0) covers it in its own column */
+        .tab-bar-bg {
+          background: linear-gradient(
+            to bottom,
+            var(--surface-1) calc(100% - 1px),
+            transparent calc(100% - 1px)
+          );
         }
 
         /* Thin scrollbars */

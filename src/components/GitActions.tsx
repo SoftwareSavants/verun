@@ -205,49 +205,55 @@ export const GitActions: Component<Props> = (props) => {
   }
 
   return (
-    <div class="relative flex items-center gap-2" ref={containerRef}>
-        {/* Status badges — always visible */}
-        <div class="flex items-center gap-1.5 flex-1 min-w-0 justify-end">
-          <Show when={pr()}>
-            <button
-              class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-surface-3 transition-colors"
-              onClick={() => openUrl(pr()!.url)}
-              title={`PR #${pr()!.number}: ${pr()!.title}`}
-            >
-              <GitPullRequest size={11} class={
-                pr()!.state === 'MERGED' ? 'text-purple-400'
-                  : pr()!.state === 'CLOSED' ? 'text-red-400'
-                  : pr()!.isDraft ? 'text-text-dim'
-                  : 'text-emerald-400'
-              } />
-              <span class="text-text-dim">#{pr()!.number}</span>
-            </button>
-          </Show>
+    <div class="relative flex items-center gap-1" ref={containerRef}>
+        <Show when={pr() || ciSummary()}>
+          {/* Status badges */}
+          <div class="flex items-center gap-1.5 shrink-0">
+            <Show when={pr()}>
+              <button
+                class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-surface-3 transition-colors"
+                onClick={() => openUrl(pr()!.url)}
+                title={`PR #${pr()!.number}: ${pr()!.title}`}
+              >
+                <GitPullRequest size={11} class={
+                  pr()!.state === 'MERGED' ? 'text-purple-400'
+                    : pr()!.state === 'CLOSED' ? 'text-red-400'
+                    : pr()!.isDraft ? 'text-text-dim'
+                    : 'text-emerald-400'
+                } />
+                <span class="text-text-dim">#{pr()!.number}</span>
+              </button>
+            </Show>
 
-          <Show when={ciSummary()}>
-            {(summary) => {
-              const Icon = summary().icon
-              return (
-                <span class={`flex items-center gap-0.5 text-[10px] ${summary().color}`} title={summary().label}>
-                  <Icon size={11} />
-                  <span>{summary().label}</span>
-                </span>
-              )
-            }}
-          </Show>
-        </div>
+            <Show when={ciSummary()}>
+              {(summary) => {
+                const Icon = summary().icon
+                return (
+                  <span class={`flex items-center gap-0.5 text-[10px] ${summary().color}`} title={summary().label}>
+                    <Icon size={11} />
+                    <span>{summary().label}</span>
+                  </span>
+                )
+              }}
+            </Show>
+          </div>
+        </Show>
 
       <Show when={hasAnything()}>
 
         {/* Split button */}
-        <div class="flex items-center shrink-0">
+        <div
+          class={`toolbar-chrome flex items-stretch shrink-0 overflow-hidden transition-colors ${
+            confirming() === primaryAction().label
+              ? 'ring-amber-500/60 text-amber-300'
+              : 'text-text-muted hover:text-text-secondary'
+          }`}
+        >
           <button
-            class={`flex items-center gap-1.5 text-[11px] py-1 pr-2 ${
-              secondaryActions().length > 0 ? 'rounded-r-none' : ''
-            } ${
+            class={`flex items-center gap-1 px-2 text-[11px] transition-colors disabled:opacity-40 disabled:pointer-events-none ${
               confirming() === primaryAction().label
-                ? 'btn-primary bg-amber-600 hover:bg-amber-500'
-                : 'btn-primary'
+                ? 'hover:bg-amber-500/10'
+                : 'hover:bg-surface-2'
             }`}
             onClick={() => runAction(primaryAction())}
             disabled={props.isRunning || actionLoading()}
@@ -262,8 +268,11 @@ export const GitActions: Component<Props> = (props) => {
             </span>
           </button>
           <Show when={secondaryActions().length > 0}>
+            <span class={`w-px self-stretch ${confirming() === primaryAction().label ? 'bg-amber-500/40' : 'bg-white/8'}`} />
             <button
-              class="btn-primary rounded-l-none border-l border-white/15 px-1.5 py-1"
+              class={`flex items-center px-1.5 transition-colors disabled:opacity-40 disabled:pointer-events-none ${
+                confirming() === primaryAction().label ? 'hover:bg-amber-500/10' : 'hover:bg-surface-2'
+              }`}
               onClick={() => { setConfirming(null); setOpen(!open()) }}
               disabled={props.isRunning || actionLoading()}
             >
@@ -275,7 +284,7 @@ export const GitActions: Component<Props> = (props) => {
 
       {/* Dropdown */}
       <Show when={open()}>
-        <div class="absolute right-0 top-full mt-1 z-50 w-52 bg-surface-2 border border-border-active rounded-lg shadow-xl py-1 animate-in">
+        <div class="absolute right-0 top-full mt-1 z-50 w-52 bg-surface-2 border border-slate-700 rounded-lg shadow-xl py-1 animate-in">
           <For each={secondaryActions()}>
             {(action) => {
               const Icon = action.icon

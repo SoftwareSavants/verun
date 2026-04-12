@@ -4,13 +4,10 @@ import { defaultWrapLines, defaultHideWhitespace } from '../store/ui'
 import { taskGit, refreshTaskGit } from '../store/git'
 import * as ipc from '../lib/ipc'
 import { highlightLine, langFromPath, type HighlightToken } from '../lib/highlighter'
-import { GitActions } from './GitActions'
 import type { GitStatus, FileDiff, DiffLine } from '../types'
 
 interface Props {
   taskId: string
-  sessionId: string | null
-  isRunning?: boolean
 }
 
 const STATUS_ICONS: Record<string, Component<{ size: number }>> = {
@@ -295,11 +292,6 @@ export const CodeChanges: Component<Props> = (props) => {
           </Show>
         </div>
 
-        <GitActions
-          taskId={props.taskId}
-          sessionId={props.sessionId}
-          isRunning={props.isRunning}
-        />
       </div>
 
       {/* Formatting toolbar */}

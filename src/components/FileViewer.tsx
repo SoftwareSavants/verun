@@ -21,7 +21,7 @@ export const FileViewer: Component<Props> = (props) => {
   return (
     <Switch fallback={
       <div class="flex flex-col h-full">
-        <div class="flex items-center px-3 py-1 bg-[#1e1e1e] border-b border-border-subtle shrink-0">
+        <div class="flex items-center px-3 py-1 shrink-0">
           <BreadcrumbBar taskId={props.taskId} currentPath={props.relativePath} />
         </div>
         <div class="flex-1 overflow-hidden">
@@ -56,7 +56,7 @@ const ViewerToolbar: Component<{
   icon?: Component<{ size: number; class?: string }>
   children?: any
 }> = (props) => (
-  <div class="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-surface-1 shrink-0">
+  <div class="flex items-center gap-2 px-3 py-1.5 shrink-0">
     <Show when={props.icon}>
       {(() => { const I = props.icon!; return <I size={14} class="text-text-dim shrink-0" /> })()}
     </Show>

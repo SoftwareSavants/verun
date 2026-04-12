@@ -17,7 +17,8 @@ import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/files'
-import { Square, Plus, X, PanelRightClose, PanelRightOpen, PanelBottomClose, PanelBottomOpen, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare } from 'lucide-solid'
+import { Square, Plus, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare } from 'lucide-solid'
+import { GitActions } from './GitActions'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
 import { fileHasErrors, fileHasWarnings } from '../store/problems'
@@ -25,6 +26,7 @@ import { getLspClient } from '../lib/lsp'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
 import vscodeIcon from '../assets/icons/vscode.svg?raw'
+import claudeIcon from '../assets/icons/claude.svg?raw'
 import cursorIcon from '../assets/icons/cursor.svg?raw'
 import zedIcon from '../assets/icons/zed.svg?raw'
 import finderIcon from '../assets/icons/finder.svg?raw'
@@ -104,21 +106,21 @@ function OpenInButton(props: { path: string }) {
   })
 
   return (
-    <div ref={containerRef} class="relative flex items-stretch h-6 border-1 border-solid border-border-active rounded-md">
+    <div ref={containerRef} class="toolbar-chrome relative flex items-stretch text-text-muted hover:text-text-secondary transition-colors">
       <button
-        class="flex items-center gap-1.5 px-2.5 text-xs text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors rounded-l-md"
+        class="flex items-center px-1.5 hover:bg-surface-2 transition-colors rounded-l-md"
         onClick={() => handleOpen(defaultEditor().app)}
         title={`Open in ${defaultEditor().label}`}
       >
-        <SvgIcon svg={defaultEditor().svg} size={13} />
-        {defaultEditor().label}
+        <SvgIcon svg={defaultEditor().svg} size={14} />
       </button>
-      <span class="w-px self-stretch bg-border-active" />
+      <span class="w-px self-stretch bg-white/8" />
       <button
-        class="flex items-center px-2 text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors rounded-r-md"
+        class="flex items-center px-1 hover:bg-surface-2 transition-colors rounded-r-md"
         onClick={() => setOpen(!open())}
+        title="Choose editor"
       >
-        <ChevronDown size={11} />
+        <ChevronDown size={10} />
       </button>
       <Show when={open()}>
         <div class="absolute right-0 top-full mt-1 bg-surface-1 border border-border-subtle rounded-lg shadow-lg py-1 z-50 min-w-[120px]">
@@ -289,7 +291,7 @@ export const TaskPanel: Component = () => {
                         }
                       }}
                     >
-                      Add Project <kbd class="ml-1.5 px-1 py-0.5 rounded bg-white/10 text-[10px] font-mono">{'\u2318'}O</kbd>
+                      Add Project <kbd class="ml-1.5 px-1 py-0.5 rounded bg-white/8 text-[10px] font-mono">{'\u2318'}O</kbd>
                     </button>
                   </>
                 }
@@ -310,10 +312,10 @@ export const TaskPanel: Component = () => {
           return (
             <>
               {/* Chat column */}
-              <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
+              <div class="flex flex-col flex-1 min-w-0 overflow-hidden bg-surface-1">
                 {/* Header — drag region for titlebar */}
-                <div class={`px-4 ${hasOverlayTitlebar ? 'pt-10' : 'pt-2'} pb-2 flex items-center justify-between bg-surface-0 drag-region`} data-tauri-drag-region>
-                  <h2 class="text-sm font-semibold text-text-primary truncate min-w-0 no-drag">
+                <div class={`px-4 ${hasOverlayTitlebar ? 'pt-10' : 'pt-2'} pb-2 flex items-center justify-between bg-surface-1 drag-region`} data-tauri-drag-region>
+                  <h2 class="text-[13px] font-medium text-text-primary truncate min-w-0 no-drag">
                     {t().name || 'New task'}
                   </h2>
                   <Show when={!creating() && !error()}>
@@ -355,7 +357,7 @@ export const TaskPanel: Component = () => {
                               when={isRunning()}
                               fallback={
                                 <button
-                                  class="h-6 flex items-center gap-1 px-2 rounded-md text-[11px] text-text-dim border-1 border-solid border-border-active hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                                  class="toolbar-btn gap-1 px-2"
                                   onClick={handleStart}
                                   disabled={setupRunning()}
                                   title={setupRunning() ? 'Waiting for setup hook…' : hasStartCommand() ? `Run: ${project()!.startCommand} (F5)` : 'Set up a start command'}
@@ -365,7 +367,7 @@ export const TaskPanel: Component = () => {
                                 </button>
                               }
                             >
-                              <div class="h-6 flex items-stretch rounded-md border-1 border-solid border-accent/30 overflow-hidden">
+                              <div class="toolbar-chrome flex items-stretch ring-accent/30 overflow-hidden">
                                 <button
                                   class="flex items-center gap-1 px-2 text-[11px] text-accent hover:bg-accent/10 transition-colors"
                                   onClick={handleStop}
@@ -403,14 +405,24 @@ export const TaskPanel: Component = () => {
                       })()}
 
                       <button
-                        class="h-6 w-6 flex items-center justify-center rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                        class={clsx(
+                          'toolbar-btn w-6 justify-center',
+                          showTerminal() && 'text-text-secondary bg-surface-2'
+                        )}
                         onClick={toggleTerminal}
                         title={showTerminal() ? 'Hide terminal' : 'Show terminal'}
                       >
-                        {showTerminal() ? <PanelBottomClose size={14} /> : <PanelBottomOpen size={14} />}
+                        <Terminal size={13} />
                       </button>
+                      <span class="w-px h-4 bg-white/8 mx-1" />
+                      <GitActions
+                        taskId={t().id}
+                        sessionId={selectedSessionId()}
+                        isRunning={currentSession()?.status === 'running'}
+                      />
+                      <span class="w-px h-4 bg-white/8 mx-1" />
                       <button
-                        class="h-6 w-6 flex items-center justify-center rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                        class="toolbar-btn w-6 justify-center"
                         onClick={toggleChanges}
                         title={showChanges() ? 'Hide changes panel' : 'Show changes panel'}
                       >
@@ -477,168 +489,170 @@ export const TaskPanel: Component = () => {
                   </Show>
 
                   {/* Unified tab bar — sessions + open files */}
-                  <div ref={tabBarRef} class="flex items-center px-3 py-1.5 gap-1 overflow-x-auto">
-                    {/* Session tabs */}
-                    <For each={taskSessions()}>
-                      {(session) => (
-                        <div
-                          class={clsx(
-                            'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-none whitespace-nowrap cursor-pointer',
-                            mainView(t().id) === 'session' && selectedSessionId() === session.id
-                              ? 'bg-accent-muted text-accent-hover border border-accent/20'
-                              : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
-                          )}
-                          onClick={() => { setSelectedSessionId(session.id); setMainView(t().id, 'session') }}
-                        >
-                          <Show when={isSessionUnread(session.id)}>
-                            <div class="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
-                          </Show>
-                          <span>{session.name || 'New session'}</span>
-                          <SessionTime session={session} />
-                          <Show when={sessionCosts[session.id] > 0}>
-                            <span class="text-text-dim">${sessionCosts[session.id] < 1 ? sessionCosts[session.id].toFixed(3) : sessionCosts[session.id].toFixed(2)}</span>
-                          </Show>
-
-                          <Show when={session.status === 'running'}>
-                            <button
-                              class="ml-0.5 text-status-error hover:text-red-300 transition-colors"
-                              onClick={(e) => { e.stopPropagation(); abortMessage(session.id) }}
-                              title="Stop"
-                            >
-                              <Square size={8} />
-                            </button>
-                          </Show>
-
-                          <Show when={session.status !== 'running'}>
-                            <button
-                              class="ml-0.5 opacity-0 group-hover:opacity-100 text-text-dim hover:text-text-muted transition-all"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                const sessions = taskSessions()
-                                const idx = sessions.findIndex(s => s.id === session.id)
-                                if (selectedSessionId() === session.id) {
-                                  const next = sessions[idx + 1] || sessions[idx - 1]
-                                  setSelectedSessionId(next?.id ?? null)
-                                }
-                                closeSession(session.id)
-                              }}
-                              title="Close session"
-                            >
-                              <X size={10} />
-                            </button>
-                          </Show>
-                        </div>
-                      )}
-                    </For>
-
+                  <div ref={tabBarRef} class="relative z-10 flex items-stretch overflow-x-auto scrollbar-hide tab-bar-bg">
                     {/* New session button */}
                     <button
-                      class="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-40"
+                      class="h-8 w-8 shrink-0 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-white/3 transition-colors disabled:opacity-40"
                       onClick={handleNewSession}
                       disabled={creatingSession()}
                       title="New Session"
                     >
-                      <Plus size={12} class={creatingSession() ? 'animate-spin' : ''} />
-                      <span>{creatingSession() ? '...' : 'New'}</span>
+                      <Plus size={13} class={creatingSession() ? 'animate-spin' : ''} />
                     </button>
+                    {/* Session tabs */}
+                    <For each={taskSessions()}>
+                      {(session) => {
+                        const isActive = () => mainView(t().id) === 'session' && selectedSessionId() === session.id
+                        const hasUnread = () => isSessionUnread(session.id) && session.status !== 'running'
+                        return (
+                          <div
+                            class={clsx(
+                              'group h-8 flex items-center gap-1.5 px-3 text-[11px] rounded-t-md whitespace-nowrap cursor-pointer transition-colors',
+                              isActive()
+                                ? 'relative z-10 bg-surface-0 text-text-primary tab-active-frame'
+                                : hasUnread()
+                                  ? 'text-accent hover:text-accent-hover tab-unread-pulse'
+                                  : 'text-text-muted hover:text-text-secondary hover:bg-white/3'
+                            )}
+                            onClick={() => { setSelectedSessionId(session.id); setMainView(t().id, 'session') }}
+                          >
+                            <SvgIcon svg={claudeIcon} size={10} />
+                            <span>{session.name || 'New session'}</span>
+                            <SessionTime session={session} />
+                            <Show when={sessionCosts[session.id] > 0}>
+                              <span class="text-text-dim">${sessionCosts[session.id] < 1 ? sessionCosts[session.id].toFixed(3) : sessionCosts[session.id].toFixed(2)}</span>
+                            </Show>
 
-                    {/* Separator between sessions and files */}
-                    <Show when={openTabs(t().id).length > 0}>
-                      <span class="w-px h-4 bg-border-subtle mx-0.5 shrink-0" />
-                    </Show>
+                            <Show when={session.status === 'running'}>
+                              <button
+                                class="ml-0.5 text-status-error hover:text-red-300 transition-colors"
+                                onClick={(e) => { e.stopPropagation(); abortMessage(session.id) }}
+                                title="Stop"
+                              >
+                                <Square size={8} />
+                              </button>
+                            </Show>
+
+                            <Show when={session.status !== 'running'}>
+                              <button
+                                class="ml-0.5 opacity-0 group-hover:opacity-100 text-text-dim hover:text-text-muted transition-all"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  const sessions = taskSessions()
+                                  const idx = sessions.findIndex(s => s.id === session.id)
+                                  if (selectedSessionId() === session.id) {
+                                    const next = sessions[idx + 1] || sessions[idx - 1]
+                                    setSelectedSessionId(next?.id ?? null)
+                                  }
+                                  closeSession(session.id)
+                                }}
+                                title="Close session"
+                              >
+                                <X size={10} />
+                              </button>
+                            </Show>
+                          </div>
+                        )
+                      }}
+                    </For>
 
                     {/* File tabs */}
                     <For each={openTabs(t().id)}>
-                      {(tab) => (
-                        <div
-                          data-tab-path={tab.relativePath}
-                          class={clsx(
-                            'group flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] transition-none whitespace-nowrap cursor-pointer',
-                            mainView(t().id) === tab.relativePath
-                              ? 'bg-surface-3 text-text-secondary border border-border-active'
-                              : 'text-text-muted hover:text-text-secondary hover:bg-surface-2 border border-transparent'
-                          )}
-                          onClick={() => { if (mainView(t().id) === tab.relativePath) return; setActiveTab(t().id, tab.relativePath); revealFileInTree(t().id, tab.relativePath) }}
-                          onDblClick={() => pinTab(t().id, tab.relativePath)}
-                          onContextMenu={(e) => {
-                            e.preventDefault()
-                            setTabMenu({ x: e.clientX, y: e.clientY, path: tab.relativePath, taskId: t().id })
-                          }}
-                        >
-                          {(() => { const I = getFileIcon(tab.name); return <I size={10} class="shrink-0" /> })()}
-                          <span class={clsx(
-                            'truncate max-w-28',
-                            tab.preview && 'italic',
-                            fileHasErrors(t().id, tab.relativePath) && 'text-status-error',
-                            !fileHasErrors(t().id, tab.relativePath) && fileHasWarnings(t().id, tab.relativePath) && 'text-yellow-500',
-                          )}>
-                            {tab.dirty ? '\u2022 ' : ''}{tab.name}
-                          </span>
-                          <button
+                      {(tab) => {
+                        const isActive = () => mainView(t().id) === tab.relativePath
+                        return (
+                          <div
+                            data-tab-path={tab.relativePath}
                             class={clsx(
-                              'ml-0.5 shrink-0 text-text-dim hover:text-text-muted transition-opacity',
-                              tab.dirty ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                              'group h-8 flex items-center gap-1.5 px-3 text-[11px] rounded-t-md whitespace-nowrap cursor-pointer transition-colors',
+                              isActive()
+                                ? 'relative z-10 bg-surface-0 text-text-primary tab-active-frame'
+                                : 'text-text-muted hover:text-text-secondary hover:bg-white/3'
                             )}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              requestCloseTab(t().id, tab.relativePath)
+                            onClick={() => { if (mainView(t().id) === tab.relativePath) return; setActiveTab(t().id, tab.relativePath); revealFileInTree(t().id, tab.relativePath) }}
+                            onDblClick={() => pinTab(t().id, tab.relativePath)}
+                            onContextMenu={(e) => {
+                              e.preventDefault()
+                              setTabMenu({ x: e.clientX, y: e.clientY, path: tab.relativePath, taskId: t().id })
                             }}
-                            title="Close"
                           >
-                            <X size={10} />
-                          </button>
-                        </div>
-                      )}
+                            {(() => { const I = getFileIcon(tab.name); return <I size={10} class="shrink-0" /> })()}
+                            <span class={clsx(
+                              'truncate max-w-28',
+                              tab.preview && 'italic',
+                              fileHasErrors(t().id, tab.relativePath) && 'text-status-error',
+                              !fileHasErrors(t().id, tab.relativePath) && fileHasWarnings(t().id, tab.relativePath) && 'text-yellow-500',
+                            )}>
+                              {tab.dirty ? '\u2022 ' : ''}{tab.name}
+                            </span>
+                            <button
+                              class={clsx(
+                                'ml-0.5 shrink-0 text-text-dim hover:text-text-muted transition-opacity',
+                                tab.dirty ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                              )}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                requestCloseTab(t().id, tab.relativePath)
+                              }}
+                              title="Close"
+                            >
+                              <X size={10} />
+                            </button>
+                          </div>
+                        )
+                      }}
                     </For>
                   </div>
 
-                  {/* Main content — chat or editor */}
-                  <Show
-                    when={mainView(t().id) !== 'session'}
-                    fallback={
-                      <>
-                        <div class="flex-1 overflow-hidden">
-                          <ChatView
-                            output={currentOutput()}
-                            sessionStatus={currentSession()?.status}
-                            sessionId={selectedSessionId()}
-                            taskId={t().id}
-                          />
-                        </div>
-                        <Show
-                          when={t().archived}
-                          fallback={
-                            <>
-                              <StepList
-                                sessionId={selectedSessionId()}
-                                isRunning={currentSession()?.status === 'running'}
-                              />
-                              <MessageInput
-                                sessionId={selectedSessionId()}
-                                isRunning={currentSession()?.status === 'running'}
-                              />
-                            </>
-                          }
-                        >
-                          <div class="px-4 py-3 border-t border-border-subtle bg-surface-1 flex items-center gap-3">
-                            <Archive size={16} class="shrink-0 text-text-dim" />
-                            <span class="flex-1 text-sm text-text-muted">This task is archived</span>
-                            <button
-                              class="px-3 py-1.5 text-xs font-medium rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors flex items-center gap-1.5"
-                              onClick={() => restoreTask(t().id)}
-                            >
-                              <RotateCcw size={12} />
-                              Restore
-                            </button>
+                  {/* Main content — chat or editor. Side borders extend the active tab's frame. */}
+                  <div class="relative -mt-px flex-1 flex flex-col min-h-0 overflow-hidden rounded-t-md bg-surface-0 border-t-1 border-t-solid border-t-white/8 border-l-1 border-l-solid border-l-white/8 border-r-1 border-r-solid border-r-white/8" style="isolation: isolate; clip-path: inset(0 round 4px 4px 0 0);">
+                    <Show
+                      when={mainView(t().id) !== 'session'}
+                      fallback={
+                        <>
+                          <div class="flex-1 overflow-hidden">
+                            <ChatView
+                              output={currentOutput()}
+                              sessionStatus={currentSession()?.status}
+                              sessionId={selectedSessionId()}
+                              taskId={t().id}
+                            />
                           </div>
-                        </Show>
-                      </>
-                    }
-                  >
-                    <div class="flex-1 overflow-hidden">
-                      <FileViewer taskId={t().id} relativePath={mainView(t().id)} />
-                    </div>
-                  </Show>
+                          <Show
+                            when={t().archived}
+                            fallback={
+                              <>
+                                <StepList
+                                  sessionId={selectedSessionId()}
+                                  isRunning={currentSession()?.status === 'running'}
+                                />
+                                <MessageInput
+                                  sessionId={selectedSessionId()}
+                                  isRunning={currentSession()?.status === 'running'}
+                                />
+                              </>
+                            }
+                          >
+                            <div class="px-4 py-3 border-t border-border-subtle bg-surface-1 flex items-center gap-3">
+                              <Archive size={16} class="shrink-0 text-text-dim" />
+                              <span class="flex-1 text-sm text-text-muted">This task is archived</span>
+                              <button
+                                class="px-3 py-1.5 text-xs font-medium rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors flex items-center gap-1.5"
+                                onClick={() => restoreTask(t().id)}
+                              >
+                                <RotateCcw size={12} />
+                                Restore
+                              </button>
+                            </div>
+                          </Show>
+                        </>
+                      }
+                    >
+                      <div class="flex-1 overflow-hidden">
+                        <FileViewer taskId={t().id} relativePath={mainView(t().id)} />
+                      </div>
+                    </Show>
+                  </div>
 
                   {/* Unsaved changes confirm */}
                   <ConfirmDialog
@@ -741,11 +755,7 @@ export const TaskPanel: Component = () => {
                   style={{ width: `${rightPanelWidth()}px` }}
                   class="shrink-0 overflow-hidden"
                 >
-                  <RightPanel
-                    taskId={t().id}
-                    sessionId={selectedSessionId()}
-                    isRunning={currentSession()?.status === 'running'}
-                  />
+                  <RightPanel taskId={t().id} />
                 </div>
               </Show>
             </>
