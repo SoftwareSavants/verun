@@ -29,6 +29,7 @@ import cursorIcon from '../assets/icons/cursor.svg?raw'
 import zedIcon from '../assets/icons/zed.svg?raw'
 import finderIcon from '../assets/icons/finder.svg?raw'
 import { fileManagerName, hasOverlayTitlebar } from '../lib/platform'
+import { registerDismissable } from '../lib/dismissable'
 
 function formatDuration(ms: number): string {
   const secs = Math.floor(ms / 1000)
@@ -205,10 +206,15 @@ export const TaskPanel: Component = () => {
     setTabMenu(null)
   }
   createEffect(() => {
-    if (tabMenu()) document.addEventListener('mousedown', closeTabMenu as EventListener, true)
-    else document.removeEventListener('mousedown', closeTabMenu as EventListener, true)
+    if (tabMenu()) {
+      document.addEventListener('mousedown', closeTabMenu as EventListener, true)
+      const unregister = registerDismissable(() => setTabMenu(null))
+      onCleanup(() => {
+        document.removeEventListener('mousedown', closeTabMenu as EventListener, true)
+        unregister()
+      })
+    }
   })
-  onCleanup(() => document.removeEventListener('mousedown', closeTabMenu as EventListener, true))
 
   const [creatingSession, setCreatingSession] = createSignal(false)
   const handleNewSession = async () => {

@@ -4,6 +4,7 @@
 
 ### Changes
 
+- Escape key closes any open context menu, dropdown, or popover
 - Fix CMD+Number task selection order to match the sidebar when multiple projects are open (iterate projects then tasks within each, instead of flat insertion order)
 - Draft message, attachments, mode switches (plan/thinking/fast), and last selected task now persist across app restarts
 - Switched bundled LSP from typescript-language-server to vtsls for project-wide diagnostics support

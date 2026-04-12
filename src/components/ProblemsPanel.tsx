@@ -4,6 +4,7 @@ import { problemsByFileForTask, problemCountForTask, isProblemsLoading } from '.
 import { openFilePinned, setMainView, setPendingGoToLine, revealFileInTree, mainView } from '../store/files'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
+import { registerDismissable } from '../lib/dismissable'
 import type { Problem, DiagnosticSeverity } from '../types'
 
 interface Props {
@@ -191,10 +192,15 @@ export const ProblemsPanel: Component<Props> = (props) => {
     setContextMenu(null)
   }
   createEffect(() => {
-    if (contextMenu()) document.addEventListener('mousedown', closeMenu, true)
-    else document.removeEventListener('mousedown', closeMenu, true)
+    if (contextMenu()) {
+      document.addEventListener('mousedown', closeMenu, true)
+      const unregister = registerDismissable(() => setContextMenu(null))
+      onCleanup(() => {
+        document.removeEventListener('mousedown', closeMenu, true)
+        unregister()
+      })
+    }
   })
-  onCleanup(() => document.removeEventListener('mousedown', closeMenu, true))
 
   const copyMessage = (p: Problem) => {
     navigator.clipboard.writeText(p.message)

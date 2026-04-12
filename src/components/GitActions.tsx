@@ -6,6 +6,7 @@ import { claudeSkills } from '../store/commands'
 import { sendMessage } from '../store/sessions'
 import { addToast } from '../store/ui'
 import { taskGit, refreshTaskGit, invalidateRemote } from '../store/git'
+import { registerDismissable } from '../lib/dismissable'
 
 interface GitAction {
   icon: Component<{ size: number }>
@@ -186,7 +187,11 @@ export const GitActions: Component<Props> = (props) => {
   createEffect(() => {
     if (open()) {
       document.addEventListener('mousedown', handleClickOutside)
-      onCleanup(() => document.removeEventListener('mousedown', handleClickOutside))
+      const unregister = registerDismissable(() => setOpen(false))
+      onCleanup(() => {
+        document.removeEventListener('mousedown', handleClickOutside)
+        unregister()
+      })
     }
   })
 

@@ -1,4 +1,5 @@
-import { Component, JSX, Show } from 'solid-js'
+import { Component, JSX, Show, createEffect, onCleanup } from 'solid-js'
+import { registerDismissable } from '../lib/dismissable'
 
 interface Props {
   open: boolean
@@ -9,6 +10,11 @@ interface Props {
 }
 
 export const Popover: Component<Props> = (props) => {
+  createEffect(() => {
+    if (!props.open) return
+    const unregister = registerDismissable(() => props.onClose())
+    onCleanup(unregister)
+  })
   return (
     <Show when={props.open}>
       <div

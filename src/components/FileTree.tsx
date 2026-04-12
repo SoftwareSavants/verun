@@ -9,6 +9,7 @@ import {
 } from '../store/files'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
+import { registerDismissable } from '../lib/dismissable'
 import type { FileEntry, FileTreeChangedEvent } from '../types'
 
 interface Props {
@@ -65,11 +66,13 @@ export const FileTree: Component<Props> = (props) => {
   createEffect(() => {
     if (contextMenu()) {
       document.addEventListener('mousedown', closeMenu, true)
-    } else {
-      document.removeEventListener('mousedown', closeMenu, true)
+      const unregister = registerDismissable(() => setContextMenu(null))
+      onCleanup(() => {
+        document.removeEventListener('mousedown', closeMenu, true)
+        unregister()
+      })
     }
   })
-  onCleanup(() => document.removeEventListener('mousedown', closeMenu, true))
 
   // Build flattened node list from expanded state
   const flatNodes = (): FlatNode[] => {

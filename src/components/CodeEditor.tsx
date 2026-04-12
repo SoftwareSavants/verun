@@ -27,6 +27,7 @@ import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
 import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal, pendingGoToLine, consumeGoToLine, onTabClose, onTaskCleanup } from '../store/files'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
+import { registerDismissable } from '../lib/dismissable'
 
 interface Props {
   taskId: string
@@ -837,11 +838,13 @@ export const CodeEditor: Component<Props> = (props) => {
   createEffect(() => {
     if (contextMenu()) {
       document.addEventListener('mousedown', handleClickOutside)
-    } else {
-      document.removeEventListener('mousedown', handleClickOutside)
+      const unregister = registerDismissable(() => setContextMenu(null))
+      onCleanup(() => {
+        document.removeEventListener('mousedown', handleClickOutside)
+        unregister()
+      })
     }
   })
-  onCleanup(() => document.removeEventListener('mousedown', handleClickOutside))
 
   // Listen for context menu event from CM dom handler
   onMount(() => {
