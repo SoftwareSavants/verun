@@ -1,7 +1,7 @@
 import { Component, createEffect, on, createSignal, Show, onCleanup, onMount } from 'solid-js'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, Decoration, type DecorationSet, type Tooltip } from '@codemirror/view'
 import { EditorState, StateField, StateEffect, RangeSet, type Extension } from '@codemirror/state'
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
+import { defaultKeymap, history, historyField, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit } from '@codemirror/language'
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search'
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete'
@@ -503,8 +503,12 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
   return exts
 }
 
-// ── Editor state cache — preserves cursor, selection, and undo/redo across tab switches ──
-const editorStateCache = new Map<string, EditorState>()
+// ── Editor state cache — preserves cursor, selection, and undo/redo across tab switches.
+// We cache a JSON snapshot (not the EditorState itself) so we can rebuild a fresh
+// state with live extensions on restore. Caching the EditorState directly leaks
+// stale references (e.g. the LSP plugin ties to a specific LSPClient instance).
+type CachedSnapshot = { doc: string; state: any /* serialized by toJSON */ }
+const editorStateCache = new Map<string, CachedSnapshot>()
 const scrollPositionCache = new Map<string, { top: number; left: number }>()
 
 function cacheKey(taskId: string, relativePath: string) {
@@ -589,9 +593,14 @@ export const CodeEditor: Component<Props> = (props) => {
 
   // ── Editor lifecycle ──────────────────────────────────────────────
   const createEditor = async (doc: string, path: string, worktreePath: string) => {
-    // Save outgoing editor state (cursor, selection, undo history, scroll)
+    // Save outgoing editor snapshot (selection + history) as JSON so we can
+    // rebuild with fresh extensions on restore — caching EditorState directly
+    // pins stale plugin references (notably the LSP plugin's LSPClient).
     if (editorView && currentFileKey) {
-      editorStateCache.set(currentFileKey, editorView.state)
+      editorStateCache.set(currentFileKey, {
+        doc: editorView.state.doc.toString(),
+        state: editorView.state.toJSON({ history: historyField }),
+      })
       scrollPositionCache.set(currentFileKey, {
         top: editorView.scrollDOM.scrollTop,
         left: editorView.scrollDOM.scrollLeft,
@@ -610,44 +619,55 @@ export const CodeEditor: Component<Props> = (props) => {
     const newKey = cacheKey(props.taskId, path)
     currentFileKey = newKey
 
-    // Try to restore cached EditorState (preserves cursor + undo/redo)
-    const cachedState = editorStateCache.get(newKey)
-    if (cachedState && cachedState.doc.toString() === doc) {
-      editorView = new EditorView({ state: cachedState, parent: editorParentRef })
+    // Always build fresh extensions so the LSP plugin is wired to the current
+    // live LSPClient, and the view/workspace references are fresh.
+    const extensions = buildExtensions(
+      path,
+      (content) => {
+        currentContent = content
+        setCachedContent(props.taskId, props.relativePath, content)
+        setTabDirty(props.taskId, props.relativePath, content !== originalContent())
+      },
+      save,
+    )
 
-      // Restore scroll position after DOM layout
-      const savedScroll = scrollPositionCache.get(newKey)
-      if (savedScroll) {
-        requestAnimationFrame(() => {
-          editorView?.scrollDOM.scrollTo(savedScroll.left, savedScroll.top)
-        })
+    // Add LSP plugin with correct languageId for JS/TS files.
+    if (isLspSupported(path)) {
+      try {
+        const client = await getLspClient(props.taskId, worktreePath)
+        const fileUri = `file://${worktreePath}/${path}`
+        const ext = path.split('.').pop()?.toLowerCase() || ''
+        const languageId = ext === 'tsx' ? 'typescriptreact'
+          : ext === 'jsx' ? 'javascriptreact'
+          : ['mjs', 'cjs', 'js'].includes(ext) ? 'javascript'
+          : 'typescript'
+        extensions.push(client.plugin(fileUri, languageId))
+      } catch (e) {
+        console.warn('LSP not available:', e)
+      }
+    }
+
+    // Restore selection + history from the cached snapshot if the doc still matches.
+    const cached = editorStateCache.get(newKey)
+    let state: EditorState
+    if (cached && cached.doc === doc) {
+      try {
+        state = EditorState.fromJSON(cached.state, { doc, extensions }, { history: historyField })
+      } catch {
+        state = EditorState.create({ doc, extensions })
       }
     } else {
-      // Fresh state — first open or after cache was cleared
-      const extensions = buildExtensions(
-        path,
-        (content) => {
-          currentContent = content
-          setCachedContent(props.taskId, props.relativePath, content)
-          setTabDirty(props.taskId, props.relativePath, content !== originalContent())
-        },
-        save,
-      )
+      state = EditorState.create({ doc, extensions })
+    }
 
-      // Add LSP plugin for JS/TS files
-      if (isLspSupported(path)) {
-        try {
-          const client = await getLspClient(props.taskId, worktreePath)
-          const fileUri = `file://${worktreePath}/${path}`
-          extensions.push(client.plugin(fileUri, 'typescript'))
-        } catch (e) {
-          console.warn('LSP not available:', e)
-          // Editor works fine without LSP
-        }
-      }
+    editorView = new EditorView({ state, parent: editorParentRef })
 
-      const state = EditorState.create({ doc, extensions })
-      editorView = new EditorView({ state, parent: editorParentRef })
+    // Restore scroll position after DOM layout
+    const savedScroll = scrollPositionCache.get(newKey)
+    if (savedScroll) {
+      requestAnimationFrame(() => {
+        editorView?.scrollDOM.scrollTo(savedScroll.left, savedScroll.top)
+      })
     }
 
     if (worktreePath) {
@@ -705,7 +725,10 @@ export const CodeEditor: Component<Props> = (props) => {
   // Cleanup — save state before destroying so it survives component remount
   onCleanup(() => {
     if (editorView && currentFileKey) {
-      editorStateCache.set(currentFileKey, editorView.state)
+      editorStateCache.set(currentFileKey, {
+        doc: editorView.state.doc.toString(),
+        state: editorView.state.toJSON({ history: historyField }),
+      })
       scrollPositionCache.set(currentFileKey, {
         top: editorView.scrollDOM.scrollTop,
         left: editorView.scrollDOM.scrollLeft,

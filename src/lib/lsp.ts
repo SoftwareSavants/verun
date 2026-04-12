@@ -115,9 +115,13 @@ class VerunWorkspace extends Workspace {
   }
 
   openFile(uri: string, languageId: string, view: EditorView) {
-    // If already open, just update the view reference
-    const existing = this.getFile(uri)
-    if (existing) return
+    // If already open with a different view (editor was recreated), replace
+    // the stale WorkspaceFile so the LSP plugin renders on the current view.
+    const existing = this.getFile(uri) as VerunWorkspaceFile | undefined
+    if (existing) {
+      if (existing.getView() === view) return
+      this.files = this.files.filter(f => f !== existing)
+    }
     markFileOpened(uri)
     const file = new VerunWorkspaceFile(uri, languageId, this.nextVersion(uri), view.state.doc, view)
     this.files.push(file)
