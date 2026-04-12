@@ -77,9 +77,8 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Find in session
 - [X] @mentioned files ship in input and sent messages
 - [X] Media viewer & markdown preview (WYSIWYG)
-- [ ] Show file errors in warnings in the scrollbar
-- [ ] Right-clicking selected code in the editor deselects it, making "Copy" from the context menu impossible without keyboard shortcut
-- [ ] "Copy Absolute Path" in the file tree context menu is broken
+- [X] Right-clicking selected code in the editor deselects it, making "Copy" from the context menu impossible without keyboard shortcut
+- [X] "Copy Absolute Path" in the file tree context menu is broken
 - [ ] "Hide whitespace changes" toggle in the Changes pane has no effect
 - [ ] Image attachments on past user messages disappear after restart — only the attachment names are persisted in `output_lines`, the bytes are dropped, so thumbnails go missing on rehydrate. Persist bytes in a per-session attachments dir and rehydrate on load.
 - [X] Reload open(ed) files cach on app lifecycle change
@@ -130,6 +129,8 @@ Important but not blocking daily use.
 - [ ] Scroll affordance when session tabs overflow
 - [ ] "Open in…" context menu submenu listing all configured editors instead of hardcoded "Open in VS Code"
 - [ ] "Reveal in Finder" should open the parent folder with the file highlighted, not open the file itself
+- [ ] Show file errors in warnings in the scrollbar
+- [ ] "Hide whitespace changes" toggle in the Changes pane has no effect
 
 ### Quality & Accessibility
 - [ ] Error recovery with guided messages (replace raw technical strings)
