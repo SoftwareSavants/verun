@@ -66,7 +66,7 @@ const verunHighlightStyle = HighlightStyle.define([
 // ── Editor chrome — backgrounds, gutters, cursors ─────────────────────
 const verunTheme = EditorView.theme({
   '&': {
-    backgroundColor: '#1e1e1e',
+    backgroundColor: 'var(--surface-0)',
     color: '#abb2bf',
     fontSize: '13px',
     height: '100%',
@@ -94,7 +94,7 @@ const verunTheme = EditorView.theme({
     color: '#abb2bf',
   },
   '.cm-gutters': {
-    backgroundColor: '#1e1e1e',
+    backgroundColor: 'var(--surface-0)',
     color: '#495162',
     border: 'none',
     borderRight: '1px solid #2c313a',

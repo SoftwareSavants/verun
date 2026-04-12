@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- File editor background now matches the session chat background (`--surface-0`), and the surface palette is exposed as CSS variables so a future light theme can swap them at runtime without rebuilding
+
 ## 0.4.3 — 2026-04-12
 
 ### Changes

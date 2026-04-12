@@ -13,11 +13,11 @@ export default defineConfig({
   theme: {
     colors: {
       surface: {
-        0: '#09090b',
-        1: '#0f0f12',
-        2: '#17171c',
-        3: '#1e1e24',
-        4: '#26262e',
+        0: 'var(--surface-0)',
+        1: 'var(--surface-1)',
+        2: 'var(--surface-2)',
+        3: 'var(--surface-3)',
+        4: 'var(--surface-4)',
       },
       border: {
         DEFAULT: '#18181f',
@@ -62,6 +62,14 @@ export default defineConfig({
   preflights: [
     {
       getCSS: () => `
+        :root {
+          --surface-0: #09090b;
+          --surface-1: #0f0f12;
+          --surface-2: #17171c;
+          --surface-3: #1e1e24;
+          --surface-4: #26262e;
+        }
+
         /* Thin scrollbars */
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }

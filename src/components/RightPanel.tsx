@@ -33,16 +33,16 @@ export const RightPanel: Component<Props> = (props) => {
   const counts = () => problemCountForTask(props.taskId)
 
   return (
-    <div class="flex flex-col h-full">
+    <div class="flex flex-col h-full bg-surface-1">
       {/* Tab bar */}
-      <div class={`flex items-center gap-0.5 px-3 ${hasOverlayTitlebar ? 'pt-10' : 'pt-2'} pb-1.5 border-b border-border-subtle bg-surface-0 shrink-0 drag-region`} data-tauri-drag-region>
+      <div class={`flex items-center gap-0.5 px-3 ${hasOverlayTitlebar ? 'pt-10' : 'pt-2'} pb-1.5 border-b border-border-subtle bg-surface-1 shrink-0 drag-region`} data-tauri-drag-region>
         {TABS.map(tab => (
           <button
             class={clsx(
               'px-3 py-1 text-[11px] font-medium rounded-md transition-colors no-drag',
               rightPanelTab() === tab.id
-                ? 'bg-surface-2 text-text-secondary'
-                : 'text-text-dim hover:text-text-muted hover:bg-surface-1'
+                ? 'bg-surface-3 text-text-secondary'
+                : 'text-text-dim hover:text-text-muted hover:bg-surface-2'
             )}
             onClick={() => setRightPanelTab(tab.id)}
           >
