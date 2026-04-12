@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Right-clicking a text selection in the editor now preserves the selection if the click lands inside it, so "Copy" from the context menu works instead of collapsing the cursor
+- Editor context menu actions (Cut/Copy/Paste/Select All) now refocus the editor after dismissal so the selection stays visually active and keyboard shortcuts keep working
+- File tree "Copy Absolute Path" now reads the worktree path synchronously from the store, fixing a silent clipboard failure caused by losing user-activation across an await
 - Update banner now reflects checking / up-to-date / error states so "Check for Updates…" gives visible feedback instead of silently doing nothing when already on the latest version
 - User message image attachments now render as small thumbnails above the chat bubble instead of inside it
 - Click any image attachment thumbnail (in chat history or in the composer preview row) to open it full-screen, with one-click Copy to clipboard and Download to disk

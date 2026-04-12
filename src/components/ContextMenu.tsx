@@ -46,6 +46,7 @@ export const ContextMenu: Component<Props> = (props) => (
                     : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
                 )}
                 disabled={action.disabled}
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
                   action.action()
                   props.onClose()

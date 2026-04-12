@@ -750,10 +750,15 @@ function buildExtensions(taskId: string, path: string, onDocChange: (content: st
     EditorView.domEventHandlers({
       contextmenu: (event, view) => {
         event.preventDefault()
-        // Move cursor to right-click position so Go to Definition works on the right word
+        // Move cursor to right-click position so Go to Definition works on the right word,
+        // but preserve an existing selection if the click landed inside it (so Copy works).
         const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
         if (pos != null) {
-          view.dispatch({ selection: { anchor: pos } })
+          const sel = view.state.selection.main
+          const inside = !sel.empty && pos >= sel.from && pos <= sel.to
+          if (!inside) {
+            view.dispatch({ selection: { anchor: pos } })
+          }
         }
         const editorEl = view.dom.closest('.code-editor-wrapper')
         if (editorEl) {
@@ -1038,6 +1043,7 @@ export const CodeEditor: Component<Props> = (props) => {
       editorView.dispatch(editorView.state.replaceSelection(''))
     }
     setContextMenu(null)
+    editorView.focus()
   }
 
   const handleCopy = () => {
@@ -1046,6 +1052,7 @@ export const CodeEditor: Component<Props> = (props) => {
     const sel = editorView.state.sliceDoc(from, to)
     if (sel) navigator.clipboard.writeText(sel)
     setContextMenu(null)
+    editorView.focus()
   }
 
   const handlePaste = async () => {
@@ -1053,12 +1060,14 @@ export const CodeEditor: Component<Props> = (props) => {
     const text = await navigator.clipboard.readText()
     editorView.dispatch(editorView.state.replaceSelection(text))
     setContextMenu(null)
+    editorView.focus()
   }
 
   const handleSelectAll = () => {
     if (!editorView) return
     editorView.dispatch({ selection: { anchor: 0, head: editorView.state.doc.length } })
     setContextMenu(null)
+    editorView.focus()
   }
 
   /** Restore cursor, re-focus editor, then run action on next frame */

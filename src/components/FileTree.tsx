@@ -8,6 +8,7 @@ import {
   getDirContents, loadDirectory, isExpanded, toggleExpanded, expandDir, collapseDir,
   invalidateDirectory, openFile, openFilePinned, revealRequest, mainView
 } from '../store/files'
+import { taskById } from '../store/tasks'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
 import type { FileEntry, FileTreeChangedEvent } from '../types'
@@ -124,9 +125,11 @@ export const FileTree: Component<Props> = (props) => {
   }
 
   // ── Context menu actions ───────────────────────────────────────────
-  const getFullPath = async (relativePath: string) => {
-    const task = await ipc.getTask(props.taskId)
-    return task ? `${task.worktreePath}/${relativePath}` : relativePath
+  // Read worktreePath synchronously from the store so clipboard writes
+  // don't lose user-activation across an await.
+  const getFullPath = (relativePath: string) => {
+    const task = taskById(props.taskId)
+    return task?.worktreePath ? `${task.worktreePath}/${relativePath}` : relativePath
   }
 
   const handleOpenFile = () => {
@@ -143,27 +146,24 @@ export const FileTree: Component<Props> = (props) => {
     setContextMenu(null)
   }
 
-  const handleCopyAbsPath = async () => {
+  const handleCopyAbsPath = () => {
     const menu = contextMenu()
     if (!menu) return
-    const full = await getFullPath(menu.entry.relativePath)
-    navigator.clipboard.writeText(full)
+    navigator.clipboard.writeText(getFullPath(menu.entry.relativePath))
     setContextMenu(null)
   }
 
-  const handleRevealInFinder = async () => {
+  const handleRevealInFinder = () => {
     const menu = contextMenu()
     if (!menu) return
-    const full = await getFullPath(menu.entry.relativePath)
-    ipc.openInFinder(full)
+    ipc.openInFinder(getFullPath(menu.entry.relativePath))
     setContextMenu(null)
   }
 
-  const handleOpenInEditor = async () => {
+  const handleOpenInEditor = () => {
     const menu = contextMenu()
     if (!menu) return
-    const full = await getFullPath(menu.entry.relativePath)
-    ipc.openInApp(full, 'Visual Studio Code')
+    ipc.openInApp(getFullPath(menu.entry.relativePath), 'Visual Studio Code')
     setContextMenu(null)
   }
 
