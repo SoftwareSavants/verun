@@ -173,10 +173,12 @@ export interface Toast {
 export interface AddToastOptions {
   id?: string
   persistent?: boolean
+  duration?: number
   actions?: ToastAction[]
 }
 
 export const [toasts, setToasts] = createSignal<Toast[]>([])
+const toastTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 export function addToast(
   message: string,
@@ -194,18 +196,30 @@ export function addToast(
     }
     return [...prev, toast]
   })
+  const existingTimer = toastTimers.get(id)
+  if (existingTimer) clearTimeout(existingTimer)
+  toastTimers.delete(id)
   if (!opts.persistent) {
-    setTimeout(() => dismissToast(id), 5000)
+    const timer = setTimeout(() => dismissToast(id), opts.duration ?? 5000)
+    toastTimers.set(id, timer)
   }
   return id
 }
 
 export function dismissToast(id: string) {
+  const timer = toastTimers.get(id)
+  if (timer) clearTimeout(timer)
+  toastTimers.delete(id)
   setToasts(prev => prev.filter(t => t.id !== id))
 }
 
 // Shared edit-step signal — set by StepList edit button, consumed by MessageInput
 export const [editStepRequest, setEditStepRequest] = createSignal<{ sessionId: string; stepId: string; message: string; attachmentsJson?: string | null } | null>(null)
+
+// Shared chat-prefill signal — set by the editor's merged hover ("Ask agent to fix")
+// button and consumed by MessageInput. Draft is set but NOT sent — the user
+// reviews and sends manually.
+export const [chatPrefillRequest, setChatPrefillRequest] = createSignal<{ text: string } | null>(null)
 
 // Tracks which tasks are currently open in a separate window
 const [_windowedTaskIds, _setWindowedTaskIds] = createSignal<Set<string>>(new Set())

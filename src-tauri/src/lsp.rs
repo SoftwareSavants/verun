@@ -33,6 +33,12 @@ pub struct LspMessageEvent {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspExitEvent {
+    pub task_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // Content-Length framing
 // ---------------------------------------------------------------------------
@@ -172,8 +178,12 @@ pub async fn start_server(
                 },
             );
         }
-        // Process exited — clean up
-        map_ref.remove(&tid);
+        // Process exited — clean up and notify the frontend so it can show a
+        // toast. `stop_server` pre-removes from the map, so if the entry is
+        // still present here it means the child exited on its own (crash).
+        if map_ref.remove(&tid).is_some() {
+            let _ = app.emit("lsp-exit", LspExitEvent { task_id: tid });
+        }
     });
 
     Ok(())

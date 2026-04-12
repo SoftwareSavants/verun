@@ -1,6 +1,6 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
 import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps } from '../store/sessions'
-import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest } from '../store/ui'
+import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
@@ -379,6 +379,20 @@ export const MessageInput: Component<Props> = (props) => {
     requestAnimationFrame(() => {
       if (inputRef) {
         setInputContent(req.message)
+        setCursorToEnd()
+        inputRef.focus()
+      }
+    })
+  }))
+
+  // React to prefill requests from the editor's merged hover ("Ask agent to fix")
+  createEffect(on(chatPrefillRequest, (req) => {
+    if (!req) return
+    setChatPrefillRequest(null) // consume
+    setMessage(req.text)
+    requestAnimationFrame(() => {
+      if (inputRef) {
+        setInputContent(req.text)
         setCursorToEnd()
         inputRef.focus()
       }

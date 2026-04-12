@@ -65,6 +65,9 @@ importers:
       '@codemirror/language':
         specifier: ^6.12.3
         version: 6.12.3
+      '@codemirror/lint':
+        specifier: ^6.9.5
+        version: 6.9.5
       '@codemirror/lsp-client':
         specifier: ^6.2.2
         version: 6.2.2

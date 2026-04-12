@@ -1,6 +1,9 @@
 import { Component, createEffect, on, createSignal, Show, onCleanup, onMount } from 'solid-js'
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, Decoration, type DecorationSet, type Tooltip } from '@codemirror/view'
-import { EditorState, StateField, StateEffect, RangeSet, type Extension } from '@codemirror/state'
+import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, hoverTooltip, tooltips, Decoration, type DecorationSet, type Tooltip } from '@codemirror/view'
+import { linter, forEachDiagnostic, type Diagnostic } from '@codemirror/lint'
+import { EditorState, StateField, StateEffect, RangeSet, Facet, type Extension } from '@codemirror/state'
+import { setChatPrefillRequest } from '../store/ui'
+import { setMainView } from '../store/files'
 import { defaultKeymap, history, historyField, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit } from '@codemirror/language'
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search'
@@ -304,6 +307,257 @@ const hoverUnderlineTheme = EditorView.theme({
   },
 }, { dark: true })
 
+// ── Editor context facet — carries taskId + relativePath to module-level
+// extensions (the merged hover tooltip needs these for the "Ask agent to
+// fix" action, which references the current file and task).
+interface EditorContext { taskId: string; relativePath: string }
+const editorContextFacet = Facet.define<EditorContext, EditorContext | null>({
+  combine: (values) => values.length > 0 ? values[0] : null,
+})
+
+// ── Merged hover tooltip (diagnostic + type, single popup) ─────────────
+// The LSP client's hoverTooltips() and @codemirror/lint's hover each render
+// their own tooltip at the same position, so hovering an errored identifier
+// stacks the type info on top of the error. We disable both (see
+// `languageServerExtensions` replacement in `src/lib/lsp.ts` and the
+// `linter(null, { tooltipFilter })` below) and render one merged tooltip:
+// error section first, then type info, with a divider.
+function renderHoverContents(plugin: any, contents: any): string {
+  if (!contents) return ''
+  if (Array.isArray(contents)) return contents.map(c => renderHoverContents(plugin, c)).filter(Boolean).join('<br>')
+  if (typeof contents === 'string') return plugin.docToHTML(contents, 'markdown')
+  if ('kind' in contents) return plugin.docToHTML(contents)
+  if ('value' in contents) return plugin.docToHTML(String(contents.value ?? ''), 'markdown')
+  return ''
+}
+
+type PositionedDiagnostic = Diagnostic & { from: number; to: number }
+
+const mergedHoverTooltip = hoverTooltip(async (view, pos) => {
+  // 1. Collect lint diagnostics covering `pos`
+  const diags: PositionedDiagnostic[] = []
+  forEachDiagnostic(view.state, (d: Diagnostic, from: number, to: number) => {
+    if (pos >= from && pos <= to) diags.push({ ...d, from, to })
+  })
+
+  // 2. Fetch LSP hover (types) in parallel
+  const plugin = LSPPlugin.get(view)
+  let hoverHtml = ''
+  let hoverFrom = pos
+  let hoverTo = pos
+  if (plugin && plugin.client.serverCapabilities?.hoverProvider) {
+    try {
+      plugin.client.sync()
+      const result: any = await plugin.client.request('textDocument/hover', {
+        position: plugin.toPosition(pos),
+        textDocument: { uri: plugin.uri },
+      })
+      if (result && result.contents) {
+        hoverHtml = renderHoverContents(plugin, result.contents)
+        if (result.range) {
+          hoverFrom = plugin.fromPosition(result.range.start)
+          hoverTo = plugin.fromPosition(result.range.end)
+        }
+      }
+    } catch { /* swallow — show diagnostics-only tooltip if types failed */ }
+  }
+
+  if (diags.length === 0 && !hoverHtml) return null
+
+  return {
+    pos: diags.length > 0 ? Math.min(diags[0].from, hoverFrom) : hoverFrom,
+    end: diags.length > 0 ? Math.max(diags[diags.length - 1].to, hoverTo) : hoverTo,
+    above: true,
+    create: () => {
+      const dom = document.createElement('div')
+      dom.className = 'cm-merged-hover'
+      // Cap the tooltip size to the smaller of a fixed ceiling and the
+      // editor's bounds, so it never overflows its container (and also
+      // stays readable on huge monitors).
+      const rect = view.dom.getBoundingClientRect()
+      dom.style.maxWidth = `${Math.min(560, Math.max(240, Math.floor(rect.width - 24)))}px`
+      dom.style.maxHeight = `${Math.min(400, Math.max(120, Math.floor(rect.height - 48)))}px`
+
+      const ctx = view.state.facet(editorContextFacet)
+
+      // Scrollable content area — errors + type info scroll together,
+      // action footer stays pinned at the bottom (VS Code layout).
+      const scroll = document.createElement('div')
+      scroll.className = 'cm-merged-hover-scroll'
+      dom.appendChild(scroll)
+
+      if (diags.length > 0) {
+        const errSection = document.createElement('div')
+        errSection.className = 'cm-merged-hover-errors'
+        for (const d of diags) {
+          const row = document.createElement('div')
+          row.className = `cm-merged-hover-diagnostic cm-merged-hover-${d.severity}`
+          const msg = document.createElement('span')
+          msg.className = 'cm-merged-hover-message'
+          msg.textContent = d.message
+          row.appendChild(msg)
+          if (d.source) {
+            const meta = document.createElement('span')
+            meta.className = 'cm-merged-hover-meta'
+            meta.textContent = d.source
+            row.appendChild(meta)
+          }
+          errSection.appendChild(row)
+        }
+        scroll.appendChild(errSection)
+      }
+
+      if (hoverHtml) {
+        if (diags.length > 0) {
+          const divider = document.createElement('div')
+          divider.className = 'cm-merged-hover-divider'
+          scroll.appendChild(divider)
+        }
+        const typeSection = document.createElement('div')
+        typeSection.className = 'cm-merged-hover-type cm-lsp-documentation'
+        typeSection.innerHTML = hoverHtml
+        scroll.appendChild(typeSection)
+      }
+
+      // "Ask agent to fix" — pinned footer (VS Code style). Prefills the
+      // message input with a template referencing the current file and the
+      // diagnostic(s) at this position, then focuses the session tab. User
+      // reviews and sends manually.
+      if (diags.length > 0 && ctx) {
+        const actions = document.createElement('div')
+        actions.className = 'cm-merged-hover-actions'
+        const askBtn = document.createElement('button')
+        askBtn.className = 'cm-merged-hover-ask'
+        askBtn.type = 'button'
+        askBtn.textContent = 'Ask agent to fix'
+        askBtn.onclick = (e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          const line = view.state.doc.lineAt(pos).number
+          const messages = diags.map(d => `- ${d.message}`).join('\n')
+          const text = diags.length === 1
+            ? `Fix this error in @${ctx.relativePath} (line ${line}):\n\n${diags[0].message}`
+            : `Fix these errors in @${ctx.relativePath} (line ${line}):\n\n${messages}`
+          setMainView(ctx.taskId, 'session')
+          setChatPrefillRequest({ text })
+        }
+        actions.appendChild(askBtn)
+        dom.appendChild(actions)
+      }
+
+      // resize:false prevents CodeMirror from rewriting dom.style.height on
+      // every measure pass. Without it, our overflow:auto scroll event
+      // triggers another measure, which CM answers by resizing the tooltip
+      // again — a feedback loop that manifests as a slow "animation" while
+      // the popup settles. Our inline maxWidth/maxHeight already handle
+      // containment.
+      return { dom, resize: false }
+    },
+  }
+}, { hideOn: tr => tr.docChanged })
+
+const mergedHoverTheme = EditorView.theme({
+  '.cm-merged-hover': {
+    display: 'flex',
+    flexDirection: 'column',
+    fontSize: '12.5px',
+    lineHeight: '1.5',
+    color: '#abb2bf',
+    userSelect: 'text',
+    WebkitUserSelect: 'text',
+    cursor: 'text',
+    minHeight: '0',
+  },
+  '.cm-merged-hover *': {
+    userSelect: 'text',
+    WebkitUserSelect: 'text',
+  },
+  '.cm-merged-hover-scroll': {
+    flex: '1 1 auto',
+    minHeight: '0',
+    overflow: 'auto',
+    padding: '6px 0',
+  },
+  '.cm-merged-hover-errors': {
+    padding: '2px 10px 6px',
+  },
+  '.cm-merged-hover-diagnostic': {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '7px',
+    padding: '2px 0',
+  },
+  '.cm-merged-hover-dot': {
+    display: 'inline-block',
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+    marginTop: '6px',
+    flexShrink: '0',
+  },
+  '.cm-merged-hover-error .cm-merged-hover-dot': { backgroundColor: '#f87171' },
+  '.cm-merged-hover-warning .cm-merged-hover-dot': { backgroundColor: '#fbbf24' },
+  '.cm-merged-hover-info .cm-merged-hover-dot': { backgroundColor: '#60a5fa' },
+  '.cm-merged-hover-hint .cm-merged-hover-dot': { backgroundColor: '#6b7280' },
+  '.cm-merged-hover-message': {
+    flex: '1',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  },
+  '.cm-merged-hover-error .cm-merged-hover-message': { color: '#fca5a5' },
+  '.cm-merged-hover-warning .cm-merged-hover-message': { color: '#fcd34d' },
+  '.cm-merged-hover-meta': {
+    color: '#6b7280',
+    fontSize: '11px',
+    marginLeft: '4px',
+    flexShrink: '0',
+  },
+  '.cm-merged-hover-actions': {
+    flex: '0 0 auto',
+    padding: '6px 10px',
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '6px',
+    borderTop: '1px solid #181a1f',
+    backgroundColor: '#21252b',
+  },
+  '.cm-merged-hover-ask': {
+    fontSize: '11.5px',
+    padding: '3px 8px',
+    borderRadius: '4px',
+    border: '1px solid #3e4452',
+    backgroundColor: '#2c313a',
+    color: '#abb2bf',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+  },
+  '.cm-merged-hover-ask:hover': {
+    backgroundColor: '#3a3f4b',
+    borderColor: '#528bff',
+    color: '#e6e6e6',
+  },
+  '.cm-merged-hover-divider': {
+    height: '1px',
+    backgroundColor: '#3e4452',
+    margin: '4px 0',
+  },
+  '.cm-merged-hover-type': {
+    padding: '4px 10px',
+  },
+  '.cm-merged-hover-type p': { margin: '2px 0' },
+  '.cm-merged-hover-type pre': {
+    margin: '4px 0',
+    padding: '6px 8px',
+    backgroundColor: '#1e1e1e',
+    borderRadius: '4px',
+    overflow: 'auto',
+  },
+  '.cm-merged-hover-type code': {
+    fontFamily: '"SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace',
+    fontSize: '12px',
+  },
+}, { dark: true })
+
 // ── Language detection ─────────────────────────────────────────────────
 function langFromExt(path: string): Extension | null {
   const ext = path.split('.').pop()?.toLowerCase() || ''
@@ -358,7 +612,7 @@ function langFromExt(path: string): Extension | null {
 }
 
 // ── Build all extensions for a given file path ─────────────────────────
-function buildExtensions(path: string, onDocChange: (content: string) => void, onSave: () => void): Extension[] {
+function buildExtensions(taskId: string, path: string, onDocChange: (content: string) => void, onSave: () => void): Extension[] {
   const exts: Extension[] = [
     // Theme & highlighting
     verunTheme,
@@ -367,6 +621,20 @@ function buildExtensions(path: string, onDocChange: (content: string) => void, o
     renameTooltipField,
     hoverUnderlineTheme,
     hoverUnderlineField,
+    mergedHoverTheme,
+    mergedHoverTooltip,
+    editorContextFacet.of({ taskId, relativePath: path }),
+    // Clamp tooltip positioning to the editor bounds so hover popups never
+    // overflow into adjacent panels (problems panel, sidebar, etc).
+    tooltips({
+      tooltipSpace: (view) => {
+        const r = view.dom.getBoundingClientRect()
+        return { top: r.top + 4, left: r.left + 4, bottom: r.bottom - 4, right: r.right - 4 }
+      },
+    }),
+    // Suppress @codemirror/lint's built-in diagnostic hover tooltip so it
+    // doesn't stack on top of our merged tooltip. Squigglies still render.
+    linter(null, { tooltipFilter: () => [] }),
     syntaxHighlighting(verunHighlightStyle),
     syntaxHighlighting(oneDarkHighlightStyle, { fallback: true }),
 
@@ -629,6 +897,7 @@ export const CodeEditor: Component<Props> = (props) => {
     // Always build fresh extensions so the LSP plugin is wired to the current
     // live LSPClient, and the view/workspace references are fresh.
     const extensions = buildExtensions(
+      props.taskId,
       path,
       (content) => {
         currentContent = content

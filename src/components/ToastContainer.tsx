@@ -39,7 +39,7 @@ export const ToastContainer: Component = () => {
           return (
             <div
               class={clsx(
-                'pointer-events-auto rounded-xl border shadow-xl backdrop-blur-sm animate-slide-in min-w-64 max-w-sm',
+                'pointer-events-auto rounded-xl border shadow-xl backdrop-blur-sm animate-slide-in min-w-64 max-w-md',
                 colors[toast.type],
                 'bg-surface-2/90',
                 hasActions() ? 'px-3.5 py-2.5' : 'px-3.5 py-2.5',

@@ -1,16 +1,44 @@
-import { LSPClient, LSPPlugin, Workspace, languageServerExtensions } from '@codemirror/lsp-client'
+import {
+  LSPClient,
+  LSPPlugin,
+  Workspace,
+  serverCompletion,
+  signatureHelp,
+  serverDiagnostics,
+  formatKeymap,
+  renameKeymap,
+  jumpToDefinitionKeymap,
+  findReferencesKeymap,
+} from '@codemirror/lsp-client'
 import type { Transport, WorkspaceFile } from '@codemirror/lsp-client'
-import { EditorView } from '@codemirror/view'
+import { EditorView, keymap } from '@codemirror/view'
 import { Text } from '@codemirror/state'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from './ipc'
 import { openFilePinned } from '../store/files'
 import { markProblemsLoading } from '../store/problems'
+import { addToast } from '../store/ui'
 import type { FileTreeChangedEvent } from '../types'
 
 interface LspMessagePayload {
   taskId: string
   message: string
+}
+
+// Redirect lsp-client's reportError() from its in-editor showDialog banner
+// (full-width ugly popup) to our toast system. lsp-client calls this from
+// many internal operations (find definition failed, rename failed, etc).
+{
+  const proto = LSPPlugin.prototype as unknown as {
+    reportError: (message: string, err: Error | { message?: string }) => void
+  }
+  proto.reportError = function reportError(message, err) {
+    const detail = (err as Error)?.message ?? String(err)
+    addToast(`${message}: ${detail}`, 'error', {
+      id: `lsp:reportError:${message}`,
+      duration: 10000,
+    })
+  }
 }
 
 // One LSP client per task (worktree)
@@ -214,6 +242,18 @@ function createTauriTransport(taskId: string, worktreePath: string, workspaceFol
         ipc.lspSend(taskId, JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }))
         return
       }
+      // Swallow window/showMessage and surface as a toast. lsp-client's
+      // default handler renders a full-width in-editor dialog (ugly banner),
+      // so we don't forward it. LSP spec: 1=Error, 2=Warning, 3=Info, 4=Log.
+      if (msg.method === 'window/showMessage') {
+        const t = msg.params?.type
+        const text = `TypeScript server: ${msg.params?.message ?? 'unknown'}`
+        const toastType: 'error' | 'info' = t === 1 ? 'error' : 'info'
+        if (t !== 4) {
+          addToast(text, toastType, { id: `lsp:${taskId}:showMessage`, duration: 10000 })
+        }
+        return
+      }
     } catch { /* parse error — fall through to handlers */ }
 
     for (const h of handlers) {
@@ -384,7 +424,16 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
   if (existing?.connected) return existing
 
   // Start the language server process in Rust
-  await ipc.lspStart(taskId, worktreePath)
+  try {
+    await ipc.lspStart(taskId, worktreePath)
+  } catch (e) {
+    addToast(
+      `TypeScript language server failed to start: ${e instanceof Error ? e.message : String(e)}`,
+      'error',
+      { id: `lsp:${taskId}:start`, duration: 10000 },
+    )
+    throw e
+  }
   worktreePaths.set(taskId, worktreePath)
 
   // Find tsconfig.json directories for monorepo workspace folder support
@@ -394,7 +443,14 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
     rootUri: `file://${worktreePath}`,
     workspace: (c) => new VerunWorkspace(c, worktreePath, taskId),
     extensions: [
-      ...languageServerExtensions(),
+      // languageServerExtensions() bundles hoverTooltips() for types, which
+      // stacks on top of lint's diagnostic hover. We want a single merged
+      // tooltip (error on top, type below), implemented per-view in CodeEditor,
+      // so we skip hoverTooltips() here and include everything else.
+      serverCompletion(),
+      keymap.of([...formatKeymap, ...renameKeymap, ...jumpToDefinitionKeymap, ...findReferencesKeymap]),
+      signatureHelp(),
+      serverDiagnostics(),
       // Advertise capabilities so vtsls sends ConfigurationRequest during init
       // (handled by the transport interceptor) and accepts workspace folder updates.
       { clientCapabilities: { workspace: { configuration: true, workspaceFolders: true } } },
@@ -462,6 +518,20 @@ export async function restartLspServer(taskId: string) {
   await ipc.lspStop(taskId)
   await getLspClient(taskId, worktreePath)
 }
+
+// Surface LSP process crashes as long toasts. Rust emits `lsp-exit` when the
+// vtsls child closes stdout (abnormal or otherwise); if the client is still
+// connected from our perspective, treat that as a crash.
+interface LspExitPayload { taskId: string }
+listen<LspExitPayload>('lsp-exit', (event) => {
+  const { taskId } = event.payload
+  if (!clients.has(taskId)) return
+  addToast(
+    'TypeScript server crashed — restart the task to recover',
+    'error',
+    { id: `lsp:${taskId}:crash`, duration: 10000 },
+  )
+})
 
 // Watch for node_modules changes and restart LSP (debounced 3s)
 listen<FileTreeChangedEvent>('file-tree-changed', (event) => {
