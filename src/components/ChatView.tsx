@@ -694,21 +694,21 @@ export const ChatView: Component<Props> = (props) => {
             switch (block.type) {
               case 'user':
                 return (
-                  <div class="flex justify-end px-5 py-1">
-                    <div class="max-w-[75%] bg-accent/15 rounded-2xl rounded-br-lg border border-accent/10 overflow-hidden">
-                      <Show when={block.images && block.images.length > 0}>
-                        <div class="flex gap-1 p-2 pb-0">
-                          <For each={block.images || []}>
-                            {(img) => (
-                              <img
-                                src={`data:${img.mimeType};base64,${img.dataBase64}`}
-                                class="max-h-48 max-w-64 rounded-lg object-contain"
-                              />
-                            )}
-                          </For>
-                        </div>
-                      </Show>
-                      <Show when={block.text}>
+                  <div class="flex flex-col items-end px-5 py-1 gap-1">
+                    <Show when={block.images && block.images.length > 0}>
+                      <div class="flex flex-wrap justify-end gap-1 max-w-[75%]">
+                        <For each={block.images || []}>
+                          {(img) => (
+                            <img
+                              src={`data:${img.mimeType};base64,${img.dataBase64}`}
+                              class="h-16 w-16 rounded-md object-cover border border-border"
+                            />
+                          )}
+                        </For>
+                      </div>
+                    </Show>
+                    <Show when={block.text}>
+                      <div class="max-w-[75%] bg-accent/15 rounded-2xl rounded-br-lg border border-accent/10 overflow-hidden">
                         <div class="px-4 py-2.5 text-sm text-text-primary whitespace-pre-wrap leading-relaxed select-text">
                           <For each={parseMentions(block.text)}>
                             {(seg) => (
@@ -718,8 +718,8 @@ export const ChatView: Component<Props> = (props) => {
                             )}
                           </For>
                         </div>
-                      </Show>
-                    </div>
+                      </div>
+                    </Show>
                   </div>
                 )
               case 'assistant':
