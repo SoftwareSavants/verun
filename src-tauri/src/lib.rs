@@ -257,6 +257,8 @@ pub fn run() {
             ipc::get_branch_commits,
             ipc::get_commit_files,
             ipc::get_commit_file_diff,
+            ipc::get_file_diff_contents,
+            ipc::get_commit_file_contents,
             // GitHub
             ipc::check_github,
             ipc::create_pull_request,

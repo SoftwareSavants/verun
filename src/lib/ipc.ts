@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
 import { bytesToBase64 } from './binary'
 
 // Projects
@@ -139,6 +139,12 @@ export const getCommitFiles = (taskId: string, commitHash: string) =>
 
 export const getCommitFileDiff = (taskId: string, commitHash: string, filePath: string, contextLines?: number, ignoreWhitespace?: boolean) =>
   invoke<FileDiff>('get_commit_file_diff', { taskId, commitHash, filePath, contextLines, ignoreWhitespace })
+
+export const getFileDiffContents = (taskId: string, filePath: string) =>
+  invoke<DiffContents>('get_file_diff_contents', { taskId, filePath })
+
+export const getCommitFileContents = (taskId: string, commitHash: string, filePath: string) =>
+  invoke<DiffContents>('get_commit_file_contents', { taskId, commitHash, filePath })
 
 export const gitStage = (taskId: string, paths: string[]) =>
   invoke<void>('git_stage', { taskId, paths })

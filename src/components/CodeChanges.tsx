@@ -1,12 +1,14 @@
 import { Component, createSignal, createEffect, on, Show, For } from 'solid-js'
-import { ChevronDown, ChevronRight, RefreshCw, X, WrapText, EyeOff, GitCommit, Circle } from 'lucide-solid'
+import { ChevronDown, ChevronRight, RefreshCw, X, GitCommit, Circle, GitCompare, FileText, ClipboardCopy, FolderOpen, ExternalLink, Tag } from 'lucide-solid'
+import { openDiffTab, openFilePinned, diffTabKey, mainView, revealFileInTree, type DiffSource } from '../store/files'
+import { selectedTaskId } from '../store/ui'
+import { taskById } from '../store/tasks'
 import { clsx } from 'clsx'
 import { getFileIcon } from '../lib/fileIcons'
-import { defaultWrapLines, defaultHideWhitespace } from '../store/ui'
 import { taskGit, refreshTaskGit } from '../store/git'
 import * as ipc from '../lib/ipc'
-import { highlightLine, langFromPath, type HighlightToken } from '../lib/highlighter'
-import type { GitStatus, FileDiff, DiffLine } from '../types'
+import type { GitStatus } from '../types'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 
 interface Props {
   taskId: string
@@ -29,8 +31,6 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 export const CodeChanges: Component<Props> = (props) => {
-  const [openFiles, setOpenFiles] = createSignal<Set<string>>(new Set())
-  const [fileDiffs, setFileDiffs] = createSignal<Map<string, FileDiff>>(new Map())
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
 
@@ -46,23 +46,6 @@ export const CodeChanges: Component<Props> = (props) => {
   const commits = () => taskGit(props.taskId).commits
   const uncommittedCount = () => taskGit(props.taskId).status?.files.length ?? 0
 
-  // Prune open files when store status changes (uncommitted view only)
-  createEffect(() => {
-    const s = taskGit(props.taskId).status
-    if (!s || selectedCommit()) return
-    const paths = new Set(s.files.map(f => f.path))
-    const current = openFiles()
-    const stillValid = new Set([...current].filter(p => paths.has(p)))
-    if (stillValid.size !== current.size) {
-      setOpenFiles(stillValid)
-      const diffs = new Map(fileDiffs())
-      for (const p of current) {
-        if (!stillValid.has(p)) diffs.delete(p)
-      }
-      setFileDiffs(diffs)
-    }
-  })
-
   const refresh = async () => {
     try {
       setLoading(true)
@@ -77,9 +60,6 @@ export const CodeChanges: Component<Props> = (props) => {
 
   const selectCommit = async (hash: string | null) => {
     setSelectedCommit(hash)
-    setOpenFiles(new Set<string>())
-    setFileDiffs(new Map<string, FileDiff>())
-
     if (hash === null) {
       setCommitStatus(null) // will read from store
     } else {
@@ -93,163 +73,54 @@ export const CodeChanges: Component<Props> = (props) => {
   createEffect(on(() => props.taskId, () => {
     setSelectedCommit(null)
     setCommitStatus(null)
-    setOpenFiles(new Set<string>())
-    setFileDiffs(new Map<string, FileDiff>())
     refreshTaskGit(props.taskId)
   }))
 
-  const [wordWrap, setWordWrap] = createSignal(defaultWrapLines())
-  const [hideWhitespace, setHideWhitespace] = createSignal(defaultHideWhitespace())
-
-  // Syntax highlighting: shared cache across all files
-  const [tokenCache, setTokenCache] = createSignal<Map<string, HighlightToken[]>>(new Map())
-
-  const highlightDiff = async (diff: FileDiff, path: string) => {
-    const lang = langFromPath(path)
-    if (!lang) return
-
-    const lines = diff.hunks.flatMap(h => h.lines)
-    const unique = [...new Set(lines.map(l => l.content))]
-    const cache = new Map(tokenCache())
-
-    const toHighlight = unique.filter(c => !cache.has(c))
-    if (toHighlight.length === 0) return
-
-    const results = await Promise.all(
-      toHighlight.map(async (content) => {
-        const tokens = await highlightLine(content, lang)
-        return [content, tokens] as const
-      })
-    )
-
-    for (const [content, tokens] of results) {
-      cache.set(content, tokens)
-    }
-    setTokenCache(new Map(cache))
-  }
-
-  const toggleFile = async (path: string) => {
-    const current = new Set(openFiles())
-    if (current.has(path)) {
-      current.delete(path)
-      setOpenFiles(current)
-      const diffs = new Map(fileDiffs())
-      diffs.delete(path)
-      setFileDiffs(diffs)
-      return
-    }
-
-    current.add(path)
-    setOpenFiles(current)
-    try {
-      const commit = selectedCommit()
-      const diff = commit
-        ? await ipc.getCommitFileDiff(props.taskId, commit, path, undefined, hideWhitespace() || undefined)
-        : await ipc.getFileDiff(props.taskId, path, undefined, hideWhitespace() || undefined)
-      const diffs = new Map(fileDiffs())
-      diffs.set(path, diff)
-      setFileDiffs(diffs)
-      highlightDiff(diff, path)
-    } catch {}
-  }
-
-  // Re-fetch all open files when hideWhitespace changes
-  createEffect(on(hideWhitespace, async (hw) => {
-    const paths = [...openFiles()]
-    if (paths.length === 0) return
+  const sourceForRow = (): DiffSource => {
     const commit = selectedCommit()
-    const diffs = new Map(fileDiffs())
-    for (const path of paths) {
-      try {
-        const diff = commit
-          ? await ipc.getCommitFileDiff(props.taskId, commit, path, undefined, hw || undefined)
-          : await ipc.getFileDiff(props.taskId, path, undefined, hw || undefined)
-        diffs.set(path, diff)
-        highlightDiff(diff, path)
-      } catch {}
-    }
-    setFileDiffs(new Map(diffs))
-  }, { defer: true }))
-
-  const EXPAND_LINES = 20
-
-  const expandAbove = async (path: string, hunkIndex: number) => {
-    const diff = fileDiffs().get(path)
-    if (!diff) return
-
-    const hunk = diff.hunks[hunkIndex]
-    const endLine = hunk.newStart - 1
-    const startLine = Math.max(1, endLine - EXPAND_LINES + 1)
-    if (endLine < 1) return
-
-    try {
-      const lines = await ipc.getFileContext(props.taskId, path, startLine, endLine, 'new')
-      if (lines.length === 0) return
-
-      const contextLines: DiffLine[] = lines.map((content, i) => ({
-        kind: 'context',
-        content,
-        oldLineNumber: hunk.oldStart - lines.length + i,
-        newLineNumber: startLine + i,
-      }))
-
-      const updatedHunks = [...diff.hunks]
-      const updatedHunk = { ...hunk }
-      updatedHunk.lines = [...contextLines, ...hunk.lines]
-      updatedHunk.oldStart = Math.max(1, hunk.oldStart - lines.length)
-      updatedHunk.oldCount = hunk.oldCount + lines.length
-      updatedHunk.newStart = startLine
-      updatedHunk.newCount = hunk.newCount + lines.length
-      updatedHunks[hunkIndex] = updatedHunk
-
-      const newDiff = { ...diff, hunks: updatedHunks }
-      const diffs = new Map(fileDiffs())
-      diffs.set(path, newDiff)
-      setFileDiffs(diffs)
-      highlightDiff(newDiff, path)
-    } catch {}
+    return commit ? { type: 'commit', commitHash: commit } : { type: 'working' }
   }
 
-  const expandBelow = async (path: string, hunkIndex: number) => {
-    const diff = fileDiffs().get(path)
-    if (!diff) return
+  const openDiff = (path: string, opts?: { pinned?: boolean }) => {
+    openDiffTab(props.taskId, path, sourceForRow(), opts)
+  }
 
-    const hunk = diff.hunks[hunkIndex]
-    const lastNewLine = hunk.lines.reduce((max, l) => l.newLineNumber ? Math.max(max, l.newLineNumber) : max, 0)
-    const startLine = lastNewLine + 1
-    const endLine = startLine + EXPAND_LINES - 1
-
-    try {
-      const lines = await ipc.getFileContext(props.taskId, path, startLine, endLine, 'new')
-      if (lines.length === 0) return
-
-      const contextLines: DiffLine[] = lines.map((content, i) => {
-        const lastOldLine = hunk.lines.reduce((max, l) => l.oldLineNumber ? Math.max(max, l.oldLineNumber) : max, 0)
-        return {
-          kind: 'context',
-          content,
-          oldLineNumber: lastOldLine + 1 + i,
-          newLineNumber: startLine + i,
-        }
-      })
-
-      const updatedHunks = [...diff.hunks]
-      const updatedHunk = { ...hunk }
-      updatedHunk.lines = [...hunk.lines, ...contextLines]
-      updatedHunk.oldCount = hunk.oldCount + lines.length
-      updatedHunk.newCount = hunk.newCount + lines.length
-      updatedHunks[hunkIndex] = updatedHunk
-
-      const newDiff = { ...diff, hunks: updatedHunks }
-      const diffs = new Map(fileDiffs())
-      diffs.set(path, newDiff)
-      setFileDiffs(diffs)
-      highlightDiff(newDiff, path)
-    } catch {}
+  const isRowActive = (path: string) => {
+    const tid = selectedTaskId()
+    if (!tid || tid !== props.taskId) return false
+    return mainView(tid) === diffTabKey(sourceForRow(), path)
   }
 
   const statsForFile = (path: string) => {
     return status()?.stats.find(s => s.path === path)
+  }
+
+  // ── File row context menu ─────────────────────────────────────────────
+  const [fileMenu, setFileMenu] = createSignal<{ x: number; y: number; path: string } | null>(null)
+  const closeFileMenu = () => setFileMenu(null)
+
+  const fullPath = (rel: string) => {
+    const t = taskById(props.taskId)
+    return t?.worktreePath ? `${t.worktreePath}/${rel}` : rel
+  }
+
+  const fileMenuItems = (): ContextMenuItem[] => {
+    const m = fileMenu()
+    if (!m) return []
+    const path = m.path
+    const name = path.split('/').pop() || path
+    return [
+      { label: 'Open Diff', icon: GitCompare, action: () => { openDiff(path, { pinned: true }); closeFileMenu() } },
+      { label: 'Open File', icon: FileText, action: () => { openFilePinned(props.taskId, path, name); closeFileMenu() } },
+      { label: 'Open in VS Code', icon: ExternalLink, action: () => { ipc.openInApp(fullPath(path), 'Visual Studio Code'); closeFileMenu() } },
+      { separator: true },
+      { label: 'Reveal in File Tree', icon: FolderOpen, action: () => { revealFileInTree(props.taskId, path); closeFileMenu() } },
+      { label: 'Reveal in Finder', icon: FolderOpen, action: () => { ipc.openInFinder(fullPath(path)); closeFileMenu() } },
+      { separator: true },
+      { label: 'Copy Name', icon: Tag, action: () => { navigator.clipboard.writeText(name); closeFileMenu() } },
+      { label: 'Copy Relative Path', icon: ClipboardCopy, action: () => { navigator.clipboard.writeText(path); closeFileMenu() } },
+      { label: 'Copy Absolute Path', icon: ClipboardCopy, action: () => { navigator.clipboard.writeText(fullPath(path)); closeFileMenu() } },
+    ]
   }
 
   const toggleCommitsPanel = () => {
@@ -296,20 +167,6 @@ export const CodeChanges: Component<Props> = (props) => {
 
         <div class="flex items-center gap-0.5 shrink-0">
           <button
-            class={clsx('p-1 rounded', wordWrap() ? 'text-accent bg-accent/10' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3')}
-            onClick={() => setWordWrap(!wordWrap())}
-            title="Word wrap"
-          >
-            <WrapText size={12} />
-          </button>
-          <button
-            class={clsx('p-1 rounded', hideWhitespace() ? 'text-accent bg-accent/10' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3')}
-            onClick={() => setHideWhitespace(!hideWhitespace())}
-            title="Hide whitespace changes"
-          >
-            <EyeOff size={12} />
-          </button>
-          <button
             class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 disabled:opacity-40"
             onClick={refresh}
             disabled={loading()}
@@ -348,64 +205,42 @@ export const CodeChanges: Component<Props> = (props) => {
             const statusLetter = STATUS_LETTERS[file.status] || '?'
             const statusColor = STATUS_COLORS[file.status] || 'text-text-muted'
             const stats = () => statsForFile(file.path)
-            const isOpen = () => openFiles().has(file.path)
-            const diff = () => fileDiffs().get(file.path)
+            const active = () => isRowActive(file.path)
 
             return (
-              <div>
-                {/* File row */}
-                <div
-                  class={`relative flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs ${
-                    isOpen()
-                      ? 'bg-surface-2 text-text-primary sticky top-0 z-10 border-b-1 border-b-solid border-b-white/8'
-                      : 'hover:bg-surface-2 text-text-secondary'
-                  }`}
-                  style={isOpen() ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
-                  onClick={() => toggleFile(file.path)}
-                >
-                  {/* Expand chevron */}
-                  <span class="text-text-dim shrink-0">
-                    {isOpen() ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              <div
+                class={`relative flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs ${
+                  active()
+                    ? 'bg-surface-2 text-text-primary'
+                    : 'hover:bg-surface-2 text-text-secondary'
+                }`}
+                style={active() ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
+                onClick={() => openDiff(file.path)}
+                onDblClick={(e) => { e.stopPropagation(); openDiff(file.path, { pinned: true }) }}
+                onContextMenu={(e) => { e.preventDefault(); setFileMenu({ x: e.clientX, y: e.clientY, path: file.path }) }}
+              >
+                <span class="shrink-0 text-text-dim">
+                  <FileIcon size={12} />
+                </span>
+
+                <span class="truncate flex-1">
+                  {file.path}
+                </span>
+
+                <Show when={stats()}>
+                  <span class="shrink-0 flex items-center gap-1.5 text-[10px] tabular-nums">
+                    <Show when={stats()!.insertions > 0}>
+                      <span class="text-emerald-400">+{stats()!.insertions}</span>
+                    </Show>
+                    <Show when={stats()!.deletions > 0}>
+                      <span class="text-red-400">-{stats()!.deletions}</span>
+                    </Show>
                   </span>
-
-                  {/* File type icon */}
-                  <span class="shrink-0 text-text-dim">
-                    <FileIcon size={12} />
-                  </span>
-
-                  {/* File path */}
-                  <span class="truncate flex-1">
-                    {file.path}
-                  </span>
-
-                  {/* Stats */}
-                  <Show when={stats()}>
-                    <span class="shrink-0 flex items-center gap-1.5 text-[10px] tabular-nums">
-                      <Show when={stats()!.insertions > 0}>
-                        <span class="text-emerald-400">+{stats()!.insertions}</span>
-                      </Show>
-                      <Show when={stats()!.deletions > 0}>
-                        <span class="text-red-400">-{stats()!.deletions}</span>
-                      </Show>
-                    </span>
-                  </Show>
-
-                  {/* Status letter (VS Code style) */}
-                  <span class={`shrink-0 text-[11px] font-medium tabular-nums w-3 text-center ${statusColor}`}>
-                    {statusLetter}
-                  </span>
-                </div>
-
-                {/* Inline diff */}
-                <Show when={isOpen() && diff()}>
-                  <DiffView
-                    diff={diff()!}
-                    tokens={tokenCache()}
-                    wordWrap={wordWrap()}
-                    onExpandAbove={(hi) => expandAbove(file.path, hi)}
-                    onExpandBelow={(hi) => expandBelow(file.path, hi)}
-                  />
                 </Show>
+
+                <span class={`shrink-0 text-[11px] font-medium tabular-nums w-3 text-center ${statusColor}`}>
+                  {statusLetter}
+                </span>
               </div>
             )
           }}
@@ -478,150 +313,14 @@ export const CodeChanges: Component<Props> = (props) => {
           </div>
         </Show>
       </div>
-    </div>
-  )
-}
 
-// ---------------------------------------------------------------------------
-// Diff viewer sub-component
-// ---------------------------------------------------------------------------
-
-const ExpandButton: Component<{ onClick: () => void; label: string; direction: 'up' | 'down' }> = (props) => (
-  <button
-    class="sticky left-0 w-full py-1 px-3 text-[10px] text-accent/70 hover:text-accent hover:bg-accent-muted/50 font-mono transition-colors select-none flex items-center gap-1"
-    onClick={props.onClick}
-  >
-    <span>{props.direction === 'up' ? '↑' : '↓'}</span>
-    <span>{props.label}</span>
-  </button>
-)
-
-interface DiffViewProps {
-  diff: FileDiff
-  tokens: Map<string, HighlightToken[]>
-  wordWrap: boolean
-  onExpandAbove: (hunkIndex: number) => void
-  onExpandBelow: (hunkIndex: number) => void
-}
-
-const DiffView: Component<DiffViewProps> = (props) => {
-  return (
-    <div class="border-t border-b border-border-subtle bg-surface-0 overflow-x-auto">
-      <div class="min-w-fit">
-      <For each={props.diff.hunks}>
-        {(hunk, i) => {
-          const showExpandAbove = () => i() === 0 && hunk.newStart > 1
-          const showExpandBetween = () => {
-            if (i() === 0) return false
-            const prev = props.diff.hunks[i() - 1]
-            const prevLastLine = prev.lines.reduce((max, l) => l.newLineNumber ? Math.max(max, l.newLineNumber) : max, 0)
-            return hunk.newStart > prevLastLine + 1
-          }
-
-          return (
-            <div>
-              {/* Expand above first hunk */}
-              <Show when={showExpandAbove()}>
-                <ExpandButton onClick={() => props.onExpandAbove(i())} label="Load more" direction="up" />
-              </Show>
-
-              {/* Expand between hunks — show both down (prev) and up (current) */}
-              <Show when={showExpandBetween()}>
-                <div class="sticky left-0 flex border-y border-border-subtle">
-                  <button
-                    class="flex-1 py-1 px-3 text-[10px] text-accent/70 hover:text-accent hover:bg-accent-muted/50 font-mono transition-colors select-none text-left"
-                    onClick={() => props.onExpandBelow(i() - 1)}
-                  >
-                    ↓ Load below
-                  </button>
-                  <div class="w-px bg-border-subtle" />
-                  <button
-                    class="flex-1 py-1 px-3 text-[10px] text-accent/70 hover:text-accent hover:bg-accent-muted/50 font-mono transition-colors select-none text-left"
-                    onClick={() => props.onExpandAbove(i())}
-                  >
-                    ↑ Load above
-                  </button>
-                </div>
-              </Show>
-
-              {/* Hunk header */}
-              <div class="px-3 py-1 text-[10px] font-mono text-text-dim bg-surface-2 border-b border-border-subtle select-none">
-                @@ -{hunk.oldStart},{hunk.oldCount} +{hunk.newStart},{hunk.newCount} @@
-                <Show when={hunk.header}>
-                  <span class="ml-2 text-text-muted">{hunk.header}</span>
-                </Show>
-              </div>
-
-              {/* Lines */}
-              <For each={hunk.lines}>
-                {(line) => {
-                  const bgClass = line.kind === 'add'
-                    ? 'bg-emerald-500/8'
-                    : line.kind === 'delete'
-                      ? 'bg-red-500/8'
-                      : ''
-
-                  const prefixClass = line.kind === 'add'
-                    ? 'text-emerald-300'
-                    : line.kind === 'delete'
-                      ? 'text-red-300'
-                      : 'text-text-muted'
-
-                  const plainClass = line.kind === 'context' ? 'text-text-muted' : ''
-                  const prefix = line.kind === 'add' ? '+' : line.kind === 'delete' ? '-' : ' '
-
-                  // Reactive getter so it updates when tokenCache changes
-                  const tokens = () => props.tokens.get(line.content)
-
-                  return (
-                    <div class={`flex font-mono text-[11px] leading-5 ${bgClass}`}>
-                      {/* Old line number */}
-                      <span class="w-10 text-right pr-1 text-text-dim/50 select-none shrink-0 text-[10px]">
-                        {line.oldLineNumber ?? ''}
-                      </span>
-                      {/* New line number */}
-                      <span class="w-10 text-right pr-2 text-text-dim/50 select-none shrink-0 text-[10px]">
-                        {line.newLineNumber ?? ''}
-                      </span>
-                      {/* Prefix */}
-                      <span class={`w-4 text-center select-none shrink-0 ${prefixClass}`}>
-                        {prefix}
-                      </span>
-                      {/* Content */}
-                      <span class={`flex-1 min-w-0 pr-3 ${props.wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} ${plainClass}`}>
-                        <Show when={tokens()} fallback={line.content}>
-                          <For each={tokens()!}>
-                            {(tok) => (
-                              <span style={tok.color ? { color: tok.color } : undefined}>
-                                {tok.content}
-                              </span>
-                            )}
-                          </For>
-                        </Show>
-                      </span>
-                    </div>
-                  )
-                }}
-              </For>
-
-              {/* Expand below last hunk — only if we haven't reached EOF */}
-              <Show when={i() === props.diff.hunks.length - 1 && (() => {
-                const lastLine = hunk.lines.reduce((max, l) => l.newLineNumber ? Math.max(max, l.newLineNumber) : max, 0)
-                return lastLine < props.diff.totalLines
-              })()}>
-                <ExpandButton onClick={() => props.onExpandBelow(i())} label="Load more" direction="down" />
-              </Show>
-            </div>
-          )
-        }}
-      </For>
-      </div>
-
-      <Show when={props.diff.hunks.length === 0}>
-        <div class="px-4 py-3 text-xs text-text-dim text-center">
-          No diff available (binary file?)
-        </div>
-      </Show>
+      <ContextMenu
+        open={!!fileMenu()}
+        onClose={closeFileMenu}
+        pos={fileMenu() ? { x: fileMenu()!.x, y: fileMenu()!.y } : undefined}
+        minWidth="min-w-44"
+        items={fileMenuItems()}
+      />
     </div>
   )
 }

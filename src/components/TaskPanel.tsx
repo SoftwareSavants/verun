@@ -17,7 +17,7 @@ import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/files'
-import { Square, Plus, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy } from 'lucide-solid'
+import { Square, Plus, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy, GitCompare } from 'lucide-solid'
 import { GitActions, hasGitActionsContent } from './GitActions'
 import { ContextMenu } from './ContextMenu'
 import { getFileIcon } from '../lib/fileIcons'
@@ -548,6 +548,12 @@ export const TaskPanel: Component = () => {
                     <For each={openTabs(t().id)}>
                       {(tab) => {
                         const isActive = () => mainView(t().id) === tab.relativePath
+                        const isDiff = () => tab.kind === 'diff'
+                        const diffSuffix = () => {
+                          if (!isDiff() || !tab.diffSource) return ''
+                          if (tab.diffSource.type === 'commit') return ` @ ${tab.diffSource.commitHash.slice(0, 7)}`
+                          return ' (diff)'
+                        }
                         return (
                           <div
                             data-tab-path={tab.relativePath}
@@ -557,21 +563,24 @@ export const TaskPanel: Component = () => {
                                 ? 'relative z-10 bg-surface-0 text-text-primary tab-active-frame'
                                 : 'text-text-muted hover:text-text-secondary hover:bg-white/3'
                             )}
-                            onClick={() => { if (mainView(t().id) === tab.relativePath) return; setActiveTab(t().id, tab.relativePath); revealFileInTree(t().id, tab.relativePath) }}
+                            onClick={() => { if (mainView(t().id) === tab.relativePath) return; setActiveTab(t().id, tab.relativePath); if (!isDiff()) revealFileInTree(t().id, tab.relativePath) }}
                             onDblClick={() => pinTab(t().id, tab.relativePath)}
                             onContextMenu={(e) => {
                               e.preventDefault()
                               setTabMenu({ x: e.clientX, y: e.clientY, path: tab.relativePath, taskId: t().id })
                             }}
                           >
-                            {(() => { const I = getFileIcon(tab.name); return <I size={10} class="shrink-0" /> })()}
+                            {(() => {
+                              if (isDiff()) return <GitCompare size={10} class="shrink-0" />
+                              const I = getFileIcon(tab.name); return <I size={10} class="shrink-0" />
+                            })()}
                             <span class={clsx(
-                              'truncate max-w-28',
+                              'truncate max-w-32',
                               tab.preview && 'italic',
-                              fileHasErrors(t().id, tab.relativePath) && 'text-status-error',
-                              !fileHasErrors(t().id, tab.relativePath) && fileHasWarnings(t().id, tab.relativePath) && 'text-yellow-500',
+                              !isDiff() && fileHasErrors(t().id, tab.relativePath) && 'text-status-error',
+                              !isDiff() && !fileHasErrors(t().id, tab.relativePath) && fileHasWarnings(t().id, tab.relativePath) && 'text-yellow-500',
                             )}>
-                              {tab.dirty ? '\u2022 ' : ''}{tab.name}
+                              {tab.dirty ? '\u2022 ' : ''}{tab.name}{diffSuffix()}
                             </span>
                             <button
                               class={clsx(

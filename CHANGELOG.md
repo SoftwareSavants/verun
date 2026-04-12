@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Diffs now open exclusively as full-size tabs in the main editor panel — clicking a file in the Changes pane opens a side-by-side diff (backed by `@codemirror/merge`) with syntax highlighting, search, and folding, instead of expanding an inline diff in the sidebar. Double-click pins the tab. Works for both working-tree changes and files inside any branch commit; toggleable inline view; tabs persist across reloads. The old inline diff renderer (custom hunk view, expand-context buttons, word-wrap and hide-whitespace toggles) has been removed.
+
 ## 0.4.4 — 2026-04-12
 
 ### Changes

@@ -39,7 +39,7 @@ interface Props {
 }
 
 // ── Syntax highlighting — VS Code One Dark colors ──────────────────────
-const verunHighlightStyle = HighlightStyle.define([
+export const verunHighlightStyle = HighlightStyle.define([
   { tag: tags.keyword, color: '#c678dd' },
   { tag: [tags.name, tags.deleted, tags.character, tags.macroName], color: '#e06c75' },
   { tag: [tags.function(tags.variableName), tags.labelName], color: '#61afef' },
@@ -64,7 +64,7 @@ const verunHighlightStyle = HighlightStyle.define([
 ])
 
 // ── Editor chrome — backgrounds, gutters, cursors ─────────────────────
-const verunTheme = EditorView.theme({
+export const verunTheme = EditorView.theme({
   '&': {
     backgroundColor: 'var(--surface-0)',
     color: '#abb2bf',
@@ -559,7 +559,7 @@ const mergedHoverTheme = EditorView.theme({
 }, { dark: true })
 
 // ── Language detection ─────────────────────────────────────────────────
-function langFromExt(path: string): Extension | null {
+export function langFromExt(path: string): Extension | null {
   const ext = path.split('.').pop()?.toLowerCase() || ''
   const name = path.split('/').pop()?.toLowerCase() || ''
 

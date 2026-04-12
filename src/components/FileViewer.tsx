@@ -3,10 +3,11 @@ import { convertFileSrc } from '@tauri-apps/api/core'
 import { marked } from 'marked'
 import { Image, Film, Music, Eye, Code2, Loader2, AlertCircle } from 'lucide-solid'
 import { CodeEditor } from './CodeEditor'
+import { DiffEditor } from './DiffEditor'
 import { BreadcrumbBar } from './BreadcrumbBar'
 import { getPreviewType } from '../lib/fileTypes'
 import * as ipc from '../lib/ipc'
-import { getCachedContent, setCachedContent, setCachedOriginal } from '../store/files'
+import { getCachedContent, setCachedContent, setCachedOriginal, isDiffKey, openTabs } from '../store/files'
 
 interface Props {
   taskId: string
@@ -18,7 +19,20 @@ interface Props {
 export const FileViewer: Component<Props> = (props) => {
   const type = () => getPreviewType(props.relativePath)
 
+  // Diff tabs use a synthetic key — look up the tab to recover source/path.
+  const diffTab = () => {
+    if (!isDiffKey(props.relativePath)) return null
+    return openTabs(props.taskId).find(t => t.relativePath === props.relativePath) ?? null
+  }
+
   return (
+    <Show when={!diffTab()} fallback={
+      <DiffEditor
+        taskId={props.taskId}
+        source={diffTab()!.diffSource!}
+        relativePath={diffTab()!.diffPath!}
+      />
+    }>
     <Switch fallback={
       <div class="flex flex-col h-full">
         <div class="flex items-center px-3 py-1 shrink-0">
@@ -45,6 +59,7 @@ export const FileViewer: Component<Props> = (props) => {
         <SvgViewer taskId={props.taskId} relativePath={props.relativePath} />
       </Match>
     </Switch>
+    </Show>
   )
 }
 

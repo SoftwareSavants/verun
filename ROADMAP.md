@@ -83,6 +83,7 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] Speed up the hover over files/list tiles everywhere
 - [X] esc to close all context menus
 - [X] CMD+Number not same order as ui
+- [X] Sessions history
 
 ---
 

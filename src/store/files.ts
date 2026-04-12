@@ -10,11 +10,31 @@ const [dirContents, setDirContents] = createStore<Record<string, FileEntry[]>>({
 const [expandedDirs, setExpandedDirs] = createSignal<Record<string, Set<string>>>({})
 
 // Open editor tabs — per task
+export type DiffSource = { type: 'working' } | { type: 'commit'; commitHash: string }
+
 export interface EditorTab {
+  /** Unique tab key. For files this is the relative path. For diffs it's a synthetic key (see diffTabKey). */
   relativePath: string
   name: string
   dirty: boolean
   preview: boolean // preview tabs get replaced when opening another file
+  /** Tab variant. Defaults to 'file' when omitted (legacy persisted tabs). */
+  kind?: 'file' | 'diff'
+  /** Original on-disk relative path (only set for diff tabs — relativePath is synthetic). */
+  diffPath?: string
+  /** Diff source descriptor (only set for diff tabs). */
+  diffSource?: DiffSource
+}
+
+/** Build the synthetic tab key used to identify a diff tab. */
+export function diffTabKey(source: DiffSource, relativePath: string): string {
+  if (source.type === 'commit') return `__diff__:commit:${source.commitHash}:${relativePath}`
+  return `__diff__:working:${relativePath}`
+}
+
+/** True when a tab key/main-view value identifies a diff tab. */
+export function isDiffKey(key: string | null | undefined): boolean {
+  return !!key && key.startsWith('__diff__:')
 }
 
 const [taskOpenTabs, setTaskOpenTabs] = createSignal<Record<string, EditorTab[]>>({})
@@ -47,7 +67,10 @@ export function mainView(taskId: string | null): string {
 }
 
 export function setMainView(taskId: string, view: string) {
-  setTaskMainView(prev => ({ ...prev, [taskId]: view }))
+  setTaskMainView(prev => {
+    if (prev[taskId] === view) return prev
+    return { ...prev, [taskId]: view }
+  })
 }
 
 // Recently closed tabs per task (for reopen)
@@ -263,6 +286,49 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
   persistTabState(taskId)
 }
 
+/** Open a diff as a tab in the main panel. Mirrors openFile preview semantics. */
+export function openDiffTab(taskId: string, relativePath: string, source: DiffSource, opts?: { pinned?: boolean }) {
+  const key = diffTabKey(source, relativePath)
+  const name = relativePath.split('/').pop() ?? relativePath
+  const tabs = openTabs(taskId)
+  const existing = tabs.find(t => t.relativePath === key)
+
+  if (existing) {
+    const alreadyActive = activeTabPath(taskId) === key && mainView(taskId) === key
+    const needsPin = opts?.pinned && existing.preview
+    if (alreadyActive && !needsPin) return
+    if (needsPin) {
+      setTaskOpenTabs(prev => ({
+        ...prev,
+        [taskId]: (prev[taskId] ?? []).map(t => t.relativePath === key ? { ...t, preview: false } : t),
+      }))
+    }
+    if (!alreadyActive) {
+      setTaskActiveTab(prev => ({ ...prev, [taskId]: key }))
+      setMainView(taskId, key)
+      pushMru(taskId, key)
+    }
+    persistTabState(taskId)
+    return
+  }
+
+  const withoutPreview = tabs.filter(t => !t.preview)
+  const newTab: EditorTab = {
+    relativePath: key,
+    name,
+    dirty: false,
+    preview: !opts?.pinned,
+    kind: 'diff',
+    diffPath: relativePath,
+    diffSource: source,
+  }
+  setTaskOpenTabs(prev => ({ ...prev, [taskId]: [...withoutPreview, newTab] }))
+  setTaskActiveTab(prev => ({ ...prev, [taskId]: key }))
+  setMainView(taskId, key)
+  pushMru(taskId, key)
+  persistTabState(taskId)
+}
+
 /** Pin the current preview tab (called on edit or double-click). */
 export function pinTab(taskId: string, relativePath: string) {
   setTaskOpenTabs(prev => {
@@ -412,6 +478,8 @@ export { revealRequest }
 
 /** Expand all ancestor directories and signal the tree to scroll to the file. */
 export async function revealFileInTree(taskId: string, relativePath: string) {
+  // Diff tabs use synthetic keys with no real path on disk — nothing to reveal.
+  if (isDiffKey(relativePath)) return
   // Build list of ancestor paths: "src/components/App.tsx" → ["src", "src/components"]
   const parts = relativePath.split('/')
   const ancestors: string[] = []

@@ -71,6 +71,16 @@ pub struct FileDiff {
     pub total_lines: u32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffContents {
+    pub path: String,
+    pub status: String,
+    pub old_text: String,
+    pub new_text: String,
+    pub binary: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Git status
 // ---------------------------------------------------------------------------
@@ -666,6 +676,127 @@ pub fn get_commit_file_diff(
             deletions,
         },
         total_lines,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Raw old/new file contents — used by the side-by-side diff editor
+// ---------------------------------------------------------------------------
+
+/// Read a file from a git revision via `git show <rev>:<path>`.
+/// Returns `(text, exists)`. Missing files are returned as empty + false.
+fn read_at_rev(worktree_path: &str, rev: &str, file_path: &str) -> (String, bool) {
+    let output = match git(worktree_path)
+        .args(["show", &format!("{rev}:{file_path}")])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return (String::new(), false),
+    };
+    if !output.status.success() {
+        return (String::new(), false);
+    }
+    (String::from_utf8_lossy(&output.stdout).to_string(), true)
+}
+
+/// Quick binary check — git's own --numstat marker is "-\t-".
+fn is_binary_diff(worktree_path: &str, args: &[&str]) -> bool {
+    let output = match git(worktree_path).args(args).output() {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    let s = String::from_utf8_lossy(&output.stdout);
+    s.lines().next().is_some_and(|l| l.starts_with("-\t-\t"))
+}
+
+/// Get full old + new text for a working-tree file (uncommitted changes vs HEAD).
+pub fn get_file_diff_contents(
+    worktree_path: &str,
+    file_path: &str,
+) -> Result<DiffContents, String> {
+    if is_binary_diff(
+        worktree_path,
+        &["diff", "--numstat", "HEAD", "--", file_path],
+    ) {
+        return Ok(DiffContents {
+            path: file_path.to_string(),
+            status: "M".to_string(),
+            old_text: String::new(),
+            new_text: String::new(),
+            binary: true,
+        });
+    }
+
+    let (old_text, old_exists) = read_at_rev(worktree_path, "HEAD", file_path);
+
+    let full_path = std::path::Path::new(worktree_path).join(file_path);
+    let (new_text, new_exists) = match std::fs::read_to_string(&full_path) {
+        Ok(s) => (s, true),
+        Err(_) => (String::new(), false),
+    };
+
+    let status = if !old_exists && new_exists {
+        "A"
+    } else if old_exists && !new_exists {
+        "D"
+    } else {
+        "M"
+    };
+
+    Ok(DiffContents {
+        path: file_path.to_string(),
+        status: status.to_string(),
+        old_text,
+        new_text,
+        binary: false,
+    })
+}
+
+/// Get full old + new text for a file at a specific commit (parent vs commit).
+pub fn get_commit_file_contents(
+    worktree_path: &str,
+    commit_hash: &str,
+    file_path: &str,
+) -> Result<DiffContents, String> {
+    if is_binary_diff(
+        worktree_path,
+        &[
+            "diff-tree",
+            "-p",
+            "--numstat",
+            "--no-commit-id",
+            commit_hash,
+            "--",
+            file_path,
+        ],
+    ) {
+        return Ok(DiffContents {
+            path: file_path.to_string(),
+            status: "M".to_string(),
+            old_text: String::new(),
+            new_text: String::new(),
+            binary: true,
+        });
+    }
+
+    let parent = format!("{commit_hash}^");
+    let (old_text, old_exists) = read_at_rev(worktree_path, &parent, file_path);
+    let (new_text, new_exists) = read_at_rev(worktree_path, commit_hash, file_path);
+
+    let status = if !old_exists && new_exists {
+        "A"
+    } else if old_exists && !new_exists {
+        "D"
+    } else {
+        "M"
+    };
+
+    Ok(DiffContents {
+        path: file_path.to_string(),
+        status: status.to_string(),
+        old_text,
+        new_text,
+        binary: false,
     })
 }
 

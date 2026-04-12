@@ -1058,6 +1058,43 @@ pub async fn get_commit_file_diff(
     )
 }
 
+#[tauri::command]
+pub async fn get_file_diff_contents(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    file_path: String,
+) -> Result<git_ops::DiffContents, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            git_ops::get_file_diff_contents(&t.worktree_path, &file_path)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_commit_file_contents(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    commit_hash: String,
+    file_path: String,
+) -> Result<git_ops::DiffContents, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            git_ops::get_commit_file_contents(&t.worktree_path, &commit_hash, &file_path)
+        })
+        .await,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // GitHub
 // ---------------------------------------------------------------------------

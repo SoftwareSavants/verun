@@ -195,6 +195,14 @@ export interface FileDiff {
   totalLines: number
 }
 
+export interface DiffContents {
+  path: string
+  status: string
+  oldText: string
+  newText: string
+  binary: boolean
+}
+
 export interface BranchCommit {
   hash: string
   shortHash: string
