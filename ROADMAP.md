@@ -78,7 +78,10 @@ Small UX issues noticed in daily use. No schedule — fix when you have a spare 
 - [X] @mentioned files ship in input and sent messages
 - [X] Media viewer & markdown preview (WYSIWYG)
 - [ ] Show file errors in warnings in the scrollbar
-- [ ] Reload open(ed) files cache on app lifecycle change
+- [ ] Reload open(ed) files cach on app lifecycle change
+- [ ] Speed up the hover over files/list tiles everywhere
+- [ ] esc to close all context menus
+- [ ] CMD+Number not same order as ui
 
 ---
 

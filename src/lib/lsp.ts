@@ -230,7 +230,7 @@ function createTauriTransport(taskId: string, worktreePath: string, workspaceFol
         // tsserver. After 3s (enough for tsserver to start), auto-open one file
         // to trigger geterrForProject and populate the problems panel.
         if (msg.method === 'initialized') {
-          setTimeout(() => autoOpenProjectFile(taskId, worktreePath), 3000)
+          setTimeout(() => autoDiscoverProjects(taskId, worktreePath), 3000)
         }
       } catch { /* not JSON — send as-is */ }
       ipc.lspSend(taskId, message)
@@ -271,29 +271,105 @@ async function findWorkspaceFolders(taskId: string, worktreePath: string): Promi
   }
 }
 
-/**
- * Auto-open one .ts/.tsx file from the root project to trigger geterrForProject.
- * Called from the transport's send interceptor when it sees the outgoing
- * `initialized` notification — timed 3s after to let vtsls finish spawning tsserver.
- */
-async function autoOpenProjectFile(taskId: string, worktreePath: string) {
-  if (!clients.has(taskId)) return
+/** Send a didOpen for a file via raw IPC. */
+async function sendDidOpen(taskId: string, worktreePath: string, relPath: string): Promise<boolean> {
   try {
-    const allFiles = await ipc.listWorktreeFiles(taskId)
-    const file = allFiles.find(f =>
-      /\.(ts|tsx)$/.test(f) && !f.includes('node_modules') && !f.includes('.next/')
-    )
-    if (!file) return
-    const content = await ipc.readTextFile(`${worktreePath}/${file}`)
-    const uri = `file://${worktreePath}/${file}`
-    const ext = file.split('.').pop() || ''
+    const content = await ipc.readTextFile(`${worktreePath}/${relPath}`)
+    const uri = `file://${worktreePath}/${relPath}`
+    const ext = relPath.split('.').pop() || ''
     const languageId = ext === 'tsx' ? 'typescriptreact' : 'typescript'
-    ipc.lspSend(taskId, JSON.stringify({
+    await ipc.lspSend(taskId, JSON.stringify({
       jsonrpc: '2.0',
       method: 'textDocument/didOpen',
       params: { textDocument: { uri, languageId, version: 0, text: content } },
     }))
-  } catch { /* worktree not ready or no TS files */ }
+    return true
+  } catch { return false }
+}
+
+/**
+ * Discover all TS projects in the worktree by chaining didOpen calls.
+ * Called from the transport's send interceptor when it sees the outgoing
+ * `initialized` notification — timed 3s after so vtsls has spawned tsserver.
+ *
+ * Flow:
+ *   1. Find one .ts/.tsx file per tsconfig directory
+ *   2. Open the first one, wait for publishDiagnostics to confirm service is live
+ *   3. Chain the rest: open, wait 3s of diagnostic quiet, repeat
+ */
+async function autoDiscoverProjects(taskId: string, worktreePath: string) {
+  if (!clients.has(taskId)) return
+
+  let allFiles: string[]
+  try { allFiles = await ipc.listWorktreeFiles(taskId) }
+  catch { return }
+
+  // Find all tsconfig directories (including root)
+  const tsconfigDirs: string[] = []
+  let hasRootTsconfig = false
+  for (const f of allFiles) {
+    if (f === 'tsconfig.json') { hasRootTsconfig = true; continue }
+    if (f.endsWith('/tsconfig.json')) {
+      tsconfigDirs.push(f.slice(0, f.lastIndexOf('/')))
+    }
+  }
+
+  // Pick one representative .ts/.tsx file per tsconfig dir
+  const filesToOpen: string[] = []
+  const pickFile = (prefix: string) => allFiles.find(f =>
+    f.startsWith(prefix) &&
+    /\.(ts|tsx)$/.test(f) &&
+    !f.includes('node_modules') &&
+    !f.includes('.next/') &&
+    !f.includes('/dist/') &&
+    !f.includes('/build/')
+  )
+
+  if (hasRootTsconfig) {
+    const root = pickFile('')
+    if (root) filesToOpen.push(root)
+  } else if (tsconfigDirs.length === 0) {
+    // No tsconfigs at all — fall back to opening any TS file
+    const any = pickFile('')
+    if (any) filesToOpen.push(any)
+  }
+  for (const dir of tsconfigDirs) {
+    const file = pickFile(dir + '/')
+    if (file) filesToOpen.push(file)
+  }
+  if (filesToOpen.length === 0) return
+
+  // Open the first file — this triggers service init confirmation
+  const first = filesToOpen.shift()!
+  const ok = await sendDidOpen(taskId, worktreePath, first)
+  if (!ok || filesToOpen.length === 0) return
+
+  // Chain remaining projects: wait for 3s of diagnostic quiet, then open next
+  const { listen: tauriListen } = await import('@tauri-apps/api/event')
+  let idx = 0
+
+  const openNext = async () => {
+    if (idx >= filesToOpen.length || !clients.has(taskId)) return
+    const file = filesToOpen[idx++]
+    await sendDidOpen(taskId, worktreePath, file)
+
+    // Wait for 3s of diagnostic quiet, then move on
+    let settleTimer: ReturnType<typeof setTimeout>
+    const unlisten = await tauriListen<{ taskId: string; message: string }>('lsp-message', (event) => {
+      if (event.payload.taskId !== taskId) return
+      try {
+        const msg = JSON.parse(event.payload.message)
+        if (msg.method === 'textDocument/publishDiagnostics') {
+          clearTimeout(settleTimer)
+          settleTimer = setTimeout(onSettle, 3000)
+        }
+      } catch {}
+    })
+    const onSettle = () => { unlisten(); openNext() }
+    settleTimer = setTimeout(onSettle, 3000)
+  }
+
+  openNext()
 }
 
 /**
