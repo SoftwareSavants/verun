@@ -44,11 +44,14 @@ import { deleteProject } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NewTaskDialog } from "./NewTaskDialog";
 import { AddProjectDialog } from "./AddProjectDialog";
-import { Popover } from "./Popover";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { selectSettingsSection } from "./SettingsPage";
 import {
   Plus,
   FolderPlus,
+  FolderOpen,
+  Pencil,
+  Trash2,
   Loader2,
   Circle,
   AlertCircle,
@@ -56,7 +59,6 @@ import {
   GitMerge,
   CircleX,
   Archive,
-  Folder,
   Settings,
 } from "lucide-solid";
 import { clsx } from "clsx";
@@ -65,6 +67,38 @@ import { listen } from "@tauri-apps/api/event";
 import * as ipc from "../lib/ipc";
 import { hasOverlayTitlebar } from "../lib/platform";
 import { ExternalLink } from "lucide-solid";
+
+// ---------------------------------------------------------------------------
+// Per-project chip color — deterministic hash → palette index. Subtle bg
+// (low alpha) + saturated text for legibility against the dark sidebar.
+// ---------------------------------------------------------------------------
+
+const PROJECT_COLORS = [
+  '#ef4444', // red
+  '#f97316', // orange
+  '#f59e0b', // amber
+  '#eab308', // yellow
+  '#84cc16', // lime
+  '#22c55e', // green
+  '#10b981', // emerald
+  '#14b8a6', // teal
+  '#06b6d4', // cyan
+  '#0ea5e9', // sky
+  '#3b82f6', // blue
+  '#6366f1', // indigo
+  '#8b5cf6', // violet
+  '#a855f7', // purple
+  '#d946ef', // fuchsia
+  '#ec4899', // pink
+  '#f43f5e', // rose
+  '#78716c', // stone
+] as const;
+
+function projectColor(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return PROJECT_COLORS[hash % PROJECT_COLORS.length];
+}
 
 // ---------------------------------------------------------------------------
 // Composite task status — richer than just session status
@@ -140,16 +174,12 @@ interface MenuPos {
   x: number;
   y: number;
 }
-interface MenuAction {
-  label: string;
-  action: () => void;
-  danger?: boolean;
-}
+type MenuItem = ContextMenuItem;
 
 export const Sidebar: Component = () => {
   const [contextMenu, setContextMenu] = createSignal<{
     pos: MenuPos;
-    items: MenuAction[];
+    items: MenuItem[];
   } | null>(null);
   const [confirmAction, setConfirmAction] = createSignal<{
     title: string;
@@ -214,17 +244,21 @@ export const Sidebar: Component = () => {
       items: [
         {
           label: "Open in Finder",
+          icon: FolderOpen,
           action: () => ipc.openInFinder(project.repoPath),
         },
         {
           label: "Project Settings",
+          icon: Settings,
           action: () => {
             setShowSettings(true);
             selectSettingsSection(projectId);
           },
         },
+        { separator: true },
         {
           label: "Delete Project",
+          icon: Trash2,
           action: () =>
             setConfirmAction({
               title: "Delete Project",
@@ -247,18 +281,23 @@ export const Sidebar: Component = () => {
       items: [
         {
           label: "Open in New Window",
+          icon: ExternalLink,
           action: () => ipc.openTaskWindow(task.id, task.name || undefined),
         },
         {
           label: "Rename",
+          icon: Pencil,
           action: () => setRenamingTaskId(taskId),
         },
         {
           label: "Open in Finder",
+          icon: FolderOpen,
           action: () => ipc.openInFinder(task.worktreePath),
         },
+        { separator: true },
         {
           label: "Archive Task",
+          icon: Archive,
           action: () => setArchiveTaskTarget(taskId),
         },
       ],
@@ -270,36 +309,19 @@ export const Sidebar: Component = () => {
   return (
     <>
       {/* Context menu */}
-      <Popover open={!!contextMenu()} onClose={closeMenu} pos={contextMenu()?.pos} class="py-1 min-w-40">
-        <For each={contextMenu()?.items || []}>
-          {(item) => (
-            <button
-              class={clsx(
-                "w-full text-left px-3 py-1.5 text-xs transition-colors",
-                item.danger
-                  ? "text-status-error hover:bg-status-error/10"
-                  : "text-text-secondary hover:bg-surface-4 hover:text-text-primary",
-              )}
-              onClick={() => {
-                item.action();
-                closeMenu();
-              }}
-            >
-              {item.label}
-            </button>
-          )}
-        </For>
-      </Popover>
+      <ContextMenu
+        open={!!contextMenu()}
+        onClose={closeMenu}
+        pos={contextMenu()?.pos}
+        items={contextMenu()?.items || []}
+      />
 
       <div class="h-full bg-surface-1 flex flex-col overflow-hidden">
         {/* Titlebar drag region (macOS overlay titlebar) */}
         <Show when={hasOverlayTitlebar}><div class="h-12 shrink-0 drag-region" data-tauri-drag-region /></Show>
 
-        {/* Header */}
-        <div class="px-4 pb-2 flex items-center justify-between no-drag">
-          <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">
-            Projects
-          </span>
+        {/* Header — just an add-project button, no redundant label */}
+        <div class="px-2 pb-1 flex items-center justify-end no-drag">
           <button
             class="p-1 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
             onClick={async () => {
@@ -313,28 +335,38 @@ export const Sidebar: Component = () => {
         </div>
 
         {/* Project + task list */}
-        <div class="flex-1 overflow-y-auto overflow-x-hidden px-3 no-drag">
+        <div class="flex-1 overflow-y-auto overflow-x-hidden px-2 no-drag">
           <For each={projects}>
             {(project) => (
-              <div class="mb-1">
+              <div class="mb-3">
                 <div
-                  class="w-full text-left px-2 py-1.5 rounded-lg transition-colors flex items-center justify-between group cursor-pointer min-w-0"
+                  class="w-full text-left px-2 py-1 rounded-md flex items-center justify-between group cursor-pointer min-w-0 hover:bg-surface-2"
                   onClick={() => handleSelectProject(project.id)}
                   onContextMenu={(e) => showProjectMenu(e, project.id)}
                 >
-                  <span class="text-sm text-text-primary truncate flex items-center gap-1.5">
-                    <Folder size={13} class="shrink-0 text-text-dim" />
-                    {project.name}
+                  <span class="flex items-center gap-2 min-w-0">
+                    <span
+                      class="shrink-0 w-4 h-4 rounded-sm text-[10px] font-semibold uppercase flex items-center justify-center"
+                      style={{
+                        'background-color': projectColor(project.id) + '26',
+                        color: projectColor(project.id),
+                      }}
+                    >
+                      {project.name.charAt(0)}
+                    </span>
+                    <span class="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">
+                      {project.name}
+                    </span>
                   </span>
                   <button
-                    class="p-0.5 rounded opacity-60 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-secondary shrink-0"
+                    class="p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-secondary shrink-0"
                     onClick={(e) => {
                       e.stopPropagation();
                       setNewTaskProjectId(project.id);
                     }}
                     title="New Task (⌘N)"
                   >
-                    <Plus size={14} />
+                    <Plus size={12} />
                   </button>
                 </div>
 
@@ -344,10 +376,7 @@ export const Sidebar: Component = () => {
                     selectedProjectId() === project.id
                   }
                 >
-                  <div
-                    class="ml-2.5 pl-4 py-0.5"
-                    style={{ "border-left": "1px solid #3a3a48" }}
-                  >
+                  <div class="px-2 pt-1">
                     <button
                       class="text-[10px] text-text-dim hover:text-text-muted transition-colors cursor-pointer"
                       onClick={() => setNewTaskProjectId(project.id)}
@@ -358,10 +387,7 @@ export const Sidebar: Component = () => {
                 </Show>
 
                 <Show when={activeTasksForProject(project.id).length > 0}>
-                  <div
-                    class="ml-2.5 mt-0.5 pl-2 flex flex-col gap-0.5"
-                    style={{ "border-left": "1px solid #3a3a48" }}
-                  >
+                  <div class="mt-1 flex flex-col gap-0.5">
                     <For each={activeTasksForProject(project.id)}>
                       {(task) => {
                         const phase = () => taskPhase(task.id);
@@ -387,23 +413,18 @@ export const Sidebar: Component = () => {
                           setShowArchived(false);
                         };
 
+                        const isSelected = () => !windowed() && selectedTaskId() === task.id;
+
                         return (
                           <div
                             class={clsx(
-                              "group/task pl-2 pr-2 py-1.5 rounded-md transition-colors flex items-start gap-2 cursor-pointer",
+                              "group/task relative pl-3 pr-2 py-1.5 rounded-md flex items-start gap-2 cursor-pointer",
                               "hover:bg-surface-2",
-                              !windowed() && selectedTaskId() === task.id && "bg-surface-2",
-                              !windowed() && attention() && "bg-amber-400/8",
-                              !windowed() && unread() && "bg-accent/8",
+                              isSelected() && "bg-surface-2",
                               archiving() && "opacity-50 pointer-events-none",
                               windowed() && "opacity-50",
                             )}
-                            style={{
-                              "border-left": !windowed() && attention() ? "2px solid #fbbf24" :
-                                             !windowed() && unread() ? "2px solid #2d6e4f" :
-                                             "2px solid transparent",
-                              "border-radius": (!windowed() && (attention() || unread())) ? "0 6px 6px 0" : undefined,
-                            }}
+                            style={isSelected() ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
                             onClick={handleClick}
                             onDblClick={() => { if (!disabled() && !hasError()) ipc.openTaskWindow(task.id, task.name || undefined) }}
                             onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
@@ -416,8 +437,17 @@ export const Sidebar: Component = () => {
                             </span>
                             <div class="flex-1 min-w-0">
                               <Show when={renamingTaskId() === task.id} fallback={
-                                <div class={clsx("text-xs truncate", hasIndicator() ? "text-text-primary font-medium" : "text-text-secondary")}>
-                                  {task.name || "New task"}
+                                <div class={clsx(
+                                  "text-xs truncate flex items-center gap-1.5",
+                                  hasIndicator() || isSelected() ? "text-text-primary font-medium" : "text-text-secondary"
+                                )}>
+                                  <span class="truncate">{task.name || "New task"}</span>
+                                  <Show when={attention()}>
+                                    <span class="shrink-0 w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                  </Show>
+                                  <Show when={unread()}>
+                                    <span class="shrink-0 w-1.5 h-1.5 rounded-full bg-accent" />
+                                  </Show>
                                 </div>
                               }>
                                 <input
@@ -441,7 +471,7 @@ export const Sidebar: Component = () => {
                                   onClick={(e) => e.stopPropagation()}
                                 />
                               </Show>
-                              <div class={clsx("text-[10px] truncate flex items-center gap-1", hasIndicator() ? "text-text-muted" : "text-text-dim")}>
+                              <div class={clsx("text-[10px] truncate flex items-center gap-1", hasIndicator() || isSelected() ? "text-text-muted" : "text-text-dim")}>
                                 {task.branch}
                                 <Show when={isTaskWindowed(task.id)}>
                                   <ExternalLink size={9} class="shrink-0 text-accent/60" />
@@ -450,7 +480,7 @@ export const Sidebar: Component = () => {
                             </div>
                             <Show when={!archiving()}>
                               <button
-                                class="shrink-0 p-0.5 rounded opacity-0 group-hover/task:opacity-60 hover:!opacity-100 text-text-dim hover:text-text-muted transition-all"
+                                class="absolute right-2 top-1 p-0.5 rounded opacity-0 group-hover/task:opacity-100 text-text-dim hover:text-text-muted bg-surface-2"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setArchiveTaskTarget(task.id);
@@ -497,33 +527,39 @@ export const Sidebar: Component = () => {
           </Show>
         </div>
 
-        {/* Footer */}
-        <div class="border-t border-border-subtle flex flex-col no-drag">
+        {/* Footer — compact icon strip */}
+        <div class="border-t border-border-subtle flex items-center gap-1 px-2 py-1.5 no-drag">
           <button
-            class={`w-full px-4 py-2.5 flex items-center gap-2 transition-colors ${
-              showArchived() ? 'text-text-secondary' : 'text-text-dim hover:text-text-muted'
-            }`}
+            class={clsx(
+              'p-1.5 rounded-md transition-colors',
+              showArchived()
+                ? 'text-accent bg-accent-muted'
+                : 'text-text-dim hover:text-text-secondary hover:bg-surface-3'
+            )}
             onClick={() => {
               const next = !showArchived()
               setShowArchived(next)
               if (next) { setShowSettings(false); setSelectedTaskId(null) }
             }}
+            title="Archived"
           >
-            <Archive size={13} />
-            <span class="text-[11px]">Archived</span>
+            <Archive size={14} />
           </button>
           <button
-            class={`w-full px-4 py-2.5 flex items-center gap-2 transition-colors ${
-              showSettings() ? 'text-text-secondary' : 'text-text-dim hover:text-text-muted'
-            }`}
+            class={clsx(
+              'p-1.5 rounded-md transition-colors',
+              showSettings()
+                ? 'text-accent bg-accent-muted'
+                : 'text-text-dim hover:text-text-secondary hover:bg-surface-3'
+            )}
             onClick={() => {
               const next = !showSettings()
               setShowSettings(next)
               if (next) setShowArchived(false)
             }}
+            title="Settings"
           >
-            <Settings size={13} />
-            <span class="text-[11px]">Settings</span>
+            <Settings size={14} />
           </button>
         </div>
       </div>

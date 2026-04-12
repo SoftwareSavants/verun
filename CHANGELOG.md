@@ -11,6 +11,9 @@
 - Editor/chat panel below the tab bar now has its own rounded `surface-0` chrome with `white/8` borders on three sides, framing the active tab as a continuous "tab pane"
 - Session tabs render the official Claude mark from simple-icons (`#D97757`); unread non-running sessions get a slow accent pulse instead of a dot
 - Breadcrumb bar in the file viewer no longer paints its own grey background — it now sits on the editor's `surface-0`
+- Left sidebar redesigned: redundant "PROJECTS" header removed, project rows turned into uppercase section labels with a per-project colored chip (deterministic 18-color palette hashed from project id), task tiles got a single inset accent strip on selection (replacing the previous border + tinted bg + radius hacks), the archive button absolute-positioned so the title row uses the full width, and the footer collapsed from two rows of icon+label into a compact icon-only strip
+- Hover transitions stripped from dense list elements (tabs, sidebar rows, file tree) — feedback is now instant instead of fading over 150ms
+- Shared `ContextMenu` component (and `ContextMenuItem` type) replaces five hand-rolled context menu blocks across Sidebar, TaskPanel (file tabs), CodeEditor, and FileTree; supports `icon`, `shortcut`, `danger`, `disabled`, and `separator` items, all sharing the new `surface-2` + `white/8` ring chrome
 
 ## 0.4.3 — 2026-04-12
 

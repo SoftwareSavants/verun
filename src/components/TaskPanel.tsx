@@ -17,8 +17,9 @@ import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/files'
-import { Square, Plus, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare } from 'lucide-solid'
+import { Square, Plus, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy } from 'lucide-solid'
 import { GitActions } from './GitActions'
+import { ContextMenu } from './ContextMenu'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
 import { fileHasErrors, fileHasWarnings } from '../store/problems'
@@ -31,7 +32,6 @@ import cursorIcon from '../assets/icons/cursor.svg?raw'
 import zedIcon from '../assets/icons/zed.svg?raw'
 import finderIcon from '../assets/icons/finder.svg?raw'
 import { fileManagerName, hasOverlayTitlebar } from '../lib/platform'
-import { registerDismissable } from '../lib/dismissable'
 
 function formatDuration(ms: number): string {
   const secs = Math.floor(ms / 1000)
@@ -201,22 +201,8 @@ export const TaskPanel: Component = () => {
   })
 
   // File tab context menu
-  let tabMenuRef: HTMLDivElement | undefined
   const [tabMenu, setTabMenu] = createSignal<{ x: number; y: number; path: string; taskId: string } | null>(null)
-  const closeTabMenu = (e?: MouseEvent) => {
-    if (e && tabMenuRef && tabMenuRef.contains(e.target as Node)) return
-    setTabMenu(null)
-  }
-  createEffect(() => {
-    if (tabMenu()) {
-      document.addEventListener('mousedown', closeTabMenu as EventListener, true)
-      const unregister = registerDismissable(() => setTabMenu(null))
-      onCleanup(() => {
-        document.removeEventListener('mousedown', closeTabMenu as EventListener, true)
-        unregister()
-      })
-    }
-  })
+  const closeTabMenu = () => setTabMenu(null)
 
   const [creatingSession, setCreatingSession] = createSignal(false)
   const handleNewSession = async () => {
@@ -507,7 +493,7 @@ export const TaskPanel: Component = () => {
                         return (
                           <div
                             class={clsx(
-                              'group h-8 flex items-center gap-1.5 px-3 text-[11px] rounded-t-md whitespace-nowrap cursor-pointer transition-colors',
+                              'group h-8 flex items-center gap-1.5 px-3 text-[11px] rounded-t-md whitespace-nowrap cursor-pointer',
                               isActive()
                                 ? 'relative z-10 bg-surface-0 text-text-primary tab-active-frame'
                                 : hasUnread()
@@ -564,7 +550,7 @@ export const TaskPanel: Component = () => {
                           <div
                             data-tab-path={tab.relativePath}
                             class={clsx(
-                              'group h-8 flex items-center gap-1.5 px-3 text-[11px] rounded-t-md whitespace-nowrap cursor-pointer transition-colors',
+                              'group h-8 flex items-center gap-1.5 px-3 text-[11px] rounded-t-md whitespace-nowrap cursor-pointer',
                               isActive()
                                 ? 'relative z-10 bg-surface-0 text-text-primary tab-active-frame'
                                 : 'text-text-muted hover:text-text-secondary hover:bg-white/3'
@@ -669,29 +655,18 @@ export const TaskPanel: Component = () => {
                   />
 
                   {/* File tab context menu */}
-                  <Show when={tabMenu()}>
-                    {(menu) => (
-                      <div
-                        ref={tabMenuRef}
-                        class="fixed z-100 bg-[#21252b] border border-[#181a1f] rounded-lg py-1 min-w-44"
-                        style={{ left: `${menu().x}px`, top: `${menu().y}px`, 'box-shadow': '0 6px 24px rgba(0,0,0,0.5)' }}
-                      >
-                        <button class="w-full flex items-center justify-between px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left" onClick={() => { requestCloseTab(menu().taskId, menu().path); closeTabMenu() }}>
-                          <span>Close</span><span class="text-[11px] text-[#5c6370] ml-8">{'\u2318'}W</span>
-                        </button>
-                        <button class="w-full flex items-center px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left" onClick={() => { closeOtherTabs(menu().taskId, menu().path); closeTabMenu() }}>
-                          Close Others
-                        </button>
-                        <button class="w-full flex items-center px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left" onClick={() => { closeAllTabs(menu().taskId); closeTabMenu() }}>
-                          Close All
-                        </button>
-                        <div class="h-px bg-[#181a1f] my-1" />
-                        <button class="w-full flex items-center px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] text-left" onClick={() => { navigator.clipboard.writeText(menu().path); closeTabMenu() }}>
-                          Copy Relative Path
-                        </button>
-                      </div>
-                    )}
-                  </Show>
+                  <ContextMenu
+                    open={!!tabMenu()}
+                    onClose={closeTabMenu}
+                    pos={tabMenu() ? { x: tabMenu()!.x, y: tabMenu()!.y } : undefined}
+                    items={tabMenu() ? [
+                      { label: 'Close', shortcut: '\u2318W', icon: X, action: () => requestCloseTab(tabMenu()!.taskId, tabMenu()!.path) },
+                      { label: 'Close Others', icon: X, action: () => closeOtherTabs(tabMenu()!.taskId, tabMenu()!.path) },
+                      { label: 'Close All', icon: X, action: () => closeAllTabs(tabMenu()!.taskId) },
+                      { separator: true },
+                      { label: 'Copy Relative Path', icon: ClipboardCopy, action: () => navigator.clipboard.writeText(tabMenu()!.path) },
+                    ] : []}
+                  />
 
                   {/* Terminal panel — resizable bottom section, kept in DOM to preserve xterm state */}
                   <div

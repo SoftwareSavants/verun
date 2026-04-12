@@ -1,6 +1,7 @@
 import { Component, For, Show, createEffect, on, onCleanup, onMount, createSignal } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
-import { Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-solid'
+import { Folder, FolderOpen, ChevronRight, ChevronDown, ExternalLink, RefreshCw, ClipboardCopy, FileText, Tag } from 'lucide-solid'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { fileHasErrors, fileHasWarnings, pathHasErrors, pathHasWarnings } from '../store/problems'
 import { getFileIcon } from '../lib/fileIcons'
 import {
@@ -9,7 +10,6 @@ import {
 } from '../store/files'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
-import { registerDismissable } from '../lib/dismissable'
 import type { FileEntry, FileTreeChangedEvent } from '../types'
 
 interface Props {
@@ -57,22 +57,7 @@ export const FileTree: Component<Props> = (props) => {
     ipc.watchWorktree(taskId)
   }))
 
-  // Close context menu on click outside
-  let menuRef: HTMLDivElement | undefined
-  const closeMenu = (e: MouseEvent) => {
-    if (menuRef && menuRef.contains(e.target as Node)) return
-    setContextMenu(null)
-  }
-  createEffect(() => {
-    if (contextMenu()) {
-      document.addEventListener('mousedown', closeMenu, true)
-      const unregister = registerDismissable(() => setContextMenu(null))
-      onCleanup(() => {
-        document.removeEventListener('mousedown', closeMenu, true)
-        unregister()
-      })
-    }
-  })
+  const closeMenu = () => setContextMenu(null)
 
   // Build flattened node list from expanded state
   const flatNodes = (): FlatNode[] => {
@@ -348,7 +333,7 @@ export const FileTree: Component<Props> = (props) => {
                       }}
                     >
                       <button
-                        class={`w-full h-full flex items-center gap-1 px-2 py-1 text-[12px] transition-colors text-left truncate${
+                        class={`w-full h-full flex items-center gap-1 px-2 py-1 text-[12px] text-left truncate${
                           !n().entry.isDir && mainView(props.taskId) === n().entry.relativePath
                             ? ' bg-surface-3 text-text-primary'
                             : selectedIndex() === virtualRow.index
@@ -400,57 +385,36 @@ export const FileTree: Component<Props> = (props) => {
       </div>
 
       {/* Context menu */}
-      <Show when={contextMenu()}>
-        {(menu) => (
-          <div
-            ref={menuRef}
-            class="fixed z-100 bg-[#21252b] border border-[#181a1f] rounded-lg py-1 min-w-52"
-            style={{
-              left: `${menu().x}px`,
-              top: `${menu().y}px`,
-              'box-shadow': '0 6px 24px rgba(0,0,0,0.5)',
-            }}
-          >
-            {/* File-specific actions */}
-            <Show when={!menu().entry.isDir}>
-              <TreeMenuItem label="Open in Editor" onClick={handleOpenFile} />
-              <TreeMenuItem label="Open in VS Code" onClick={handleOpenInEditor} />
-              <div class="h-px bg-[#181a1f] my-1" />
-            </Show>
-
-            {/* Folder-specific actions */}
-            <Show when={menu().entry.isDir}>
-              <Show
-                when={isExpanded(props.taskId, menu().entry.relativePath)}
-                fallback={<TreeMenuItem label="Expand" onClick={handleExpandFolder} />}
-              >
-                <TreeMenuItem label="Collapse" onClick={handleCollapseFolder} />
-              </Show>
-              <TreeMenuItem label="Open in VS Code" onClick={handleOpenInEditor} />
-              <TreeMenuItem label="Refresh" onClick={handleRefresh} />
-              <div class="h-px bg-[#181a1f] my-1" />
-            </Show>
-
-            {/* Common actions */}
-            <TreeMenuItem label="Copy Name" onClick={handleCopyName} />
-            <TreeMenuItem label="Copy Relative Path" onClick={handleCopyPath} />
-            <TreeMenuItem label="Copy Absolute Path" onClick={handleCopyAbsPath} />
-            <div class="h-px bg-[#181a1f] my-1" />
-            <TreeMenuItem label="Reveal in Finder" onClick={handleRevealInFinder} />
-          </div>
-        )}
-      </Show>
+      <ContextMenu
+        open={!!contextMenu()}
+        onClose={closeMenu}
+        pos={contextMenu() ? { x: contextMenu()!.x, y: contextMenu()!.y } : undefined}
+        minWidth="min-w-44"
+        items={(() => {
+          const menu = contextMenu()
+          if (!menu) return []
+          const items: ContextMenuItem[] = []
+          if (menu.entry.isDir) {
+            if (isExpanded(props.taskId, menu.entry.relativePath)) {
+              items.push({ label: 'Collapse', icon: ChevronRight, action: handleCollapseFolder })
+            } else {
+              items.push({ label: 'Expand', icon: ChevronDown, action: handleExpandFolder })
+            }
+            items.push({ label: 'Open in VS Code', icon: ExternalLink, action: handleOpenInEditor })
+            items.push({ label: 'Refresh', icon: RefreshCw, action: handleRefresh })
+          } else {
+            items.push({ label: 'Open in Editor', icon: FileText, action: handleOpenFile })
+            items.push({ label: 'Open in VS Code', icon: ExternalLink, action: handleOpenInEditor })
+          }
+          items.push({ separator: true })
+          items.push({ label: 'Copy Name', icon: Tag, action: handleCopyName })
+          items.push({ label: 'Copy Relative Path', icon: ClipboardCopy, action: handleCopyPath })
+          items.push({ label: 'Copy Absolute Path', icon: ClipboardCopy, action: handleCopyAbsPath })
+          items.push({ separator: true })
+          items.push({ label: 'Reveal in Finder', icon: FolderOpen, action: handleRevealInFinder })
+          return items
+        })()}
+      />
     </div>
-  )
-}
-
-function TreeMenuItem(props: { label: string; onClick: () => void }) {
-  return (
-    <button
-      class="w-full flex items-center px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] transition-colors text-left"
-      onClick={props.onClick}
-    >
-      {props.label}
-    </button>
   )
 }

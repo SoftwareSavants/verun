@@ -4,6 +4,7 @@ import { linter, forEachDiagnostic, type Diagnostic } from '@codemirror/lint'
 import { EditorState, StateField, StateEffect, RangeSet, Facet, type Extension } from '@codemirror/state'
 import { setChatPrefillRequest } from '../store/ui'
 import { setMainView } from '../store/files'
+import { ContextMenu } from './ContextMenu'
 import { defaultKeymap, history, historyField, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit } from '@codemirror/language'
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search'
@@ -31,7 +32,6 @@ import * as ipc from '../lib/ipc'
 import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal, pendingGoToLine, consumeGoToLine, onTabClose, onTaskCleanup } from '../store/files'
 import { reloadNonce, checkBeforeSave } from '../store/fileSync'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
-import { registerDismissable } from '../lib/dismissable'
 
 interface Props {
   taskId: string
@@ -1108,22 +1108,6 @@ export const CodeEditor: Component<Props> = (props) => {
     return from !== to
   }
 
-  // Close context menu on click outside
-  const handleClickOutside = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).closest('.editor-ctx-menu')) return
-    setContextMenu(null)
-  }
-  createEffect(() => {
-    if (contextMenu()) {
-      document.addEventListener('mousedown', handleClickOutside)
-      const unregister = registerDismissable(() => setContextMenu(null))
-      onCleanup(() => {
-        document.removeEventListener('mousedown', handleClickOutside)
-        unregister()
-      })
-    }
-  })
-
   // Listen for context menu event from CM dom handler
   onMount(() => {
     containerRef?.addEventListener('editor-context-menu', ((e: CustomEvent) => {
@@ -1144,55 +1128,29 @@ export const CodeEditor: Component<Props> = (props) => {
       </Show>
 
       {/* Context menu */}
-      <Show when={contextMenu()}>
-        {(pos) => (
-          <div
-            class="editor-ctx-menu fixed z-100 bg-[#21252b] border border-[#181a1f] rounded-lg py-1 min-w-52"
-            style={{
-              left: `${pos().x}px`,
-              top: `${pos().y}px`,
-              'box-shadow': '0 6px 24px rgba(0,0,0,0.5)',
-            }}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <ContextMenuItem label="Go to Definition" shortcut="F12" onClick={handleGoToDefinition} />
-            <ContextMenuItem label="Find References" shortcut="Shift+F12" onClick={handleFindReferences} />
-            <ContextMenuItem label="Rename Symbol" shortcut="F2" onClick={handleRenameSymbol} />
-            <ContextMenuSep />
-            <ContextMenuItem label="Cut" shortcut={'\u2318X'} onClick={handleCut} disabled={!hasSelection()} />
-            <ContextMenuItem label="Copy" shortcut={'\u2318C'} onClick={handleCopy} disabled={!hasSelection()} />
-            <ContextMenuItem label="Paste" shortcut={'\u2318V'} onClick={handlePaste} />
-            <ContextMenuSep />
-            <ContextMenuItem label="Select All" shortcut={'\u2318A'} onClick={handleSelectAll} />
-            <ContextMenuSep />
-            <ContextMenuItem label="Find" shortcut={'\u2318F'} onClick={handleFind} />
-            <ContextMenuItem label="Find and Replace" shortcut={'\u2318H'} onClick={handleFind} />
-            <ContextMenuSep />
-            <ContextMenuItem label="Copy Relative Path" onClick={handleCopyPath} />
-            <ContextMenuItem label="Reveal in Finder" onClick={handleRevealInFinder} />
-          </div>
-        )}
-      </Show>
+      <ContextMenu
+        open={!!contextMenu()}
+        onClose={() => setContextMenu(null)}
+        pos={contextMenu() || undefined}
+        minWidth="min-w-44"
+        items={[
+          { label: 'Go to Definition', shortcut: 'F12', action: handleGoToDefinition },
+          { label: 'Find References', shortcut: 'Shift+F12', action: handleFindReferences },
+          { label: 'Rename Symbol', shortcut: 'F2', action: handleRenameSymbol },
+          { separator: true },
+          { label: 'Cut', shortcut: '\u2318X', action: handleCut, disabled: !hasSelection() },
+          { label: 'Copy', shortcut: '\u2318C', action: handleCopy, disabled: !hasSelection() },
+          { label: 'Paste', shortcut: '\u2318V', action: handlePaste },
+          { separator: true },
+          { label: 'Select All', shortcut: '\u2318A', action: handleSelectAll },
+          { separator: true },
+          { label: 'Find', shortcut: '\u2318F', action: handleFind },
+          { label: 'Find and Replace', shortcut: '\u2318H', action: handleFind },
+          { separator: true },
+          { label: 'Copy Relative Path', action: handleCopyPath },
+          { label: 'Reveal in Finder', action: handleRevealInFinder },
+        ]}
+      />
     </div>
   )
-}
-
-// ── Context menu primitives ────────────────────────────────────────────
-function ContextMenuItem(props: { label: string; shortcut?: string; onClick: () => void; disabled?: boolean }) {
-  return (
-    <button
-      class="w-full flex items-center justify-between px-3 py-1.5 text-[12px] text-[#abb2bf] hover:bg-[#2c313a] transition-colors text-left disabled:opacity-35 disabled:cursor-default disabled:hover:bg-transparent"
-      onClick={props.onClick}
-      disabled={props.disabled}
-    >
-      <span>{props.label}</span>
-      <Show when={props.shortcut}>
-        <span class="text-[11px] text-[#5c6370] ml-8">{props.shortcut}</span>
-      </Show>
-    </button>
-  )
-}
-
-function ContextMenuSep() {
-  return <div class="h-px bg-[#181a1f] my-1" />
 }
