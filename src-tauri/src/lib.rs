@@ -47,10 +47,14 @@ pub fn run() {
         .setup(|app| {
             // Fix PATH for bundled .app / AppImage — the app inherits a minimal
             // system PATH that doesn't include Homebrew, nvm, etc.
+            // -lic (login + interactive + command) so .zshrc is sourced — that's
+            // where nvm lives, and a plain login shell (-lc) would only source
+            // .zprofile/.profile and miss the nvm-set PATH entirely. Spawned
+            // children (claude, gh, lsp) inherit this PATH via the process env.
             #[cfg(not(target_os = "windows"))]
             if let Ok(shell) = std::env::var("SHELL").or_else(|_| Ok::<_, std::env::VarError>("/bin/sh".to_string())) {
                 if let Ok(output) = std::process::Command::new(&shell)
-                    .args(["-lc", "echo $PATH"])
+                    .args(["-lic", "echo $PATH"])
                     .output()
                 {
                     if output.status.success() {
