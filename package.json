@@ -1,6 +1,6 @@
 {
   "name": "verun",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Parallel Claude Code Agent Orchestrator for macOS",
   "type": "module",
   "scripts": {
