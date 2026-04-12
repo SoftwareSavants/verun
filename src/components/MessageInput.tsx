@@ -1936,7 +1936,7 @@ export const MessageInput: Component<Props> = (props) => {
                   >
                     <button
                       type="button"
-                      class="block rounded-lg overflow-hidden border border-border hover:border-border-active transition-colors cursor-zoom-in"
+                      class="block rounded-lg overflow-hidden border border-border hover:border-border-active transition-colors cursor-pointer"
                       onClick={() => setViewerAttachment(att)}
                       title="Open image"
                     >

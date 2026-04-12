@@ -705,7 +705,7 @@ export const ChatView: Component<Props> = (props) => {
                           {(img) => (
                             <button
                               type="button"
-                              class="block rounded-md overflow-hidden border border-border hover:border-border-active transition-colors cursor-zoom-in"
+                              class="block rounded-md overflow-hidden border border-border hover:border-border-active transition-colors cursor-pointer"
                               onClick={() => setViewerImage({ mimeType: img.mimeType, dataBase64: img.dataBase64 })}
                               title="Open image"
                             >
