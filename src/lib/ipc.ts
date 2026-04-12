@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
+import { bytesToBase64 } from './binary'
 
 // Projects
 export const addProject = (repoPath: string) =>
@@ -61,8 +62,14 @@ export const stopHook = (taskId: string) =>
 export const createSession = (taskId: string) =>
   invoke<Session>('create_session', { taskId })
 
-export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) =>
-  invoke<void>('send_message', { sessionId, message, attachments, model, planMode, thinkingMode, fastMode })
+export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) => {
+  const wireAttachments = attachments?.map(a => ({
+    name: a.name,
+    mimeType: a.mimeType,
+    dataBase64: bytesToBase64(a.data),
+  }))
+  return invoke<void>('send_message', { sessionId, message, attachments: wireAttachments, model, planMode, thinkingMode, fastMode })
+}
 
 export const closeSession = (sessionId: string) =>
   invoke<void>('close_session', { sessionId })
@@ -218,6 +225,16 @@ export const ptyClose = (terminalId: string) =>
 // Clipboard
 export const readClipboard = () =>
   invoke<string>('read_clipboard')
+
+export const copyImageToClipboard = (mimeType: string, data: Uint8Array) =>
+  invoke<void>('copy_image_to_clipboard', data.buffer as ArrayBuffer, {
+    headers: { 'mime-type': mimeType },
+  })
+
+export const writeBinaryFile = (path: string, data: Uint8Array) =>
+  invoke<void>('write_binary_file', data.buffer as ArrayBuffer, {
+    headers: { path },
+  })
 
 export const readTextFile = (path: string) =>
   invoke<string>('read_text_file', { path })

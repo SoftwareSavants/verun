@@ -1295,6 +1295,78 @@ pub async fn read_clipboard() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn ext_for_mime(mime_type: &str) -> &'static str {
+    match mime_type {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "png",
+    }
+}
+
+fn request_bytes<'a>(request: &'a tauri::ipc::Request<'_>) -> Result<&'a [u8], String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.as_slice()),
+        _ => Err("Expected raw binary body".to_string()),
+    }
+}
+
+fn header_str(request: &tauri::ipc::Request<'_>, name: &str) -> Option<String> {
+    request
+        .headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
+
+#[tauri::command]
+pub async fn copy_image_to_clipboard(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let mime_type = header_str(&request, "mime-type").ok_or("Missing mime-type header")?;
+    let bytes = request_bytes(&request)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let ext = ext_for_mime(&mime_type);
+        let tmp = std::env::temp_dir().join(format!("verun-clip-{}.{}", Uuid::new_v4(), ext));
+        std::fs::write(&tmp, bytes).map_err(|e| format!("Failed to write temp file: {e}"))?;
+        let posix = tmp.to_string_lossy().replace('"', "\\\"");
+        // PNGf is the universal pasteboard image flavor on macOS; AppKit will
+        // accept jpeg/gif/webp bytes flagged this way for the standard image pasteboards
+        // we whitelist on the frontend.
+        let script = format!(
+            "set the clipboard to (read (POSIX file \"{}\") as «class PNGf»)",
+            posix
+        );
+        let result = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output();
+        let _ = std::fs::remove_file(&tmp);
+        let output = result.map_err(|e| format!("Failed to run osascript: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "osascript failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (bytes, mime_type);
+        Err("Image clipboard copy is only supported on macOS".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn write_binary_file(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let path = header_str(&request, "path").ok_or("Missing path header")?;
+    let bytes = request_bytes(&request)?;
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| format!("Failed to write file: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------

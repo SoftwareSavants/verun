@@ -15,6 +15,9 @@ import { clsx } from 'clsx'
 import type { Attachment, ModelId, TrustLevel } from '../types'
 import * as ipc from '../lib/ipc'
 import { Popover } from './Popover'
+import { ImageViewer } from './ImageViewer'
+import { BlobImage } from './BlobImage'
+import { serializeAttachments, deserializeAttachments } from '../lib/binary'
 
 interface Props {
   sessionId: string | null
@@ -27,21 +30,12 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024
 async function fileToAttachment(file: File): Promise<Attachment | null> {
   if (!SUPPORTED_IMAGE_TYPES.has(file.type)) return null
   if (file.size > MAX_FILE_SIZE) return null
-
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = reader.result as string
-      const base64 = result.split(',')[1]
-      if (base64) {
-        resolve({ name: file.name, mimeType: file.type, dataBase64: base64 })
-      } else {
-        resolve(null)
-      }
-    }
-    reader.onerror = () => resolve(null)
-    reader.readAsDataURL(file)
-  })
+  try {
+    const buf = await file.arrayBuffer()
+    return { name: file.name, mimeType: file.type, data: new Uint8Array(buf) }
+  } catch {
+    return null
+  }
 }
 
 // Module-level signal — survives re-renders
@@ -295,6 +289,7 @@ export const MessageInput: Component<Props> = (props) => {
   }
   const [taskMessages, setTaskMessages] = createSignal<Record<string, string>>({})
   const [taskAttachments, setTaskAttachments] = createSignal<Record<string, Attachment[]>>({})
+  const [viewerAttachment, setViewerAttachment] = createSignal<Attachment | null>(null)
   const message = () => taskMessages()[selectedTaskId() ?? ''] ?? ''
 
   // Debounced localStorage persistence for drafts
@@ -306,7 +301,7 @@ export const MessageInput: Component<Props> = (props) => {
       const atts = taskAttachments()[tid] ?? []
       if (msg) localStorage.setItem(`verun:draft-msg:${tid}`, msg)
       else localStorage.removeItem(`verun:draft-msg:${tid}`)
-      if (atts.length > 0) localStorage.setItem(`verun:draft-att:${tid}`, JSON.stringify(atts))
+      if (atts.length > 0) localStorage.setItem(`verun:draft-att:${tid}`, serializeAttachments(atts))
       else localStorage.removeItem(`verun:draft-att:${tid}`)
     }, 500)
   }
@@ -374,7 +369,7 @@ export const MessageInput: Component<Props> = (props) => {
     setEditingStepId(req.stepId)
     setMessage(req.message)
     // Restore step's attachments into the input
-    const stepAttachments: Attachment[] = req.attachmentsJson ? JSON.parse(req.attachmentsJson) : []
+    const stepAttachments: Attachment[] = req.attachmentsJson ? deserializeAttachments(req.attachmentsJson) : []
     setAttachments(stepAttachments)
     requestAnimationFrame(() => {
       if (inputRef) {
@@ -412,7 +407,7 @@ export const MessageInput: Component<Props> = (props) => {
       if (!taskAttachments()[taskId]?.length) {
         try {
           const savedAtt = localStorage.getItem(`verun:draft-att:${taskId}`)
-          if (savedAtt) setTaskAttachments(prev => ({ ...prev, [taskId]: JSON.parse(savedAtt) }))
+          if (savedAtt) setTaskAttachments(prev => ({ ...prev, [taskId]: deserializeAttachments(savedAtt) }))
         } catch { /* ignore corrupt data */ }
       }
       try {
@@ -1932,11 +1927,19 @@ export const MessageInput: Component<Props> = (props) => {
                       </div>
                     }
                   >
-                    <img
-                      src={`data:${att.mimeType};base64,${att.dataBase64}`}
-                      alt={att.name}
-                      class="w-16 h-16 rounded-lg object-cover border border-border"
-                    />
+                    <button
+                      type="button"
+                      class="block cursor-pointer"
+                      onClick={() => setViewerAttachment(att)}
+                      title="Open image"
+                    >
+                      <BlobImage
+                        data={att.data}
+                        mimeType={att.mimeType}
+                        alt={att.name}
+                        class="w-16 h-16 object-cover rounded-xl border border-border transition-all duration-150 hover:border-border-active hover:brightness-110 hover:scale-[1.03]"
+                      />
+                    </button>
                   </Show>
                   <button
                     class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-surface-3 border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
@@ -2225,6 +2228,17 @@ export const MessageInput: Component<Props> = (props) => {
           </div>
         </div>
       </div>
+      <Show when={viewerAttachment()}>
+        {(att) => (
+          <ImageViewer
+            open={true}
+            mimeType={att().mimeType}
+            data={att().data}
+            name={att().name}
+            onClose={() => setViewerAttachment(null)}
+          />
+        )}
+      </Show>
     </div>
   )
 }

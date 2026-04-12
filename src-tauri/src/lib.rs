@@ -274,6 +274,8 @@ pub fn run() {
             ipc::pty_close,
             // Clipboard
             ipc::read_clipboard,
+            ipc::copy_image_to_clipboard,
+            ipc::write_binary_file,
             // Utility
             ipc::list_claude_skills,
             ipc::check_claude,

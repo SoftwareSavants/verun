@@ -6,6 +6,8 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import type { OutputItem, SessionStatus } from '../types'
 import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
+import { ImageViewer } from './ImageViewer'
+import { BlobImage } from './BlobImage'
 import { parseMentions } from '../lib/mentions'
 
 marked.setOptions({ breaks: true, gfm: true })
@@ -50,7 +52,7 @@ interface Props {
 interface UserBlock {
   type: 'user'
   text: string
-  images?: Array<{ mimeType: string; dataBase64: string }>
+  images?: Array<{ mimeType: string; data: Uint8Array }>
 }
 interface AssistantBlock {
   type: 'assistant'
@@ -462,6 +464,9 @@ export const ChatView: Component<Props> = (props) => {
   const [blocks, setBlocks] = createStore<DisplayBlock[]>([])
   let lastItemCount = 0
 
+  // Image viewer state
+  const [viewerImage, setViewerImage] = createSignal<{ mimeType: string; data: Uint8Array } | null>(null)
+
   // Search state
   const [showSearch, setShowSearch] = createSignal(false)
   const [searchQuery, setSearchQuery] = createSignal('')
@@ -699,10 +704,18 @@ export const ChatView: Component<Props> = (props) => {
                       <div class="flex flex-wrap justify-end gap-1 max-w-[75%]">
                         <For each={block.images || []}>
                           {(img) => (
-                            <img
-                              src={`data:${img.mimeType};base64,${img.dataBase64}`}
-                              class="h-16 w-16 rounded-md object-cover border border-border"
-                            />
+                            <button
+                              type="button"
+                              class="block cursor-pointer"
+                              onClick={() => setViewerImage({ mimeType: img.mimeType, data: img.data })}
+                              title="Open image"
+                            >
+                              <BlobImage
+                                data={img.data}
+                                mimeType={img.mimeType}
+                                class="h-16 w-16 object-cover rounded-xl border border-border transition-all duration-150 hover:border-border-active hover:brightness-110 hover:scale-[1.03]"
+                              />
+                            </button>
                           )}
                         </For>
                       </div>
@@ -791,6 +804,16 @@ export const ChatView: Component<Props> = (props) => {
         </Show>
       </div>
       </div>
+      <Show when={viewerImage()}>
+        {(img) => (
+          <ImageViewer
+            open={true}
+            mimeType={img().mimeType}
+            data={img().data}
+            onClose={() => setViewerImage(null)}
+          />
+        )}
+      </Show>
     </div>
   )
 }

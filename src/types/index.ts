@@ -85,7 +85,7 @@ export interface ClaudeSkill {
 export interface Attachment {
   name: string
   mimeType: string
-  dataBase64: string
+  data: Uint8Array
 }
 
 // Structured output items from Claude's stream-json protocol
@@ -97,7 +97,7 @@ export type OutputItem =
   | { kind: 'toolResult'; text: string; isError: boolean }
   | { kind: 'system'; text: string }
   | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number }
-  | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; dataBase64: string }>; timestamp?: number }
+  | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; data: Uint8Array }>; timestamp?: number }
   | { kind: 'raw'; text: string }
 
 export interface SessionOutputEvent {
