@@ -1,6 +1,7 @@
 import { createStore, produce } from 'solid-js/store'
 import type { Step, Attachment } from '../types'
 import * as ipc from '../lib/ipc'
+import { serializeAttachments } from '../lib/binary'
 
 // Store: sessionId -> Step[]
 const [stepStore, setStepStore] = createStore<Record<string, Step[]>>({})
@@ -34,7 +35,7 @@ export function addStep(opts: {
     ? existing[existing.length - 1].sortOrder + 1
     : 0
   const attachmentsJson = opts.attachments && opts.attachments.length > 0
-    ? JSON.stringify(opts.attachments)
+    ? serializeAttachments(opts.attachments)
     : null
 
   const step: Step = {

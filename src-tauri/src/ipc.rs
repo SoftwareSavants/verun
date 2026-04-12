@@ -1305,18 +1305,31 @@ fn ext_for_mime(mime_type: &str) -> &'static str {
     }
 }
 
+fn request_bytes<'a>(request: &'a tauri::ipc::Request<'_>) -> Result<&'a [u8], String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.as_slice()),
+        _ => Err("Expected raw binary body".to_string()),
+    }
+}
+
+fn header_str(request: &tauri::ipc::Request<'_>, name: &str) -> Option<String> {
+    request
+        .headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
+
 #[tauri::command]
-pub async fn copy_image_to_clipboard(mime_type: String, data_base64: String) -> Result<(), String> {
-    use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data_base64.as_bytes())
-        .map_err(|e| format!("Invalid base64: {e}"))?;
+pub async fn copy_image_to_clipboard(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let mime_type = header_str(&request, "mime-type").ok_or("Missing mime-type header")?;
+    let bytes = request_bytes(&request)?;
 
     #[cfg(target_os = "macos")]
     {
         let ext = ext_for_mime(&mime_type);
         let tmp = std::env::temp_dir().join(format!("verun-clip-{}.{}", Uuid::new_v4(), ext));
-        std::fs::write(&tmp, &bytes).map_err(|e| format!("Failed to write temp file: {e}"))?;
+        std::fs::write(&tmp, bytes).map_err(|e| format!("Failed to write temp file: {e}"))?;
         let posix = tmp.to_string_lossy().replace('"', "\\\"");
         // PNGf is the universal pasteboard image flavor on macOS; AppKit will
         // accept jpeg/gif/webp bytes flagged this way for the standard image pasteboards
@@ -1346,12 +1359,10 @@ pub async fn copy_image_to_clipboard(mime_type: String, data_base64: String) -> 
 }
 
 #[tauri::command]
-pub async fn write_binary_file(path: String, data_base64: String) -> Result<(), String> {
-    use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data_base64.as_bytes())
-        .map_err(|e| format!("Invalid base64: {e}"))?;
-    tokio::fs::write(&path, &bytes)
+pub async fn write_binary_file(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let path = header_str(&request, "path").ok_or("Missing path header")?;
+    let bytes = request_bytes(&request)?;
+    tokio::fs::write(&path, bytes)
         .await
         .map_err(|e| format!("Failed to write file: {e}"))
 }

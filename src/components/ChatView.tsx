@@ -7,6 +7,7 @@ import type { OutputItem, SessionStatus } from '../types'
 import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
+import { BlobImage } from './BlobImage'
 import { parseMentions } from '../lib/mentions'
 
 marked.setOptions({ breaks: true, gfm: true })
@@ -51,7 +52,7 @@ interface Props {
 interface UserBlock {
   type: 'user'
   text: string
-  images?: Array<{ mimeType: string; dataBase64: string }>
+  images?: Array<{ mimeType: string; data: Uint8Array }>
 }
 interface AssistantBlock {
   type: 'assistant'
@@ -464,7 +465,7 @@ export const ChatView: Component<Props> = (props) => {
   let lastItemCount = 0
 
   // Image viewer state
-  const [viewerImage, setViewerImage] = createSignal<{ mimeType: string; dataBase64: string } | null>(null)
+  const [viewerImage, setViewerImage] = createSignal<{ mimeType: string; data: Uint8Array } | null>(null)
 
   // Search state
   const [showSearch, setShowSearch] = createSignal(false)
@@ -706,11 +707,12 @@ export const ChatView: Component<Props> = (props) => {
                             <button
                               type="button"
                               class="block rounded-md overflow-hidden border border-border hover:border-border-active transition-colors cursor-pointer"
-                              onClick={() => setViewerImage({ mimeType: img.mimeType, dataBase64: img.dataBase64 })}
+                              onClick={() => setViewerImage({ mimeType: img.mimeType, data: img.data })}
                               title="Open image"
                             >
-                              <img
-                                src={`data:${img.mimeType};base64,${img.dataBase64}`}
+                              <BlobImage
+                                data={img.data}
+                                mimeType={img.mimeType}
                                 class="h-16 w-16 object-cover"
                               />
                             </button>
@@ -807,7 +809,7 @@ export const ChatView: Component<Props> = (props) => {
           <ImageViewer
             open={true}
             mimeType={img().mimeType}
-            dataBase64={img().dataBase64}
+            data={img().data}
             onClose={() => setViewerImage(null)}
           />
         )}

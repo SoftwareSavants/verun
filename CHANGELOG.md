@@ -4,6 +4,7 @@
 
 - User message image attachments now render as small thumbnails above the chat bubble instead of inside it
 - Click any image attachment thumbnail (in chat history or in the composer preview row) to open it full-screen, with one-click Copy to clipboard and Download to disk
+- Image attachments are kept as raw `Uint8Array` bytes in the frontend (rendered through blob URLs instead of base64 `data:` URLs); the new copy and save commands use Tauri's raw-binary IPC instead of shipping a base64 string
 - File editor background now matches the session chat background (`--surface-0`), and the surface palette is exposed as CSS variables so a future light theme can swap them at runtime without rebuilding
 - Right pane (Changes/Files) background now matches the left sidebar (`--surface-1`) instead of blending into the editor
 - Task top bar redesigned: smaller title, editor button collapsed to an icon-only control with a picker caret, git actions promoted from inside the Changes pane so they're always reachable, and the terminal toggle now uses an actual terminal icon with an active-state tint

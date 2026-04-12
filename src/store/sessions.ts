@@ -7,6 +7,7 @@ import { markTaskUnread, markTaskAttention, clearTaskAttention, markSessionUnrea
 import { dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
 import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
+import { deserializeAttachments } from '../lib/binary'
 
 const MAX_ITEMS_IN_MEMORY = 50_000
 
@@ -64,7 +65,7 @@ export async function createSession(taskId: string): Promise<Session> {
 export async function sendMessage(sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) {
   const images = attachments
     ?.filter(a => a.mimeType.startsWith('image/'))
-    .map(a => ({ mimeType: a.mimeType, dataBase64: a.dataBase64 }))
+    .map(a => ({ mimeType: a.mimeType, data: a.data }))
 
   const item: OutputItem = {
     kind: 'userMessage',
@@ -328,7 +329,7 @@ export function tryDrainSteps(sessionId: string) {
   if (session?.status === 'idle') {
     const next = dequeueArmedStep(sessionId)
     if (next) {
-      const attachments = next.attachmentsJson ? JSON.parse(next.attachmentsJson) : undefined
+      const attachments = next.attachmentsJson ? deserializeAttachments(next.attachmentsJson) : undefined
       sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
     }
   }

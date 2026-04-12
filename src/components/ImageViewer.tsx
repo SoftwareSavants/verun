@@ -3,11 +3,12 @@ import { Copy, Download, X } from 'lucide-solid'
 import { save } from '@tauri-apps/plugin-dialog'
 import * as ipc from '../lib/ipc'
 import { addToast } from '../store/ui'
+import { BlobImage } from './BlobImage'
 
 interface Props {
   open: boolean
   mimeType: string
-  dataBase64: string
+  data: Uint8Array
   name?: string
   onClose: () => void
 }
@@ -41,7 +42,7 @@ export const ImageViewer: Component<Props> = (props) => {
 
   const handleCopy = async () => {
     try {
-      await ipc.copyImageToClipboard(props.mimeType, props.dataBase64)
+      await ipc.copyImageToClipboard(props.mimeType, props.data)
       addToast('Image copied', 'success', { duration: 2000 })
     } catch (e) {
       addToast(`Copy failed: ${e}`, 'error', { duration: 4000 })
@@ -56,7 +57,7 @@ export const ImageViewer: Component<Props> = (props) => {
         filters: [{ name: 'Image', extensions: [ext] }],
       })
       if (!path) return
-      await ipc.writeBinaryFile(path, props.dataBase64)
+      await ipc.writeBinaryFile(path, props.data)
       addToast('Image saved', 'success', { duration: 2000 })
     } catch (e) {
       addToast(`Save failed: ${e}`, 'error', { duration: 4000 })
@@ -92,8 +93,9 @@ export const ImageViewer: Component<Props> = (props) => {
             <X size={15} />
           </button>
         </div>
-        <img
-          src={`data:${props.mimeType};base64,${props.dataBase64}`}
+        <BlobImage
+          data={props.data}
+          mimeType={props.mimeType}
           alt={props.name ?? ''}
           class="max-w-[95vw] max-h-[95vh] object-contain rounded-md shadow-2xl"
           onClick={(e) => e.stopPropagation()}
