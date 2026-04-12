@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.4 — 2026-04-12
+
+### Changes
 
 - Right-clicking a text selection in the editor now preserves the selection if the click lands inside it, so "Copy" from the context menu works instead of collapsing the cursor
 - Editor context menu actions (Cut/Copy/Paste/Select All) now refocus the editor after dismissal so the selection stays visually active and keyboard shortcuts keep working
