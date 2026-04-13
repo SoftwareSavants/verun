@@ -1,0 +1,11 @@
+{
+  "productName": "Verun Dev",
+  "identifier": "com.softwaresavants.verun.dev",
+  "app": {
+    "windows": [
+      {
+        "title": "Verun Dev"
+      }
+    ]
+  }
+}
