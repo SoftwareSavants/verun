@@ -1,5 +1,5 @@
 import { createSignal } from 'solid-js'
-import { selectedTaskId } from '../store/ui'
+import { selectedTaskId, addToast, dismissToast } from '../store/ui'
 import * as ipc from './ipc'
 
 // User preference — persisted to localStorage, default enabled
@@ -13,36 +13,38 @@ export function setNotificationsEnabledAndPersist(v: boolean) {
   localStorage.setItem(PREF_KEY, String(v))
 }
 
-// Whether the user has already seen the explanation dialog
-export function wasPrompted(): boolean {
+function wasPrompted(): boolean {
   return localStorage.getItem(PROMPTED_KEY) === 'true'
 }
 
-export function markPrompted() {
+function markPrompted() {
   localStorage.setItem(PROMPTED_KEY, 'true')
 }
 
-// Signal to drive the explanation dialog in App.tsx
-export const [showNotificationDialog, setShowNotificationDialog] = createSignal(false)
+const TOAST_ID = 'notification-prompt'
 
-/** Call on app mount. Shows the opt-in dialog on first launch. */
+/** Call on app mount. Shows an opt-in toast on first launch. */
 export function initNotifications() {
   if (!wasPrompted()) {
-    setShowNotificationDialog(true)
+    addToast('Enable desktop notifications for task updates?', 'info', {
+      id: TOAST_ID,
+      persistent: true,
+      onDismiss: () => {
+        markPrompted()
+        setNotificationsEnabledAndPersist(false)
+      },
+      actions: [
+        {
+          label: 'Enable',
+          variant: 'primary',
+          onClick: () => {
+            markPrompted()
+            dismissToast(TOAST_ID)
+          },
+        },
+      ],
+    })
   }
-}
-
-/** Called when user confirms the explanation dialog. */
-export function onNotificationDialogConfirm() {
-  setShowNotificationDialog(false)
-  markPrompted()
-}
-
-/** Called when user dismisses the explanation dialog. */
-export function onNotificationDialogCancel() {
-  setShowNotificationDialog(false)
-  markPrompted()
-  setNotificationsEnabledAndPersist(false)
 }
 
 // Suppress if the user is already looking at this task
