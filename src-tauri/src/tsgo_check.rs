@@ -1,21 +1,38 @@
 use dashmap::DashMap;
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::task::JoinHandle;
+use tokio::sync::Semaphore;
+use tokio::task::{JoinHandle, JoinSet};
+
+// Bound concurrent tsgo subprocesses per task. On a 14-tsconfig monorepo
+// each subprocess can briefly hold ~300 MB during its type-check pass, so
+// running them all in parallel would spike memory for a few seconds. Four is
+// enough to keep wall-clock reasonable without the stampede.
+const MAX_CONCURRENT_CHECKS: usize = 4;
+
+// Directories skipped while walking the worktree for tsconfig.json files.
+// Build output and vendor dirs add noise without useful diagnostics.
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    ".next",
+    ".turbo",
+    "target",
+    ".cache",
+    "out",
+];
 
 // One in-flight typecheck per task. Subsequent runs flip the previous run's
 // cancelled flag to true and abort its JoinHandle — the aborted task drops
-// its owned Child, and `kill_on_drop(true)` terminates the subprocess.
-//
-// The cancelled flag is created BEFORE spawning so the background task has
-// its own Arc clone from the start. That avoids a race where a fast-failing
-// subprocess could reach the "am I still current?" check before run_check
-// had finished inserting the handle into the map.
+// each owned Child, and `kill_on_drop(true)` terminates the subprocesses.
 pub struct TsgoCheckHandle {
     cancelled: Arc<AtomicBool>,
     join: JoinHandle<()>,
@@ -96,98 +113,197 @@ fn parse_tsc_output(output: &str) -> Vec<TsgoProblem> {
     output.lines().filter_map(parse_tsc_line).collect()
 }
 
+/// Walk a worktree and collect every `tsconfig.json` — returned as paths
+/// relative to `worktree` so tsgo's per-invocation cwd produces relative
+/// diagnostic paths that Verun can resolve back to real files.
+fn discover_tsconfigs(worktree: &Path) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    walk(worktree, worktree, &mut result);
+    result
+}
+
+fn walk(base: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if file_type.is_dir() {
+            // Skip build output, vendor dirs, and dotdirs in general (.git,
+            // .claude, .vscode, etc. — none house TypeScript projects we care
+            // about).
+            if name.starts_with('.') || SKIP_DIRS.contains(&name) {
+                continue;
+            }
+            walk(base, &path, out);
+        } else if file_type.is_file() && name == "tsconfig.json" {
+            if let Ok(rel) = path.strip_prefix(base) {
+                out.push(rel.to_path_buf());
+            }
+        }
+    }
+}
+
+/// Spawn one `tsgo --noEmit --pretty false -p <tsconfig>` invocation and
+/// parse its stdout. Failures produce an empty vec — a single project's
+/// failure shouldn't tank the whole aggregated check.
+async fn run_single(
+    binary: &Path,
+    worktree: &Path,
+    tsconfig_rel: &Path,
+) -> Vec<TsgoProblem> {
+    let mut child = match Command::new(binary)
+        .arg("--noEmit")
+        .arg("--pretty")
+        .arg("false")
+        .arg("-p")
+        .arg(tsconfig_rel)
+        .current_dir(worktree)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[tsgo_check] failed to spawn for {tsconfig_rel:?}: {e}");
+            return Vec::new();
+        }
+    };
+
+    let mut stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let mut buf = Vec::new();
+    let _ = stdout.read_to_end(&mut buf).await;
+    let _ = child.wait().await;
+    parse_tsc_output(&String::from_utf8_lossy(&buf))
+}
+
 pub async fn run_check(
     map: &TsgoCheckMap,
     app: AppHandle,
-    binary: std::path::PathBuf,
+    binary: PathBuf,
     task_id: String,
     worktree_path: String,
 ) -> Result<(), String> {
-    // Cancel any previous run for this task before starting a new one. We
-    // flip the previous run's flag first so that if it happens to be mid-emit
-    // right now, the abort-at-next-await arrives before a stale result lands
-    // on the Problems panel.
+    // Cancel any previous run for this task. We flip the flag first so a
+    // run that's mid-emit aborts before a stale result lands on the panel.
     if let Some((_, prev)) = map.remove(&task_id) {
         prev.cancelled.store(true, Ordering::Relaxed);
         prev.join.abort();
     }
 
-    // The cancelled flag is created BEFORE spawn so the background task
-    // owns its own clone from the start. Inserting into the map after spawn
-    // is therefore race-free — the task never looks in the map.
     let cancelled = Arc::new(AtomicBool::new(false));
     let task_cancelled = Arc::clone(&cancelled);
-
-    let mut child = Command::new(&binary)
-        .arg("--noEmit")
-        .arg("--pretty")
-        .arg("false")
-        .current_dir(&worktree_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn tsgo check: {e}"))?;
-
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or("Failed to capture tsgo check stdout")?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or("Failed to capture tsgo check stderr")?;
-
     let tid = task_id.clone();
     let started = std::time::Instant::now();
 
     let join = tokio::spawn(async move {
-        // Child is owned by this task — no mutex anywhere. Drain both
-        // streams concurrently so a verbose stderr can't starve stdout.
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let (_, _) = tokio::join!(
-            stdout.read_to_end(&mut stdout_buf),
-            stderr.read_to_end(&mut stderr_buf),
-        );
-        let exit = child.wait().await;
+        let worktree = PathBuf::from(&worktree_path);
+        let tsconfigs = discover_tsconfigs(&worktree);
 
-        // Cancellation is cooperative in tokio: `abort()` delivers at the
-        // next await, so a mid-emit task may still complete its emit after
-        // being cancelled. Check the flag and drop the result ourselves.
-        if task_cancelled.load(Ordering::Relaxed) {
+        // No tsconfigs in the worktree → nothing to typecheck. Emit an
+        // empty successful result so the Problems panel clears its loading
+        // state instead of spinning forever.
+        if tsconfigs.is_empty() {
+            if task_cancelled.load(Ordering::Relaxed) {
+                return;
+            }
+            let _ = app.emit(
+                "tsgo-check-result",
+                TsgoCheckResult {
+                    task_id: tid,
+                    problems: Vec::new(),
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    ok: true,
+                },
+            );
             return;
         }
 
-        let output = String::from_utf8_lossy(&stdout_buf);
-        let problems = parse_tsc_output(&output);
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CHECKS));
+        let mut set: JoinSet<Vec<TsgoProblem>> = JoinSet::new();
 
-        // tsc/tsgo exits with 0 (no errors) or 2 (errors found). Anything
-        // else means a fatal failure — a missing binary, a panic, or being
-        // killed. Surface that via `ok: false` and log stderr so the Rust
-        // console has something to look at during debugging.
-        let ok = exit
-            .as_ref()
-            .map(|status| matches!(status.code(), Some(0) | Some(2)))
-            .unwrap_or(false);
-        if !ok {
-            let stderr_str = String::from_utf8_lossy(&stderr_buf);
-            let trimmed = stderr_str.trim();
-            if !trimmed.is_empty() {
-                eprintln!("[tsgo_check] task={tid} failed: {trimmed}");
-            } else if let Ok(status) = exit {
-                eprintln!("[tsgo_check] task={tid} failed with status {status}");
+        for tsconfig in tsconfigs {
+            let binary = binary.clone();
+            let worktree = worktree.clone();
+            let sem = Arc::clone(&semaphore);
+            let cancel_flag = Arc::clone(&task_cancelled);
+            set.spawn(async move {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    return Vec::new();
+                }
+                let _permit = match sem.acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => return Vec::new(),
+                };
+                if cancel_flag.load(Ordering::Relaxed) {
+                    return Vec::new();
+                }
+                run_single(&binary, &worktree, &tsconfig).await
+            });
+        }
+
+        let mut all: Vec<TsgoProblem> = Vec::new();
+        while let Some(result) = set.join_next().await {
+            if task_cancelled.load(Ordering::Relaxed) {
+                set.shutdown().await;
+                return;
+            }
+            if let Ok(mut problems) = result {
+                all.append(&mut problems);
             }
         }
 
+        // Dedupe — two overlapping tsconfigs can report the same error on
+        // the same file. Sort first, then collapse adjacent duplicates.
+        all.sort_by(|a, b| {
+            (
+                a.file.as_str(),
+                a.line,
+                a.column,
+                a.severity.as_str(),
+                a.code.as_str(),
+                a.message.as_str(),
+            )
+                .cmp(&(
+                    b.file.as_str(),
+                    b.line,
+                    b.column,
+                    b.severity.as_str(),
+                    b.code.as_str(),
+                    b.message.as_str(),
+                ))
+        });
+        all.dedup_by(|a, b| {
+            a.file == b.file
+                && a.line == b.line
+                && a.column == b.column
+                && a.severity == b.severity
+                && a.code == b.code
+                && a.message == b.message
+        });
+
+        if task_cancelled.load(Ordering::Relaxed) {
+            return;
+        }
         let _ = app.emit(
             "tsgo-check-result",
             TsgoCheckResult {
                 task_id: tid,
-                problems,
+                problems: all,
                 duration_ms: started.elapsed().as_millis() as u64,
-                ok,
+                ok: true,
             },
         );
     });
@@ -261,5 +377,30 @@ src/c.ts(3,3): error TS3: still bad
         assert_eq!(v[0].file, "src/a.ts");
         assert_eq!(v[1].file, "src/b.ts");
         assert_eq!(v[2].file, "src/c.ts");
+    }
+
+    #[test]
+    fn discover_tsconfigs_skips_node_modules_and_hidden() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join(format!("tsgo_check_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("tsconfig.json"), "{}").unwrap();
+        fs::create_dir_all(tmp.join("packages/ui")).unwrap();
+        fs::write(tmp.join("packages/ui/tsconfig.json"), "{}").unwrap();
+        fs::create_dir_all(tmp.join("node_modules/foo")).unwrap();
+        fs::write(tmp.join("node_modules/foo/tsconfig.json"), "{}").unwrap();
+        fs::create_dir_all(tmp.join(".next/types")).unwrap();
+        fs::write(tmp.join(".next/types/tsconfig.json"), "{}").unwrap();
+        fs::create_dir_all(tmp.join("dist")).unwrap();
+        fs::write(tmp.join("dist/tsconfig.json"), "{}").unwrap();
+
+        let mut found = discover_tsconfigs(&tmp);
+        found.sort();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0], PathBuf::from("packages/ui/tsconfig.json"));
+        assert_eq!(found[1], PathBuf::from("tsconfig.json"));
+
+        fs::remove_dir_all(&tmp).unwrap();
     }
 }
