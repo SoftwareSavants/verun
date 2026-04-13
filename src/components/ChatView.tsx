@@ -707,37 +707,50 @@ export const ChatView: Component<Props> = (props) => {
     })
   })
 
-  // Rebuild blocks only when output items change
-  createEffect(on(() => props.output.length, (len) => {
-    if (len === 0 && lastItemCount !== 0) {
-      setBlocks([])
-      lastItemCount = 0
-      return
-    }
-    if (len !== lastItemCount) {
-      const newBlocks = rebuildBlocks(props.output)
-      setBlocks(reconcile(newBlocks, { merge: true }))
-      lastItemCount = len
-      // Re-apply search highlights after block rebuild
-      if (showSearch() && searchQuery()) {
-        requestAnimationFrame(() => runSearch(searchQuery()))
+  // Rebuild blocks when output items change OR session switches.
+  // ChatView stays mounted across session/task switches (Solid <Show> doesn't
+  // remount on truthy->truthy), so we must track sessionId to avoid showing
+  // stale blocks from the previous session when item counts happen to match.
+  let lastSessionId: string | null | undefined = props.sessionId
+  createEffect(on(
+    [() => props.sessionId, () => props.output.length] as const,
+    ([sid, len]) => {
+      const sessionChanged = sid !== lastSessionId
+      lastSessionId = sid
+
+      if (len === 0 && (lastItemCount !== 0 || sessionChanged)) {
+        setBlocks([])
+        lastItemCount = 0
+        if (sessionChanged) scheduleAutoScroll()
+        return
       }
-      // On remount: restore saved scroll position instead of auto-scrolling
-      if (pendingScrollRestore) {
-        const restore = pendingScrollRestore
-        pendingScrollRestore = null
-        if (!restore.autoScroll) {
-          requestAnimationFrame(() => {
-            if (containerRef) containerRef.scrollTop = restore.scrollTop
-          })
+      if (len !== lastItemCount || sessionChanged) {
+        const newBlocks = rebuildBlocks(props.output)
+        setBlocks(reconcile(newBlocks, { merge: !sessionChanged }))
+        lastItemCount = len
+        // Re-apply search highlights after block rebuild
+        if (showSearch() && searchQuery()) {
+          requestAnimationFrame(() => runSearch(searchQuery()))
+        }
+        if (sessionChanged) {
+          scheduleAutoScroll()
+        } else if (pendingScrollRestore) {
+          // On remount: restore saved scroll position instead of auto-scrolling
+          const restore = pendingScrollRestore
+          pendingScrollRestore = null
+          if (!restore.autoScroll) {
+            requestAnimationFrame(() => {
+              if (containerRef) containerRef.scrollTop = restore.scrollTop
+            })
+          } else {
+            scheduleAutoScroll()
+          }
         } else {
           scheduleAutoScroll()
         }
-      } else {
-        scheduleAutoScroll()
       }
     }
-  }))
+  ))
 
   // Auto-scroll when session starts running (thinking dots appear)
   createEffect(on(() => props.sessionStatus, (status) => {
