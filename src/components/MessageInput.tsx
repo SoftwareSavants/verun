@@ -1513,7 +1513,7 @@ export const MessageInput: Component<Props> = (props) => {
 
   return (
     <div
-      class="px-4 py-3 min-w-0"
+      class="px-4 pb-3 min-w-0"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
