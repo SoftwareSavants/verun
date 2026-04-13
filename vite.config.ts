@@ -5,6 +5,10 @@ import UnoCSS from "unocss/vite";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+// @ts-expect-error process is a nodejs global
+const vitePort = Number(process.env.VITE_PORT) || 1420;
+// @ts-expect-error process is a nodejs global
+const viteHmrPort = Number(process.env.VITE_HMR_PORT) || 1421;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -18,14 +22,14 @@ export default defineConfig(async () => ({
 
   clearScreen: false,
   server: {
-    port: 1420,
+    port: vitePort,
     strictPort: true,
     host: host || false,
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: viteHmrPort,
         }
       : undefined,
     watch: {

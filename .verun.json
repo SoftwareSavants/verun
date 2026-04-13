@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "setup": "pnpm install --frozen-lockfile",
+    "destroy": "rm -rf node_modules src-tauri/target"
+  },
+  "startCommand": "TASK_ID=$(basename \"$PWD\") && VITE_PORT=$VERUN_PORT_0 VITE_HMR_PORT=$VERUN_PORT_1 pnpm tauri dev --config src-tauri/tauri.dev.conf.json --config '{\"productName\":\"Verun ('\"$TASK_ID\"')\",\"identifier\":\"com.softwaresavants.verun.dev.'\"$TASK_ID\"'\",\"build\":{\"devUrl\":\"http://localhost:'\"$VERUN_PORT_0\"'\"}}'"
+}
