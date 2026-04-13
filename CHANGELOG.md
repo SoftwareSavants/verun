@@ -4,7 +4,8 @@
 
 ### Changes
 
--
+- Add project dialog now always applies the user's edits to hooks, fixing a bug where clearing pre-populated fields from .verun.json had no effect
+- Auto-detect section and "Or configure manually" label are hidden when .verun.json already provides hooks
 
 ## Unreleased
 
