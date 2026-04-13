@@ -11,6 +11,8 @@ const makeSession = (overrides: Partial<Session> = {}): Session => ({
   startedAt: 1000,
   endedAt: null,
   totalCost: 0,
+  parentSessionId: null,
+  forkedAtMessageUuid: null,
   ...overrides,
 })
 

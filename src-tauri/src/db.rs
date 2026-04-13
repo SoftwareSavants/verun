@@ -153,6 +153,25 @@ pub fn migrations() -> Vec<Migration> {
         description: "add auto_start toggle to projects",
         sql: "ALTER TABLE projects ADD COLUMN auto_start INTEGER NOT NULL DEFAULT 0;",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 12,
+        description: "add fork lineage and per-turn worktree snapshots",
+        sql: r#"
+            ALTER TABLE sessions ADD COLUMN parent_session_id TEXT;
+            ALTER TABLE sessions ADD COLUMN forked_at_message_uuid TEXT;
+            ALTER TABLE tasks ADD COLUMN parent_task_id TEXT;
+
+            CREATE TABLE IF NOT EXISTS turn_snapshots (
+                session_id TEXT NOT NULL,
+                message_uuid TEXT NOT NULL,
+                stash_sha TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, message_uuid)
+            );
+            CREATE INDEX IF NOT EXISTS idx_turn_snapshots_session ON turn_snapshots(session_id);
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -191,6 +210,8 @@ pub struct Task {
     pub archived_at: Option<i64>,
     #[sqlx(default)]
     pub last_commit_message: Option<String>,
+    #[sqlx(default)]
+    pub parent_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -204,6 +225,10 @@ pub struct Session {
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub total_cost: f64,
+    #[sqlx(default)]
+    pub parent_session_id: Option<String>,
+    #[sqlx(default)]
+    pub forked_at_message_uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -225,6 +250,15 @@ pub struct AuditEntry {
     pub tool_input_summary: String,
     pub decision: String,
     pub reason: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnSnapshot {
+    pub session_id: String,
+    pub message_uuid: String,
+    pub stash_sha: String,
     pub created_at: i64,
 }
 
@@ -276,6 +310,10 @@ pub enum DbWrite {
     // Output
     InsertOutputLines { session_id: String, lines: Vec<(String, i64)> },
     DeleteOutputLines { session_id: String },
+
+    // Turn snapshots (per-turn worktree state for forking)
+    InsertTurnSnapshot { session_id: String, message_uuid: String, stash_sha: String, created_at: i64 },
+    DeleteTurnSnapshotsForSession { session_id: String },
 
     // Policy
     SetTrustLevel { task_id: String, trust_level: String, updated_at: i64 },
@@ -353,7 +391,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .await?;
         }
         DbWrite::DeleteProject { id } => {
-            // Cascade: audit_log → trust_levels → steps → output_lines → sessions → tasks → project
+            // Cascade: audit_log → trust_levels → steps → output_lines → turn_snapshots → sessions → tasks → project
             sqlx::query(
                 "DELETE FROM policy_audit_log WHERE task_id IN \
                  (SELECT id FROM tasks WHERE project_id = ?)",
@@ -375,6 +413,11 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             )
             .bind(&id).execute(pool).await?;
             sqlx::query(
+                "DELETE FROM turn_snapshots WHERE session_id IN \
+                 (SELECT s.id FROM sessions s JOIN tasks t ON s.task_id = t.id WHERE t.project_id = ?)",
+            )
+            .bind(&id).execute(pool).await?;
+            sqlx::query(
                 "DELETE FROM sessions WHERE task_id IN \
                  (SELECT id FROM tasks WHERE project_id = ?)",
             )
@@ -388,8 +431,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Tasks --
         DbWrite::InsertTask(t) => {
             sqlx::query(
-                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&t.id)
             .bind(&t.project_id)
@@ -398,6 +441,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(&t.branch)
             .bind(t.created_at)
             .bind(t.port_offset)
+            .bind(&t.parent_task_id)
             .execute(pool)
             .await?;
         }
@@ -430,6 +474,11 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                  (SELECT id FROM sessions WHERE task_id = ?)",
             )
             .bind(&id).execute(pool).await?;
+            sqlx::query(
+                "DELETE FROM turn_snapshots WHERE session_id IN \
+                 (SELECT id FROM sessions WHERE task_id = ?)",
+            )
+            .bind(&id).execute(pool).await?;
             sqlx::query("DELETE FROM sessions WHERE task_id = ?")
                 .bind(&id).execute(pool).await?;
             sqlx::query("DELETE FROM tasks WHERE id = ?")
@@ -449,8 +498,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Sessions --
         DbWrite::CreateSession(s) => {
             sqlx::query(
-                "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(&s.task_id)
@@ -460,6 +509,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(s.started_at)
             .bind(s.ended_at)
             .bind(s.total_cost)
+            .bind(&s.parent_session_id)
+            .bind(&s.forked_at_message_uuid)
             .execute(pool)
             .await?;
         }
@@ -524,6 +575,25 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
 
         DbWrite::DeleteOutputLines { session_id } => {
             sqlx::query("DELETE FROM output_lines WHERE session_id = ?")
+                .bind(&session_id)
+                .execute(pool)
+                .await?;
+        }
+
+        DbWrite::InsertTurnSnapshot { session_id, message_uuid, stash_sha, created_at } => {
+            sqlx::query(
+                "INSERT OR REPLACE INTO turn_snapshots (session_id, message_uuid, stash_sha, created_at) \
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(&session_id)
+            .bind(&message_uuid)
+            .bind(&stash_sha)
+            .bind(created_at)
+            .execute(pool)
+            .await?;
+        }
+        DbWrite::DeleteTurnSnapshotsForSession { session_id } => {
+            sqlx::query("DELETE FROM turn_snapshots WHERE session_id = ?")
                 .bind(&session_id)
                 .execute(pool)
                 .await?;
@@ -718,6 +788,23 @@ pub async fn get_output_lines(
     .map_err(|e| e.to_string())
 }
 
+// Turn snapshots
+
+pub async fn get_turn_snapshot(
+    pool: &SqlitePool,
+    session_id: &str,
+    message_uuid: &str,
+) -> Result<Option<TurnSnapshot>, String> {
+    sqlx::query_as::<_, TurnSnapshot>(
+        "SELECT * FROM turn_snapshots WHERE session_id = ? AND message_uuid = ?",
+    )
+    .bind(session_id)
+    .bind(message_uuid)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
 // Steps
 
 pub async fn list_steps(pool: &SqlitePool, session_id: &str) -> Result<Vec<Step>, String> {
@@ -803,9 +890,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_eleven_migrations() {
+    fn has_twelve_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 11);
+        assert_eq!(m.len(), 12);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
@@ -817,6 +904,7 @@ mod tests {
         assert_eq!(m[8].version, 9);
         assert_eq!(m[9].version, 10);
         assert_eq!(m[10].version, 11);
+        assert_eq!(m[11].version, 12);
     }
 
     #[test]
@@ -860,6 +948,7 @@ mod tests {
             archived: false,
             archived_at: None,
             last_commit_message: None,
+            parent_task_id: None,
         }
     }
 
@@ -873,6 +962,8 @@ mod tests {
             started_at: 3000,
             ended_at: None,
             total_cost: 0.0,
+            parent_session_id: None,
+            forked_at_message_uuid: None,
         }
     }
 

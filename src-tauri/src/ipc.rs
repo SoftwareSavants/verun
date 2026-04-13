@@ -481,6 +481,68 @@ pub async fn create_session(
     task::create_session(db_tx.inner(), task_id).await
 }
 
+/// Fork an existing session at a specific assistant message uuid into a new
+/// session inside the SAME task. The worktree is unchanged.
+#[tauri::command]
+pub async fn fork_session_in_task(
+    pool: State<'_, SqlitePool>,
+    session_id: String,
+    fork_after_message_uuid: String,
+) -> Result<Session, String> {
+    task::fork_session_in_task(pool.inner(), session_id, fork_after_message_uuid).await
+}
+
+/// Fork an existing session at a specific assistant message uuid into a new
+/// task with its own worktree. `worktree_state` controls whether the new
+/// worktree is restored to the per-turn snapshot ("snapshot") or seeded from
+/// the parent's current code ("current"). After the fork completes, the
+/// project's setup hook is spawned on the new worktree so dependencies,
+/// `.env` files, etc. are installed — same treatment as a fresh task.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn fork_session_to_new_task(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    pty_map: State<'_, ActivePtyMap>,
+    hook_pty_map: State<'_, HookPtyMap>,
+    setup_in_progress: State<'_, SetupInProgress>,
+    session_id: String,
+    fork_after_message_uuid: String,
+    worktree_state: task::WorktreeForkState,
+) -> Result<TaskWithSession, String> {
+    let (new_task, new_session) = task::fork_session_to_new_task(
+        &app,
+        pool.inner(),
+        session_id,
+        fork_after_message_uuid,
+        worktree_state,
+    )
+    .await?;
+
+    // Spawn the project's setup hook on the new worktree so gitignored
+    // files (node_modules, .env, build artifacts) are materialized the same
+    // way a fresh task's worktree gets them. Without this, forked tasks
+    // look broken for any project with non-trivial setup.
+    if let Some(project) = db::get_project(pool.inner(), &new_task.project_id).await? {
+        task::spawn_setup_hook(
+            &app,
+            pty_map.inner(),
+            hook_pty_map.inner(),
+            setup_in_progress.inner(),
+            &new_task.id,
+            &new_task.worktree_path,
+            &project.setup_hook,
+            new_task.port_offset,
+            &project.repo_path,
+        );
+    }
+
+    Ok(TaskWithSession {
+        task: new_task,
+        session: new_session,
+    })
+}
+
 /// Send a message to Claude in this session.
 /// Spawns claude -p with --resume if we have a prior session_id.
 #[allow(clippy::too_many_arguments)]

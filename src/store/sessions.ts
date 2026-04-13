@@ -222,6 +222,14 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
     return [{ kind: 'userMessage', text: v.text as string, timestamp: emittedAt }]
   }
 
+  // Per-turn snapshot marker — attach the message uuid to the most recent
+  // assistant block so the "fork from here" affordance has a stable id.
+  if (type === 'verun_turn_snapshot') {
+    const uuid = v.messageUuid as string | undefined
+    if (uuid) return [{ kind: 'turnSnapshot', messageUuid: uuid }]
+    return null
+  }
+
   // Stream event (content_block_delta)
   if (type === 'stream_event') {
     const event = v.event as Record<string, unknown> | undefined

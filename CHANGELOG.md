@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fork a session from a past assistant message: hover any assistant reply to fork in this task (rewinds the chat, keeps current code), or fork to a new task with the worktree restored to the code as it was at that message (true counterfactual) or seeded from the parent's current code
+- Per-turn worktree snapshots taken at every assistant turn end via git plumbing (commit-tree against a temporary index), anchored under `refs/verun/snapshots/` so they survive `git gc`
 - Dev builds now use a separate bundle identifier (`com.softwaresavants.verun.dev`) and product name ("Verun Dev"), so dev and released apps have isolated SQLite databases and app data dirs — no more "migration N was previously applied but is missing" panics when running a released build after a newer dev session. Run dev with `pnpm tauri dev --config src-tauri/tauri.dev.conf.json` (or `make dev`).
 - Diffs now open exclusively as full-size tabs in the main editor panel — clicking a file in the Changes pane opens a side-by-side diff (backed by `@codemirror/merge`) with syntax highlighting, search, and folding, instead of expanding an inline diff in the sidebar. Double-click pins the tab. Works for both working-tree changes and files inside any branch commit; toggleable inline view; tabs persist across reloads. The old inline diff renderer (custom hunk view, expand-context buttons, word-wrap and hide-whitespace toggles) has been removed.
 

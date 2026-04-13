@@ -95,6 +95,20 @@ export const listSessions = (taskId: string) =>
 export const getSession = (id: string) =>
   invoke<Session | null>('get_session', { id })
 
+export const forkSessionInTask = (sessionId: string, forkAfterMessageUuid: string) =>
+  invoke<Session>('fork_session_in_task', { sessionId, forkAfterMessageUuid })
+
+export const forkSessionToNewTask = (
+  sessionId: string,
+  forkAfterMessageUuid: string,
+  worktreeState: 'snapshot' | 'current',
+) =>
+  invoke<TaskWithSession>('fork_session_to_new_task', {
+    sessionId,
+    forkAfterMessageUuid,
+    worktreeState,
+  })
+
 export const getOutputLines = (sessionId: string) =>
   invoke<OutputLine[]>('get_output_lines', { sessionId })
 
