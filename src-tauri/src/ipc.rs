@@ -6,6 +6,7 @@ use crate::github;
 use crate::pty::{self, ActivePtyMap};
 use crate::task::{self, ActiveMap, ApprovalResponse, HookPtyMap, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals, SetupInProgress};
 use crate::lsp::LspMap;
+use crate::tsgo_check::TsgoCheckMap;
 use crate::watcher::FileWatcherMap;
 use crate::worktree;
 use serde::Serialize;
@@ -1861,6 +1862,26 @@ pub async fn lsp_stop(
     task_id: String,
 ) -> Result<(), String> {
     crate::lsp::stop_server(&lsp_map, &task_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn tsgo_check_run(
+    map: State<'_, TsgoCheckMap>,
+    app: AppHandle,
+    task_id: String,
+    worktree_path: String,
+) -> Result<(), String> {
+    let binary = crate::lsp::resolve_lsp_binary(&app)?;
+    crate::tsgo_check::run_check(&map, app, binary, task_id, worktree_path).await
+}
+
+#[tauri::command]
+pub async fn tsgo_check_cancel(
+    map: State<'_, TsgoCheckMap>,
+    task_id: String,
+) -> Result<(), String> {
+    crate::tsgo_check::cancel(&map, &task_id);
     Ok(())
 }
 

@@ -10,6 +10,7 @@ mod pty;
 mod snapshots;
 mod stream;
 mod task;
+mod tsgo_check;
 mod watcher;
 mod worktree;
 
@@ -46,6 +47,7 @@ pub fn run() {
         .manage(pty::new_active_pty_map())
         .manage(watcher::new_file_watcher_map())
         .manage(lsp::new_lsp_map())
+        .manage(tsgo_check::new_tsgo_check_map())
         .manage(WindowTaskMap::new())
         .setup(|app| {
             // Capture the user's full PATH from their interactive shell so
@@ -303,6 +305,8 @@ pub fn run() {
             ipc::lsp_start,
             ipc::lsp_send,
             ipc::lsp_stop,
+            ipc::tsgo_check_run,
+            ipc::tsgo_check_cancel,
             // Notifications
             ipc::send_notification,
             // Steps

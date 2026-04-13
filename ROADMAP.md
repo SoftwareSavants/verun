@@ -110,6 +110,8 @@ High-impact features that engineers are asking for most.
 - [X] Mention files in chat (@ references)
 - [ ] Code review comments on diffs
 - [X] Problems section
+- [X] Project-wide Problems panel population for tsgo via debounced `tsgo --noEmit` shellout
+- [ ] Idle LSP eviction: stop a task's tsgo process after N minutes without an editor focused, restart on focus. Biggest practical lever for the 3-task scenario — most users actively work in 1 task while the others sit idle holding ~1.5 GB each.
 
 ### CLI Parity
 - [ ] Full Claude CLI parity (skills, slash commands, CLAUDE.md/AGENTS.md, memory)

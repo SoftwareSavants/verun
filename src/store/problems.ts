@@ -82,8 +82,10 @@ function flushBatch() {
 }
 
 // ── Gitignore filtering ─────────────────────────────────────────────
-// With enableProjectDiagnostics, vtsls scans gitignored dirs (.next, dist, etc).
-// We batch-check unknown paths via git check-ignore and cache the results.
+// Project-wide typechecks walk everything inside the tsconfig include set,
+// which often covers gitignored build output (.next, dist, etc) — noise we
+// don't want in the Problems panel. Batch-check unknown paths via
+// git check-ignore and cache the results per task.
 
 const ignoredPaths = new Map<string, Set<string>>()   // taskId → known-ignored paths
 const checkedPaths = new Map<string, Set<string>>()   // taskId → paths we've already checked
@@ -157,7 +159,7 @@ const loadingTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
 
 export function markProblemsLoading(taskId: string) {
   setLoadingTasks(prev => { const s = new Set(prev); s.add(taskId); return s })
-  // Auto-clear loading if no diagnostics arrive within 15s (e.g. vtsls crashed)
+  // Auto-clear loading if no diagnostics arrive within 15s (e.g. tsgo crashed)
   const existing = loadingTimeouts.get(taskId)
   if (existing) clearTimeout(existing)
   loadingTimeouts.set(taskId, setTimeout(() => {
@@ -242,6 +244,113 @@ export function pathHasWarnings(taskId: string, pathPrefix: string): boolean {
   return false
 }
 
+// Atomic project-wide replacement, used by the `tsgo --noEmit` pipeline.
+// Files currently open in an editor are left untouched — those are owned by
+// the LSP pull→push shim, which is faster to react to in-flight edits than a
+// debounced full-project check would be. Anything else (gitignored,
+// node_modules) is filtered out the same way as the per-file path.
+export interface ProjectError {
+  file: string
+  line: number
+  column: number
+  severity: DiagnosticSeverity
+  code?: string
+  message: string
+}
+
+// Shallow identity check: are two Problem arrays effectively the same set of
+// errors? Used to short-circuit a no-op setProjectErrors call so the signal
+// doesn't notify downstream consumers for nothing.
+function problemsEqual(a: Problem[], b: Problem[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i], y = b[i]
+    if (x.line !== y.line || x.column !== y.column
+        || x.severity !== y.severity || x.message !== y.message
+        || x.code !== y.code) return false
+  }
+  return true
+}
+
+export function setProjectErrors(taskId: string, errors: ProjectError[]) {
+  // Drop late results for a task the user has since deleted. tsgo --noEmit
+  // can take tens of seconds on a big monorepo, so a task can easily be
+  // torn down in between kicking off the check and receiving the event.
+  // Without this, a stale emit would re-add the task to the problems map.
+  const task = taskById(taskId)
+  if (!task?.worktreePath) return
+  const worktreePath = task.worktreePath
+
+  // Drop any pending per-file updates for this task — the project-wide
+  // snapshot is more authoritative for files we're about to overwrite.
+  for (const key of [...pendingUpdates.keys()]) {
+    if (key.startsWith(`${taskId}:`)) pendingUpdates.delete(key)
+  }
+  markProblemsReady(taskId)
+
+  // Bucket by file, dropping anything we already know to ignore.
+  const byFile = new Map<string, Problem[]>()
+  for (const err of errors) {
+    if (err.file.startsWith('node_modules/')) continue
+    if (isKnownIgnored(taskId, err.file)) continue
+    queueIgnoreCheck(taskId, err.file)
+
+    let bucket = byFile.get(err.file)
+    if (!bucket) { bucket = []; byFile.set(err.file, bucket) }
+    bucket.push({
+      file: err.file,
+      line: err.line,
+      column: err.column,
+      endLine: err.line,
+      endColumn: err.column,
+      severity: err.severity,
+      message: err.message,
+      code: err.code,
+      source: 'typescript',
+    })
+  }
+
+  setProblemMap(prev => {
+    const prevForTask = prev[taskId] || {}
+    const nextForTask: Record<string, Problem[]> = {}
+    const isOpen = (relPath: string) =>
+      !!lspHelpersForProjectErrors?.isFileOpenInEditor(worktreePath, relPath)
+
+    // Carry over entries for files currently open in an editor — the LSP
+    // shim owns those.
+    for (const [relPath, problems] of Object.entries(prevForTask)) {
+      if (isOpen(relPath)) nextForTask[relPath] = problems
+    }
+
+    // Merge in the project-wide results, but skip any file the LSP is owning.
+    for (const [relPath, problems] of byFile) {
+      if (isOpen(relPath)) continue
+      nextForTask[relPath] = problems
+    }
+
+    // Bail out if the new state matches the previous state exactly. This is
+    // the common case on a stable codebase — re-running the check after a
+    // save should not churn the signal when nothing changed.
+    const prevKeys = Object.keys(prevForTask)
+    const nextKeys = Object.keys(nextForTask)
+    if (prevKeys.length === nextKeys.length) {
+      let changed = false
+      for (const k of nextKeys) {
+        const a = prevForTask[k], b = nextForTask[k]
+        if (!a || !problemsEqual(a, b)) { changed = true; break }
+      }
+      if (!changed) return prev
+    }
+
+    return { ...prev, [taskId]: nextForTask }
+  })
+}
+
+// Populated by initProblemsListener once the lsp module has loaded. Kept as
+// a narrow interface so this module doesn't statically depend on lib/lsp.ts
+// (the dynamic import pattern breaks an import cycle for tests).
+let lspHelpersForProjectErrors: { isFileOpenInEditor: (w: string, r: string) => boolean } | null = null
+
 export function clearProblemsForTask(taskId: string) {
   setProblemMap(prev => {
     const next = { ...prev }
@@ -262,24 +371,14 @@ export function initProblemsListener() {
   if (initialized) return
   initialized = true
 
-  // Import lsp helpers here (not at module level) to avoid pulling in lsp.ts
-  // side effects during module evaluation — other test files import this store
-  // transitively and lsp.ts has a module-level listen() call.
-  let lspHelpers: { isFileOpenInEditor: (w: string, r: string) => boolean; isFileRecentlyOpened: (w: string, r: string) => boolean; clearFileOpened: (uri: string) => void } | null = null
-  import('../lib/lsp').then(m => { lspHelpers = m })
+  // lsp helpers are loaded lazily so this module stays import-cycle-free for
+  // tests. Start out null; the dynamic import below fills them in.
+  let lspHelpers: { isFileOpenInEditor: (w: string, r: string) => boolean } | null = null
 
-  // Listen for all LSP messages and extract publishDiagnostics.
-  // With vtsls + enableProjectDiagnostics, the server sends diagnostics
-  // for all project files automatically — not just open ones.
-  listen<LspMessagePayload>('lsp-message', (event) => {
-    const { taskId, message } = event.payload
-
+  const handleLspMessage = (taskId: string, message: string) => {
     let parsed: any
-    try {
-      parsed = JSON.parse(message)
-    } catch {
-      return
-    }
+    try { parsed = JSON.parse(message) }
+    catch { return }
 
     if (parsed.method !== 'textDocument/publishDiagnostics') return
 
@@ -316,24 +415,29 @@ export function initProblemsListener() {
       source: d.source || 'unknown',
     }))
 
-    // Suppress transient empty diagnostics that don't reflect real state:
-    // 1. didClose: vtsls clears diagnostics for closed files — suppress if file not in editor
-    // 2. didOpen: vtsls clears then re-sends — suppress if file was just opened
-    // In both cases, the project diagnostics server will re-report real errors.
-    if (lspHelpers && problems.length === 0) {
-      if (!lspHelpers.isFileOpenInEditor(task.worktreePath!, relativePath)) return
-      if (lspHelpers.isFileRecentlyOpened(task.worktreePath!, relativePath)) return
-    }
-
-    // First non-empty diagnostic after didOpen — clear the recently-opened flag
-    if (lspHelpers && problems.length > 0) {
-      lspHelpers.clearFileOpened(`file://${task.worktreePath}/${relativePath}`)
+    // Empty diagnostics for files that aren't currently open in an editor
+    // are stray pushes (e.g. tsgo's tsconfig-scope diagnostics) — skip them.
+    if (lspHelpers && problems.length === 0
+        && !lspHelpers.isFileOpenInEditor(task.worktreePath!, relativePath)) {
+      return
     }
 
     // Queue the update — will be flushed on the next animation frame.
-    // This batches rapid remove→add cycles from the LSP into a single
-    // store update, preventing flicker.
+    // Batches rapid remove→add cycles into a single store update.
     pendingUpdates.set(`${taskId}:${relativePath}`, { taskId, relativePath, problems })
     scheduleBatchFlush()
+  }
+
+  // Real publishDiagnostics from tsgo (e.g. tsconfig errors) arrive on the
+  // raw Tauri lsp-message event. Source-file diagnostics arrive via the
+  // synthetic sink registered below.
+  listen<LspMessagePayload>('lsp-message', (event) => {
+    handleLspMessage(event.payload.taskId, event.payload.message)
+  })
+
+  import('../lib/lsp').then(m => {
+    lspHelpers = { isFileOpenInEditor: m.isFileOpenInEditor }
+    lspHelpersForProjectErrors = lspHelpers
+    m.onSyntheticLspMessage(handleLspMessage)
   })
 }

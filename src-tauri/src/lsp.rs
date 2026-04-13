@@ -83,37 +83,47 @@ fn frame_lsp_message(json: &str) -> Vec<u8> {
 // Resolve bundled LSP binary
 // ---------------------------------------------------------------------------
 
-fn resolve_lsp_binary(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    // Production: Tauri bundles resources into the app's resource directory
+// tsgo ships as a per-arch native binary inside
+// @typescript/native-preview-<os>-<arch>. npm installs only the subpackage
+// matching the host arch, so we select the right directory at compile time.
+// Verun is macOS-only per CLAUDE.md; Apple Silicon and Intel are the two
+// arches that can show up on a developer machine today.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const TSGO_PLATFORM_DIR: &str = "native-preview-darwin-arm64";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const TSGO_PLATFORM_DIR: &str = "native-preview-darwin-x64";
+// Fallback just so the code compiles on non-macOS hosts during development —
+// it won't actually resolve a valid binary, but it keeps `cargo check` happy.
+#[cfg(not(target_os = "macos"))]
+const TSGO_PLATFORM_DIR: &str = "native-preview-unsupported";
+
+fn tsgo_rel_path() -> [&'static str; 5] {
+    ["node_modules", "@typescript", TSGO_PLATFORM_DIR, "lib", "tsgo"]
+}
+
+pub fn resolve_lsp_binary(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let rel = tsgo_rel_path();
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled = resource_dir
-            .join("resources")
-            .join("lsp")
-            .join("node_modules")
-            .join("@vtsls")
-            .join("language-server")
-            .join("bin")
-            .join("vtsls.js");
+        let mut bundled = resource_dir.join("resources").join("lsp");
+        for seg in rel.iter() {
+            bundled = bundled.join(seg);
+        }
         if bundled.exists() {
             return Ok(bundled);
         }
     }
 
-    // Dev: relative to the src-tauri directory
-    let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let mut dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
-        .join("lsp")
-        .join("node_modules")
-        .join("@vtsls")
-        .join("language-server")
-        .join("bin")
-        .join("vtsls.js");
+        .join("lsp");
+    for seg in rel.iter() {
+        dev_path = dev_path.join(seg);
+    }
     if dev_path.exists() {
         return Ok(dev_path);
     }
 
-    // Fallback: try PATH (user has it globally installed)
-    Err("vtsls not found. Reinstall Verun or install @vtsls/language-server globally.".into())
+    Err("tsgo binary not found. Reinstall Verun or run `pnpm install` to fetch @typescript/native-preview.".into())
 }
 
 // ---------------------------------------------------------------------------
@@ -131,18 +141,17 @@ pub async fn start_server(
         return Ok(());
     }
 
-    // Resolve the bundled vtsls path
     let lsp_bin = resolve_lsp_binary(&app)?;
 
-    let mut child = tokio::process::Command::new("node")
-        .arg(&lsp_bin)
+    let mut child = tokio::process::Command::new(&lsp_bin)
+        .arg("--lsp")
         .arg("--stdio")
         .current_dir(&worktree_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("Failed to spawn vtsls: {e}"))?;
+        .map_err(|e| format!("Failed to spawn tsgo: {e}"))?;
 
     let stdin = child
         .stdin

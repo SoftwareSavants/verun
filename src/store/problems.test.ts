@@ -9,29 +9,24 @@ vi.mock('@tauri-apps/api/event', () => ({
   }),
 }))
 
-// Mock tasks store — provide a task with a worktree path
+// Mock tasks store — provide a task with a worktree path. Tests that exercise
+// the "task deleted mid-check" path flip `deletedTasks` to make taskById
+// return undefined for a given taskId.
+const deletedTasks = new Set<string>()
 vi.mock('./tasks', () => ({
-  taskById: vi.fn((id: string) => ({
-    id,
-    worktreePath: '/tmp/test-worktree',
-  })),
+  taskById: vi.fn((id: string) => {
+    if (deletedTasks.has(id)) return undefined
+    return { id, worktreePath: '/tmp/test-worktree' }
+  }),
 }))
 
-// Mock lsp module — track which files are "open in editor" and "recently opened"
+// Mock lsp module — track which files are "open in editor"
 const openEditorFiles = new Set<string>()
-const recentlyOpenedFiles = new Set<string>()
 vi.mock('../lib/lsp', () => ({
   isFileOpenInEditor: vi.fn((_worktree: string, relativePath: string) =>
     openEditorFiles.has(relativePath)
   ),
-  isFileRecentlyOpened: vi.fn((_worktree: string, relativePath: string) =>
-    recentlyOpenedFiles.has(relativePath)
-  ),
-  clearFileOpened: vi.fn((_uri: string) => {
-    // Extract relative path from URI for our test set
-    const prefix = 'file:///tmp/test-worktree/'
-    if (_uri.startsWith(prefix)) recentlyOpenedFiles.delete(_uri.slice(prefix.length))
-  }),
+  onSyntheticLspMessage: vi.fn(() => () => {}),
 }))
 
 import {
@@ -42,6 +37,7 @@ import {
   fileHasErrors,
   fileHasWarnings,
   clearProblemsForTask,
+  setProjectErrors,
 } from './problems'
 
 // Helper: simulate an LSP publishDiagnostics message
@@ -64,7 +60,7 @@ describe('problems store', () => {
     clearProblemsForTask('task-1')
     clearProblemsForTask('task-2')
     openEditorFiles.clear()
-    recentlyOpenedFiles.clear()
+    deletedTasks.clear()
     vi.useFakeTimers()
     // Mock requestAnimationFrame to use setTimeout(fn, 0) so vi.runAllTimers() works
     vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0))
@@ -153,34 +149,6 @@ describe('problems store', () => {
     expect(problemsForTask('task-1').length).toBe(0)
   })
 
-  test('didOpen empty diagnostic suppressed, real diagnostics clear the flag', () => {
-    initProblemsListener()
-
-    // File has existing project-wide problems
-    emitDiagnostics('task-1', 'file:///tmp/test-worktree/src/foo.ts', [
-      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, severity: 1, message: 'Error', source: 'ts' },
-    ])
-    flushBatch()
-    expect(problemsForTask('task-1').length).toBe(1)
-
-    // Simulate didOpen: file is now open AND recently opened
-    openEditorFiles.add('src/foo.ts')
-    recentlyOpenedFiles.add('src/foo.ts')
-
-    // Empty diagnostic from didOpen → suppressed because recently opened
-    emitDiagnostics('task-1', 'file:///tmp/test-worktree/src/foo.ts', [])
-    flushBatch()
-    expect(problemsForTask('task-1').length).toBe(1) // Still there
-
-    // Real diagnostics arrive → flag cleared, problems updated
-    emitDiagnostics('task-1', 'file:///tmp/test-worktree/src/foo.ts', [
-      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, severity: 1, message: 'Error', source: 'ts' },
-    ])
-    flushBatch()
-    expect(problemsForTask('task-1').length).toBe(1)
-    expect(recentlyOpenedFiles.has('src/foo.ts')).toBe(false) // Flag cleared
-  })
-
   test('empty diagnostics suppressed for files not open in editor', () => {
     initProblemsListener()
 
@@ -238,6 +206,81 @@ describe('problems store', () => {
 
     // Same reference means the store didn't update (identical skip worked)
     expect(first).toBe(second)
+  })
+
+  test('setProjectErrors replaces all problems for a task atomically', async () => {
+    initProblemsListener()
+    // Wait for the lsp helpers to load (microtask).
+    await Promise.resolve(); await Promise.resolve()
+
+    // Seed two files with errors via the per-file path.
+    emitDiagnostics('task-1', 'file:///tmp/test-worktree/src/a.ts', [
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, severity: 1, message: 'old a', source: 'ts' },
+    ])
+    emitDiagnostics('task-1', 'file:///tmp/test-worktree/src/b.ts', [
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, severity: 1, message: 'old b', source: 'ts' },
+    ])
+    flushBatch()
+    expect(problemsForTask('task-1').length).toBe(2)
+
+    // Project-wide check returns a fresh set: c.ts has an error, a.ts and
+    // b.ts are gone (clean now).
+    setProjectErrors('task-1', [
+      { file: 'src/c.ts', line: 7, column: 3, severity: 'error', code: 'TS2322', message: 'fresh c' },
+    ])
+
+    const after = problemsByFileForTask('task-1')
+    expect(Object.keys(after).sort()).toEqual(['src/c.ts'])
+    expect(after['src/c.ts'][0].message).toBe('fresh c')
+    expect(after['src/c.ts'][0].source).toBe('typescript')
+  })
+
+  test('setProjectErrors leaves files open in editor untouched', async () => {
+    initProblemsListener()
+    await Promise.resolve(); await Promise.resolve()
+
+    openEditorFiles.add('src/owned.ts')
+    emitDiagnostics('task-1', 'file:///tmp/test-worktree/src/owned.ts', [
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, severity: 1, message: 'lsp owns this', source: 'ts' },
+    ])
+    flushBatch()
+    expect(problemsForTask('task-1').length).toBe(1)
+
+    // Project-wide says owned.ts is clean and reports an error in unopened.ts.
+    // Editor-owned file should be preserved; unopened should be added.
+    setProjectErrors('task-1', [
+      { file: 'src/unopened.ts', line: 1, column: 1, severity: 'error', message: 'project error' },
+    ])
+
+    const after = problemsByFileForTask('task-1')
+    expect(Object.keys(after).sort()).toEqual(['src/owned.ts', 'src/unopened.ts'])
+    expect(after['src/owned.ts'][0].message).toBe('lsp owns this')
+  })
+
+  test('setProjectErrors drops results for a task that no longer exists', async () => {
+    initProblemsListener()
+    await Promise.resolve(); await Promise.resolve()
+
+    // Task was deleted between the check being kicked off and the result
+    // arriving. setProjectErrors should be a no-op, not re-add the task.
+    deletedTasks.add('task-1')
+    setProjectErrors('task-1', [
+      { file: 'src/foo.ts', line: 1, column: 1, severity: 'error', message: 'stale' },
+    ])
+    expect(Object.keys(problemsByFileForTask('task-1'))).toEqual([])
+  })
+
+  test('setProjectErrors filters node_modules', async () => {
+    initProblemsListener()
+    await Promise.resolve(); await Promise.resolve()
+
+    setProjectErrors('task-1', [
+      { file: 'node_modules/foo/index.ts', line: 1, column: 1, severity: 'error', message: 'noise' },
+      { file: 'src/real.ts', line: 1, column: 1, severity: 'error', message: 'real' },
+    ])
+
+    const after = problemsByFileForTask('task-1')
+    expect(Object.keys(after)).toEqual(['src/real.ts'])
   })
 
   test('clearProblemsForTask removes all problems', () => {

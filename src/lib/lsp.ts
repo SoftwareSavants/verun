@@ -11,12 +11,13 @@ import {
   findReferencesKeymap,
 } from '@codemirror/lsp-client'
 import type { Transport, WorkspaceFile } from '@codemirror/lsp-client'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import { EditorView, keymap } from '@codemirror/view'
 import { Text } from '@codemirror/state'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from './ipc'
 import { openFilePinned } from '../store/files'
-import { markProblemsLoading } from '../store/problems'
+import { markProblemsLoading, setProjectErrors } from '../store/problems'
 import { addToast } from '../store/ui'
 import type { FileTreeChangedEvent } from '../types'
 
@@ -75,26 +76,6 @@ export function isFileOpenInEditor(worktreePath: string, relativePath: string): 
   return editorViews.has(`file://${worktreePath}/${relativePath}`)
 }
 
-// ── didOpen suppression ──────────────────────────────────────────────
-// When didOpen is sent, vtsls clears diagnostics (empty publishDiagnostics)
-// then re-analyzes (real diagnostics). We suppress the transient empty.
-const recentlyOpenedFiles = new Set<string>()
-
-/** Mark a file as recently opened — suppresses the next empty diagnostic */
-export function markFileOpened(uri: string) {
-  recentlyOpenedFiles.add(uri)
-}
-
-/** Clear the recently-opened flag (called when real diagnostics arrive) */
-export function clearFileOpened(uri: string) {
-  recentlyOpenedFiles.delete(uri)
-}
-
-/** Check if a file was just didOpen'd (transient empty should be suppressed) */
-export function isFileRecentlyOpened(worktreePath: string, relativePath: string): boolean {
-  return recentlyOpenedFiles.has(`file://${worktreePath}/${relativePath}`)
-}
-
 // ── Custom Workspace with cross-file support ──────────────────────────
 
 class VerunWorkspaceFile implements WorkspaceFile {
@@ -150,7 +131,6 @@ class VerunWorkspace extends Workspace {
       if (existing.getView() === view) return
       this.files = this.files.filter(f => f !== existing)
     }
-    markFileOpened(uri)
     const file = new VerunWorkspaceFile(uri, languageId, this.nextVersion(uri), view.state.doc, view)
     this.files.push(file)
     this.client.didOpen(file)
@@ -196,88 +176,183 @@ class VerunWorkspace extends Workspace {
   }
 }
 
-// ── vtsls settings ───────────────────────────────────────────────────
-// Returned when vtsls sends a workspace/configuration request during init.
-// This is how enableProjectDiagnostics gets set BEFORE the service spawns
-// its diagnostics server — sending didChangeConfiguration after init is too late.
-const VTSLS_SETTINGS = {
-  typescript: {
-    tsserver: {
-      experimental: { enableProjectDiagnostics: true },
-    },
-  },
-  vtsls: {
-    autoUseWorkspaceTsdk: true,
-  },
-}
+// ── tsgo settings ────────────────────────────────────────────────────
+// tsgo's workspace/configuration request asks for typescript / javascript /
+// editor sections; we don't need to set anything specific. Empty object is
+// the safe default — tsgo uses its own internal defaults.
+const LSP_SETTINGS = {}
 
 // ── Transport ─────────────────────────────────────────────────────────
-// Per-task injectors — lets us push synthetic messages into the transport
-// so @codemirror/lsp-client processes them as if they came from vtsls.
-const transportInjectors = new Map<string, (msg: string) => void>()
 
-/** Inject a message into a task's transport handlers (for replaying cached diagnostics) */
-export function injectLspMessage(taskId: string, message: string) {
-  transportInjectors.get(taskId)?.(message)
+// Sinks that receive synthesized LSP messages (e.g. publishDiagnostics that
+// the pull→push shim builds from tsgo's pull responses). Listeners that
+// subscribe via Tauri's `lsp-message` event don't see these — they only flow
+// through here. Used by the Problems panel store.
+type SyntheticLspMessageSink = (taskId: string, message: string) => void
+const syntheticMessageSinks = new Set<SyntheticLspMessageSink>()
+export function onSyntheticLspMessage(sink: SyntheticLspMessageSink): () => void {
+  syntheticMessageSinks.add(sink)
+  return () => syntheticMessageSinks.delete(sink)
 }
 
-function createTauriTransport(taskId: string, worktreePath: string, workspaceFolders?: Array<{ uri: string; name: string }>): Transport {
-  const handlers: Array<(msg: string) => void> = []
-  transportInjectors.set(taskId, (msg: string) => {
-    for (const h of handlers) h(msg)
-  })
+// Per-task unlisten handles for the Tauri `lsp-message` subscription created
+// inside createTauriTransport. Stored as Promises because Tauri's `listen`
+// is async; stopLspClient chains a `.then` to invoke the unlisten whenever
+// it resolves.
+const transportUnlisten = new Map<string, Promise<UnlistenFn>>()
 
-  listen<LspMessagePayload>('lsp-message', (event) => {
+// ── pull→push diagnostics shim ───────────────────────────────────────
+// tsgo only supports textDocument/diagnostic (pull). @codemirror/lsp-client
+// only handles textDocument/publishDiagnostics (push). We bridge by firing a
+// pull request after every didOpen/didChange we see going out, then
+// synthesizing a publishDiagnostics from the response and injecting it back
+// into the transport. From lsp-client's perspective the server is push-based.
+let diagRequestCounter = 0
+function nextDiagId(taskId: string): string {
+  diagRequestCounter += 1
+  return `verun-diag-${taskId}-${diagRequestCounter}`
+}
+
+function createTauriTransport(taskId: string, workspaceFolders?: Array<{ uri: string; name: string }>): Transport {
+  const handlers: Array<(msg: string) => void> = []
+
+  // Track pending diagnostic pulls. The latest request id per URI wins; older
+  // responses are dropped so a slow tsgo doesn't overwrite a newer result.
+  const pendingDiagByUri = new Map<string, string>() // uri → latest pending diag id
+  const diagIdToUri = new Map<string, string>()      // diag id → uri
+
+  const pullDiagnostics = (uri: string) => {
+    const id = nextDiagId(taskId)
+    pendingDiagByUri.set(uri, id)
+    diagIdToUri.set(id, uri)
+    ipc.lspSend(taskId, JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      method: 'textDocument/diagnostic',
+      params: { textDocument: { uri } },
+    })).catch(() => {})
+  }
+
+  const synthesizePublishDiagnostics = (uri: string, items: unknown[]) => {
+    const message = JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'textDocument/publishDiagnostics',
+      params: { uri, diagnostics: items ?? [] },
+    })
+    for (const h of handlers) h(message)
+    for (const s of syntheticMessageSinks) s(taskId, message)
+  }
+
+  // Each transport registers its own Tauri event subscription. We track the
+  // unlisten promise so stopLspClient can tear it down — otherwise a restart
+  // would accumulate parallel listeners, each firing its own pull-diagnostic
+  // request on every incoming message.
+  const unlistenPromise = listen<LspMessagePayload>('lsp-message', (event) => {
     if (event.payload.taskId !== taskId) return
 
-    // Intercept workspace/configuration requests from vtsls.
-    // vtsls sends this during initialization to pull settings (enableProjectDiagnostics, etc).
-    // @codemirror/lsp-client doesn't handle server→client requests — it responds with
-    // MethodNotFound, which crashes vtsls. We handle it here at the transport level.
-    try {
-      const msg = JSON.parse(event.payload.message)
-      if (msg.id != null && msg.method === 'workspace/configuration') {
+    let msg: any
+    try { msg = JSON.parse(event.payload.message) }
+    catch {
+      for (const h of handlers) h(event.payload.message)
+      return
+    }
+
+    // Server→client requests: lsp-client doesn't handle these and would
+    // respond MethodNotFound, which tsgo treats as a fatal protocol error.
+    // Reply at the transport level instead.
+    if (msg.id != null && typeof msg.method === 'string') {
+      if (msg.method === 'workspace/configuration') {
         const items = msg.params?.items || []
-        const result = items.map(() => VTSLS_SETTINGS)
-        ipc.lspSend(taskId, JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }))
+        ipc.lspSend(taskId, JSON.stringify({
+          jsonrpc: '2.0', id: msg.id, result: items.map(() => LSP_SETTINGS),
+        })).catch(() => {})
         return
       }
-      // Swallow window/showMessage and surface as a toast. lsp-client's
-      // default handler renders a full-width in-editor dialog (ugly banner),
-      // so we don't forward it. LSP spec: 1=Error, 2=Warning, 3=Info, 4=Log.
-      if (msg.method === 'window/showMessage') {
-        const t = msg.params?.type
+      if (msg.method === 'client/registerCapability'
+          || msg.method === 'client/unregisterCapability') {
+        ipc.lspSend(taskId, JSON.stringify({
+          jsonrpc: '2.0', id: msg.id, result: null,
+        })).catch(() => {})
+        return
+      }
+    }
+
+    // Intercept responses to our pull-diagnostic requests and convert them
+    // into synthesized publishDiagnostics notifications.
+    if (typeof msg.id === 'string' && msg.id.startsWith('verun-diag-')) {
+      const uri = diagIdToUri.get(msg.id)
+      diagIdToUri.delete(msg.id)
+      // Drop superseded responses (a newer pull for the same URI is in flight).
+      if (uri && pendingDiagByUri.get(uri) === msg.id) {
+        pendingDiagByUri.delete(uri)
+        const result = msg.result
+        const items = result && typeof result === 'object' && 'items' in result
+          ? (result as { items: unknown[] }).items
+          : []
+        synthesizePublishDiagnostics(uri, items)
+      }
+      return
+    }
+
+    // Swallow window/showMessage and surface as a toast. lsp-client's default
+    // handler renders a full-width in-editor dialog. LSP spec: 1=Error,
+    // 2=Warning, 3=Info, 4=Log.
+    if (msg.method === 'window/showMessage') {
+      const t = msg.params?.type
+      if (t !== 4) {
         const text = `TypeScript server: ${msg.params?.message ?? 'unknown'}`
         const toastType: 'error' | 'info' = t === 1 ? 'error' : 'info'
-        if (t !== 4) {
-          addToast(text, toastType, { id: `lsp:${taskId}:showMessage`, duration: 10000 })
-        }
-        return
+        addToast(text, toastType, { id: `lsp:${taskId}:showMessage`, duration: 10000 })
       }
-    } catch { /* parse error — fall through to handlers */ }
-
-    for (const h of handlers) {
-      h(event.payload.message)
+      return
     }
+
+    // Mute tsgo's verbose window/logMessage stream. lsp-client passes these
+    // through to console; not useful in production.
+    if (msg.method === 'window/logMessage') return
+
+    for (const h of handlers) h(event.payload.message)
   })
+
+  // Replace any stale subscription for this task (defensive — stopLspClient
+  // should have cleared it already) and store the new one.
+  const prev = transportUnlisten.get(taskId)
+  if (prev) prev.then(fn => fn()).catch(() => {})
+  transportUnlisten.set(taskId, unlistenPromise)
 
   return {
     send(message: string) {
-      try {
-        const msg = JSON.parse(message)
-        // Inject workspaceFolders into the initialize request for monorepo support
-        if (msg.method === 'initialize' && workspaceFolders?.length) {
-          msg.params.workspaceFolders = workspaceFolders
-          message = JSON.stringify(msg)
+      let parsed: any
+      try { parsed = JSON.parse(message) } catch { /* not JSON */ }
+
+      if (parsed) {
+        // Inject workspaceFolders into the initialize request. Single-folder
+        // for the worktree root — tsgo discovers tsconfigs lazily as files
+        // open, which keeps RSS proportional to what the user actually uses.
+        if (parsed.method === 'initialize' && workspaceFolders?.length) {
+          parsed.params.workspaceFolders = workspaceFolders
+          message = JSON.stringify(parsed)
         }
-        // When initialized is sent, vtsls starts initializeService() which spawns
-        // tsserver. After 3s (enough for tsserver to start), auto-open one file
-        // to trigger geterrForProject and populate the problems panel.
-        if (msg.method === 'initialized') {
-          setTimeout(() => autoDiscoverProjects(taskId, worktreePath), 3000)
-        }
-      } catch { /* not JSON — send as-is */ }
+      }
+
       ipc.lspSend(taskId, message)
+
+      // Pull-to-push shim: after every didOpen/didChange that goes out, fire
+      // a textDocument/diagnostic for the same URI. lsp-client's autoSync
+      // already debounces didChange to 500ms after typing stops, so we don't
+      // need our own debounce here.
+      if (parsed) {
+        if (parsed.method === 'textDocument/didOpen') {
+          const uri = parsed.params?.textDocument?.uri
+          if (typeof uri === 'string') pullDiagnostics(uri)
+        } else if (parsed.method === 'textDocument/didChange') {
+          const uri = parsed.params?.textDocument?.uri
+          if (typeof uri === 'string') pullDiagnostics(uri)
+        } else if (parsed.method === 'textDocument/didSave') {
+          const uri = parsed.params?.textDocument?.uri
+          if (typeof uri === 'string') pullDiagnostics(uri)
+        }
+      }
     },
     subscribe(handler: (msg: string) => void) {
       handlers.push(handler)
@@ -287,133 +362,6 @@ function createTauriTransport(taskId: string, worktreePath: string, workspaceFol
       if (i >= 0) handlers.splice(i, 1)
     },
   }
-}
-
-/**
- * Find all tsconfig.json directories and build workspace folder entries for
- * the LSP initialize request. In monorepos, this tells vtsls about all
- * sub-projects so it can discover and analyze them from the start.
- */
-async function findWorkspaceFolders(taskId: string, worktreePath: string): Promise<Array<{ uri: string; name: string }>> {
-  try {
-    const allFiles = await ipc.listWorktreeFiles(taskId)
-    const folders: Array<{ uri: string; name: string }> = [
-      { uri: `file://${worktreePath}`, name: worktreePath.split('/').pop() || 'root' },
-    ]
-    for (const f of allFiles) {
-      if (f.endsWith('/tsconfig.json')) {
-        const dir = f.slice(0, f.lastIndexOf('/'))
-        folders.push({
-          uri: `file://${worktreePath}/${dir}`,
-          name: dir.split('/').pop() || dir,
-        })
-      }
-    }
-    return folders
-  } catch {
-    return [{ uri: `file://${worktreePath}`, name: worktreePath.split('/').pop() || 'root' }]
-  }
-}
-
-/** Send a didOpen for a file via raw IPC. */
-async function sendDidOpen(taskId: string, worktreePath: string, relPath: string): Promise<boolean> {
-  try {
-    const content = await ipc.readTextFile(`${worktreePath}/${relPath}`)
-    const uri = `file://${worktreePath}/${relPath}`
-    const ext = relPath.split('.').pop() || ''
-    const languageId = ext === 'tsx' ? 'typescriptreact' : 'typescript'
-    await ipc.lspSend(taskId, JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'textDocument/didOpen',
-      params: { textDocument: { uri, languageId, version: 0, text: content } },
-    }))
-    return true
-  } catch { return false }
-}
-
-/**
- * Discover all TS projects in the worktree by chaining didOpen calls.
- * Called from the transport's send interceptor when it sees the outgoing
- * `initialized` notification — timed 3s after so vtsls has spawned tsserver.
- *
- * Flow:
- *   1. Find one .ts/.tsx file per tsconfig directory
- *   2. Open the first one, wait for publishDiagnostics to confirm service is live
- *   3. Chain the rest: open, wait 3s of diagnostic quiet, repeat
- */
-async function autoDiscoverProjects(taskId: string, worktreePath: string) {
-  if (!clients.has(taskId)) return
-
-  let allFiles: string[]
-  try { allFiles = await ipc.listWorktreeFiles(taskId) }
-  catch { return }
-
-  // Find all tsconfig directories (including root)
-  const tsconfigDirs: string[] = []
-  let hasRootTsconfig = false
-  for (const f of allFiles) {
-    if (f === 'tsconfig.json') { hasRootTsconfig = true; continue }
-    if (f.endsWith('/tsconfig.json')) {
-      tsconfigDirs.push(f.slice(0, f.lastIndexOf('/')))
-    }
-  }
-
-  // Pick one representative .ts/.tsx file per tsconfig dir
-  const filesToOpen: string[] = []
-  const pickFile = (prefix: string) => allFiles.find(f =>
-    f.startsWith(prefix) &&
-    /\.(ts|tsx)$/.test(f) &&
-    !f.includes('node_modules') &&
-    !f.includes('.next/') &&
-    !f.includes('/dist/') &&
-    !f.includes('/build/')
-  )
-
-  if (hasRootTsconfig) {
-    const root = pickFile('')
-    if (root) filesToOpen.push(root)
-  } else if (tsconfigDirs.length === 0) {
-    // No tsconfigs at all — fall back to opening any TS file
-    const any = pickFile('')
-    if (any) filesToOpen.push(any)
-  }
-  for (const dir of tsconfigDirs) {
-    const file = pickFile(dir + '/')
-    if (file) filesToOpen.push(file)
-  }
-  if (filesToOpen.length === 0) return
-
-  // Open the first file — this triggers service init confirmation
-  const first = filesToOpen.shift()!
-  const ok = await sendDidOpen(taskId, worktreePath, first)
-  if (!ok || filesToOpen.length === 0) return
-
-  // Chain remaining projects: wait for 3s of diagnostic quiet, then open next
-  const { listen: tauriListen } = await import('@tauri-apps/api/event')
-  let idx = 0
-
-  const openNext = async () => {
-    if (idx >= filesToOpen.length || !clients.has(taskId)) return
-    const file = filesToOpen[idx++]
-    await sendDidOpen(taskId, worktreePath, file)
-
-    // Wait for 3s of diagnostic quiet, then move on
-    let settleTimer: ReturnType<typeof setTimeout>
-    const unlisten = await tauriListen<{ taskId: string; message: string }>('lsp-message', (event) => {
-      if (event.payload.taskId !== taskId) return
-      try {
-        const msg = JSON.parse(event.payload.message)
-        if (msg.method === 'textDocument/publishDiagnostics') {
-          clearTimeout(settleTimer)
-          settleTimer = setTimeout(onSettle, 3000)
-        }
-      } catch {}
-    })
-    const onSettle = () => { unlisten(); openNext() }
-    settleTimer = setTimeout(onSettle, 3000)
-  }
-
-  openNext()
 }
 
 /**
@@ -428,7 +376,7 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
     await ipc.lspStart(taskId, worktreePath)
   } catch (e) {
     addToast(
-      `TypeScript language server failed to start: ${e instanceof Error ? e.message : String(e)}`,
+      `tsgo failed to start: ${e instanceof Error ? e.message : String(e)}`,
       'error',
       { id: `lsp:${taskId}:start`, duration: 10000 },
     )
@@ -436,8 +384,12 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
   }
   worktreePaths.set(taskId, worktreePath)
 
-  // Find tsconfig.json directories for monorepo workspace folder support
-  const workspaceFolders = await findWorkspaceFolders(taskId, worktreePath)
+  // Single-folder workspace at the worktree root. tsgo discovers per-package
+  // tsconfigs lazily as the user opens files; preloading every tsconfig would
+  // load each as a separate project and balloon RSS on monorepos.
+  const workspaceFolders = [
+    { uri: `file://${worktreePath}`, name: worktreePath.split('/').pop() || 'root' },
+  ]
 
   const client = new LSPClient({
     rootUri: `file://${worktreePath}`,
@@ -451,13 +403,15 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
       keymap.of([...formatKeymap, ...renameKeymap, ...jumpToDefinitionKeymap, ...findReferencesKeymap]),
       signatureHelp(),
       serverDiagnostics(),
-      // Advertise capabilities so vtsls sends ConfigurationRequest during init
-      // (handled by the transport interceptor) and accepts workspace folder updates.
+      // Advertise workspace/configuration + workspaceFolders so tsgo sends a
+      // ConfigurationRequest during init (handled by the transport
+      // interceptor). Diagnostics themselves are pull-only on tsgo; the
+      // transport shim translates them to synthetic publishDiagnostics.
       { clientCapabilities: { workspace: { configuration: true, workspaceFolders: true } } },
     ],
   })
 
-  client.connect(createTauriTransport(taskId, worktreePath, workspaceFolders))
+  client.connect(createTauriTransport(taskId, workspaceFolders))
   clients.set(taskId, client)
 
   await client.initializing
@@ -465,15 +419,10 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
   // Mark loading so the Problems panel shows a spinner
   markProblemsLoading(taskId)
 
-  // Also send didChangeConfiguration — the transport interceptor handles the
-  // init-time workspace/configuration request (setting enableProjectDiagnostics),
-  // but this notification triggers vtsls to re-analyze open files and emit
-  // publishDiagnostics, which @codemirror/lsp-client needs for inline rendering.
-  ipc.lspSend(taskId, JSON.stringify({
-    jsonrpc: '2.0',
-    method: 'workspace/didChangeConfiguration',
-    params: { settings: VTSLS_SETTINGS },
-  })).catch(() => {})
+  // Kick off an immediate project-wide typecheck so the Problems panel
+  // populates without the user having to touch any file. Subsequent runs are
+  // triggered by file-tree changes (debounced below).
+  ipc.tsgoCheckRun(taskId, worktreePath).catch(() => {})
 
   return client
 }
@@ -486,6 +435,27 @@ export function isLspSupported(path: string): boolean {
   return ['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'mjs', 'cjs'].includes(ext)
 }
 
+// Per-task debounce for project-wide tsgo --noEmit reruns triggered by file
+// changes. Cancelled when the task's LSP shuts down.
+const recheckTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const RECHECK_DEBOUNCE_MS = 3000
+
+function scheduleProjectRecheck(taskId: string) {
+  if (!worktreePaths.has(taskId)) return
+  const existing = recheckTimers.get(taskId)
+  if (existing) clearTimeout(existing)
+  recheckTimers.set(taskId, setTimeout(() => {
+    recheckTimers.delete(taskId)
+    if (!clients.has(taskId)) return
+    // Re-read the worktree path at firing time — if the task was torn down
+    // and rebuilt during the debounce window, we want the fresh path, not
+    // a stale one captured in the closure.
+    const worktreePath = worktreePaths.get(taskId)
+    if (!worktreePath) return
+    ipc.tsgoCheckRun(taskId, worktreePath).catch(() => {})
+  }, RECHECK_DEBOUNCE_MS))
+}
+
 /**
  * Stop and clean up the LSP client for a task.
  */
@@ -496,10 +466,18 @@ export async function stopLspClient(taskId: string) {
     clients.delete(taskId)
   }
   worktreePaths.delete(taskId)
-  transportInjectors.delete(taskId)
+  const unlisten = transportUnlisten.get(taskId)
+  if (unlisten) {
+    transportUnlisten.delete(taskId)
+    unlisten.then(fn => fn()).catch(() => {})
+  }
   const timer = restartTimers.get(taskId)
   if (timer) clearTimeout(timer)
   restartTimers.delete(taskId)
+  const recheck = recheckTimers.get(taskId)
+  if (recheck) clearTimeout(recheck)
+  recheckTimers.delete(taskId)
+  ipc.tsgoCheckCancel(taskId).catch(() => {})
   await ipc.lspStop(taskId)
 }
 
@@ -510,39 +488,62 @@ export async function restartLspServer(taskId: string) {
   const worktreePath = worktreePaths.get(taskId)
   if (!worktreePath) return
 
-  const client = clients.get(taskId)
-  if (client) {
-    client.disconnect()
-    clients.delete(taskId)
-  }
-  await ipc.lspStop(taskId)
+  // Go through stopLspClient so the transport's Tauri listener and all the
+  // per-task timers get torn down. Otherwise each restart would leak another
+  // lsp-message subscription.
+  await stopLspClient(taskId)
   await getLspClient(taskId, worktreePath)
 }
 
 // Surface LSP process crashes as long toasts. Rust emits `lsp-exit` when the
-// vtsls child closes stdout (abnormal or otherwise); if the client is still
+// tsgo child closes stdout (abnormal or otherwise); if the client is still
 // connected from our perspective, treat that as a crash.
 interface LspExitPayload { taskId: string }
 listen<LspExitPayload>('lsp-exit', (event) => {
   const { taskId } = event.payload
   if (!clients.has(taskId)) return
   addToast(
-    'TypeScript server crashed — restart the task to recover',
+    'tsgo crashed — restart the task to recover',
     'error',
     { id: `lsp:${taskId}:crash`, duration: 10000 },
   )
 })
 
-// Watch for node_modules changes and restart LSP (debounced 3s)
+// Watch for file tree changes:
+//   - node_modules changes restart the LSP entirely (debounced 3s)
+//   - any other change schedules a project-wide tsgo --noEmit rerun (3s)
 listen<FileTreeChangedEvent>('file-tree-changed', (event) => {
   const { taskId, path } = event.payload
   if (!clients.has(taskId)) return
-  if (!path.includes('node_modules')) return
 
-  const existing = restartTimers.get(taskId)
-  if (existing) clearTimeout(existing)
-  restartTimers.set(taskId, setTimeout(() => {
-    restartTimers.delete(taskId)
-    restartLspServer(taskId)
-  }, 3000))
+  if (path.includes('node_modules')) {
+    const existing = restartTimers.get(taskId)
+    if (existing) clearTimeout(existing)
+    restartTimers.set(taskId, setTimeout(() => {
+      restartTimers.delete(taskId)
+      restartLspServer(taskId)
+    }, 3000))
+    return
+  }
+
+  // Only retypecheck on changes to source files we care about.
+  if (!isLspSupported(path)) return
+  scheduleProjectRecheck(taskId)
+})
+
+// Forward project-wide typecheck results into the Problems panel store.
+interface TsgoCheckResultPayload {
+  taskId: string
+  problems: Array<{
+    file: string; line: number; column: number;
+    severity: 'error' | 'warning' | 'info' | 'hint';
+    code: string; message: string;
+  }>
+  durationMs: number
+  ok: boolean
+}
+listen<TsgoCheckResultPayload>('tsgo-check-result', (event) => {
+  const { taskId, problems, ok } = event.payload
+  if (!ok) return
+  setProjectErrors(taskId, problems)
 })

@@ -154,7 +154,8 @@ export const TaskPanel: Component = () => {
       }
       // Start LSP eagerly so project-wide diagnostics populate the problems
       // panel without waiting for the user to open a file in the editor.
-      // Wait until setup is done — node_modules must exist for vtsls.
+      // Wait until setup is done — node_modules must exist for tsgo to resolve
+      // dependencies correctly.
       if (!isSetupRunning(taskId) && !setupFailed(taskId)) {
         const t = taskById(taskId)
         if (t?.worktreePath) {
