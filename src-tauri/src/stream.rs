@@ -194,8 +194,7 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // Control requests are handled separately in stream_and_capture
         "control_request" | "control_response" => vec![],
 
-        other => {
-            eprintln!("[verun-debug] unhandled event type: {other} | line: {}", &line[..line.len().min(200)]);
+        _ => {
             vec![]
         }
     }
@@ -261,15 +260,13 @@ fn parse_stream_event(v: &serde_json::Value) -> Vec<OutputItem> {
                         input: input_str,
                     }]
                 }
-                other => {
-                    eprintln!("[verun-debug] content_block_start unhandled block type: {other}");
+                _ => {
                     vec![]
                 }
             }
         }
         "content_block_stop" | "message_start" | "message_delta" | "message_stop" => vec![],
-        other => {
-            eprintln!("[verun-debug] unhandled stream_event type: {other}");
+        _ => {
             vec![]
         }
     }
@@ -297,7 +294,6 @@ fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
                 } else {
                     serde_json::to_string_pretty(&input).unwrap_or_default()
                 };
-                eprintln!("[verun-debug] ToolStart from assistant message: {name}");
                 items.push(OutputItem::ToolStart {
                     tool: name.to_string(),
                     input: input_str,
@@ -412,12 +408,7 @@ pub async fn stream_and_capture(
                             if cr.handled {
                                 // Emit ToolStart so the frontend knows which tool is running
                                 if let Some(tool_start) = cr.tool_start {
-                                    if let OutputItem::ToolStart { ref tool, .. } = tool_start {
-                                        eprintln!("[verun-debug] ToolStart from control_request: {tool}");
-                                    }
                                     buffer.push(tool_start);
-                                } else {
-                                    eprintln!("[verun-debug] control_request handled but no tool_start");
                                 }
                                 persist_line(&db_tx, &session_id, &line, &mut total_persisted);
                                 continue;
@@ -448,13 +439,6 @@ pub async fn stream_and_capture(
                         // Emit text/thinking deltas immediately for real-time streaming
                         let mut has_immediate = false;
                         let mut is_turn_end = false;
-                        for item in &items {
-                            match item {
-                                OutputItem::ToolStart { tool, .. } => eprintln!("[verun-debug] ToolStart: {tool}"),
-                                OutputItem::ToolResult { is_error, .. } => eprintln!("[verun-debug] ToolResult (error={is_error})"),
-                                _ => {}
-                            }
-                        }
                         for item in items {
                             match &item {
                                 OutputItem::Text { .. } | OutputItem::Thinking { .. } => {

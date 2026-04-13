@@ -137,6 +137,7 @@ Important but not blocking daily use.
 - [ ] Help panel and keyboard shortcut overlay
 - [ ] ARIA labels and tab order management
 - [ ] Accessibility audit
+- [ ] Voice mode
 
 ---
 
