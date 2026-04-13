@@ -172,6 +172,7 @@ export interface Toast {
   type: 'info' | 'error' | 'success'
   persistent?: boolean
   actions?: ToastAction[]
+  onDismiss?: () => void
 }
 
 export interface AddToastOptions {
@@ -179,6 +180,7 @@ export interface AddToastOptions {
   persistent?: boolean
   duration?: number
   actions?: ToastAction[]
+  onDismiss?: () => void
 }
 
 export const [toasts, setToasts] = createSignal<Toast[]>([])
@@ -190,7 +192,7 @@ export function addToast(
   opts: AddToastOptions = {},
 ): string {
   const id = opts.id ?? crypto.randomUUID()
-  const toast: Toast = { id, message, type, persistent: opts.persistent, actions: opts.actions }
+  const toast: Toast = { id, message, type, persistent: opts.persistent, actions: opts.actions, onDismiss: opts.onDismiss }
   setToasts(prev => {
     const existing = prev.findIndex(t => t.id === id)
     if (existing >= 0) {
@@ -214,7 +216,11 @@ export function dismissToast(id: string) {
   const timer = toastTimers.get(id)
   if (timer) clearTimeout(timer)
   toastTimers.delete(id)
-  setToasts(prev => prev.filter(t => t.id !== id))
+  setToasts(prev => {
+    const toast = prev.find(t => t.id === id)
+    toast?.onDismiss?.()
+    return prev.filter(t => t.id !== id)
+  })
 }
 
 // Shared edit-step signal — set by StepList edit button, consumed by MessageInput

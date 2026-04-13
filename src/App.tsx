@@ -14,7 +14,7 @@ import { initProblemsListener } from './store/problems'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId } from './store/ui'
-import { initNotifications, showNotificationDialog, onNotificationDialogConfirm, onNotificationDialogCancel } from './lib/notifications'
+import { initNotifications } from './lib/notifications'
 import { initUpdateListener } from './lib/updater'
 
 const ctx = parseWindowContext()
@@ -64,14 +64,6 @@ const MainApp: Component = () => {
         danger
         onConfirm={() => ipc.quitApp()}
         onCancel={closeQuitDialog}
-      />
-      <ConfirmDialog
-        open={showNotificationDialog()}
-        title="Enable desktop notifications?"
-        message="Verun can notify you when tasks complete, fail, or need your approval. This is especially useful when you're running multiple sessions in parallel — you'll know exactly when something needs your attention, even if the app is in the background."
-        confirmLabel="Enable"
-        onConfirm={onNotificationDialogConfirm}
-        onCancel={onNotificationDialogCancel}
       />
       <FileConflictDialog />
     </>
