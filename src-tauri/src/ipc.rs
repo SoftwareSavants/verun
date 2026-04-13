@@ -1936,13 +1936,16 @@ pub async fn open_task_window(
     let title = task_name.unwrap_or_else(|| "Task".into());
     let url = format!("index.html?windowType=task&taskId={task_id}&windowLabel={label}");
 
-    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+    let builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
         .title(&title)
         .inner_size(1200.0, 800.0)
         .min_inner_size(800.0, 600.0)
+        .visible(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder
         .hidden_title(true)
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .visible(false)
+        .title_bar_style(tauri::TitleBarStyle::Overlay);
+    builder
         .build()
         .map_err(|e| format!("Failed to create task window: {e}"))?;
 
@@ -1970,13 +1973,16 @@ pub async fn open_new_task_window(
         "index.html?windowType=task&projectId={project_id}&windowLabel={label}"
     );
 
-    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+    let builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
         .title("New Task")
         .inner_size(1200.0, 800.0)
         .min_inner_size(800.0, 600.0)
+        .visible(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder
         .hidden_title(true)
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .visible(false)
+        .title_bar_style(tauri::TitleBarStyle::Overlay);
+    builder
         .build()
         .map_err(|e| format!("Failed to create new task window: {e}"))?;
 
