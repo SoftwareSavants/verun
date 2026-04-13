@@ -1179,8 +1179,8 @@ export const MessageInput: Component<Props> = (props) => {
       }
     }
 
-    // Cmd+Enter
-    if (e.key === 'Enter' && e.metaKey) {
+    // Cmd+Enter (without Shift)
+    if (e.key === 'Enter' && e.metaKey && !e.shiftKey) {
       e.preventDefault()
       if (props.isRunning) {
         handleSteer() // abort + send immediately
@@ -1190,8 +1190,8 @@ export const MessageInput: Component<Props> = (props) => {
       return
     }
 
-    // Shift+Enter while running = add armed step
-    if (e.key === 'Enter' && e.shiftKey && props.isRunning) {
+    // Cmd+Shift+Enter while running = add armed step
+    if (e.key === 'Enter' && e.shiftKey && e.metaKey && props.isRunning) {
       e.preventDefault()
       handleAddStep(true)
       return
@@ -1921,7 +1921,7 @@ export const MessageInput: Component<Props> = (props) => {
       <Show when={props.isRunning && editingMessageIdx() === null && editingStepId() === null && (message().trim() || attachments().length > 0)}>
         <div class="px-3 pb-0.5">
           <span class="text-[10px] text-text-dim">
-            Enter to add next step · Shift+Enter to add & arm · Cmd+Enter to redirect
+            Enter to add next step · Cmd+Shift+Enter to add & arm · Cmd+Enter to redirect
           </span>
         </div>
       </Show>
