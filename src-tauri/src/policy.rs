@@ -247,7 +247,9 @@ fn matches_deny_pattern(command: &str) -> Option<&'static str> {
 
     static DENY_PATTERNS: &[(&str, &str)] = &[
         // Git destructive operations
-        ("git push", "git push"),
+        ("git push --force", "git push --force"),
+        ("git push -f", "git push --force"),
+        ("git push --delete", "git push --delete"),
         ("git reset --hard", "git reset --hard"),
         ("git clean -f", "git clean"),
         ("git checkout -- .", "git checkout (discard all)"),
@@ -436,10 +438,16 @@ mod tests {
     }
 
     #[test]
-    fn bash_git_push_requires_approval() {
+    fn bash_git_push_auto_allowed() {
         let result = evaluate("Bash", &json!({"command": "git push origin main"}), WORKTREE, REPO, TrustLevel::Normal);
+        assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
+    }
+
+    #[test]
+    fn bash_git_push_force_requires_approval() {
+        let result = evaluate("Bash", &json!({"command": "git push --force origin main"}), WORKTREE, REPO, TrustLevel::Normal);
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
-        assert!(result.reason.contains("git push"));
+        assert!(result.reason.contains("git push --force"));
     }
 
     #[test]
@@ -481,7 +489,7 @@ mod tests {
 
     #[test]
     fn bash_chained_dangerous_requires_approval() {
-        let result = evaluate("Bash", &json!({"command": "echo hello && git push origin main"}), WORKTREE, REPO, TrustLevel::Normal);
+        let result = evaluate("Bash", &json!({"command": "echo hello && git push --force origin main"}), WORKTREE, REPO, TrustLevel::Normal);
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
 
@@ -581,12 +589,15 @@ mod tests {
         assert!(matches_deny_pattern("git log --oneline").is_none());
         assert!(matches_deny_pattern("git add .").is_none());
         assert!(matches_deny_pattern("git commit -m 'fix'").is_none());
+        assert!(matches_deny_pattern("git push").is_none());
+        assert!(matches_deny_pattern("git push origin main").is_none());
     }
 
     #[test]
     fn deny_pattern_matched_for_dangerous_commands() {
-        assert!(matches_deny_pattern("git push").is_some());
         assert!(matches_deny_pattern("git push --force").is_some());
+        assert!(matches_deny_pattern("git push -f origin main").is_some());
+        assert!(matches_deny_pattern("git push --delete origin branch").is_some());
         assert!(matches_deny_pattern("sudo rm -rf /").is_some());
         assert!(matches_deny_pattern("ssh user@host").is_some());
         assert!(matches_deny_pattern("docker run ubuntu").is_some());
