@@ -8,6 +8,13 @@ import { clearProblemsForTask } from './problems'
 import { fireTaskCleanup } from './files'
 import { sessionsForTask } from './sessions'
 
+// Dynamic-imported on first use: static import would pull lib/lsp.ts's
+// module-level `listen(...)` side effects into test evaluation for any file
+// that imports the tasks store transitively.
+function stopLspClient(id: string): Promise<void> {
+  return import('../lib/lsp').then(m => m.stopLspClient(id))
+}
+
 export const [tasks, setTasks] = createStore<Task[]>([])
 
 // Track tasks currently being set up (worktree creation in progress)
@@ -149,6 +156,10 @@ export function removePlaceholderTask(id: string) {
 }
 
 export async function deleteTask(id: string, deleteBranch = true, skipDestroyHook = false) {
+  // Fire-and-forget — stopLspClient kills the tsgo LSP process, cancels any
+  // in-flight tsgo --noEmit run, and tears down the per-task Tauri listener.
+  // We don't await because the rest of the teardown doesn't depend on it.
+  stopLspClient(id).catch(() => {})
   closeTerminalsForTask(id)
   clearTaskGitState(id)
   clearProblemsForTask(id)
@@ -161,6 +172,7 @@ export async function deleteTask(id: string, deleteBranch = true, skipDestroyHoo
 export async function archiveTask(id: string, skipDestroyHook = false) {
   addArchiving(id)
   try {
+    stopLspClient(id).catch(() => {})
     closeTerminalsForTask(id)
     clearTaskGitState(id)
     clearProblemsForTask(id)
