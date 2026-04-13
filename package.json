@@ -16,6 +16,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@choochmeque/tauri-plugin-notifications-api": "^0.4.3",
     "@codemirror/autocomplete": "^6.20.1",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-cpp": "^6.0.3",

@@ -294,10 +294,6 @@ export const tsgoCheckRun = (taskId: string, worktreePath: string) =>
 export const tsgoCheckCancel = (taskId: string) =>
   invoke<void>('tsgo_check_cancel', { taskId })
 
-// Notifications
-export const sendNotification = (title: string, body: string) =>
-  invoke<void>('send_notification', { title, body })
-
 // Steps
 export const listSteps = (sessionId: string) =>
   invoke<Step[]>('list_steps', { sessionId })

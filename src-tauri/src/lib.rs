@@ -31,7 +31,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notifications::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(
@@ -307,8 +307,9 @@ pub fn run() {
             ipc::lsp_stop,
             ipc::tsgo_check_run,
             ipc::tsgo_check_cancel,
-            // Notifications
-            ipc::send_notification,
+            // Notifications (debug-only: test click navigation from devtools)
+            #[cfg(debug_assertions)]
+            ipc::debug_navigate_to_task,
             // Steps
             ipc::list_steps,
             ipc::add_step,

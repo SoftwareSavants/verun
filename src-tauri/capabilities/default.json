@@ -31,9 +31,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
     "core:window:allow-start-dragging",
-    "notification:default",
-    "notification:allow-is-permission-granted",
-    "notification:allow-notify",
+    "notifications:default",
     "updater:default",
     "process:default"
   ]

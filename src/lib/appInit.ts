@@ -6,10 +6,12 @@ import { initTerminalListeners } from '../store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from '../store/git'
 import { initOpenFilesRefresh } from '../store/fileSync'
 import { initSetupListeners } from '../store/setup'
-import { loadTasks } from '../store/tasks'
+import { loadTasks, taskById } from '../store/tasks'
 import { loadSessions } from '../store/sessions'
 import { refreshTaskGit } from '../store/git'
-import { addToast } from '../store/ui'
+import { addToast, setSelectedTaskId, setSelectedProjectId, setSelectedSessionId } from '../store/ui'
+import { onNotificationClicked } from '@choochmeque/tauri-plugin-notifications-api'
+import { consumePendingNav, clearDeliveredNotifications } from './notifications'
 import * as ipc from './ipc'
 
 /**
@@ -42,6 +44,33 @@ export async function initListeners() {
   initWindowFocusRefresh()
   initEnvPathFocusRefresh()
   initOpenFilesRefresh()
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') clearDeliveredNotifications()
+  })
+
+  // Navigate to task+session when a notification is clicked
+  onNotificationClicked((data) => {
+    const nav = consumePendingNav(data.id)
+    if (nav) {
+      const task = taskById(nav.taskId)
+      if (task) {
+        setSelectedProjectId(task.projectId)
+        setSelectedTaskId(nav.taskId)
+        setSelectedSessionId(nav.sessionId)
+      }
+    }
+  })
+
+  // Debug-only: test navigation from devtools via Rust event
+  listen<{ task_id: string; session_id: string }>('navigate-to-task', (event) => {
+    const { task_id: taskId, session_id: sessionId } = event.payload
+    const task = taskById(taskId)
+    if (task) {
+      setSelectedProjectId(task.projectId)
+      setSelectedTaskId(taskId)
+      setSelectedSessionId(sessionId)
+    }
+  })
 
   // Cross-window sync: reload when tasks change in another window
   listen<{ taskId: string; projectId: string }>('task-created', (event) => {
