@@ -38,10 +38,12 @@ async function ensureSystemPermission() {
 /** Call on app mount. Shows an opt-in toast on first launch. */
 export function initNotifications() {
   if (!wasPrompted()) {
+    let accepted = false
     addToast('Enable desktop notifications for task updates?', 'info', {
       id: TOAST_ID,
       persistent: true,
       onDismiss: () => {
+        if (accepted) return
         markPrompted()
         setNotificationsEnabledAndPersist(false)
       },
@@ -50,7 +52,9 @@ export function initNotifications() {
           label: 'Enable',
           variant: 'primary',
           onClick: () => {
+            accepted = true
             markPrompted()
+            setNotificationsEnabledAndPersist(true)
             ensureSystemPermission()
             dismissToast(TOAST_ID)
           },

@@ -9,7 +9,7 @@ import { initSetupListeners } from '../store/setup'
 import { loadTasks, taskById } from '../store/tasks'
 import { loadSessions } from '../store/sessions'
 import { refreshTaskGit } from '../store/git'
-import { addToast, setSelectedTaskId, setSelectedProjectId, setSelectedSessionId } from '../store/ui'
+import { addToast, setSelectedTaskId, setSelectedProjectId, setPendingSessionNav } from '../store/ui'
 import { onNotificationClicked } from '@choochmeque/tauri-plugin-notifications-api'
 import { consumePendingNav, clearDeliveredNotifications } from './notifications'
 import * as ipc from './ipc'
@@ -54,9 +54,9 @@ export async function initListeners() {
     if (nav) {
       const task = taskById(nav.taskId)
       if (task) {
+        setPendingSessionNav(nav.sessionId)
         setSelectedProjectId(task.projectId)
         setSelectedTaskId(nav.taskId)
-        setSelectedSessionId(nav.sessionId)
       }
     }
   })
@@ -66,9 +66,9 @@ export async function initListeners() {
     const { task_id: taskId, session_id: sessionId } = event.payload
     const task = taskById(taskId)
     if (task) {
+      setPendingSessionNav(sessionId)
       setSelectedProjectId(task.projectId)
       setSelectedTaskId(taskId)
-      setSelectedSessionId(sessionId)
     }
   })
 
