@@ -560,6 +560,7 @@ pub async fn stream_and_capture(
 
                         // Capture claude session_id from `system.init` so the snapshot hook
                         // at turn end can locate the on-disk JSONL transcript.
+                        // Also persist it to the DB immediately so it survives crashes/aborts.
                         if claude_session_id_for_snapshot.is_none() {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
                                 if v.get("type").and_then(|t| t.as_str()) == Some("system")
@@ -567,6 +568,10 @@ pub async fn stream_and_capture(
                                 {
                                     if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
                                         claude_session_id_for_snapshot = Some(sid.to_string());
+                                        let _ = db_tx.send(crate::db::DbWrite::SetClaudeSessionId {
+                                            id: session_id.clone(),
+                                            claude_session_id: sid.to_string(),
+                                        }).await;
                                     }
                                 }
                             }
