@@ -17,7 +17,6 @@ import { NewTaskDialog } from './NewTaskDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ToastContainer } from './ToastContainer'
 import { SelectionMenu } from './SelectionMenu'
-import { UpdateBanner } from './UpdateBanner'
 import * as ipc from '../lib/ipc'
 
 export const TaskWindowShell: Component = () => {
@@ -191,7 +190,6 @@ export const TaskWindowShell: Component = () => {
   return (
     <>
       <div class="flex flex-col h-screen w-screen bg-surface-0 text-text-primary select-none overflow-hidden">
-        <UpdateBanner />
         <TaskPanel />
       </div>
       <ToastContainer />

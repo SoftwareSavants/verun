@@ -2,6 +2,7 @@ import { Component, For, Show } from 'solid-js'
 import { toasts, dismissToast, type ToastAction } from '../store/ui'
 import { clsx } from 'clsx'
 import { CheckCircle, AlertCircle, Info, X } from 'lucide-solid'
+import { UpdateToast } from './UpdateBanner'
 
 const icons = {
   success: CheckCircle,
@@ -73,6 +74,7 @@ export const ToastContainer: Component = () => {
           )
         }}
       </For>
+      <UpdateToast />
     </div>
   )
 }
