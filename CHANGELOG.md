@@ -15,6 +15,7 @@
 - CMD+P now correctly focuses an already-open file tab even when the session view is active
 - Hide copy and fork buttons on the currently streaming assistant message - completed turns still show their buttons
 - Fix messages rendering with the wrong role (user as agent, agent as user) when switching between sessions/tasks with similar output lengths - ChatView block rebuild now tracks session ID, not just item count
+- Plan review overlay now stays within the session pane instead of overflowing behind the sidebar and right panel
 - Clicking a project header no longer collapses other empty projects — removed stale "selected project" gating that hid the "+ New task" hint on non-selected empty projects
 - Task and session unread indicators now only appear when a session finishes (status → idle/error), not after every streamed chunk or tool call
 - Update notification converted from a top bar to a dismissible bottom-right toast; dismissing during a download hides the toast without cancelling the download, and the restart prompt re-appears automatically once the download completes

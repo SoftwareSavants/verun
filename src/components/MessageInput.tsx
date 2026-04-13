@@ -2,6 +2,7 @@ import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanu
 import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps } from '../store/sessions'
 import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
+import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
@@ -38,8 +39,19 @@ async function fileToAttachment(file: File): Promise<Attachment | null> {
   }
 }
 
-// Module-level signal — survives re-renders
-const [planExpanded, setPlanExpanded] = createSignal(true)
+const PLAN_EXPANDED_KEY = 'verun:planExpanded'
+
+function getPlanExpanded(): boolean {
+  const v = localStorage.getItem(PLAN_EXPANDED_KEY)
+  return v === null ? true : v === 'true'
+}
+
+const [planExpanded, _setPlanExpanded] = createSignal(getPlanExpanded())
+
+function setPlanExpanded(v: boolean) {
+  _setPlanExpanded(v)
+  localStorage.setItem(PLAN_EXPANDED_KEY, String(v))
+}
 
 // ---------------------------------------------------------------------------
 // Usage chip + popover (rate limit info + session cost/tokens)
@@ -1663,22 +1675,61 @@ export const MessageInput: Component<Props> = (props) => {
         }}
       </Show>
 
+      {/* Backdrop for plan viewer */}
+      <Show when={showPlanViewer() && planContent()}>
+        <div
+          class="absolute inset-0 bg-black/60 z-40"
+          style={{
+            opacity: planExpanded() ? 1 : 0,
+            'pointer-events': planExpanded() ? 'auto' : 'none',
+            transition: 'opacity 150ms cubic-bezier(0.4, 0, 0.2, 1)',
+          }}
+        />
+      </Show>
+
       {/* Plan viewer — live ExitPlanMode approval or persisted plan file */}
       <Show when={showPlanViewer() && planContent()}>
         {(plan) => (
           <div
-            class={clsx(
-              'bg-surface-0 border border-accent/30 rounded-xl flex flex-col overflow-hidden transition-all',
-              planExpanded() ? 'fixed inset-4 z-50' : 'max-h-[50vh]'
-            )}
+            class="bg-surface-0 flex flex-col overflow-hidden absolute bottom-0 z-50"
+            style={{
+              left: planExpanded() ? '0' : '16px',
+              right: planExpanded() ? '0' : '16px',
+              'max-height': planExpanded() ? '100%' : '50vh',
+              'border-radius': planExpanded() ? '0' : '12px 12px 0 0',
+              'box-shadow': planExpanded() ? 'none' : 'inset 0 0 0 1px rgba(255,255,255,0.08)',
+              transition: 'left 150ms cubic-bezier(0.4, 0, 0.2, 1), right 150ms cubic-bezier(0.4, 0, 0.2, 1), max-height 150ms cubic-bezier(0.4, 0, 0.2, 1), border-radius 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms cubic-bezier(0.4, 0, 0.2, 1)',
+            }}
           >
             {/* Header */}
             <div class="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
               <div class="flex items-center gap-2">
-                <ListChecks size={16} class="text-accent" />
                 <span class="text-sm font-medium text-text-primary">Plan Review</span>
                 <Show when={plan().filePath}>
-                  <span class="text-[10px] text-text-dim font-mono truncate max-w-60">{plan().filePath}</span>
+                  {(fp) => {
+                    const tid = selectedTaskId()
+                    const task = tid ? taskById(tid) : undefined
+                    const rel = () => {
+                      if (!task?.worktreePath) return null
+                      const wt = task.worktreePath.endsWith('/') ? task.worktreePath : task.worktreePath + '/'
+                      return fp().startsWith(wt) ? fp().slice(wt.length) : null
+                    }
+                    return (
+                      <Show
+                        when={rel()}
+                        fallback={<span class="text-[10px] text-text-dim font-mono truncate max-w-60">{fp()}</span>}
+                      >
+                        {(r) => (
+                          <button
+                            class="text-[10px] text-text-dim font-mono truncate max-w-60 hover:text-text-secondary"
+                            onClick={() => tid && openFile(tid, r(), r().split('/').pop() ?? r())}
+                          >
+                            {r()}
+                          </button>
+                        )}
+                      </Show>
+                    )
+                  }}
                 </Show>
               </div>
               <div class="flex items-center gap-1.5">
@@ -1693,7 +1744,7 @@ export const MessageInput: Component<Props> = (props) => {
             </div>
 
             {/* Plan content */}
-            <div class="flex-1 overflow-auto px-6 py-4">
+            <div class="flex-1 overflow-auto px-6 py-4 select-text cursor-text">
               <div
                 class="prose prose-invert prose-sm max-w-none
                   [&_h1]:text-lg [&_h1]:font-bold [&_h1]:text-text-primary [&_h1]:mb-3 [&_h1]:mt-6 [&_h1]:first:mt-0
@@ -1747,11 +1798,6 @@ export const MessageInput: Component<Props> = (props) => {
             </div>
           </div>
         )}
-      </Show>
-
-      {/* Backdrop for fullscreen plan viewer */}
-      <Show when={showPlanViewer() && planContent() && planExpanded()}>
-        <div class="fixed inset-0 bg-black/60 z-40" />
       </Show>
 
       {/* Tool approval overlay */}

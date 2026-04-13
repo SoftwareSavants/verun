@@ -59,6 +59,14 @@ stream.rs   — stdout/stderr buffering, DB persistence, backpressure
 ipc.rs      — all 20 #[tauri::command] definitions
 main.rs     — entry point only, no logic
 
+## UnoCSS (not Tailwind)
+
+This project uses UnoCSS with preset-wind3. Key differences:
+- Container outlines: use `ring-1 ring-<color>` (e.g. `ring-1 ring-white/8`, `ring-1 ring-accent/40`)
+- Directional borders: `border-t-1 border-t-solid border-t-<color>`
+- Tailwind shorthands like `border-2` do NOT work — use the explicit form
+- `border border-<color>` only works on form elements (buttons, inputs) — for divs use `ring`
+
 ## Never
 
 - Never put logic in main.rs
