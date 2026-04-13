@@ -395,11 +395,6 @@ export async function initSessionListeners() {
         }
       }
     }
-    // Mark task as unread if it's not currently selected
-    const session = sessions.find(s => s.id === sessionId)
-    if (session) markTaskUnread(session.taskId)
-    // Mark session tab as unread if it's not the selected session
-    markSessionUnread(sessionId)
   })
 
   await listen<SessionStatusEvent>('session-status', (event) => {
@@ -423,8 +418,10 @@ export async function initSessionListeners() {
     if (status === 'error') {
       disarmAllSteps(sessionId)
     }
-    // OS notification on completion/error (suppress if queue drained — more work pending)
+    // Mark unread + OS notification on completion/error
     if (wasRunning && (status === 'idle' || status === 'error') && prevSession) {
+      markTaskUnread(prevSession.taskId)
+      markSessionUnread(sessionId)
       const taskName = taskById(prevSession.taskId)?.name || 'Task'
       notify({
         title: status === 'error' ? 'Task failed' : 'Task completed',
