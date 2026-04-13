@@ -25,16 +25,21 @@ export const AddProjectDialog: Component<Props> = (props) => {
   const [autoStart, setAutoStart] = createSignal(false)
   const [adding, setAdding] = createSignal(false)
   const [autoDetecting, setAutoDetecting] = createSignal(false)
+  const [hasConfig, setHasConfig] = createSignal(false)
 
   // Pre-populate hooks from .verun.json if it exists
   createEffect(on(() => props.repoPath, (path) => {
     if (!path) return
+    setHasConfig(false)
     ipc.readTextFile(`${path}/.verun.json`).then((content) => {
       try {
         const config = JSON.parse(content)
         if (config.hooks?.setup) setSetupHook(config.hooks.setup)
         if (config.hooks?.destroy) setDestroyHook(config.hooks.destroy)
         if (config.startCommand) setStartCommand(config.startCommand)
+        if (config.hooks?.setup || config.hooks?.destroy || config.startCommand) {
+          setHasConfig(true)
+        }
       } catch { /* ignore invalid JSON */ }
     }).catch(() => { /* no config file, leave fields empty */ })
   }))
@@ -82,13 +87,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
     setAdding(true)
     try {
       const project = await addProject(props.repoPath)
-      const sh = setupHook()
-      const dh = destroyHook()
-      const sc = startCommand()
-      const as_ = autoStart()
-      if (sh || dh || sc || as_) {
-        await updateHooks(project.id, sh, dh, sc, as_)
-      }
+      await updateHooks(project.id, setupHook(), destroyHook(), startCommand(), autoStart())
       addToast(`Added ${project.name}`, 'success')
       props.onAdded(project.id)
       handleClose()
@@ -104,6 +103,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
     setDestroyHook('')
     setStartCommand('')
     setAutoStart(false)
+    setHasConfig(false)
     props.onClose()
   }
 
@@ -112,29 +112,33 @@ export const AddProjectDialog: Component<Props> = (props) => {
       <h2 class="text-base font-semibold text-text-primary mb-1">Add Project</h2>
       <p class="text-xs text-text-dim mb-4 truncate" title={props.repoPath ?? ''}>{projectName()}</p>
 
-      {/* Auto-detect option */}
-      <div class="mb-5 p-3 rounded-lg bg-surface-2 border border-border">
-        <div class="flex items-center justify-between">
-          <div>
-            <div class="text-xs font-medium text-text-secondary">Auto-detect with Claude</div>
-            <div class="text-[11px] text-text-dim mt-0.5">Creates a task that analyzes your project, detects env files, ports, and generates hooks</div>
+      {/* Auto-detect option - hidden when .verun.json already provides config */}
+      <Show when={!hasConfig()}>
+        <div class="mb-5 p-3 rounded-lg bg-surface-2 border border-border">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="text-xs font-medium text-text-secondary">Auto-detect with Claude</div>
+              <div class="text-[11px] text-text-dim mt-0.5">Creates a task that analyzes your project, detects env files, ports, and generates hooks</div>
+            </div>
+            <button
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs btn-primary disabled:opacity-40 shrink-0 ml-3"
+              onClick={handleAutoDetect}
+              disabled={autoDetecting()}
+            >
+              <Show when={autoDetecting()} fallback={<Sparkles size={12} />}>
+                <Loader2 size={12} class="animate-spin" />
+              </Show>
+              Detect
+            </button>
           </div>
-          <button
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs btn-primary disabled:opacity-40 shrink-0 ml-3"
-            onClick={handleAutoDetect}
-            disabled={autoDetecting()}
-          >
-            <Show when={autoDetecting()} fallback={<Sparkles size={12} />}>
-              <Loader2 size={12} class="animate-spin" />
-            </Show>
-            Detect
-          </button>
         </div>
-      </div>
+      </Show>
 
       {/* Manual hooks */}
       <div class="space-y-4">
-        <div class="text-xs font-medium text-text-muted">Or configure manually</div>
+        <Show when={!hasConfig()}>
+          <div class="text-xs font-medium text-text-muted">Or configure manually</div>
+        </Show>
 
         <div>
           <label class="block text-xs text-text-muted mb-1">Setup hook</label>
