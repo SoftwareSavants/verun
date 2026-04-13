@@ -7,6 +7,8 @@ import { sendMessage } from '../store/sessions'
 import { addToast } from '../store/ui'
 import { taskGit, refreshTaskGit, invalidateRemote } from '../store/git'
 import { registerDismissable } from '../lib/dismissable'
+import { Dialog } from './Dialog'
+import { DialogFooter } from './DialogFooter'
 
 interface GitAction {
   icon: Component<{ size: number }>
@@ -37,6 +39,11 @@ export const GitActions: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [confirming, setConfirming] = createSignal<string | null>(null)
   const [actionLoading, setActionLoading] = createSignal(false)
+  const [mergeDialogOpen, setMergeDialogOpen] = createSignal(false)
+  const [mergeFailure, setMergeFailure] = createSignal<string | null>(null)
+  const [deleteBranch, setDeleteBranch] = createSignal(false)
+  const [forceMerge, setForceMerge] = createSignal(false)
+  const [merging, setMerging] = createSignal(false)
 
   // Read all git state from the centralized store
   const git = () => taskGit(props.taskId)
@@ -61,7 +68,7 @@ export const GitActions: Component<Props> = (props) => {
   }
 
   const needsConfirmation = (label: string) =>
-    label === 'Push' || label === 'Commit & Push' || label === 'Merge PR'
+    label === 'Push' || label === 'Commit & Push'
 
   const runAction = async (a: GitAction) => {
     if (needsConfirmation(a.label) && confirming() !== a.label) {
@@ -94,14 +101,36 @@ export const GitActions: Component<Props> = (props) => {
     }
   }
 
-  const doMerge = async () => {
+  const openMergeDialog = () => {
+    setMergeDialogOpen(true)
+    setDeleteBranch(false)
+    setForceMerge(false)
+    setMergeFailure(null)
+  }
+
+  const closeMergeDialog = () => {
+    setMergeDialogOpen(false)
+    setMergeFailure(null)
+  }
+
+  const doMerge = async (force?: boolean) => {
+    setMerging(true)
     try {
-      await ipc.mergePullRequest(props.taskId)
+      await ipc.mergePullRequest(props.taskId, force, deleteBranch())
       addToast('PR merged', 'success')
+      closeMergeDialog()
       invalidateRemote(props.taskId)
       await refreshTaskGit(props.taskId, { force: true })
     } catch (e: any) {
-      addToast(`Merge failed: ${e}`, 'error')
+      if (!force) {
+        setMergeFailure(String(e))
+        setForceMerge(false)
+      } else {
+        addToast(`Force merge failed: ${e}`, 'error')
+        closeMergeDialog()
+      }
+    } finally {
+      setMerging(false)
     }
   }
 
@@ -143,7 +172,7 @@ export const GitActions: Component<Props> = (props) => {
   const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: 'create a draft pull request with an appropriate title and description' })
   const pullAction = (): GitAction => ({ icon: Download, label: 'Update Branch', message: 'this branch is behind the base branch. rebase onto the base branch to bring it up to date. Use git rebase, not merge.' })
   const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: 'rebase this branch onto the base branch and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue' })
-  const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: doMerge })
+  const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: async () => openMergeDialog() })
   const readyForReviewAction = (): GitAction => ({ icon: Eye, label: 'Ready for Review', action: doMarkReady })
 
   const isDraft = () => pr()?.isDraft ?? false
@@ -363,6 +392,60 @@ export const GitActions: Component<Props> = (props) => {
         </div>
       </Show>
       </Show>
+
+      <Dialog open={mergeDialogOpen()} onClose={closeMergeDialog} onConfirm={() => !mergeFailure() && doMerge()}>
+        <h2 class="text-base font-semibold text-text-primary mb-2">
+          {mergeFailure() ? 'Merge blocked' : 'Merge PR'}
+        </h2>
+
+        <Show when={mergeFailure()}>
+          <p class="text-sm text-text-muted mb-4">{mergeFailure()}</p>
+        </Show>
+
+        <label class="flex items-center gap-2 mb-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={deleteBranch()}
+            onChange={(e) => setDeleteBranch(e.currentTarget.checked)}
+            class="accent-blue-500 w-3.5 h-3.5"
+          />
+          <span class="text-sm text-text-secondary">Delete branch after merge</span>
+        </label>
+
+        <Show when={mergeFailure()}>
+          <label class="flex items-center gap-2 mb-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={forceMerge()}
+              onChange={(e) => setForceMerge(e.currentTarget.checked)}
+              class="accent-amber-500 w-3.5 h-3.5"
+            />
+            <span class="text-sm text-amber-400">Force merge (bypass branch protection)</span>
+          </label>
+        </Show>
+
+        <div class="mt-4">
+          <Show when={mergeFailure()} fallback={
+            <DialogFooter
+              onCancel={closeMergeDialog}
+              onConfirm={() => doMerge()}
+              confirmLabel="Merge"
+              loading={merging()}
+              loadingLabel="Merging..."
+            />
+          }>
+            <DialogFooter
+              onCancel={closeMergeDialog}
+              onConfirm={() => doMerge(true)}
+              confirmLabel="Force Merge"
+              confirmClass="btn-danger border border-status-error/20"
+              disabled={!forceMerge()}
+              loading={merging()}
+              loadingLabel="Merging..."
+            />
+          </Show>
+        </div>
+      </Dialog>
     </div>
   )
 }

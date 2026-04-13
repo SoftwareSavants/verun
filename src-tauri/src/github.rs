@@ -205,11 +205,21 @@ pub fn mark_pr_ready(worktree_path: &str) -> Result<(), String> {
 }
 
 /// Merge the PR for the current branch.
-pub fn merge_pr(worktree_path: &str) -> Result<(), String> {
+/// When `force` is true, passes `--admin` to bypass branch protection rules.
+/// When `delete_branch` is true, passes `--delete-branch` to remove the remote branch.
+pub fn merge_pr(worktree_path: &str, force: bool, delete_branch: bool) -> Result<(), String> {
     check_gh_installed()?;
 
-    let output = gh(worktree_path)
-        .args(["pr", "merge", "--merge"])
+    let mut cmd = gh(worktree_path);
+    cmd.args(["pr", "merge", "--merge"]);
+    if force {
+        cmd.arg("--admin");
+    }
+    if delete_branch {
+        cmd.arg("--delete-branch");
+    }
+
+    let output = cmd
         .output()
         .map_err(|e| format!("Failed to merge PR: {e}"))?;
 

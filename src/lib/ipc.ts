@@ -191,8 +191,8 @@ export const getPullRequest = (taskId: string) =>
 export const markPrReady = (taskId: string) =>
   invoke<void>('mark_pr_ready', { taskId })
 
-export const mergePullRequest = (taskId: string) =>
-  invoke<void>('merge_pull_request', { taskId })
+export const mergePullRequest = (taskId: string, force?: boolean, deleteBranch?: boolean) =>
+  invoke<void>('merge_pull_request', { taskId, force, deleteBranch })
 
 export const gitShip = (taskId: string, commitMessage: string, prTitle: string, prBody: string, base: string) =>
   invoke<PrInfo>('git_ship', { taskId, commitMessage, prTitle, prBody, base })
