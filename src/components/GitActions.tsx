@@ -7,8 +7,6 @@ import { sendMessage } from '../store/sessions'
 import { addToast } from '../store/ui'
 import { taskGit, refreshTaskGit, invalidateRemote } from '../store/git'
 import { registerDismissable } from '../lib/dismissable'
-import { Dialog } from './Dialog'
-import { DialogFooter } from './DialogFooter'
 
 interface GitAction {
   icon: Component<{ size: number }>
@@ -39,10 +37,9 @@ export const GitActions: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [confirming, setConfirming] = createSignal<string | null>(null)
   const [actionLoading, setActionLoading] = createSignal(false)
-  const [mergeDialogOpen, setMergeDialogOpen] = createSignal(false)
+  const [mergePanelOpen, setMergePanelOpen] = createSignal(false)
   const [mergeFailure, setMergeFailure] = createSignal<string | null>(null)
   const [deleteBranch, setDeleteBranch] = createSignal(false)
-  const [forceMerge, setForceMerge] = createSignal(false)
   const [merging, setMerging] = createSignal(false)
 
   // Read all git state from the centralized store
@@ -57,6 +54,7 @@ export const GitActions: Component<Props> = (props) => {
   createEffect(on(() => props.taskId, () => {
     setOpen(false)
     setConfirming(null)
+    closeMergePanel()
     refreshTaskGit(props.taskId)
   }))
 
@@ -101,15 +99,15 @@ export const GitActions: Component<Props> = (props) => {
     }
   }
 
-  const openMergeDialog = () => {
-    setMergeDialogOpen(true)
+  const openMergePanel = () => {
+    setOpen(false)
+    setMergePanelOpen(true)
     setDeleteBranch(false)
-    setForceMerge(false)
     setMergeFailure(null)
   }
 
-  const closeMergeDialog = () => {
-    setMergeDialogOpen(false)
+  const closeMergePanel = () => {
+    setMergePanelOpen(false)
     setMergeFailure(null)
   }
 
@@ -118,16 +116,15 @@ export const GitActions: Component<Props> = (props) => {
     try {
       await ipc.mergePullRequest(props.taskId, force, deleteBranch())
       addToast('PR merged', 'success')
-      closeMergeDialog()
+      closeMergePanel()
       invalidateRemote(props.taskId)
       await refreshTaskGit(props.taskId, { force: true })
     } catch (e: any) {
       if (!force) {
         setMergeFailure(String(e))
-        setForceMerge(false)
       } else {
         addToast(`Force merge failed: ${e}`, 'error')
-        closeMergeDialog()
+        closeMergePanel()
       }
     } finally {
       setMerging(false)
@@ -172,7 +169,7 @@ export const GitActions: Component<Props> = (props) => {
   const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: 'create a draft pull request with an appropriate title and description' })
   const pullAction = (): GitAction => ({ icon: Download, label: 'Update Branch', message: 'this branch is behind the base branch. rebase onto the base branch to bring it up to date. Use git rebase, not merge.' })
   const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: 'rebase this branch onto the base branch and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue' })
-  const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: async () => openMergeDialog() })
+  const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: async () => openMergePanel() })
   const readyForReviewAction = (): GitAction => ({ icon: Eye, label: 'Ready for Review', action: doMarkReady })
 
   const isDraft = () => pr()?.isDraft ?? false
@@ -220,15 +217,17 @@ export const GitActions: Component<Props> = (props) => {
 
   // Close dropdown on outside click
   let containerRef: HTMLDivElement | undefined
+  const anyPanelOpen = () => open() || mergePanelOpen()
+  const closeAllPanels = () => { setOpen(false); closeMergePanel() }
   const handleClickOutside = (e: MouseEvent) => {
-    if (open() && containerRef && !containerRef.contains(e.target as Node)) {
-      setOpen(false)
+    if (anyPanelOpen() && containerRef && !containerRef.contains(e.target as Node)) {
+      closeAllPanels()
     }
   }
   createEffect(() => {
-    if (open()) {
+    if (anyPanelOpen()) {
       document.addEventListener('mousedown', handleClickOutside)
-      const unregister = registerDismissable(() => setOpen(false))
+      const unregister = registerDismissable(closeAllPanels)
       onCleanup(() => {
         document.removeEventListener('mousedown', handleClickOutside)
         unregister()
@@ -314,7 +313,7 @@ export const GitActions: Component<Props> = (props) => {
               class={`flex items-center px-1.5 transition-colors disabled:opacity-40 disabled:pointer-events-none ${
                 confirming() === primaryAction().label ? 'hover:bg-amber-500/10' : 'hover:bg-surface-2'
               }`}
-              onClick={() => { setConfirming(null); setOpen(!open()) }}
+              onClick={() => { setConfirming(null); closeMergePanel(); setOpen(!open()) }}
               disabled={props.isRunning || actionLoading()}
             >
               <ChevronDown size={11} />
@@ -393,59 +392,50 @@ export const GitActions: Component<Props> = (props) => {
       </Show>
       </Show>
 
-      <Dialog open={mergeDialogOpen()} onClose={closeMergeDialog} onConfirm={() => !mergeFailure() && doMerge()}>
-        <h2 class="text-base font-semibold text-text-primary mb-2">
-          {mergeFailure() ? 'Merge blocked' : 'Merge PR'}
-        </h2>
+      <Show when={mergePanelOpen()}>
+        <div class="absolute right-0 top-full mt-1 z-50 w-56 bg-surface-2 border border-slate-700 rounded-lg shadow-xl p-3 animate-in">
+          <Show when={mergeFailure()}>
+            <p class="text-[11px] text-red-400 mb-2">{mergeFailure()}</p>
+          </Show>
 
-        <Show when={mergeFailure()}>
-          <p class="text-sm text-text-muted mb-4">{mergeFailure()}</p>
-        </Show>
-
-        <label class="flex items-center gap-2 mb-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={deleteBranch()}
-            onChange={(e) => setDeleteBranch(e.currentTarget.checked)}
-            class="accent-blue-500 w-3.5 h-3.5"
-          />
-          <span class="text-sm text-text-secondary">Delete branch after merge</span>
-        </label>
-
-        <Show when={mergeFailure()}>
-          <label class="flex items-center gap-2 mb-2 cursor-pointer select-none">
+          <label class="flex items-center gap-2 mb-3 cursor-pointer select-none">
             <input
               type="checkbox"
-              checked={forceMerge()}
-              onChange={(e) => setForceMerge(e.currentTarget.checked)}
-              class="accent-amber-500 w-3.5 h-3.5"
+              checked={deleteBranch()}
+              onChange={(e) => setDeleteBranch(e.currentTarget.checked)}
+              class="accent-blue-500 w-3 h-3"
             />
-            <span class="text-sm text-amber-400">Force merge (bypass branch protection)</span>
+            <span class="text-[11px] text-text-secondary">Delete branch</span>
           </label>
-        </Show>
 
-        <div class="mt-4">
-          <Show when={mergeFailure()} fallback={
-            <DialogFooter
-              onCancel={closeMergeDialog}
-              onConfirm={() => doMerge()}
-              confirmLabel="Merge"
-              loading={merging()}
-              loadingLabel="Merging..."
-            />
-          }>
-            <DialogFooter
-              onCancel={closeMergeDialog}
-              onConfirm={() => doMerge(true)}
-              confirmLabel="Force Merge"
-              confirmClass="btn-danger border border-status-error/20"
-              disabled={!forceMerge()}
-              loading={merging()}
-              loadingLabel="Merging..."
-            />
-          </Show>
+          <div class="flex items-center gap-1.5">
+            <Show when={mergeFailure()}>
+              <button
+                class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-[11px] bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors disabled:opacity-40"
+                onClick={() => doMerge(true)}
+                disabled={merging()}
+              >
+                <Show when={merging()} fallback={<>Force Merge</>}>
+                  <Loader2 size={11} class="animate-spin" />
+                  <span>Merging...</span>
+                </Show>
+              </button>
+            </Show>
+            <Show when={!mergeFailure()}>
+              <button
+                class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-[11px] btn-primary transition-colors disabled:opacity-40"
+                onClick={() => doMerge()}
+                disabled={merging()}
+              >
+                <Show when={merging()} fallback={<>Merge</>}>
+                  <Loader2 size={11} class="animate-spin" />
+                  <span>Merging...</span>
+                </Show>
+              </button>
+            </Show>
+          </div>
         </div>
-      </Dialog>
+      </Show>
     </div>
   )
 }
