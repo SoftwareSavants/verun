@@ -37,6 +37,13 @@ export function isDiffKey(key: string | null | undefined): boolean {
   return !!key && key.startsWith('__diff__:')
 }
 
+/** Extract the real relative path from a synthetic diff key. */
+export function pathFromDiffKey(key: string): string | null {
+  if (key.startsWith('__diff__:working:')) return key.slice('__diff__:working:'.length)
+  const m = key.match(/^__diff__:commit:[^:]+:(.+)$/)
+  return m ? m[1] : null
+}
+
 const [taskOpenTabs, setTaskOpenTabs] = createSignal<Record<string, EditorTab[]>>({})
 const [taskActiveTab, setTaskActiveTab] = createSignal<Record<string, string | null>>({})
 
@@ -393,7 +400,11 @@ export function reopenClosedTab(taskId: string) {
     ...prev,
     [taskId]: (prev[taskId] ?? []).slice(1),
   }))
-  openFile(taskId, tab.relativePath, tab.name)
+  if (tab.kind === 'diff' && tab.diffPath && tab.diffSource) {
+    openDiffTab(taskId, tab.diffPath, tab.diffSource)
+  } else {
+    openFile(taskId, tab.relativePath, tab.name)
+  }
 }
 
 export function setTabDirty(taskId: string, relativePath: string, dirty: boolean) {

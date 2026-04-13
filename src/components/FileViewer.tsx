@@ -7,7 +7,7 @@ import { DiffEditor } from './DiffEditor'
 import { BreadcrumbBar } from './BreadcrumbBar'
 import { getPreviewType } from '../lib/fileTypes'
 import * as ipc from '../lib/ipc'
-import { getCachedContent, setCachedContent, setCachedOriginal, isDiffKey, openTabs } from '../store/files'
+import { getCachedContent, setCachedContent, setCachedOriginal, isDiffKey, pathFromDiffKey, openTabs } from '../store/files'
 
 interface Props {
   taskId: string
@@ -17,13 +17,20 @@ interface Props {
 // ── FileViewer — routes to the correct sub-viewer by file type ─────────
 
 export const FileViewer: Component<Props> = (props) => {
-  const type = () => getPreviewType(props.relativePath)
-
   // Diff tabs use a synthetic key — look up the tab to recover source/path.
   const diffTab = () => {
     if (!isDiffKey(props.relativePath)) return null
     return openTabs(props.taskId).find(t => t.relativePath === props.relativePath) ?? null
   }
+
+  // If mainView holds a stale diff key whose tab no longer exists, fall back
+  // to the real file path so viewers don't try to read the synthetic key.
+  const resolvedPath = () => {
+    if (!isDiffKey(props.relativePath) || diffTab()) return props.relativePath
+    return pathFromDiffKey(props.relativePath) ?? props.relativePath
+  }
+
+  const type = () => getPreviewType(resolvedPath())
 
   return (
     <Show when={!diffTab()} fallback={
@@ -36,27 +43,27 @@ export const FileViewer: Component<Props> = (props) => {
     <Switch fallback={
       <div class="flex flex-col h-full">
         <div class="flex items-center px-3 py-1 shrink-0">
-          <BreadcrumbBar taskId={props.taskId} currentPath={props.relativePath} />
+          <BreadcrumbBar taskId={props.taskId} currentPath={resolvedPath()} />
         </div>
         <div class="flex-1 overflow-hidden">
-          <CodeEditor taskId={props.taskId} relativePath={props.relativePath} />
+          <CodeEditor taskId={props.taskId} relativePath={resolvedPath()} />
         </div>
       </div>
     }>
       <Match when={type() === 'image'}>
-        <ImageViewer taskId={props.taskId} relativePath={props.relativePath} />
+        <ImageViewer taskId={props.taskId} relativePath={resolvedPath()} />
       </Match>
       <Match when={type() === 'video'}>
-        <VideoViewer taskId={props.taskId} relativePath={props.relativePath} />
+        <VideoViewer taskId={props.taskId} relativePath={resolvedPath()} />
       </Match>
       <Match when={type() === 'audio'}>
-        <AudioViewer taskId={props.taskId} relativePath={props.relativePath} />
+        <AudioViewer taskId={props.taskId} relativePath={resolvedPath()} />
       </Match>
       <Match when={type() === 'markdown'}>
-        <MarkdownViewer taskId={props.taskId} relativePath={props.relativePath} />
+        <MarkdownViewer taskId={props.taskId} relativePath={resolvedPath()} />
       </Match>
       <Match when={type() === 'svg'}>
-        <SvgViewer taskId={props.taskId} relativePath={props.relativePath} />
+        <SvgViewer taskId={props.taskId} relativePath={resolvedPath()} />
       </Match>
     </Switch>
     </Show>
