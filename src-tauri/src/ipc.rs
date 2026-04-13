@@ -227,6 +227,7 @@ pub async fn create_task(
     setup_in_progress: State<'_, SetupInProgress>,
     project_id: String,
     base_branch: Option<String>,
+    agent_type: Option<String>,
 ) -> Result<TaskWithSession, String> {
     let project = db::get_project(pool.inner(), &project_id)
         .await?
@@ -249,6 +250,7 @@ pub async fn create_task(
             setup_hook: project.setup_hook,
             port_offset,
             from_task_window,
+            agent_type: agent_type.unwrap_or_else(|| "claude".to_string()),
         },
     ).await?;
 
@@ -597,6 +599,7 @@ pub async fn send_message(
             thinking_mode: thinking_mode.unwrap_or(false),
             fast_mode: fast_mode.unwrap_or(false),
             task_name: t.name,
+            agent_type: t.agent_type,
         },
     )
     .await
@@ -1484,13 +1487,17 @@ pub struct ClaudeSkill {
 
 #[tauri::command]
 pub async fn list_claude_skills() -> Result<Vec<ClaudeSkill>, String> {
-    let output = std::process::Command::new("claude")
+    let agent = crate::agent::AgentKind::Claude.implementation();
+    if !agent.supports_skills() {
+        return Ok(vec![]);
+    }
+    let output = std::process::Command::new(agent.cli_binary())
         .args(["skills", "list"])
         .output()
-        .map_err(|e| format!("Failed to run claude skills list: {e}"))?;
+        .map_err(|e| format!("Failed to run {} skills list: {e}", agent.display_name()))?;
 
     if !output.status.success() {
-        return Err("claude skills list failed".to_string());
+        return Err(format!("{} skills list failed", agent.display_name()));
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
@@ -1498,14 +1505,12 @@ pub async fn list_claude_skills() -> Result<Vec<ClaudeSkill>, String> {
 
     for line in text.lines() {
         let trimmed = line.trim();
-        // Parse lines like: - `/name` — description
-        // or:                - `/name` — description
         if let Some(rest) = trimmed.strip_prefix("- `/").or_else(|| trimmed.strip_prefix("- `/")) {
             if let Some(idx) = rest.find('`') {
                 let name = rest[..idx].to_string();
                 let desc = rest[idx + 1..]
-                    .trim_start_matches(" — ")
-                    .trim_start_matches(" — ")
+                    .trim_start_matches(" - ")
+                    .trim_start_matches(" - ")
                     .trim()
                     .to_string();
                 if !name.is_empty() {
@@ -1529,14 +1534,63 @@ pub async fn reload_env_path() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn check_claude() -> Result<String, String> {
-    let output = std::process::Command::new("claude")
-        .arg("--version")
+    check_agent_impl(&*crate::agent::AgentKind::Claude.implementation())
+}
+
+#[tauri::command]
+pub async fn check_agent(agent_type: String) -> Result<String, String> {
+    let agent = crate::agent::AgentKind::parse(&agent_type).implementation();
+    check_agent_impl(&*agent)
+}
+
+fn check_agent_impl(agent: &dyn crate::agent::Agent) -> Result<String, String> {
+    let output = std::process::Command::new(agent.cli_binary())
+        .args(agent.version_args())
         .output()
-        .map_err(|_| "Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code".to_string())?;
+        .map_err(|_| format!("{} CLI not found. {}", agent.display_name(), agent.install_hint()))?;
     if !output.status.success() {
-        return Err("Claude CLI returned an error".to_string());
+        return Err(format!("{} CLI returned an error", agent.display_name()));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[tauri::command]
+pub async fn list_available_agents() -> Result<Vec<AgentInfo>, String> {
+    let mut agents = Vec::new();
+    for &kind in crate::agent::AgentKind::all() {
+        let agent = kind.implementation();
+        let installed = check_agent_impl(&*agent).is_ok();
+        agents.push(AgentInfo {
+            id: kind.as_str().to_string(),
+            name: agent.display_name().to_string(),
+            installed,
+            supports_streaming: agent.supports_streaming(),
+            supports_resume: agent.supports_resume(),
+            supports_plan_mode: agent.supports_plan_mode(),
+            supports_model_selection: agent.supports_model_selection(),
+            supports_effort: agent.supports_effort(),
+            supports_skills: agent.supports_skills(),
+            supports_attachments: agent.supports_attachments(),
+            supports_fork: agent.supports_fork(),
+        });
+    }
+    Ok(agents)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInfo {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+    pub supports_streaming: bool,
+    pub supports_resume: bool,
+    pub supports_plan_mode: bool,
+    pub supports_model_selection: bool,
+    pub supports_effort: bool,
+    pub supports_skills: bool,
+    pub supports_attachments: bool,
+    pub supports_fork: bool,
 }
 
 #[tauri::command]

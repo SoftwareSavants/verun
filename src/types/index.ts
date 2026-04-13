@@ -12,6 +12,14 @@ export interface Project {
   createdAt: number
 }
 
+export type AgentType = 'claude' | 'codex' | 'cursor'
+
+export const AGENT_DISPLAY_NAMES: Record<AgentType, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  cursor: 'Cursor',
+}
+
 export interface Task {
   id: string
   projectId: string
@@ -25,6 +33,7 @@ export interface Task {
   archivedAt: number | null
   lastCommitMessage: string | null
   parentTaskId: string | null
+  agentType: AgentType
 }
 
 export interface Session {
@@ -83,6 +92,20 @@ export const MODEL_OPTIONS: { id: ModelId; label: string; description: string }[
 export interface ClaudeSkill {
   name: string
   description: string
+}
+
+export interface AgentInfo {
+  id: AgentType
+  name: string
+  installed: boolean
+  supportsStreaming: boolean
+  supportsResume: boolean
+  supportsPlanMode: boolean
+  supportsModelSelection: boolean
+  supportsEffort: boolean
+  supportsSkills: boolean
+  supportsAttachments: boolean
+  supportsFork: boolean
 }
 
 export interface Attachment {

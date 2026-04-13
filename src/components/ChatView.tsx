@@ -970,7 +970,7 @@ export const ChatView: Component<Props> = (props) => {
             <div class="text-center max-w-sm">
               <p class="text-sm text-text-secondary mb-1">New session</p>
               <p class="text-xs text-text-dim leading-relaxed">
-                Describe what you want Claude to build, fix, or explore in this worktree.
+                Describe what you want to build, fix, or explore in this worktree.
               </p>
             </div>
           </div>

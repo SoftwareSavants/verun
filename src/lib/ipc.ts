@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
 import { bytesToBase64 } from './binary'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
@@ -28,8 +28,8 @@ export const importProjectConfig = (projectId: string) =>
   invoke<{ setupHook: string; destroyHook: string; startCommand: string }>('import_project_config', { projectId })
 
 // Tasks
-export const createTask = (projectId: string, baseBranch?: string) =>
-  invoke<TaskWithSession>('create_task', { projectId, baseBranch })
+export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType) =>
+  invoke<TaskWithSession>('create_task', { projectId, baseBranch, agentType })
 
 export const listTasks = (projectId: string): Promise<Task[]> =>
   DEMO
@@ -244,6 +244,12 @@ export const listClaudeSkills = () =>
 
 export const checkClaude = (): Promise<string> =>
   DEMO ? Promise.resolve('1.0.0') : invoke<string>('check_claude')
+
+export const checkAgent = (agentType: AgentType) =>
+  invoke<string>('check_agent', { agentType })
+
+export const listAvailableAgents = () =>
+  invoke<AgentInfo[]>('list_available_agents')
 
 export const reloadEnvPath = () =>
   invoke<void>('reload_env_path')

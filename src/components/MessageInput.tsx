@@ -2108,7 +2108,7 @@ export const MessageInput: Component<Props> = (props) => {
               )}
               onClick={() => setPlanMode(!planMode())}
               disabled={!props.sessionId || props.isRunning}
-              title="Plan mode — Claude will plan before acting"
+              title="Plan mode - agent will plan before acting"
             >
               <ListChecks size={13} />
               <span>Plan</span>

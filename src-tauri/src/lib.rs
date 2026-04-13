@@ -1,3 +1,4 @@
+pub mod agent;
 mod claude_jsonl;
 mod db;
 mod env_path;
@@ -51,7 +52,7 @@ pub fn run() {
         .manage(WindowTaskMap::new())
         .setup(|app| {
             // Capture the user's full PATH from their interactive shell so
-            // children (claude, lsp, git, gh, …) inherit nvm/homebrew/etc.
+            // children (agents, lsp, git, gh, ...) inherit nvm/homebrew/etc.
             // Then start the background watcher that re-captures whenever
             // the integrated terminal looks idle after a user command.
             env_path::reload_now();
@@ -287,6 +288,8 @@ pub fn run() {
             // Utility
             ipc::list_claude_skills,
             ipc::check_claude,
+            ipc::check_agent,
+            ipc::list_available_agents,
             ipc::reload_env_path,
             ipc::list_worktree_files,
             ipc::check_gitignored,

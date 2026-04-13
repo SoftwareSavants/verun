@@ -172,6 +172,12 @@ pub fn migrations() -> Vec<Migration> {
             CREATE INDEX IF NOT EXISTS idx_turn_snapshots_session ON turn_snapshots(session_id);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 13,
+        description: "add agent_type to tasks",
+        sql: "ALTER TABLE tasks ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'claude';",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -212,6 +218,8 @@ pub struct Task {
     pub last_commit_message: Option<String>,
     #[sqlx(default)]
     pub parent_task_id: Option<String>,
+    #[sqlx(default)]
+    pub agent_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -431,8 +439,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Tasks --
         DbWrite::InsertTask(t) => {
             sqlx::query(
-                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id, agent_type) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&t.id)
             .bind(&t.project_id)
@@ -442,6 +450,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(t.created_at)
             .bind(t.port_offset)
             .bind(&t.parent_task_id)
+            .bind(&t.agent_type)
             .execute(pool)
             .await?;
         }
@@ -949,6 +958,7 @@ mod tests {
             archived_at: None,
             last_commit_message: None,
             parent_task_id: None,
+            agent_type: "claude".into(),
         }
     }
 

@@ -10,6 +10,10 @@ Spin up multiple AI coding agents - each in its own isolated git worktree - and 
 
 Every task gets its own git worktree, branch, and set of ports - agents can't interfere with each other. Lifecycle hooks copy `.env` files, install dependencies, and start dev servers automatically so each agent starts ready to work. Define your setup once in a `.verun.json` and the whole team gets the same config.
 
+## Multi-agent support
+
+Pluggable agent backend with Claude Code support today, Codex and Cursor coming soon.
+
 ## Stay in control without babysitting
 
 - **Steps** - queue follow-up prompts while an agent is working; arm them to auto-send on idle, or fire manually

@@ -1,3 +1,4 @@
+use crate::agent::AgentKind;
 use crate::db::{self, DbWriteTx, Session, Task};
 use crate::policy::TrustLevel;
 use crate::stream;
@@ -329,6 +330,7 @@ pub struct CreateTaskParams {
     pub setup_hook: String,
     pub port_offset: i64,
     pub from_task_window: bool,
+    pub agent_type: String,
 }
 
 pub async fn create_task(
@@ -339,7 +341,7 @@ pub async fn create_task(
     setup_in_progress: &SetupInProgress,
     params: CreateTaskParams,
 ) -> Result<(Task, Session), String> {
-    let CreateTaskParams { project_id, repo_path, base_branch, setup_hook, port_offset, from_task_window } = params;
+    let CreateTaskParams { project_id, repo_path, base_branch, setup_hook, port_offset, from_task_window, agent_type } = params;
     let id = Uuid::new_v4().to_string();
     let branch = funny_branch_name();
     let now = epoch_ms();
@@ -369,6 +371,7 @@ pub async fn create_task(
         archived_at: None,
         last_commit_message: None,
         parent_task_id: None,
+        agent_type,
     };
 
     db_tx
@@ -570,7 +573,6 @@ pub struct Attachment {
     pub data_base64: String,
 }
 
-/// Parameters for sending a message to Claude
 pub struct SendMessageParams {
     pub session_id: String,
     pub task_id: String,
@@ -587,6 +589,7 @@ pub struct SendMessageParams {
     pub thinking_mode: bool,
     pub fast_mode: bool,
     pub task_name: Option<String>,
+    pub agent_type: String,
 }
 
 /// Send a message to Claude in this session's worktree.
@@ -600,7 +603,8 @@ pub async fn send_message(
     pending_approval_meta: PendingApprovalMeta,
     params: SendMessageParams,
 ) -> Result<(), String> {
-    let SendMessageParams { session_id, task_id, project_id, worktree_path, repo_path, port_offset, trust_level, message, claude_session_id, attachments, model, plan_mode, thinking_mode, fast_mode, task_name } = params;
+    let SendMessageParams { session_id, task_id, project_id, worktree_path, repo_path, port_offset, trust_level, message, claude_session_id, attachments, model, plan_mode, thinking_mode, fast_mode, task_name, agent_type } = params;
+    let agent = AgentKind::parse(&agent_type).implementation();
     // Don't allow concurrent messages on the same session
     if active.contains_key(&session_id) {
         return Err("Session is already processing a message".to_string());
@@ -671,44 +675,28 @@ pub async fn send_message(
         })
         .await;
 
-    let mut cmd = tokio::process::Command::new("claude");
-    cmd.args([
-        "-p",
-        "--output-format", "stream-json",
-        "--input-format", "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-    ]);
-    cmd.args(["--permission-prompt-tool", "stdio"]);
+    let resume_id = claude_session_id.as_deref().filter(|s| !s.is_empty());
+    let session_args = crate::agent::SessionArgs {
+        resume_session_id: resume_id,
+        model: model.as_deref(),
+        plan_mode,
+        thinking_mode,
+        fast_mode,
+    };
+
+    let mut cmd = tokio::process::Command::new(agent.cli_binary());
+    cmd.args(agent.build_session_args(&session_args));
     for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
         cmd.env(&k, &v);
     }
-    if plan_mode {
-        cmd.args(["--permission-mode", "plan"]);
-    }
-    cmd.stdin(std::process::Stdio::piped());
-
-    if let Some(ref rid) = claude_session_id {
-        if !rid.is_empty() {
-            cmd.args(["--resume", rid]);
-        }
-    }
-    if let Some(ref m) = model {
-        cmd.args(["--model", m]);
-    }
-    if thinking_mode {
-        cmd.args(["--effort", "max"]);
-    }
-    if fast_mode {
-        cmd.args(["--effort", "low"]);
-    }
-    cmd.current_dir(&worktree_path)
+    cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped())
+        .current_dir(&worktree_path);
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to spawn claude: {e}"))?;
+        .map_err(|e| format!("Failed to spawn {}: {e}", agent.display_name()))?;
 
     // Write user message to stdin (always via stream-json input)
     let mut stdin_handle = child.stdin.take()
@@ -949,16 +937,14 @@ pub async fn abort_message(
     Ok(())
 }
 
-/// Extract the claude session_id from stream-json output.
-/// Looks for `{"type":"system","subtype":"init",...,"session_id":"..."}` or
-/// `{"type":"result",...,"session_id":"..."}` in the captured lines.
 /// Generate a short title using a standalone Haiku call (fast, doesn't affect session).
+/// Uses the Claude CLI regardless of agent type since title generation is a Verun feature.
 async fn generate_session_title(first_message: &str, worktree_path: &str) -> Option<String> {
     let prompt = format!(
         "Generate a 3-5 word title summarizing what the user wants. Reply with ONLY the title, nothing else. If the message is too vague or unclear to summarize (e.g. just a greeting), reply with exactly NONE.\n\nUser message: {}",
         first_message.chars().take(300).collect::<String>()
     );
-    let output = tokio::process::Command::new("claude")
+    let output = tokio::process::Command::new(AgentKind::Claude.implementation().cli_binary())
         .args([
             "-p", &prompt,
             "--output-format", "text",
@@ -1238,8 +1224,8 @@ async fn insert_task_row_tx(
     t: &Task,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id, agent_type) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&t.id)
     .bind(&t.project_id)
@@ -1249,6 +1235,7 @@ async fn insert_task_row_tx(
     .bind(t.created_at)
     .bind(t.port_offset)
     .bind(&t.parent_task_id)
+    .bind(&t.agent_type)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert task: {e}"))?;
@@ -1385,6 +1372,7 @@ pub async fn fork_session_to_new_task(
         archived_at: None,
         last_commit_message: None,
         parent_task_id: Some(parent_task.id.clone()),
+        agent_type: parent_task.agent_type.clone(),
     };
 
     // Write the truncated on-disk JSONL into the NEW worktree's projects dir

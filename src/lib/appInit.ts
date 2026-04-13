@@ -106,7 +106,7 @@ export async function checkCli() {
   try {
     await ipc.checkClaude()
   } catch {
-    addToast('Claude CLI not found. Install with: npm i -g @anthropic-ai/claude-code', 'error')
+    addToast('Claude Code CLI not found. Install with: npm i -g @anthropic-ai/claude-code', 'error')
   }
 }
 

@@ -51,7 +51,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
     <Dialog open={props.open} onClose={props.onClose} onConfirm={handleCreate}>
       <h2 class="text-base font-semibold text-text-primary mb-2">New Task</h2>
       <p class="text-sm text-text-muted mb-4">
-        Creates a new worktree branched from the selected base. A Claude session starts automatically.
+        Creates a new worktree branched from the selected base. An agent session starts automatically.
       </p>
 
       <div class="mb-4">

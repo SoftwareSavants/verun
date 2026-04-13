@@ -89,6 +89,7 @@ export function startTaskCreation(projectId: string, baseBranch: string): string
     archivedAt: null,
     lastCommitMessage: null,
     parentTaskId: null,
+    agentType: 'claude',
   }
 
   setTasks(produce(t => t.unshift(placeholder)))
