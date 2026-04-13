@@ -66,6 +66,7 @@ interface AssistantBlock {
   turnCost?: number
   turnTokens?: { input: number; output: number }
   isLastInTurn?: boolean
+  isStreaming?: boolean
   /** On-disk message uuid attached at turn end via verun_turn_snapshot. Used as the fork point. */
   messageUuid?: string
 }
@@ -211,6 +212,7 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
     for (let i = blocks.length - 1; i >= 0; i--) {
       if (blocks[i].type === 'assistant') {
         (blocks[i] as AssistantBlock).isLastInTurn = true
+        ;(blocks[i] as AssistantBlock).isStreaming = true
         break
       }
       if (blocks[i].type === 'user') break
@@ -900,12 +902,14 @@ export const ChatView: Component<Props> = (props) => {
                             )
                           })()}
                         </Show>
-                        <CopyButton text={block.text} />
-                        <Show when={(block as AssistantBlock).messageUuid && props.sessionId}>
-                          <ForkButton
-                            sessionId={props.sessionId!}
-                            messageUuid={(block as AssistantBlock).messageUuid!}
-                          />
+                        <Show when={!(block as AssistantBlock).isStreaming}>
+                          <CopyButton text={block.text} />
+                          <Show when={(block as AssistantBlock).messageUuid && props.sessionId}>
+                            <ForkButton
+                              sessionId={props.sessionId!}
+                              messageUuid={(block as AssistantBlock).messageUuid!}
+                            />
+                          </Show>
                         </Show>
                       </div>
                     </Show>
