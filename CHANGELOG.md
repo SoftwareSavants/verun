@@ -17,6 +17,8 @@
 - Fix messages rendering with the wrong role (user as agent, agent as user) when switching between sessions/tasks with similar output lengths - ChatView block rebuild now tracks session ID, not just item count
 - Plan review overlay now stays within the session pane instead of overflowing behind the sidebar and right panel
 - Clicking a project header no longer collapses other empty projects — removed stale "selected project" gating that hid the "+ New task" hint on non-selected empty projects
+- Clicking a macOS notification now navigates directly to the relevant task and session - migrated from `mac-notification-sys` to `tauri-plugin-notifications` (Choochmeque), which uses `UNUserNotificationCenter` via Swift FFI for native click callbacks via `onNotificationClicked`; JS-side Map tracks notification IDs to task/session pairs for navigation on click; session selection uses a `pendingSessionNav` signal consumed after session loading completes, preventing a race where the effect defaulted to the first session
+- Notification permission toast "Enable" button now properly persists the enabled preference and guards `onDismiss` from racing with the enable callback
 - Task and session unread indicators now only appear when a session finishes (status → idle/error), not after every streamed chunk or tool call
 - Update notification converted from a top bar to a dismissible bottom-right toast; dismissing during a download hides the toast without cancelling the download, and the restart prompt re-appears automatically once the download completes
 - Normal trust level now auto-allows non-destructive `git push` — only `git push --force`, `-f`, and `--delete` still require approval

@@ -15,6 +15,15 @@ export function setSelectedTaskId(id: string | null) {
 
 export const [selectedSessionId, setSelectedSessionId] = createSignal<string | null>(null)
 
+// When set, the next task-selection effect should navigate to this session
+// instead of defaulting to the first one. Consumed (cleared) after use.
+export const [pendingSessionNav, setPendingSessionNav] = createSignal<string | null>(null)
+export function consumePendingSessionNav(): string | null {
+  const id = pendingSessionNav()
+  if (id) setPendingSessionNav(null)
+  return id
+}
+
 // Unread / attention-required indicators for sidebar tasks
 // "unread" = new output arrived while the task wasn't selected
 // "attention" = pending tool approval that needs user action

@@ -427,6 +427,7 @@ export async function initSessionListeners() {
         title: status === 'error' ? 'Task failed' : 'Task completed',
         body: taskName,
         taskId: prevSession.taskId,
+        sessionId,
       })
     }
   })
@@ -453,6 +454,7 @@ export async function initSessionListeners() {
           ? `${taskName}: ${(req.toolInput?.question as string)?.slice(0, 100) || 'has a question'}`
           : `${taskName}: ${req.toolName}`,
         taskId: session.taskId,
+        sessionId: req.sessionId,
       })
     }
   })

@@ -1,5 +1,5 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth } from '../store/ui'
+import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth, consumePendingSessionNav } from '../store/ui'
 import { refitActiveTerminal, setActiveTerminalForTask, startCommandTerminalId, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
 import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
@@ -146,8 +146,11 @@ export const TaskPanel: Component = () => {
     if (taskId) {
       restoreTabState(taskId)
       await loadSessions(taskId)
+      const pending = consumePendingSessionNav()
       const taskSessions = sessionsForTask(taskId)
-      if (taskSessions.length > 0) {
+      if (pending && taskSessions.some(s => s.id === pending)) {
+        setSelectedSessionId(pending)
+      } else if (taskSessions.length > 0) {
         setSelectedSessionId(taskSessions[0].id)
       } else {
         setSelectedSessionId(null)

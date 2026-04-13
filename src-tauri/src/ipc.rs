@@ -1896,15 +1896,24 @@ pub fn quit_app() {
 
 // ── Notifications ──────────────────────────────────────────────────────
 
+/// Dev-only: directly emit the navigate-to-task event without going through
+/// the notification system. Call from browser devtools to test click navigation:
+///   await window.__TAURI_INTERNALS__.invoke('debug_navigate_to_task', { taskId: '...', sessionId: '...' })
+#[cfg(debug_assertions)]
 #[tauri::command]
-pub async fn send_notification(app: AppHandle, title: String, body: String) -> Result<(), String> {
-    use tauri_plugin_notification::NotificationExt;
-    app.notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-        .map_err(|e| format!("notification failed: {e}"))
+pub async fn debug_navigate_to_task(
+    app: AppHandle,
+    task_id: String,
+    session_id: String,
+) -> Result<(), String> {
+    #[derive(Clone, Serialize)]
+    struct Payload { task_id: String, session_id: String }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    app.emit("navigate-to-task", Payload { task_id, session_id })
+        .map_err(|e| e.to_string())
 }
 
 // ── Steps ──────────────────────────────────────────────────────────────
