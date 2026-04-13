@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 — 2026-04-13
+
+### Changes
+
+-
+
 ## Unreleased
 
 - Normal trust level now auto-allows non-destructive `git push` — only `git push --force`, `-f`, and `--delete` still require approval
