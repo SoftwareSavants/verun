@@ -827,7 +827,7 @@ export const ChatView: Component<Props> = (props) => {
         onScroll={handleScroll}
         onClick={handleLinkClick}
       >
-      <div ref={contentRef} class="flex flex-col gap-2 py-4">
+      <div ref={contentRef} class="flex flex-col gap-2 pt-4 pb-6">
         <Show when={props.sessionStatus === 'error'}>
           <div class="mx-5 flex items-center gap-2 px-3 py-2 rounded-lg bg-status-error/8 border border-status-error/15">
             <AlertTriangle size={14} class="text-status-error shrink-0" />
