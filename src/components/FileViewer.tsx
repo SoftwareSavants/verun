@@ -1,6 +1,6 @@
 import { Component, Switch, Match, Show, createSignal, createEffect, on } from 'solid-js'
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { marked } from 'marked'
+import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import { Image, Film, Music, Eye, Code2, Loader2, AlertCircle } from 'lucide-solid'
 import { CodeEditor } from './CodeEditor'
 import { DiffEditor } from './DiffEditor'
@@ -284,7 +284,8 @@ const MarkdownViewer: Component<Props> = (props) => {
 
   const renderedHtml = () => {
     try {
-      return marked.parse(content(), { async: false }) as string
+      const dir = props.relativePath.includes('/') ? props.relativePath.replace(/\/[^/]+$/, '') : undefined
+      return renderMarkdown(content(), { worktreePath: getWorktreePath(props.taskId), fileDir: dir })
     } catch {
       return content()
     }
@@ -335,6 +336,7 @@ const MarkdownViewer: Component<Props> = (props) => {
           ref={previewEl}
           class="flex-1 overflow-auto px-6 py-4 text-sm text-text-primary leading-relaxed prose-verun select-text"
           style={{ display: mode() === 'preview' ? '' : 'none' }}
+          onClick={(e) => handleMarkdownLinkClick(e, props.taskId)}
           innerHTML={renderedHtml()}
         />
         <div ref={editorWrapperEl} class="flex-1 overflow-hidden" style={{ display: mode() === 'edit' ? '' : 'none' }}>

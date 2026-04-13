@@ -7,6 +7,8 @@
 - Add project dialog now always applies the user's edits to hooks, fixing a bug where clearing pre-populated fields from .verun.json had no effect
 - Auto-detect section and "Or configure manually" label are hidden when .verun.json already provides hooks
 - Persist `claude_session_id` eagerly from the `system.init` event at stream start instead of only after process exit - prevents session context loss on crashes, aborts, or abnormal exits
+- Markdown images now render in chat, plan review, file preview, and file mention popups - local image paths are resolved to Tauri asset:// URLs via `convertFileSrc`
+- File links in markdown are now clickable - relative paths open in Verun's file viewer instead of the browser, especially useful in plan review where links were previously inert
 
 ## Unreleased
 

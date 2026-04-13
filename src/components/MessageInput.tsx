@@ -7,9 +7,9 @@ import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
 import { openFile } from '../store/files'
+import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { Command } from '../store/commands'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
-import { marked } from 'marked'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
 import type { Attachment, ModelId, TrustLevel } from '../types'
@@ -1710,8 +1710,11 @@ export const MessageInput: Component<Props> = (props) => {
                   [&_th]:text-left [&_th]:text-text-muted [&_th]:font-medium [&_th]:px-2 [&_th]:py-1.5 [&_th]:border-b [&_th]:border-border
                   [&_td]:text-text-secondary [&_td]:px-2 [&_td]:py-1.5 [&_td]:border-b [&_td]:border-border/50
                   [&_strong]:text-text-primary [&_strong]:font-semibold
+                  [&_a]:text-accent [&_a]:no-underline [&_a]:cursor-pointer hover:[&_a]:underline
+                  [&_img]:max-w-full [&_img]:h-auto [&_img]:rounded-lg [&_img]:my-2
                   [&_blockquote]:border-l-2 [&_blockquote]:border-accent/40 [&_blockquote]:pl-4 [&_blockquote]:text-text-muted [&_blockquote]:italic"
-                innerHTML={marked.parse(plan().plan, { async: false }) as string}
+                onClick={(e) => handleMarkdownLinkClick(e, selectedTaskId() ?? undefined)}
+                innerHTML={renderMarkdown(plan().plan, getWorktreePath(selectedTaskId() ?? undefined))}
               />
             </div>
 

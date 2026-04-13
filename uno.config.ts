@@ -198,8 +198,9 @@ export default defineConfig({
           margin: 0.4em 0;
           color: #a1a1aa;
         }
-        .prose-verun a { color: #2d6e4f; text-decoration: none; }
+        .prose-verun a { color: #2d6e4f; text-decoration: none; cursor: pointer; }
         .prose-verun a:hover { text-decoration: underline; }
+        .prose-verun img { max-width: 100%; height: auto; border-radius: 8px; margin: 0.5em 0; }
         .prose-verun hr { border: none; border-top: 1px solid #1e1e26; margin: 0.8em 0; }
 
         /* Thinking dots */

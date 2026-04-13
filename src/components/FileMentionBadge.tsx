@@ -2,7 +2,7 @@ import { Component, Show, Switch, Match, createSignal, onCleanup } from 'solid-j
 import { Portal } from 'solid-js/web'
 import { computePosition, flip, shift, offset } from '@floating-ui/dom'
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { marked } from 'marked'
+import { renderMarkdown, getWorktreePath } from '../lib/markdown'
 import { getFileIcon } from '../lib/fileIcons'
 import { highlightCode, langFromPath } from '../lib/highlighter'
 import { getPreviewType, isMediaType } from '../lib/fileTypes'
@@ -83,7 +83,7 @@ export const FileMentionBadge: Component<Props> = (props) => {
         result = { type: 'svg', dataUrl }
       } else if (pvType === 'markdown') {
         const content = await readWorktreeFile(props.taskId, props.filePath)
-        const html = marked.parse(content, { async: false }) as string
+        const html = renderMarkdown(content, getWorktreePath(props.taskId))
         result = { type: 'markdown', html }
       } else {
         const content = await readWorktreeFile(props.taskId, props.filePath)

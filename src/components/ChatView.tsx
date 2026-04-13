@@ -1,8 +1,7 @@
 import { Component, For, Show, createEffect, on, createSignal, onMount, onCleanup } from 'solid-js'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import { clsx } from 'clsx'
-import { marked } from 'marked'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { OutputItem, SessionStatus } from '../types'
 import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
@@ -14,8 +13,6 @@ import * as ipc from '../lib/ipc'
 import { addToast, setSelectedTaskId, setSelectedSessionId } from '../store/ui'
 import { setSessions, loadOutputLines } from '../store/sessions'
 import { setTasks } from '../store/tasks'
-
-marked.setOptions({ breaks: true, gfm: true })
 
 function formatDuration(ms: number): string {
   const totalSec = Math.round(ms / 1000)
@@ -39,8 +36,8 @@ function formatTokens(n: number): string {
   return `${n}`
 }
 
-function renderMarkdown(text: string): string {
-  return marked.parse(text, { async: false }) as string
+function renderMarkdownForTask(text: string, taskId?: string): string {
+  return renderMarkdown(text, getWorktreePath(taskId))
 }
 
 interface Props {
@@ -762,13 +759,7 @@ export const ChatView: Component<Props> = (props) => {
     autoScroll = scrollHeight - scrollTop - clientHeight < 30
   }
 
-  const handleLinkClick = (e: MouseEvent) => {
-    const anchor = (e.target as HTMLElement).closest('a')
-    if (anchor?.href) {
-      e.preventDefault()
-      openUrl(anchor.href)
-    }
-  }
+  const handleLinkClick = (e: MouseEvent) => handleMarkdownLinkClick(e, props.taskId)
 
   return (
     <div class="w-full h-full relative">
@@ -875,7 +866,7 @@ export const ChatView: Component<Props> = (props) => {
                   <div class="px-5 py-1">
                     <div
                       class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
-                      innerHTML={renderMarkdown(block.text)}
+                      innerHTML={renderMarkdownForTask(block.text, props.taskId)}
                     />
                     <Show when={(block as AssistantBlock).isLastInTurn}>
                       <div class="flex items-center gap-2 mt-0.5">
