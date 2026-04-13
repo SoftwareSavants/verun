@@ -2090,6 +2090,7 @@ export const MessageInput: Component<Props> = (props) => {
             {/* Model selector */}
             <ModelSelector
               model={currentModel()}
+              agentType={taskById(selectedTaskId() ?? '')?.agentType ?? 'claude'}
               onChange={(m) => {
                 const tid = selectedTaskId()
                 if (tid) setTaskModel(tid, m)
