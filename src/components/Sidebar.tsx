@@ -39,6 +39,7 @@ import {
   markTaskWindowed,
 } from "../store/ui";
 import { sessionsForTask, loadSessions } from "../store/sessions";
+import { isStartCommandRunning } from "../store/terminals";
 import { deleteProject } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NewTaskDialog } from "./NewTaskDialog";
@@ -59,6 +60,7 @@ import {
   CircleX,
   Archive,
   Settings,
+  Play,
 } from "lucide-solid";
 import { clsx } from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -465,6 +467,9 @@ export const Sidebar: Component = () => {
                                   <GitBranch size={9} class="shrink-0 text-text-dim/70" />
                                 </Show>
                                 {task.branch}
+                                <Show when={isStartCommandRunning(task.id)}>
+                                  <Play size={9} class="shrink-0 text-green-400 fill-green-400 animate-pulse" />
+                                </Show>
                                 <Show when={isTaskWindowed(task.id)}>
                                   <ExternalLink size={9} class="shrink-0 text-accent/60" />
                                 </Show>
