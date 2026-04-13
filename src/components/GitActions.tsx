@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
-import { Upload, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye } from 'lucide-solid'
+import { ArrowUpFromLine, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import * as ipc from '../lib/ipc'
 import { claudeSkills } from '../store/commands'
@@ -163,8 +163,8 @@ export const GitActions: Component<Props> = (props) => {
 
   const pushAction = (): GitAction =>
     fileCount() > 0
-      ? { icon: Upload, label: 'Commit & Push', message: 'commit all changes and push to remote' }
-      : { icon: Upload, label: 'Push', action: doPush }
+      ? { icon: ArrowUpFromLine, label: 'Commit & Push', message: 'commit all changes and push to remote' }
+      : { icon: ArrowUpFromLine, label: 'Push', action: doPush }
   const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: 'create a pull request with an appropriate title and description' })
   const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: 'create a draft pull request with an appropriate title and description' })
   const pullAction = (): GitAction => ({ icon: Download, label: 'Update Branch', message: 'this branch is behind the base branch. rebase onto the base branch to bring it up to date. Use git rebase, not merge.' })
@@ -393,47 +393,48 @@ export const GitActions: Component<Props> = (props) => {
       </Show>
 
       <Show when={mergePanelOpen()}>
-        <div class="absolute right-0 top-full mt-1 z-50 w-56 bg-surface-2 border border-slate-700 rounded-lg shadow-xl p-3 animate-in">
-          <Show when={mergeFailure()}>
-            <p class="text-[11px] text-red-400 mb-2">{mergeFailure()}</p>
-          </Show>
-
-          <label class="flex items-center gap-2 mb-3 cursor-pointer select-none">
+        <div class="absolute right-0 top-full mt-1 z-50 w-56 bg-surface-2 border border-slate-700 rounded-lg shadow-xl py-3 px-3 flex flex-col gap-2.5 animate-in">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
             <input
               type="checkbox"
               checked={deleteBranch()}
               onChange={(e) => setDeleteBranch(e.currentTarget.checked)}
-              class="accent-blue-500 w-3.5 h-3.5"
+              class="accent-accent w-3.5 h-3.5"
             />
-            <span class="text-[11px] text-text-secondary">Delete branch</span>
+            <span class="text-[13px] text-text-secondary">Delete branch</span>
           </label>
 
-          <div class="flex items-center gap-1.5">
-            <Show when={mergeFailure()}>
-              <button
-                class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-[11px] bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors disabled:opacity-40"
-                onClick={() => doMerge(true)}
-                disabled={merging()}
-              >
-                <Show when={merging()} fallback={<>Force Merge</>}>
-                  <Loader2 size={11} class="animate-spin" />
-                  <span>Merging...</span>
-                </Show>
-              </button>
-            </Show>
-            <Show when={!mergeFailure()}>
-              <button
-                class="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-[11px] btn-primary transition-colors disabled:opacity-40"
-                onClick={() => doMerge()}
-                disabled={merging()}
-              >
-                <Show when={merging()} fallback={<>Merge</>}>
-                  <Loader2 size={11} class="animate-spin" />
-                  <span>Merging...</span>
-                </Show>
-              </button>
-            </Show>
-          </div>
+          <Show when={mergeFailure()} fallback={
+            <button
+              class="w-full h-7 flex items-center justify-center gap-1 px-2 rounded text-[11px] btn-primary transition-colors disabled:opacity-40"
+              onClick={() => doMerge()}
+              disabled={merging()}
+            >
+              <Show when={merging()} fallback={<>Merge</>}>
+                <Loader2 size={11} class="animate-spin" />
+                <span>Merging...</span>
+              </Show>
+            </button>
+          }>
+            <button
+              class="w-full h-7 flex items-center justify-center gap-1 px-2 rounded text-[11px] bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors disabled:opacity-40"
+              onClick={() => doMerge(true)}
+              disabled={merging()}
+            >
+              <Show when={merging()} fallback={<>Force Merge</>}>
+                <Loader2 size={11} class="animate-spin" />
+                <span>Merging...</span>
+              </Show>
+            </button>
+          </Show>
+
+          <Show when={mergeFailure()}>
+            <p class="text-[11px] text-red-400 m-0">
+              {mergeFailure()!.toLowerCase().includes('policy') || mergeFailure()!.toLowerCase().includes('protection')
+                ? 'Branch protection is blocking this merge. Use force merge to bypass.'
+                : `Merge failed. Use force merge to retry with admin privileges.`}
+            </p>
+          </Show>
         </div>
       </Show>
     </div>
