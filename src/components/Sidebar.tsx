@@ -23,7 +23,6 @@ import {
   updateTaskName,
 } from "../store/tasks";
 import {
-  selectedProjectId,
   setSelectedProjectId,
   selectedTaskId,
   setSelectedTaskId,
@@ -231,10 +230,6 @@ export const Sidebar: Component = () => {
   );
 
 
-  const handleSelectProject = (id: string) => {
-    setSelectedProjectId(id);
-  };
-
   const showProjectMenu = (e: MouseEvent, projectId: string) => {
     e.preventDefault();
     const project = projects.find((p) => p.id === projectId);
@@ -341,7 +336,6 @@ export const Sidebar: Component = () => {
               <div class="mb-3">
                 <div
                   class="w-full text-left px-2 py-1 rounded-md flex items-center justify-between group cursor-pointer min-w-0 hover:bg-surface-2"
-                  onClick={() => handleSelectProject(project.id)}
                   onContextMenu={(e) => showProjectMenu(e, project.id)}
                 >
                   <span class="flex items-center gap-2 min-w-0">
@@ -370,12 +364,7 @@ export const Sidebar: Component = () => {
                   </button>
                 </div>
 
-                <Show
-                  when={
-                    activeTasksForProject(project.id).length === 0 &&
-                    selectedProjectId() === project.id
-                  }
-                >
+                <Show when={activeTasksForProject(project.id).length === 0}>
                   <div class="px-2 pt-1">
                     <button
                       class="text-[10px] text-text-dim hover:text-text-muted transition-colors cursor-pointer"
