@@ -288,6 +288,12 @@ export const lspSend = (taskId: string, message: string) =>
 export const lspStop = (taskId: string) =>
   invoke<void>('lsp_stop', { taskId })
 
+export const tsgoCheckRun = (taskId: string, worktreePath: string) =>
+  invoke<void>('tsgo_check_run', { taskId, worktreePath })
+
+export const tsgoCheckCancel = (taskId: string) =>
+  invoke<void>('tsgo_check_cancel', { taskId })
+
 // Notifications
 export const sendNotification = (title: string, body: string) =>
   invoke<void>('send_notification', { title, body })

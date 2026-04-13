@@ -2,6 +2,6 @@
   "name": "verun-lsp",
   "private": true,
   "dependencies": {
-    "@vtsls/language-server": "^0"
+    "@typescript/native-preview": "^7.0.0-dev"
   }
 }
