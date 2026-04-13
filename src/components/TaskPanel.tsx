@@ -505,7 +505,7 @@ export const TaskPanel: Component = () => {
                             onClick={() => { setSelectedSessionId(session.id); setMainView(t().id, 'session') }}
                           >
                             <SvgIcon svg={claudeIcon} size={10} />
-                            <span>{session.name || 'New session'}</span>
+                            <span>{session.name || 'Claude Code'}</span>
                             <SessionTime session={session} />
                             <Show when={sessionCosts[session.id] > 0}>
                               <span class="text-text-dim">${sessionCosts[session.id] < 1 ? sessionCosts[session.id].toFixed(3) : sessionCosts[session.id].toFixed(2)}</span>
