@@ -18,6 +18,9 @@ export const updateProjectBaseBranch = (id: string, baseBranch: string) =>
 export const updateProjectHooks = (id: string, setupHook: string, destroyHook: string, startCommand: string, autoStart: boolean) =>
   invoke<void>('update_project_hooks', { id, setupHook, destroyHook, startCommand, autoStart })
 
+export const updateProjectDefaults = (id: string, defaultTrustLevel: string, defaultModel: string | null, defaultThinkingMode: boolean, defaultFastMode: boolean) =>
+  invoke<void>('update_project_defaults', { id, defaultTrustLevel, defaultModel, defaultThinkingMode, defaultFastMode })
+
 export const exportProjectConfig = (projectId: string, taskId: string) =>
   invoke<void>('export_project_config', { projectId, taskId })
 

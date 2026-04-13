@@ -1,6 +1,6 @@
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Project } from '../types'
+import type { ModelId, Project, TrustLevel } from '../types'
 import * as ipc from '../lib/ipc'
 import { selectedTaskId, selectedProjectId, setSelectedProjectId, setSelectedTaskId, setSelectedSessionId } from './ui'
 import { taskById } from './tasks'
@@ -54,6 +54,25 @@ export function updateStoreHooks(id: string, setupHook: string, destroyHook: str
   setProjects(produce(list => {
     const p = list.find(p => p.id === id)
     if (p) { p.setupHook = setupHook; p.destroyHook = destroyHook; p.startCommand = startCommand }
+  }))
+}
+
+export async function updateProjectDefaults(id: string, defaults: { defaultTrustLevel?: TrustLevel; defaultModel?: ModelId | null; defaultThinkingMode?: boolean; defaultFastMode?: boolean }) {
+  const p = projects.find(pr => pr.id === id)
+  if (!p) return
+  const trustLevel = defaults.defaultTrustLevel ?? p.defaultTrustLevel
+  const model = defaults.defaultModel !== undefined ? defaults.defaultModel : p.defaultModel
+  const thinking = defaults.defaultThinkingMode ?? p.defaultThinkingMode
+  const fast = defaults.defaultFastMode ?? p.defaultFastMode
+  await ipc.updateProjectDefaults(id, trustLevel, model, thinking, fast)
+  setProjects(produce(list => {
+    const proj = list.find(pr => pr.id === id)
+    if (proj) {
+      proj.defaultTrustLevel = trustLevel
+      proj.defaultModel = model
+      proj.defaultThinkingMode = thinking
+      proj.defaultFastMode = fast
+    }
   }))
 }
 

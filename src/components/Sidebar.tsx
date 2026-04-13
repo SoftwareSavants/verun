@@ -11,7 +11,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { taskGit, refreshTaskGit } from "../store/git";
-import { projects } from "../store/projects";
+import { projects, projectById } from "../store/projects";
 import {
   tasks,
   activeTasksForProject,
@@ -224,7 +224,8 @@ export const Sidebar: Component = () => {
       () => tasks.length,
       () => {
         for (const t of tasks) {
-          loadSessions(t.id);
+          const project = projectById(t.projectId)
+          loadSessions(t.id, project ? { defaultThinkingMode: project.defaultThinkingMode, defaultFastMode: project.defaultFastMode } : undefined);
           refreshTaskGit(t.id);
         }
       },

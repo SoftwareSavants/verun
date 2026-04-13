@@ -47,7 +47,7 @@ export function setTaskPlanFilePath(taskId: string, path: string | null) {
   }
 }
 
-export async function loadSessions(taskId: string) {
+export async function loadSessions(taskId: string, projectDefaults?: { defaultThinkingMode: boolean; defaultFastMode: boolean }) {
   const list = await ipc.listSessions(taskId)
   // Merge — keep sessions from other tasks, replace sessions for this task
   setSessions(prev => [...prev.filter(s => s.taskId !== taskId), ...list])
@@ -55,13 +55,15 @@ export async function loadSessions(taskId: string) {
   for (const s of list) {
     if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
   }
-  // Restore mode switches from localStorage (authoritative source for toggles)
+  // Restore mode switches from localStorage, fall back to project defaults
   const savedPlan = localStorage.getItem(`verun:planMode:${taskId}`)
   const savedThinking = localStorage.getItem(`verun:thinkingMode:${taskId}`)
   const savedFast = localStorage.getItem(`verun:fastMode:${taskId}`)
   if (savedPlan !== null) _setTaskPlanMode(taskId, savedPlan === 'true')
   if (savedThinking !== null) _setTaskThinkingMode(taskId, savedThinking === 'true')
+  else if (projectDefaults) setTaskThinkingMode(taskId, projectDefaults.defaultThinkingMode)
   if (savedFast !== null) _setTaskFastMode(taskId, savedFast === 'true')
+  else if (projectDefaults) setTaskFastMode(taskId, projectDefaults.defaultFastMode)
   const savedPlanFilePath = localStorage.getItem(`verun:planFilePath:${taskId}`)
   if (savedPlanFilePath) _setTaskPlanFilePath(taskId, savedPlanFilePath)
 }

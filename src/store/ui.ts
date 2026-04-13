@@ -99,7 +99,7 @@ export function setTaskModel(taskId: string, model: ModelId) {
   if (pid) localStorage.setItem(`verun:model:${pid}`, model)
 }
 
-export function effectiveModel(taskId: string | null): ModelId {
+export function effectiveModel(taskId: string | null, projectDefaultModel?: ModelId | null): ModelId {
   if (taskId) {
     let m = taskModels()[taskId]
     if (m) return m
@@ -110,6 +110,7 @@ export function effectiveModel(taskId: string | null): ModelId {
       return saved
     }
   }
+  if (projectDefaultModel) return projectDefaultModel
   const pid = selectedProjectId()
   if (pid) return (localStorage.getItem(`verun:model:${pid}`) as ModelId | null) || 'sonnet'
   return 'sonnet'

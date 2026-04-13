@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Project-level session defaults: approval mode, model, thinking mode, and fast mode are now stored per project and applied automatically to new tasks - toggling any mode on a task updates the project default, and the project settings page exposes all four controls
+
 ## 0.6.0 — 2026-04-14
 
 - Plan approval prompt no longer appears falsely when navigating back to a task with plan mode toggled on but no plan generated

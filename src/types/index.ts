@@ -10,6 +10,10 @@ export interface Project {
   startCommand: string
   autoStart: boolean
   createdAt: number
+  defaultTrustLevel: TrustLevel
+  defaultModel: ModelId | null
+  defaultThinkingMode: boolean
+  defaultFastMode: boolean
 }
 
 export interface Task {

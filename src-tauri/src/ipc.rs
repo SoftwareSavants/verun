@@ -80,6 +80,10 @@ pub async fn add_project(
         start_command,
         auto_start: false,
         created_at: epoch_ms(),
+        default_trust_level: "normal".into(),
+        default_model: None,
+        default_thinking_mode: true,
+        default_fast_mode: false,
     };
 
     db_tx
@@ -143,6 +147,21 @@ pub async fn update_project_hooks(
 ) -> Result<(), String> {
     db_tx
         .send(db::DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command, auto_start })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
+}
+
+#[tauri::command]
+pub async fn update_project_defaults(
+    db_tx: State<'_, DbWriteTx>,
+    id: String,
+    default_trust_level: String,
+    default_model: Option<String>,
+    default_thinking_mode: bool,
+    default_fast_mode: bool,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::UpdateProjectDefaults { id, default_trust_level, default_model, default_thinking_mode, default_fast_mode })
         .await
         .map_err(|e| format!("DB write failed: {e}"))
 }
@@ -251,6 +270,14 @@ pub async fn create_task(
             from_task_window,
         },
     ).await?;
+
+    if project.default_trust_level != "normal" {
+        let _ = db_tx.send(db::DbWrite::SetTrustLevel {
+            task_id: task.id.clone(),
+            trust_level: project.default_trust_level,
+            updated_at: epoch_ms(),
+        }).await;
+    }
 
     // For task windows: store label → taskId so the close handler works
     if from_task_window {
