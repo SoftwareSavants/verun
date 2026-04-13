@@ -368,15 +368,6 @@ pub struct StreamResult {
     pub total_cost: f64,
 }
 
-/// Stream stdout from the claude process, parse NDJSON events, emit
-/// structured items to frontend, persist to DB, and return all captured lines.
-///
-/// Text and thinking deltas are emitted immediately for real-time feel.
-/// Other items are batched with a short flush interval.
-///
-/// When a `control_request` (tool approval) is detected, we emit it to the
-/// frontend and block until the user responds via `respond_to_approval`.
-#[allow(clippy::too_many_arguments)]
 /// After a turn ends, snapshot the worktree and persist a `turn_snapshots`
 /// row keyed to the latest assistant message uuid in the on-disk JSONL.
 ///
@@ -509,6 +500,14 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Stream stdout from the claude process, parse NDJSON events, emit
+/// structured items to frontend, persist to DB, and return all captured lines.
+///
+/// Text and thinking deltas are emitted immediately for real-time feel.
+/// Other items are batched with a short flush interval.
+///
+/// When a `control_request` (tool approval) is detected, we emit it to the
+/// frontend and block until the user responds via `respond_to_approval`.
 #[allow(clippy::too_many_arguments)]
 pub async fn stream_and_capture(
     app: AppHandle,

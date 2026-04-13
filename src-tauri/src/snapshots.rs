@@ -78,15 +78,33 @@ pub fn snapshot_turn(
     session_id: &str,
     message_uuid: &str,
 ) -> Result<Option<String>, SnapshotError> {
+    let Some(commit_sha) = build_snapshot_commit(worktree)? else {
+        return Ok(None);
+    };
+    anchor_ref(worktree, session_id, message_uuid, &commit_sha)?;
+    Ok(Some(commit_sha))
+}
+
+/// Capture the current worktree state as a commit object WITHOUT anchoring a
+/// ref. Used for the "fork with current code" path where we want to carry
+/// the parent's uncommitted work into a new worktree but don't want to leak
+/// a ref under refs/verun/snapshots/ that git gc will never reap.
+///
+/// The returned commit is unreferenced and will be garbage-collected when
+/// the caller is done with it. Callers should use the SHA immediately.
+pub fn ephemeral_snapshot(worktree: &Path) -> Result<Option<String>, SnapshotError> {
+    build_snapshot_commit(worktree)
+}
+
+/// Build a snapshot commit object (no ref anchoring). Shared between
+/// `snapshot_turn` (which anchors) and `ephemeral_snapshot` (which doesn't).
+fn build_snapshot_commit(worktree: &Path) -> Result<Option<String>, SnapshotError> {
     let head = run_git(worktree, &["rev-parse", "HEAD"]).ok();
     let head_sha = match head {
         Some(s) if !s.is_empty() => s,
         _ => return Ok(None),
     };
 
-    // Use a temporary index file so the user's real index is untouched. We
-    // include a nanosecond-precision timestamp + atomic counter so concurrent
-    // snapshots and re-runs never collide on the .lock file git creates.
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = std::time::SystemTime::now()
@@ -94,19 +112,15 @@ pub fn snapshot_turn(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let tmp_index = std::env::temp_dir().join(format!(
-        "verun-snap-{}-{}-{}-{}.idx",
+        "verun-eph-{}-{}-{}.idx",
         std::process::id(),
         nanos,
         counter,
-        message_uuid.replace('/', "_"),
     ));
     let lock_file = tmp_index.with_extension("idx.lock");
     let _ = std::fs::remove_file(&tmp_index);
     let _ = std::fs::remove_file(&lock_file);
 
-    // Worktrees have a .git file pointing to the real gitdir, not a directory.
-    // `git rev-parse --git-path index` resolves to the correct index path
-    // regardless of whether this is the main checkout or a linked worktree.
     let index_path = run_git(worktree, &["rev-parse", "--git-path", "index"])?;
     let real_index_buf = std::path::PathBuf::from(&index_path);
     let real_index = if real_index_buf.is_absolute() {
@@ -114,9 +128,6 @@ pub fn snapshot_turn(
     } else {
         worktree.join(&index_path)
     };
-
-    // Best-effort copy. If the real index doesn't exist yet (very fresh repo),
-    // start from an empty temp index — `git add -A` will populate it.
     if real_index.exists() {
         std::fs::copy(&real_index, &tmp_index)
             .map_err(|e| SnapshotError::Io(format!("copy index: {e}")))?;
@@ -126,7 +137,6 @@ pub fn snapshot_turn(
         .to_str()
         .ok_or_else(|| SnapshotError::Io("non-utf8 tmp index path".into()))?;
 
-    // Stage tracked + untracked into the temp index.
     let add_status = git(worktree)
         .env("GIT_INDEX_FILE", tmp_index_str)
         .args(["add", "-A"])
@@ -141,7 +151,6 @@ pub fn snapshot_turn(
         });
     }
 
-    // Write the temp index out to a tree.
     let tree_out = git(worktree)
         .env("GIT_INDEX_FILE", tmp_index_str)
         .args(["write-tree"])
@@ -157,8 +166,6 @@ pub fn snapshot_turn(
     }
     let tree_sha = String::from_utf8_lossy(&tree_out.stdout).trim().to_string();
 
-    // Commit the tree with HEAD as the sole parent so the snapshot has a clean
-    // single-parent shape that's easy to restore from.
     let commit_sha = run_git(
         worktree,
         &[
@@ -170,8 +177,6 @@ pub fn snapshot_turn(
             "verun turn snapshot",
         ],
     )?;
-
-    anchor_ref(worktree, session_id, message_uuid, &commit_sha)?;
     Ok(Some(commit_sha))
 }
 
