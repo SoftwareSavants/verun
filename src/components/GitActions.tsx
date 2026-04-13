@@ -403,7 +403,7 @@ export const GitActions: Component<Props> = (props) => {
               type="checkbox"
               checked={deleteBranch()}
               onChange={(e) => setDeleteBranch(e.currentTarget.checked)}
-              class="accent-blue-500 w-3 h-3"
+              class="accent-blue-500 w-3.5 h-3.5"
             />
             <span class="text-[11px] text-text-secondary">Delete branch</span>
           </label>

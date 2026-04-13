@@ -224,11 +224,43 @@ pub fn merge_pr(worktree_path: &str, force: bool, delete_branch: bool) -> Result
         .map_err(|e| format!("Failed to merge PR: {e}"))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh pr merge failed: {stderr}"));
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let msg = parse_merge_error(&stderr);
+        return Err(msg);
     }
 
     Ok(())
+}
+
+fn parse_merge_error(stderr: &str) -> String {
+    let s = stderr.trim();
+
+    if let Some(pos) = s.find("is not mergeable:") {
+        let after = s[pos + "is not mergeable:".len()..].trim();
+        let reason = after
+            .split(". To ")
+            .next()
+            .unwrap_or(after)
+            .trim_end_matches('.');
+        return capitalize(reason);
+    }
+
+    if let Some(pos) = s.find("not mergeable") {
+        let after = s[pos..].trim();
+        return capitalize(after);
+    }
+
+    s.strip_prefix("gh pr merge failed: ")
+        .unwrap_or(s)
+        .to_string()
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().to_string() + c.as_str(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -360,5 +392,19 @@ mod tests {
     fn parse_empty_url() {
         let result = parse_github_url("").unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn merge_error_branch_protection() {
+        let stderr = "X Pull request SoftwareSavants/verun#24 is not mergeable: the base branch policy prohibits the merge. To have the pull request merged after all the requirements have been met, add the `--auto` flag. To use administrator privileges to immediately merge the pull request, add the `--admin` flag.";
+        assert_eq!(
+            parse_merge_error(stderr),
+            "The base branch policy prohibits the merge"
+        );
+    }
+
+    #[test]
+    fn merge_error_passthrough() {
+        assert_eq!(parse_merge_error("some unknown error"), "some unknown error");
     }
 }
