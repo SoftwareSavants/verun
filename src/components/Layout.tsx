@@ -2,7 +2,6 @@ import { Component, Show, onMount, onCleanup, createSignal } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Sidebar } from './Sidebar'
-import { UpdateBanner } from './UpdateBanner'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
@@ -269,7 +268,6 @@ export const Layout: Component = () => {
       </Show>
 
       <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
-        <UpdateBanner />
         <Show when={showSettings()}>
           <SettingsPage />
         </Show>

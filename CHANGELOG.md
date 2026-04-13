@@ -10,6 +10,7 @@
 
 - Clicking a project header no longer collapses other empty projects — removed stale "selected project" gating that hid the "+ New task" hint on non-selected empty projects
 - Task and session unread indicators now only appear when a session finishes (status → idle/error), not after every streamed chunk or tool call
+- Update notification converted from a top bar to a dismissible bottom-right toast; dismissing during a download hides the toast without cancelling the download, and the restart prompt re-appears automatically once the download completes
 - Normal trust level now auto-allows non-destructive `git push` — only `git push --force`, `-f`, and `--delete` still require approval
 - Fork a session from a past assistant message: hover any assistant reply to fork in this task (rewinds the chat, keeps current code), or fork to a new task with the worktree restored to the code as it was at that message (true counterfactual) or seeded from the parent's current code
 - Per-turn worktree snapshots taken at every assistant turn end via git plumbing (commit-tree against a temporary index), anchored under `refs/verun/snapshots/` so they survive `git gc`

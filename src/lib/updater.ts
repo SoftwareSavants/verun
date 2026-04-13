@@ -14,6 +14,7 @@ const [updateReady, setUpdateReady] = createSignal(false)
 const [updateError, setUpdateError] = createSignal<string | null>(null)
 const [updateChecking, setUpdateChecking] = createSignal(false)
 const [updateUpToDate, setUpdateUpToDate] = createSignal(false)
+const [dismissed, setDismissed] = createSignal(false)
 
 export {
   updateAvailable,
@@ -22,6 +23,7 @@ export {
   updateError,
   updateChecking,
   updateUpToDate,
+  dismissed,
 }
 
 let upToDateTimer: number | null = null
@@ -44,6 +46,7 @@ let currentUpdate: Update | null = null
 export function initUpdateListener() {
   listen<UpdateInfo>('update-available', (event) => {
     setUpdateAvailable(event.payload)
+    setDismissed(false)
   })
 
   listen('check-updates', () => {
@@ -54,8 +57,13 @@ export function initUpdateListener() {
 export async function checkForUpdate() {
   if (updateChecking()) return
   try {
+    setDismissed(false)
     setUpdateError(null)
     setUpdateUpToDate(false)
+    setUpdateAvailable(null)
+    setUpdateProgress(null)
+    setUpdateReady(false)
+    currentUpdate = null
     setUpdateChecking(true)
     const update = await check()
     if (update) {
@@ -99,6 +107,7 @@ export async function downloadAndInstall() {
       } else if (event.event === 'Finished') {
         setUpdateProgress(100)
         setUpdateReady(true)
+        setDismissed(false)
       }
     })
   } catch (e) {
@@ -112,9 +121,5 @@ export async function restartApp() {
 }
 
 export function dismissUpdate() {
-  setUpdateAvailable(null)
-  setUpdateProgress(null)
-  setUpdateReady(false)
-  setUpdateError(null)
-  setUpdateUpToDate(false)
+  setDismissed(true)
 }
