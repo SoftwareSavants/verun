@@ -6,6 +6,7 @@ import { closeTerminalsForTask } from './terminals'
 import { clearTaskGitState } from './git'
 import { clearProblemsForTask } from './problems'
 import { fireTaskCleanup } from './files'
+import { sessionsForTask } from './sessions'
 
 export const [tasks, setTasks] = createStore<Task[]>([])
 
@@ -186,14 +187,17 @@ export const taskById = (id: string) =>
 /** Remove all localStorage keys associated with a task */
 export function cleanupTaskStorage(id: string) {
   const keys = [
-    `verun:draft-msg:${id}`,
-    `verun:draft-att:${id}`,
     `verun:planMode:${id}`,
     `verun:thinkingMode:${id}`,
     `verun:fastMode:${id}`,
     `verun:task-model:${id}`,
   ]
   for (const k of keys) localStorage.removeItem(k)
+  // Drafts are keyed by sessionId — clean up every session that belonged to this task
+  for (const s of sessionsForTask(id)) {
+    localStorage.removeItem(`verun:draft-msg:${s.id}`)
+    localStorage.removeItem(`verun:draft-att:${s.id}`)
+  }
   if (localStorage.getItem('verun:selectedTaskId') === id) {
     localStorage.removeItem('verun:selectedTaskId')
   }

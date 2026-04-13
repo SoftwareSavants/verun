@@ -287,37 +287,40 @@ export const MessageInput: Component<Props> = (props) => {
     inputRef.style.height = 'auto'
     inputRef.style.height = Math.min(inputRef.scrollHeight, 200) + 'px'
   }
-  const [taskMessages, setTaskMessages] = createSignal<Record<string, string>>({})
-  const [taskAttachments, setTaskAttachments] = createSignal<Record<string, Attachment[]>>({})
+  // Drafts are keyed by sessionId so each session inside a task has its own
+  // composer text + attachments. Task-scoped settings (plan mode, model,
+  // trust level, …) are still keyed by taskId further down.
+  const [sessionMessages, setSessionMessages] = createSignal<Record<string, string>>({})
+  const [sessionAttachments, setSessionAttachments] = createSignal<Record<string, Attachment[]>>({})
   const [viewerAttachment, setViewerAttachment] = createSignal<Attachment | null>(null)
-  const message = () => taskMessages()[selectedTaskId() ?? ''] ?? ''
+  const message = () => sessionMessages()[props.sessionId ?? ''] ?? ''
 
   // Debounced localStorage persistence for drafts
   let draftSaveTimer: ReturnType<typeof setTimeout> | null = null
-  const persistDraft = (tid: string) => {
+  const persistDraft = (sid: string) => {
     if (draftSaveTimer) clearTimeout(draftSaveTimer)
     draftSaveTimer = setTimeout(() => {
-      const msg = taskMessages()[tid] ?? ''
-      const atts = taskAttachments()[tid] ?? []
-      if (msg) localStorage.setItem(`verun:draft-msg:${tid}`, msg)
-      else localStorage.removeItem(`verun:draft-msg:${tid}`)
-      if (atts.length > 0) localStorage.setItem(`verun:draft-att:${tid}`, serializeAttachments(atts))
-      else localStorage.removeItem(`verun:draft-att:${tid}`)
+      const msg = sessionMessages()[sid] ?? ''
+      const atts = sessionAttachments()[sid] ?? []
+      if (msg) localStorage.setItem(`verun:draft-msg:${sid}`, msg)
+      else localStorage.removeItem(`verun:draft-msg:${sid}`)
+      if (atts.length > 0) localStorage.setItem(`verun:draft-att:${sid}`, serializeAttachments(atts))
+      else localStorage.removeItem(`verun:draft-att:${sid}`)
     }, 500)
   }
-  const clearPersistedDraft = (tid: string) => {
+  const clearPersistedDraft = (sid: string) => {
     if (draftSaveTimer) clearTimeout(draftSaveTimer)
-    localStorage.removeItem(`verun:draft-msg:${tid}`)
-    localStorage.removeItem(`verun:draft-att:${tid}`)
+    localStorage.removeItem(`verun:draft-msg:${sid}`)
+    localStorage.removeItem(`verun:draft-att:${sid}`)
   }
 
   const setMessageRaw = (v: string) => {
-    const tid = selectedTaskId()
-    if (tid) {
-      setTaskMessages(prev => ({ ...prev, [tid]: v }))
+    const sid = props.sessionId
+    if (sid) {
+      setSessionMessages(prev => ({ ...prev, [sid]: v }))
       // Clear persisted draft immediately when emptied (message sent), debounce otherwise
-      if (v === '' && !taskAttachments()[tid]?.length) clearPersistedDraft(tid)
-      else persistDraft(tid)
+      if (v === '' && !sessionAttachments()[sid]?.length) clearPersistedDraft(sid)
+      else persistDraft(sid)
     }
   }
   /** Set message signal + sync the contenteditable DOM */
@@ -335,14 +338,14 @@ export const MessageInput: Component<Props> = (props) => {
       }
     }
   }
-  const attachments = () => taskAttachments()[selectedTaskId() ?? ''] ?? []
+  const attachments = () => sessionAttachments()[props.sessionId ?? ''] ?? []
   const setAttachments = (v: Attachment[] | ((prev: Attachment[]) => Attachment[])) => {
-    const tid = selectedTaskId()
-    if (!tid) return
-    const resolved = typeof v === 'function' ? v(taskAttachments()[tid] ?? []) : v
-    setTaskAttachments(prev => ({ ...prev, [tid]: resolved }))
-    if (resolved.length === 0 && !taskMessages()[tid]) clearPersistedDraft(tid)
-    else persistDraft(tid)
+    const sid = props.sessionId
+    if (!sid) return
+    const resolved = typeof v === 'function' ? v(sessionAttachments()[sid] ?? []) : v
+    setSessionAttachments(prev => ({ ...prev, [sid]: resolved }))
+    if (resolved.length === 0 && !sessionMessages()[sid]) clearPersistedDraft(sid)
+    else persistDraft(sid)
   }
   const [sending, setSending] = createSignal(false)
   const [dragOver, setDragOver] = createSignal(false)
@@ -394,26 +397,38 @@ export const MessageInput: Component<Props> = (props) => {
     })
   }))
 
-  // Load trust level when task changes + reset file cache + restore draft
+  // Load trust level when task changes + reset file cache
   createEffect(on(selectedTaskId, async (taskId) => {
     setFilesLoaded(null)
     setWorktreeFiles([])
     if (taskId) {
-      // Restore persisted draft if not already in memory
-      if (!taskMessages()[taskId]) {
-        const savedMsg = localStorage.getItem(`verun:draft-msg:${taskId}`)
-        if (savedMsg) setTaskMessages(prev => ({ ...prev, [taskId]: savedMsg }))
-      }
-      if (!taskAttachments()[taskId]?.length) {
-        try {
-          const savedAtt = localStorage.getItem(`verun:draft-att:${taskId}`)
-          if (savedAtt) setTaskAttachments(prev => ({ ...prev, [taskId]: deserializeAttachments(savedAtt) }))
-        } catch { /* ignore corrupt data */ }
-      }
       try {
         const level = await ipc.getTrustLevel(taskId) as TrustLevel
         setTrustLevelLocal(level)
       } catch { /* default to normal */ }
+    }
+  }))
+
+  // Restore persisted draft when the visible session changes
+  createEffect(on(() => props.sessionId, (sid) => {
+    if (!sid) return
+    if (!sessionMessages()[sid]) {
+      const savedMsg = localStorage.getItem(`verun:draft-msg:${sid}`)
+      if (savedMsg) setSessionMessages(prev => ({ ...prev, [sid]: savedMsg }))
+    }
+    if (!sessionAttachments()[sid]?.length) {
+      try {
+        const savedAtt = localStorage.getItem(`verun:draft-att:${sid}`)
+        if (savedAtt) setSessionAttachments(prev => ({ ...prev, [sid]: deserializeAttachments(savedAtt) }))
+      } catch { /* ignore corrupt data */ }
+    }
+    // Sync the contenteditable DOM to the restored draft
+    if (inputRef) {
+      const msg = sessionMessages()[sid] ?? ''
+      if (serializeInput() !== msg) {
+        if (msg === '') inputRef.textContent = ''
+        else { setInputContent(msg); setCursorToEnd() }
+      }
     }
   }))
 
