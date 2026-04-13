@@ -8,6 +8,7 @@
 
 ## Unreleased
 
+- CMD+P now correctly focuses an already-open file tab even when the session view is active
 - Clicking a project header no longer collapses other empty projects — removed stale "selected project" gating that hid the "+ New task" hint on non-selected empty projects
 - Task and session unread indicators now only appear when a session finishes (status → idle/error), not after every streamed chunk or tool call
 - Update notification converted from a top bar to a dismissible bottom-right toast; dismissing during a download hides the toast without cancelling the download, and the restart prompt re-appears automatically once the download completes

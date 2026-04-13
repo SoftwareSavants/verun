@@ -267,8 +267,8 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
     }
     if (activeTabPath(taskId) !== relativePath) {
       setTaskActiveTab(prev => ({ ...prev, [taskId]: relativePath }))
-      setMainView(taskId, relativePath)
     }
+    setMainView(taskId, relativePath)
     pushMru(taskId, relativePath)
     persistTabState(taskId)
     return
