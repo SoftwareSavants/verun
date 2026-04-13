@@ -60,7 +60,7 @@ Requires [Rust](https://rustup.rs), Node.js 18+, pnpm, and Xcode Command Line To
 Project (repo) → Tasks (worktrees) → Sessions (agent conversations)
 ```
 
-Add a repo, create tasks - each gets an isolated worktree with an auto-generated branch name like `sleepy-capybara-472`. Run multiple agent sessions per task. Switch between them freely.
+Add a repo, create tasks - each gets an isolated worktree with an auto-generated branch name like `sleepy-capybara-472`. Run multiple agent sessions per task and switch between them freely.
 
 ## Stack
 
