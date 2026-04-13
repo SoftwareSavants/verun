@@ -1135,6 +1135,7 @@ pub async fn fork_session_in_task(
         &fork_after_message_uuid,
     )
     .await?;
+    copy_turn_snapshots_tx(&mut tx, &parent.id, &new_verun_sid).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
 
     Ok(new_session)
@@ -1172,6 +1173,32 @@ async fn copy_output_lines_up_to_marker_tx(
             "fork marker not found for message {fork_uuid} (scanned {insert_count} rows)"
         ));
     }
+    Ok(())
+}
+
+/// Copy `turn_snapshots` rows from the parent session to the newly-forked
+/// session. Without this the forked session has output_lines markers that
+/// reference message uuids, but no corresponding snapshot rows under its own
+/// session_id — so every subsequent fork from the forked session in
+/// "code as of this message" mode fails with "no snapshot exists for this
+/// message". The git commit objects themselves are shared (they're anchored
+/// under refs/verun/snapshots/<parent>/... regardless of this table), so
+/// these are cheap pointer rows, not a duplication of git state.
+async fn copy_turn_snapshots_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    parent_session_id: &str,
+    new_session_id: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO turn_snapshots (session_id, message_uuid, stash_sha, created_at) \
+         SELECT ?, message_uuid, stash_sha, created_at \
+         FROM turn_snapshots WHERE session_id = ?",
+    )
+    .bind(new_session_id)
+    .bind(parent_session_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| format!("copy turn_snapshots: {e}"))?;
     Ok(())
 }
 
@@ -1410,6 +1437,7 @@ pub async fn fork_session_to_new_task(
         &fork_after_message_uuid,
     )
     .await?;
+    copy_turn_snapshots_tx(&mut tx, &parent_session.id, &new_verun_sid).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
 
     let _ = app.emit(
