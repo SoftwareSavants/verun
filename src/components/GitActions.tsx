@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
-import { Upload, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye } from 'lucide-solid'
+import { ArrowUpFromLine, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import * as ipc from '../lib/ipc'
 import { claudeSkills } from '../store/commands'
@@ -37,6 +37,10 @@ export const GitActions: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [confirming, setConfirming] = createSignal<string | null>(null)
   const [actionLoading, setActionLoading] = createSignal(false)
+  const [mergePanelOpen, setMergePanelOpen] = createSignal(false)
+  const [mergeFailure, setMergeFailure] = createSignal<string | null>(null)
+  const [deleteBranch, setDeleteBranch] = createSignal(false)
+  const [merging, setMerging] = createSignal(false)
 
   // Read all git state from the centralized store
   const git = () => taskGit(props.taskId)
@@ -50,6 +54,7 @@ export const GitActions: Component<Props> = (props) => {
   createEffect(on(() => props.taskId, () => {
     setOpen(false)
     setConfirming(null)
+    closeMergePanel()
     refreshTaskGit(props.taskId)
   }))
 
@@ -61,7 +66,7 @@ export const GitActions: Component<Props> = (props) => {
   }
 
   const needsConfirmation = (label: string) =>
-    label === 'Push' || label === 'Commit & Push' || label === 'Merge PR'
+    label === 'Push' || label === 'Commit & Push'
 
   const runAction = async (a: GitAction) => {
     if (needsConfirmation(a.label) && confirming() !== a.label) {
@@ -94,14 +99,35 @@ export const GitActions: Component<Props> = (props) => {
     }
   }
 
-  const doMerge = async () => {
+  const openMergePanel = () => {
+    setOpen(false)
+    setMergePanelOpen(true)
+    setDeleteBranch(false)
+    setMergeFailure(null)
+  }
+
+  const closeMergePanel = () => {
+    setMergePanelOpen(false)
+    setMergeFailure(null)
+  }
+
+  const doMerge = async (force?: boolean) => {
+    setMerging(true)
     try {
-      await ipc.mergePullRequest(props.taskId)
+      await ipc.mergePullRequest(props.taskId, force, deleteBranch())
       addToast('PR merged', 'success')
+      closeMergePanel()
       invalidateRemote(props.taskId)
       await refreshTaskGit(props.taskId, { force: true })
     } catch (e: any) {
-      addToast(`Merge failed: ${e}`, 'error')
+      if (!force) {
+        setMergeFailure(String(e))
+      } else {
+        addToast(`Force merge failed: ${e}`, 'error')
+        closeMergePanel()
+      }
+    } finally {
+      setMerging(false)
     }
   }
 
@@ -137,13 +163,13 @@ export const GitActions: Component<Props> = (props) => {
 
   const pushAction = (): GitAction =>
     fileCount() > 0
-      ? { icon: Upload, label: 'Commit & Push', message: 'commit all changes and push to remote' }
-      : { icon: Upload, label: 'Push', action: doPush }
+      ? { icon: ArrowUpFromLine, label: 'Commit & Push', message: 'commit all changes and push to remote' }
+      : { icon: ArrowUpFromLine, label: 'Push', action: doPush }
   const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: 'create a pull request with an appropriate title and description' })
   const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: 'create a draft pull request with an appropriate title and description' })
   const pullAction = (): GitAction => ({ icon: Download, label: 'Update Branch', message: 'this branch is behind the base branch. rebase onto the base branch to bring it up to date. Use git rebase, not merge.' })
   const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: 'rebase this branch onto the base branch and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue' })
-  const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: doMerge })
+  const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: async () => openMergePanel() })
   const readyForReviewAction = (): GitAction => ({ icon: Eye, label: 'Ready for Review', action: doMarkReady })
 
   const isDraft = () => pr()?.isDraft ?? false
@@ -191,15 +217,17 @@ export const GitActions: Component<Props> = (props) => {
 
   // Close dropdown on outside click
   let containerRef: HTMLDivElement | undefined
+  const anyPanelOpen = () => open() || mergePanelOpen()
+  const closeAllPanels = () => { setOpen(false); closeMergePanel() }
   const handleClickOutside = (e: MouseEvent) => {
-    if (open() && containerRef && !containerRef.contains(e.target as Node)) {
-      setOpen(false)
+    if (anyPanelOpen() && containerRef && !containerRef.contains(e.target as Node)) {
+      closeAllPanels()
     }
   }
   createEffect(() => {
-    if (open()) {
+    if (anyPanelOpen()) {
       document.addEventListener('mousedown', handleClickOutside)
-      const unregister = registerDismissable(() => setOpen(false))
+      const unregister = registerDismissable(closeAllPanels)
       onCleanup(() => {
         document.removeEventListener('mousedown', handleClickOutside)
         unregister()
@@ -285,7 +313,7 @@ export const GitActions: Component<Props> = (props) => {
               class={`flex items-center px-1.5 transition-colors disabled:opacity-40 disabled:pointer-events-none ${
                 confirming() === primaryAction().label ? 'hover:bg-amber-500/10' : 'hover:bg-surface-2'
               }`}
-              onClick={() => { setConfirming(null); setOpen(!open()) }}
+              onClick={() => { setConfirming(null); closeMergePanel(); setOpen(!open()) }}
               disabled={props.isRunning || actionLoading()}
             >
               <ChevronDown size={11} />
@@ -362,6 +390,52 @@ export const GitActions: Component<Props> = (props) => {
           </Show>
         </div>
       </Show>
+      </Show>
+
+      <Show when={mergePanelOpen()}>
+        <div class="absolute right-0 top-full mt-1 z-50 w-56 bg-surface-2 border border-slate-700 rounded-lg shadow-xl py-3 px-3 flex flex-col gap-2.5 animate-in">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={deleteBranch()}
+              onChange={(e) => setDeleteBranch(e.currentTarget.checked)}
+              class="accent-accent w-3.5 h-3.5"
+            />
+            <span class="text-[13px] text-text-secondary">Delete branch</span>
+          </label>
+
+          <Show when={mergeFailure()} fallback={
+            <button
+              class="w-full h-7 flex items-center justify-center gap-1 px-2 rounded text-[11px] btn-primary transition-colors disabled:opacity-40"
+              onClick={() => doMerge()}
+              disabled={merging()}
+            >
+              <Show when={merging()} fallback={<>Merge</>}>
+                <Loader2 size={11} class="animate-spin" />
+                <span>Merging...</span>
+              </Show>
+            </button>
+          }>
+            <button
+              class="w-full h-7 flex items-center justify-center gap-1 px-2 rounded text-[11px] bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors disabled:opacity-40"
+              onClick={() => doMerge(true)}
+              disabled={merging()}
+            >
+              <Show when={merging()} fallback={<>Force Merge</>}>
+                <Loader2 size={11} class="animate-spin" />
+                <span>Merging...</span>
+              </Show>
+            </button>
+          </Show>
+
+          <Show when={mergeFailure()}>
+            <p class="text-[11px] text-red-400 m-0">
+              {mergeFailure()!.toLowerCase().includes('policy') || mergeFailure()!.toLowerCase().includes('protection')
+                ? 'Branch protection is blocking this merge. Use force merge to bypass.'
+                : `Merge failed. Use force merge to retry with admin privileges.`}
+            </p>
+          </Show>
+        </div>
       </Show>
     </div>
   )

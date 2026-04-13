@@ -1214,13 +1214,17 @@ pub async fn mark_pr_ready(
 pub async fn merge_pull_request(
     pool: State<'_, SqlitePool>,
     task_id: String,
+    force: Option<bool>,
+    delete_branch: Option<bool>,
 ) -> Result<(), String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
+    let force = force.unwrap_or(false);
+    let delete_branch = delete_branch.unwrap_or(false);
     flatten_join(
-        tokio::task::spawn_blocking(move || github::merge_pr(&t.worktree_path)).await,
+        tokio::task::spawn_blocking(move || github::merge_pr(&t.worktree_path, force, delete_branch)).await,
     )
 }
 
