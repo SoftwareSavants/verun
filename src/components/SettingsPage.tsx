@@ -1,9 +1,9 @@
 import { Component, createSignal, createEffect, on, For, Show } from 'solid-js'
 import { ChevronDown, X, Settings, FolderGit2, Loader2, Sparkles, Download, Upload, GitBranch } from 'lucide-solid'
 import { ACCENT_THEMES, getActiveTheme, setActiveTheme, type AccentTheme } from '../lib/theme'
-import { setShowSettings, setSelectedTaskId, setSelectedSessionId, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist } from '../store/ui'
+import { setShowSettings, setSelectedTaskId, setSelectedSessionId, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist, addToast } from '../store/ui'
 import { notificationsEnabled, setNotificationsEnabledAndPersist } from '../lib/notifications'
-import { projects, updateHooks, updateStoreHooks, updateBaseBranch } from '../store/projects'
+import { projects, updateHooks, updateStoreHooks, updateBaseBranch, updateProjectDefaults } from '../store/projects'
 import { createTask, tasksForProject } from '../store/tasks'
 import { sendMessage, setSessions, setOutputItems } from '../store/sessions'
 import * as ipc from '../lib/ipc'
@@ -11,7 +11,8 @@ import { Popover } from './Popover'
 import { hasOverlayTitlebar } from '../lib/platform'
 import { Toggle } from './Toggle'
 import { CodeTextarea } from './CodeTextarea'
-import { addToast } from '../store/ui'
+import { MODEL_OPTIONS } from '../types'
+import type { TrustLevel, ModelId } from '../types'
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
 import { produce } from 'solid-js/store'
 
@@ -378,6 +379,99 @@ export const SettingsPage: Component = () => {
                       )}
                     </For>
                   </Popover>
+                </div>
+              </div>
+            </div>
+
+            {/* Session Defaults */}
+            <div class="mb-8">
+              <h2 class="section-title mb-4">Session Defaults</h2>
+              <div class="space-y-4">
+                {/* Approval mode */}
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm text-text-primary">Approval mode</div>
+                    <div class="text-xs text-text-dim mt-0.5">Default trust level for new tasks</div>
+                  </div>
+                  <div class="flex rounded-lg overflow-hidden ring-1 ring-white/8">
+                    {([
+                      { value: 'supervised', label: 'Supervised' },
+                      { value: 'normal', label: 'Normal' },
+                      { value: 'full_auto', label: 'Auto' },
+                    ] as { value: TrustLevel; label: string }[]).map(opt => (
+                      <button
+                        class={`px-3 py-1 text-xs transition-colors ${
+                          selectedProject()?.defaultTrustLevel === opt.value
+                            ? 'bg-accent text-white'
+                            : 'bg-surface-2 text-text-muted hover:text-text-secondary'
+                        }`}
+                        onClick={() => {
+                          const p = selectedProject()
+                          if (p) updateProjectDefaults(p.id, { defaultTrustLevel: opt.value })
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Default model */}
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm text-text-primary">Model</div>
+                    <div class="text-xs text-text-dim mt-0.5">Default model for new tasks</div>
+                  </div>
+                  <div class="flex rounded-lg overflow-hidden ring-1 ring-white/8">
+                    {([
+                      { value: null, label: 'Default' },
+                      ...MODEL_OPTIONS.map(o => ({ value: o.id as ModelId, label: o.label })),
+                    ] as { value: ModelId | null; label: string }[]).map(opt => (
+                      <button
+                        class={`px-3 py-1 text-xs transition-colors ${
+                          (selectedProject()?.defaultModel ?? null) === opt.value
+                            ? 'bg-accent text-white'
+                            : 'bg-surface-2 text-text-muted hover:text-text-secondary'
+                        }`}
+                        onClick={() => {
+                          const p = selectedProject()
+                          if (p) updateProjectDefaults(p.id, { defaultModel: opt.value })
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Thinking mode */}
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm text-text-primary">Thinking mode</div>
+                    <div class="text-xs text-text-dim mt-0.5">Enable extended thinking by default</div>
+                  </div>
+                  <Toggle
+                    checked={selectedProject()?.defaultThinkingMode ?? false}
+                    onChange={(v) => {
+                      const p = selectedProject()
+                      if (p) updateProjectDefaults(p.id, { defaultThinkingMode: v })
+                    }}
+                  />
+                </div>
+
+                {/* Fast mode */}
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm text-text-primary">Fast mode</div>
+                    <div class="text-xs text-text-dim mt-0.5">Use faster responses by default</div>
+                  </div>
+                  <Toggle
+                    checked={selectedProject()?.defaultFastMode ?? false}
+                    onChange={(v) => {
+                      const p = selectedProject()
+                      if (p) updateProjectDefaults(p.id, { defaultFastMode: v })
+                    }}
+                  />
                 </div>
               </div>
             </div>

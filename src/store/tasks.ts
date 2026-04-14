@@ -100,6 +100,20 @@ export function startTaskCreation(projectId: string, baseBranch: string): string
     setTasks(prev => prev.map(t => t.id === placeholderId ? result.task : t))
     removeCreating(placeholderId)
 
+    // Apply project defaults eagerly before loadSessions runs
+    import('./projects').then(({ projectById }) => {
+      const project = projectById(projectId)
+      if (project) {
+        import('./sessions').then(({ setTaskThinkingMode, setTaskFastMode }) => {
+          setTaskThinkingMode(result.task.id, project.defaultThinkingMode)
+          setTaskFastMode(result.task.id, project.defaultFastMode)
+        })
+        import('./ui').then(({ setTaskModel }) => {
+          if (project.defaultModel) setTaskModel(result.task.id, project.defaultModel)
+        })
+      }
+    })
+
     // Set up session
     import('./sessions').then(({ setSessions, setOutputItems }) => {
       import('./ui').then(({ setSelectedSessionId, selectedTaskId }) => {
@@ -131,6 +145,20 @@ export function retryTaskCreation(placeholderId: string, projectId: string, base
   ipc.createTask(projectId, baseBranch).then(result => {
     setTasks(prev => prev.map(t => t.id === placeholderId ? result.task : t))
     removeCreating(placeholderId)
+
+    // Apply project defaults eagerly before loadSessions runs
+    import('./projects').then(({ projectById }) => {
+      const project = projectById(projectId)
+      if (project) {
+        import('./sessions').then(({ setTaskThinkingMode, setTaskFastMode }) => {
+          setTaskThinkingMode(result.task.id, project.defaultThinkingMode)
+          setTaskFastMode(result.task.id, project.defaultFastMode)
+        })
+        import('./ui').then(({ setTaskModel }) => {
+          if (project.defaultModel) setTaskModel(result.task.id, project.defaultModel)
+        })
+      }
+    })
 
     import('./sessions').then(({ setSessions, setOutputItems }) => {
       import('./ui').then(({ setSelectedSessionId, selectedTaskId, setSelectedTaskId }) => {

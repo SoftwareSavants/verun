@@ -12,6 +12,10 @@ const makeProject = (overrides: Partial<Project> = {}): Project => ({
   startCommand: '',
   autoStart: false,
   createdAt: 1000,
+  defaultTrustLevel: 'normal',
+  defaultModel: null,
+  defaultThinkingMode: false,
+  defaultFastMode: false,
   ...overrides,
 })
 

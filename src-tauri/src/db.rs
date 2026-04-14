@@ -172,6 +172,17 @@ pub fn migrations() -> Vec<Migration> {
             CREATE INDEX IF NOT EXISTS idx_turn_snapshots_session ON turn_snapshots(session_id);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 13,
+        description: "add session defaults to projects",
+        sql: r#"
+            ALTER TABLE projects ADD COLUMN default_trust_level TEXT NOT NULL DEFAULT 'normal';
+            ALTER TABLE projects ADD COLUMN default_model TEXT;
+            ALTER TABLE projects ADD COLUMN default_thinking_mode INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE projects ADD COLUMN default_fast_mode INTEGER NOT NULL DEFAULT 0;
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -191,6 +202,14 @@ pub struct Project {
     pub start_command: String,
     pub auto_start: bool,
     pub created_at: i64,
+    #[sqlx(default)]
+    pub default_trust_level: String,
+    #[sqlx(default)]
+    pub default_model: Option<String>,
+    #[sqlx(default)]
+    pub default_thinking_mode: bool,
+    #[sqlx(default)]
+    pub default_fast_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -288,6 +307,7 @@ pub enum DbWrite {
     InsertProject(Project),
     UpdateProjectBaseBranch { id: String, base_branch: String },
     UpdateProjectHooks { id: String, setup_hook: String, destroy_hook: String, start_command: String, auto_start: bool },
+    UpdateProjectDefaults { id: String, default_trust_level: String, default_model: Option<String>, default_thinking_mode: bool, default_fast_mode: bool },
     DeleteProject { id: String },
 
     // Tasks
@@ -358,8 +378,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Projects --
         DbWrite::InsertProject(p) => {
             sqlx::query(
-                "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at, default_trust_level, default_model, default_thinking_mode, default_fast_mode) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&p.id)
             .bind(&p.name)
@@ -370,6 +390,10 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(&p.start_command)
             .bind(p.auto_start)
             .bind(p.created_at)
+            .bind(&p.default_trust_level)
+            .bind(&p.default_model)
+            .bind(p.default_thinking_mode)
+            .bind(p.default_fast_mode)
             .execute(pool)
             .await?;
         }
@@ -386,6 +410,16 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .bind(&destroy_hook)
                 .bind(&start_command)
                 .bind(auto_start)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        DbWrite::UpdateProjectDefaults { id, default_trust_level, default_model, default_thinking_mode, default_fast_mode } => {
+            sqlx::query("UPDATE projects SET default_trust_level = ?, default_model = ?, default_thinking_mode = ?, default_fast_mode = ? WHERE id = ?")
+                .bind(&default_trust_level)
+                .bind(&default_model)
+                .bind(default_thinking_mode)
+                .bind(default_fast_mode)
                 .bind(&id)
                 .execute(pool)
                 .await?;
@@ -890,21 +924,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_twelve_migrations() {
+    fn has_thirteen_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 12);
-        assert_eq!(m[0].version, 1);
-        assert_eq!(m[1].version, 2);
-        assert_eq!(m[2].version, 3);
-        assert_eq!(m[3].version, 4);
-        assert_eq!(m[4].version, 5);
-        assert_eq!(m[5].version, 6);
-        assert_eq!(m[6].version, 7);
-        assert_eq!(m[7].version, 8);
-        assert_eq!(m[8].version, 9);
-        assert_eq!(m[9].version, 10);
-        assert_eq!(m[10].version, 11);
-        assert_eq!(m[11].version, 12);
+        assert_eq!(m.len(), 13);
+        for (i, mig) in m.iter().enumerate() {
+            assert_eq!(mig.version, (i + 1) as i64);
+        }
     }
 
     #[test]
@@ -932,6 +957,10 @@ mod tests {
             start_command: String::new(),
             auto_start: false,
             created_at: 1000,
+            default_trust_level: "normal".into(),
+            default_model: None,
+            default_thinking_mode: true,
+            default_fast_mode: false,
         }
     }
 

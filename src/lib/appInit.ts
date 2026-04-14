@@ -1,6 +1,6 @@
 import { createSignal } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
-import { loadProjects, initProjectListeners } from '../store/projects'
+import { loadProjects, initProjectListeners, projectById } from '../store/projects'
 import { initSessionListeners, syncSessionStatuses } from '../store/sessions'
 import { initTerminalListeners } from '../store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from '../store/git'
@@ -75,7 +75,8 @@ export async function initListeners() {
   // Cross-window sync: reload when tasks change in another window
   listen<{ taskId: string; projectId: string }>('task-created', (event) => {
     loadTasks(event.payload.projectId)
-    loadSessions(event.payload.taskId)
+    const project = projectById(event.payload.projectId)
+    loadSessions(event.payload.taskId, project ? { defaultThinkingMode: project.defaultThinkingMode, defaultFastMode: project.defaultFastMode } : undefined)
     refreshTaskGit(event.payload.taskId)
   })
   listen('task-removed', () => {

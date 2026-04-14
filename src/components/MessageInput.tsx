@@ -3,6 +3,7 @@ import { sendMessage, abortMessage, createSession, clearOutputItems, pendingAppr
 import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
+import { projectById, updateProjectDefaults } from '../store/projects'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
@@ -417,7 +418,14 @@ export const MessageInput: Component<Props> = (props) => {
       try {
         const level = await ipc.getTrustLevel(taskId) as TrustLevel
         setTrustLevelLocal(level)
-      } catch { /* default to normal */ }
+      } catch {
+        // Fall back to project default
+        const task = taskById(taskId)
+        if (task) {
+          const project = projectById(task.projectId)
+          if (project) setTrustLevelLocal(project.defaultTrustLevel)
+        }
+      }
     }
   }))
 
@@ -450,6 +458,12 @@ export const MessageInput: Component<Props> = (props) => {
     await ipc.setTrustLevel(taskId, level)
     setTrustLevelLocal(level)
     setShowTrustMenu(false)
+    // Propagate to project default
+    const task = taskById(taskId)
+    if (task) {
+      const project = projectById(task.projectId)
+      if (project) updateProjectDefaults(project.id, { defaultTrustLevel: level })
+    }
   }
 
   const autoApprovedCount = () => {
@@ -480,6 +494,12 @@ export const MessageInput: Component<Props> = (props) => {
     const tid = selectedTaskId()
     if (!tid) return
     setTaskThinkingMode(tid, on)
+    // Propagate to project default
+    const task = taskById(tid)
+    if (task) {
+      const project = projectById(task.projectId)
+      if (project) updateProjectDefaults(project.id, { defaultThinkingMode: on })
+    }
   }
 
   const fastMode = () => {
@@ -491,6 +511,12 @@ export const MessageInput: Component<Props> = (props) => {
     const tid = selectedTaskId()
     if (!tid) return
     setTaskFastMode(tid, on)
+    // Propagate to project default
+    const task = taskById(tid)
+    if (task) {
+      const project = projectById(task.projectId)
+      if (project) updateProjectDefaults(project.id, { defaultFastMode: on })
+    }
   }
 
   const showPlanResponse = () => {
@@ -544,7 +570,12 @@ export const MessageInput: Component<Props> = (props) => {
     sendMessage(sid, text, undefined, currentModel(), true)
   }
 
-  const currentModel = () => effectiveModel(selectedTaskId())
+  const currentModel = () => {
+    const tid = selectedTaskId()
+    const task = tid ? taskById(tid) : null
+    const project = task ? projectById(task.projectId) : null
+    return effectiveModel(tid, project?.defaultModel)
+  }
 
   const currentApproval = () => {
     const sid = props.sessionId
@@ -2042,7 +2073,15 @@ export const MessageInput: Component<Props> = (props) => {
               model={currentModel()}
               onChange={(m) => {
                 const tid = selectedTaskId()
-                if (tid) setTaskModel(tid, m)
+                if (tid) {
+                  setTaskModel(tid, m)
+                  // Propagate to project default
+                  const task = taskById(tid)
+                  if (task) {
+                    const project = projectById(task.projectId)
+                    if (project) updateProjectDefaults(project.id, { defaultModel: m })
+                  }
+                }
               }}
               disabled={!props.sessionId || props.isRunning}
             />

@@ -10,9 +10,10 @@ import { BlobImage } from './BlobImage'
 import { parseMentions } from '../lib/mentions'
 import { Popover } from './Popover'
 import * as ipc from '../lib/ipc'
-import { addToast, setSelectedTaskId, setSelectedSessionId } from '../store/ui'
-import { setSessions, loadOutputLines } from '../store/sessions'
+import { addToast, setSelectedTaskId, setSelectedSessionId, setTaskModel } from '../store/ui'
+import { setSessions, loadOutputLines, setTaskThinkingMode, setTaskFastMode } from '../store/sessions'
 import { setTasks } from '../store/tasks'
+import { projectById } from '../store/projects'
 
 function formatDuration(ms: number): string {
   const totalSec = Math.round(ms / 1000)
@@ -276,6 +277,13 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
       const tws = await ipc.forkSessionToNewTask(props.sessionId, props.messageUuid, worktreeState)
       setTasks(produce(t => { if (!t.find(x => x.id === tws.task.id)) t.unshift(tws.task) }))
       setSessions(produce(s => { if (!s.find(x => x.id === tws.session.id)) s.push(tws.session) }))
+      // Apply project defaults to the forked task
+      const project = projectById(tws.task.projectId)
+      if (project) {
+        setTaskThinkingMode(tws.task.id, project.defaultThinkingMode)
+        setTaskFastMode(tws.task.id, project.defaultFastMode)
+        if (project.defaultModel) setTaskModel(tws.task.id, project.defaultModel)
+      }
       await loadOutputLines(tws.session.id)
       setSelectedTaskId(tws.task.id)
       setSelectedSessionId(tws.session.id)

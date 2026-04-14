@@ -145,7 +145,9 @@ export const TaskPanel: Component = () => {
   createEffect(on(selectedTaskId, async (taskId) => {
     if (taskId) {
       restoreTabState(taskId)
-      await loadSessions(taskId)
+      const task = taskById(taskId)
+      const project = task ? projectById(task.projectId) : null
+      await loadSessions(taskId, project ? { defaultThinkingMode: project.defaultThinkingMode, defaultFastMode: project.defaultFastMode } : undefined)
       const pending = consumePendingSessionNav()
       const taskSessions = sessionsForTask(taskId)
       if (pending && taskSessions.some(s => s.id === pending)) {
