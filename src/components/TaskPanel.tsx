@@ -31,6 +31,7 @@ import vscodeIcon from '../assets/icons/vscode.svg?raw'
 import claudeIcon from '../assets/icons/claude.svg?raw'
 import codexIcon from '../assets/icons/codex.svg?raw'
 import cursorIcon from '../assets/icons/cursor.svg?raw'
+import opencodeIcon from '../assets/icons/opencode.svg?raw'
 import zedIcon from '../assets/icons/zed.svg?raw'
 import finderIcon from '../assets/icons/finder.svg?raw'
 import { fileManagerName } from '../lib/platform'
@@ -39,6 +40,7 @@ const AGENT_ICONS: Record<string, string> = {
   claude: claudeIcon,
   codex: codexIcon,
   cursor: cursorIcon,
+  opencode: opencodeIcon,
 }
 
 function agentIcon(agentType: string): string {

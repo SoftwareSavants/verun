@@ -7,6 +7,7 @@ import { Popover } from './Popover'
 import claudeIcon from '../assets/icons/claude.svg?raw'
 import codexIcon from '../assets/icons/codex.svg?raw'
 import cursorIcon from '../assets/icons/cursor.svg?raw'
+import opencodeIcon from '../assets/icons/opencode.svg?raw'
 
 interface Props {
   model: ModelId
@@ -19,6 +20,7 @@ const AGENT_ICONS: Record<string, string> = {
   claude: claudeIcon,
   codex: codexIcon,
   cursor: cursorIcon,
+  opencode: opencodeIcon,
 }
 
 function SvgIcon(props: { svg: string; size?: number; class?: string }) {

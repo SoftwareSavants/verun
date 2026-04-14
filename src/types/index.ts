@@ -12,12 +12,13 @@ export interface Project {
   createdAt: number
 }
 
-export type AgentType = 'claude' | 'codex' | 'cursor'
+export type AgentType = 'claude' | 'codex' | 'cursor' | 'opencode'
 
 export const AGENT_DISPLAY_NAMES: Record<AgentType, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
   cursor: 'Cursor',
+  opencode: 'OpenCode',
 }
 
 export interface Task {

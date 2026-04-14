@@ -1,6 +1,7 @@
 mod claude;
 mod codex;
 mod cursor;
+mod opencode;
 
 use serde::{Deserialize, Serialize};
 
@@ -8,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub use claude::Claude;
 pub use codex::Codex;
 pub use cursor::Cursor;
+pub use opencode::OpenCode;
 
 // ---------------------------------------------------------------------------
 // AgentKind - serializable identifier stored in the DB
@@ -19,6 +21,7 @@ pub enum AgentKind {
     Claude,
     Codex,
     Cursor,
+    OpenCode,
 }
 
 impl AgentKind {
@@ -26,6 +29,7 @@ impl AgentKind {
         match s {
             "codex" => Self::Codex,
             "cursor" => Self::Cursor,
+            "opencode" => Self::OpenCode,
             _ => Self::Claude,
         }
     }
@@ -35,11 +39,12 @@ impl AgentKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Cursor => "cursor",
+            Self::OpenCode => "opencode",
         }
     }
 
     pub fn all() -> &'static [AgentKind] {
-        &[Self::Claude, Self::Codex, Self::Cursor]
+        &[Self::Claude, Self::Codex, Self::Cursor, Self::OpenCode]
     }
 
     /// Return a boxed trait object for this agent kind.
@@ -48,6 +53,7 @@ impl AgentKind {
             Self::Claude => Box::new(Claude),
             Self::Codex => Box::new(Codex),
             Self::Cursor => Box::new(Cursor),
+            Self::OpenCode => Box::new(OpenCode),
         }
     }
 }
