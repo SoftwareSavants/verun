@@ -63,15 +63,15 @@ export const NewTaskDialog: Component<Props> = (props) => {
   const handleAgentChange = (agent: AgentType) => {
     setCopied(false)
     setAgentType(agent)
-    const p = project()
-    if (p) {
-      updateProjectDefaultAgentInStore(p.id, agent)
-      ipc.updateProjectDefaultAgent(p.id, agent).catch(() => {})
-    }
   }
 
   const handleCreate = () => {
     if (!props.projectId || agentNotInstalled()) return
+    const p = project()
+    if (p) {
+      updateProjectDefaultAgentInStore(p.id, agentType())
+      ipc.updateProjectDefaultAgent(p.id, agentType()).catch(() => {})
+    }
     const placeholderId = startTaskCreation(props.projectId, baseBranch(), agentType())
     setSelectedTaskId(placeholderId)
     setSelectedProjectId(props.projectId)
