@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Demo mode: set `VITE_DEMO_MODE=true` to populate the app with dummy projects, tasks, sessions, and a realistic chat conversation for screenshots
+- Fix message role corruption when switching between tasks - clear stale output data before reloading and use reactive Switch/Match for block type rendering so reconcile merges can't produce wrong role display
 
 ## 0.6.0 — 2026-04-14
 

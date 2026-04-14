@@ -1,4 +1,4 @@
-import { Component, For, Show, createEffect, on, createSignal, onMount, onCleanup } from 'solid-js'
+import { Component, For, Show, Switch, Match, createEffect, on, createSignal, onMount, onCleanup } from 'solid-js'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
@@ -849,101 +849,112 @@ export const ChatView: Component<Props> = (props) => {
         </Show>
 
         <For each={blocks}>
-          {(block) => {
-            switch (block.type) {
-              case 'user':
-                return (
-                  <div class="flex flex-col items-end px-5 py-1 gap-1">
-                    <Show when={block.images && block.images.length > 0}>
-                      <div class="flex flex-wrap justify-end gap-1 max-w-[75%]">
-                        <For each={block.images || []}>
-                          {(img) => (
-                            <button
-                              type="button"
-                              class="block cursor-pointer"
-                              onClick={() => setViewerImage({ mimeType: img.mimeType, data: img.data })}
-                              title="Open image"
-                            >
-                              <BlobImage
-                                data={img.data}
-                                mimeType={img.mimeType}
-                                class="h-16 w-16 object-cover rounded-xl border border-border transition-all duration-150 hover:border-border-active hover:brightness-110 hover:scale-[1.03]"
-                              />
-                            </button>
-                          )}
-                        </For>
-                      </div>
-                    </Show>
-                    <Show when={block.text}>
-                      <div class="max-w-[75%] bg-accent/15 rounded-2xl rounded-br-lg border border-accent/10 overflow-hidden">
-                        <div class="px-4 py-2.5 text-sm text-text-primary whitespace-pre-wrap leading-relaxed select-text">
-                          <For each={parseMentions(block.text)}>
-                            {(seg) => (
-                              <Show when={seg.type === 'mention'} fallback={seg.value}>
-                                <FileMentionBadge filePath={seg.value} taskId={props.taskId} size="sm" />
-                              </Show>
+          {(block) => (
+            <Switch>
+              <Match when={block.type === 'user'}>
+                {(() => {
+                  const b = block as UserBlock
+                  return (
+                    <div class="flex flex-col items-end px-5 py-1 gap-1">
+                      <Show when={b.images && b.images.length > 0}>
+                        <div class="flex flex-wrap justify-end gap-1 max-w-[75%]">
+                          <For each={b.images || []}>
+                            {(img) => (
+                              <button
+                                type="button"
+                                class="block cursor-pointer"
+                                onClick={() => setViewerImage({ mimeType: img.mimeType, data: img.data })}
+                                title="Open image"
+                              >
+                                <BlobImage
+                                  data={img.data}
+                                  mimeType={img.mimeType}
+                                  class="h-16 w-16 object-cover rounded-xl border border-border transition-all duration-150 hover:border-border-active hover:brightness-110 hover:scale-[1.03]"
+                                />
+                              </button>
                             )}
                           </For>
                         </div>
-                      </div>
-                    </Show>
-                  </div>
-                )
-              case 'assistant':
-                return (
-                  <div class="px-5 py-1">
-                    <div
-                      class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
-                      innerHTML={renderMarkdownForTask(block.text, props.taskId)}
-                    />
-                    <Show when={(block as AssistantBlock).isLastInTurn}>
-                      <div class="flex items-center gap-2 mt-0.5">
-                        <Show when={(block as AssistantBlock).durationMs}>
-                          {(() => {
-                            const ab = block as AssistantBlock
-                            const hasCostInfo = ab.turnCost || ab.turnTokens
-                            if (!hasCostInfo) {
-                              return <span class="text-[10px] text-text-dim/50">{formatDuration(ab.durationMs!)}</span>
-                            }
-                            const parts = [
-                              ab.turnCost ? formatCost(ab.turnCost) : '',
-                              ab.turnTokens ? `${formatTokens(ab.turnTokens.input)} in / ${formatTokens(ab.turnTokens.output)} out` : '',
-                            ].filter(Boolean).join(' · ')
-                            return (
-                              <span class="relative group/dur">
-                                <span class="text-[10px] text-text-dim/50 cursor-default">{formatDuration(ab.durationMs!)}</span>
-                                <span class="absolute left-0 bottom-full mb-1 hidden group-hover/dur:block z-50 whitespace-nowrap px-2 py-1 rounded bg-surface-3 border border-border-active shadow-lg text-[10px] text-text-secondary">
-                                  {parts}
+                      </Show>
+                      <Show when={b.text}>
+                        <div class="max-w-[75%] bg-accent/15 rounded-2xl rounded-br-lg border border-accent/10 overflow-hidden">
+                          <div class="px-4 py-2.5 text-sm text-text-primary whitespace-pre-wrap leading-relaxed select-text">
+                            <For each={parseMentions(b.text)}>
+                              {(seg) => (
+                                <Show when={seg.type === 'mention'} fallback={seg.value}>
+                                  <FileMentionBadge filePath={seg.value} taskId={props.taskId} size="sm" />
+                                </Show>
+                              )}
+                            </For>
+                          </div>
+                        </div>
+                      </Show>
+                    </div>
+                  )
+                })()}
+              </Match>
+              <Match when={block.type === 'assistant'}>
+                {(() => {
+                  const b = block as AssistantBlock
+                  return (
+                    <div class="px-5 py-1">
+                      <div
+                        class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
+                        innerHTML={renderMarkdownForTask(b.text, props.taskId)}
+                      />
+                      <Show when={b.isLastInTurn}>
+                        <div class="flex items-center gap-2 mt-0.5">
+                          <Show when={b.durationMs}>
+                            {(() => {
+                              const hasCostInfo = b.turnCost || b.turnTokens
+                              if (!hasCostInfo) {
+                                return <span class="text-[10px] text-text-dim/50">{formatDuration(b.durationMs!)}</span>
+                              }
+                              const parts = [
+                                b.turnCost ? formatCost(b.turnCost) : '',
+                                b.turnTokens ? `${formatTokens(b.turnTokens.input)} in / ${formatTokens(b.turnTokens.output)} out` : '',
+                              ].filter(Boolean).join(' · ')
+                              return (
+                                <span class="relative group/dur">
+                                  <span class="text-[10px] text-text-dim/50 cursor-default">{formatDuration(b.durationMs!)}</span>
+                                  <span class="absolute left-0 bottom-full mb-1 hidden group-hover/dur:block z-50 whitespace-nowrap px-2 py-1 rounded bg-surface-3 border border-border-active shadow-lg text-[10px] text-text-secondary">
+                                    {parts}
+                                  </span>
                                 </span>
-                              </span>
-                            )
-                          })()}
-                        </Show>
-                        <Show when={!(block as AssistantBlock).isStreaming}>
-                          <CopyButton text={block.text} />
-                          <Show when={(block as AssistantBlock).messageUuid && props.sessionId}>
-                            <ForkButton
-                              sessionId={props.sessionId!}
-                              messageUuid={(block as AssistantBlock).messageUuid!}
-                            />
+                              )
+                            })()}
                           </Show>
-                        </Show>
-                      </div>
-                    </Show>
-                  </div>
-                )
-              case 'thinking':
-                return <ThinkingBlockView id={(block as ThinkingBlock).id} text={block.text} />
-              case 'tool':
-                return <ToolBlockView id={block.id} tool={block.tool} input={block.input} result={block.result} />
-              case 'system':
-                return (
-                  <div class="flex justify-center px-5 py-1">
-                    <span class="text-[11px] text-text-dim">{block.text}</span>
-                  </div>
-                )
-            }
-          }}
+                          <Show when={!b.isStreaming}>
+                            <CopyButton text={b.text} />
+                            <Show when={b.messageUuid && props.sessionId}>
+                              <ForkButton
+                                sessionId={props.sessionId!}
+                                messageUuid={b.messageUuid!}
+                              />
+                            </Show>
+                          </Show>
+                        </div>
+                      </Show>
+                    </div>
+                  )
+                })()}
+              </Match>
+              <Match when={block.type === 'thinking'}>
+                <ThinkingBlockView id={(block as ThinkingBlock).id} text={(block as ThinkingBlock).text} />
+              </Match>
+              <Match when={block.type === 'tool'}>
+                {(() => {
+                  const b = block as ToolBlock
+                  return <ToolBlockView id={b.id} tool={b.tool} input={b.input} result={b.result} />
+                })()}
+              </Match>
+              <Match when={block.type === 'system'}>
+                <div class="flex justify-center px-5 py-1">
+                  <span class="text-[11px] text-text-dim">{(block as SystemBlock).text}</span>
+                </div>
+              </Match>
+            </Switch>
+          )}
         </For>
 
         <Show when={props.sessionStatus === 'running'}>
