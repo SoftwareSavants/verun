@@ -23,7 +23,7 @@ impl Agent for OpenCode {
     }
 
     fn docs_url(&self) -> &'static str {
-        "https://opencode.ai/docs"
+        "https://opencode.ai/docs#install"
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {

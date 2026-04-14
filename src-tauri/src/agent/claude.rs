@@ -19,7 +19,7 @@ impl Agent for Claude {
     }
 
     fn docs_url(&self) -> &'static str {
-        "https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview"
+        "https://docs.anthropic.com/en/docs/claude-code/quickstart"
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {

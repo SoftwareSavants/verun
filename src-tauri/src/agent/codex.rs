@@ -22,7 +22,7 @@ impl Agent for Codex {
     }
 
     fn docs_url(&self) -> &'static str {
-        "https://github.com/openai/codex"
+        "https://github.com/openai/codex#installation"
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {

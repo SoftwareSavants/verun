@@ -138,7 +138,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
                 href={selectedAgent()!.docsUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                class="inline-flex items-center gap-1 mt-2 text-[11px] text-text-dim hover:text-text-secondary transition-colors"
+                class="inline-flex items-center gap-1 mt-2 text-[11px] text-text-primary hover:text-white transition-colors"
                 onClick={(e) => e.stopPropagation()}
               >
                 <ExternalLink size={10} />

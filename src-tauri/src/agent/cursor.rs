@@ -22,7 +22,7 @@ impl Agent for Cursor {
     }
 
     fn docs_url(&self) -> &'static str {
-        "https://cursor.com/docs/cli/overview"
+        "https://cursor.com/docs/cli/overview#installation"
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {
