@@ -601,6 +601,9 @@ export const ChatView: Component<Props> = (props) => {
   // Image viewer state
   const [viewerImage, setViewerImage] = createSignal<{ mimeType: string; data: Uint8Array } | null>(null)
 
+  // Scroll to bottom button visibility
+  const [isAtBottom, setIsAtBottom] = createSignal(true)
+
   // Search state
   const [showSearch, setShowSearch] = createSignal(false)
   const [searchQuery, setSearchQuery] = createSignal('')
@@ -672,6 +675,7 @@ export const ChatView: Component<Props> = (props) => {
       const saved = savedScrollPositions.get(sid)
       if (saved) {
         autoScroll = saved.autoScroll
+        setIsAtBottom(saved.autoScroll)
         pendingScrollRestore = saved
       }
     }
@@ -768,10 +772,19 @@ export const ChatView: Component<Props> = (props) => {
     })
   }
 
+  const scrollToBottom = () => {
+    if (!containerRef) return
+    containerRef.scrollTo({ top: containerRef.scrollHeight, behavior: 'smooth' })
+    autoScroll = true
+    setIsAtBottom(true)
+  }
+
   const handleScroll = () => {
     if (!containerRef || scrollRafPending) return
     const { scrollTop, scrollHeight, clientHeight } = containerRef
-    autoScroll = scrollHeight - scrollTop - clientHeight < 30
+    const distFromBottom = scrollHeight - scrollTop - clientHeight
+    autoScroll = distFromBottom < 30
+    setIsAtBottom(distFromBottom < 200)
   }
 
   const handleLinkClick = (e: MouseEvent) => handleMarkdownLinkClick(e, props.taskId)
@@ -953,6 +966,15 @@ export const ChatView: Component<Props> = (props) => {
         </Show>
       </div>
       </div>
+      <Show when={!isAtBottom()}>
+        <button
+          class="absolute bottom-4 right-4 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-surface-2 ring-1 ring-white/10 shadow-lg text-text-dim hover:text-text-secondary hover:ring-white/20 transition-colors"
+          onClick={scrollToBottom}
+          title="Scroll to bottom"
+        >
+          <ChevronDown size={15} />
+        </button>
+      </Show>
       <Show when={viewerImage()}>
         {(img) => (
           <ImageViewer

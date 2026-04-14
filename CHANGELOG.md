@@ -16,6 +16,7 @@
 - CMD+P now correctly focuses an already-open file tab even when the session view is active
 - Git action messages (rebase, PR creation) now use the project's configured base branch instead of letting Claude default to main
 - Git actions show "Archive" as the primary action when a PR is merged, replacing the empty button area
+- Scroll-to-bottom button appears in the bottom-right corner of the session when scrolled up
 - Hide copy and fork buttons on the currently streaming assistant message - completed turns still show their buttons
 - Fix messages rendering with the wrong role (user as agent, agent as user) when switching between sessions/tasks with similar output lengths - ChatView block rebuild now tracks session ID, not just item count
 - Plan review overlay now stays within the session pane instead of overflowing behind the sidebar and right panel
