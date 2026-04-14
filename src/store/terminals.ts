@@ -5,6 +5,7 @@ import * as ipc from '../lib/ipc'
 import type { TerminalInstance, PtyOutputEvent, PtyExitedEvent } from '../types'
 import type { Terminal as XTerm } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
+import type { SearchAddon } from '@xterm/addon-search'
 
 // ---------------------------------------------------------------------------
 // Store
@@ -22,6 +23,7 @@ const [terminalExitCodes, setTerminalExitCodes] = createSignal<Record<string, nu
 export interface XtermEntry {
   term: XTerm
   fitAddon: FitAddon
+  searchAddon?: SearchAddon
 }
 const xtermInstances = new Map<string, XtermEntry>()
 
@@ -67,8 +69,8 @@ export function setActiveTerminalForTask(taskId: string, terminalId: string | nu
 // xterm instance registry
 // ---------------------------------------------------------------------------
 
-export function registerXterm(terminalId: string, term: XTerm, fitAddon: FitAddon) {
-  xtermInstances.set(terminalId, { term, fitAddon })
+export function registerXterm(terminalId: string, term: XTerm, fitAddon: FitAddon, searchAddon?: SearchAddon) {
+  xtermInstances.set(terminalId, { term, fitAddon, searchAddon })
 }
 
 export function getXtermEntry(terminalId: string): XtermEntry | undefined {

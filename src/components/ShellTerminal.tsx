@@ -1,6 +1,7 @@
-import { Component, onMount, onCleanup, type Accessor } from 'solid-js'
+import { Component, onMount, onCleanup, createSignal, Show, type Accessor } from 'solid-js'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebglAddon } from '@xterm/addon-webgl'
@@ -34,9 +35,15 @@ const THEME = {
 }
 
 /** Capture-phase keydown on the container — fires before xterm's textarea gets it */
-function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>) {
+function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>, onToggleSearch?: () => void) {
   container.addEventListener('keydown', (e: KeyboardEvent) => {
     const mod = modPressed(e)
+    if (mod && e.key === 'f') {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      onToggleSearch?.()
+      return
+    }
     if (mod && e.key === 'c') {
       e.preventDefault()
       e.stopImmediatePropagation()
@@ -106,21 +113,50 @@ interface Props {
 }
 
 export const ShellTerminal: Component<Props> = (props) => {
-  let containerRef: HTMLDivElement | undefined
+  let containerRef!: HTMLDivElement
+  let terminalRef: HTMLDivElement | undefined
+  let searchInputRef: HTMLInputElement | undefined
   let resizeObserver: ResizeObserver | undefined
+  let searchAddonRef: SearchAddon | undefined
+
+  const [showSearch, setShowSearch] = createSignal(false)
+
+  const toggleSearch = () => {
+    const next = !showSearch()
+    setShowSearch(next)
+    if (next) {
+      requestAnimationFrame(() => searchInputRef?.focus())
+    } else {
+      searchAddonRef?.clearDecorations()
+    }
+  }
+
+  const handleSearchKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      setShowSearch(false)
+      searchAddonRef?.clearDecorations()
+      getXtermEntry(props.terminalId)?.term.focus()
+    } else if (e.key === 'Enter') {
+      if (e.shiftKey) {
+        searchAddonRef?.findPrevious((e.target as HTMLInputElement).value)
+      } else {
+        searchAddonRef?.findNext((e.target as HTMLInputElement).value)
+      }
+    }
+  }
 
   onMount(() => {
-    if (!containerRef) return
+    if (!terminalRef) return
 
     const existing = getXtermEntry(props.terminalId)
 
     if (existing) {
-      // Reparent the existing xterm DOM into this new container (task switch)
       const el = existing.term.element
-      if (el) containerRef.appendChild(el)
-      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped)
+      if (el) terminalRef.appendChild(el)
+      searchAddonRef = existing.searchAddon
+      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped, toggleSearch)
       initialFit(existing, props.terminalId)
-      resizeObserver = attachResizeObserver(containerRef, existing, props.terminalId)
+      resizeObserver = attachResizeObserver(terminalRef, existing, props.terminalId)
       return
     }
 
@@ -142,30 +178,33 @@ export const ShellTerminal: Component<Props> = (props) => {
     })
 
     const fitAddon = new FitAddon()
+    const searchAddon = new SearchAddon()
+    searchAddonRef = searchAddon
     term.loadAddon(fitAddon)
+    term.loadAddon(searchAddon)
     term.loadAddon(new WebLinksAddon())
     const unicode11 = new Unicode11Addon()
     term.loadAddon(unicode11)
     term.unicode.activeVersion = '11'
     setupXtermPassthrough(term)
-    setupCaptureKeyHandler(containerRef, term, props.terminalId, props.isStopped)
+    setupCaptureKeyHandler(containerRef, term, props.terminalId, props.isStopped, toggleSearch)
     term.onData((data) => {
       if (props.isStopped?.()) return
       ipc.ptyWrite(props.terminalId, data)
     })
-    registerXterm(props.terminalId, term, fitAddon)
+    registerXterm(props.terminalId, term, fitAddon, searchAddon)
 
-    term.open(containerRef)
+    term.open(terminalRef)
 
     try {
       term.loadAddon(new WebglAddon())
     } catch {
-      // WebGL not available — fall back to canvas renderer
+      // WebGL not available
     }
 
-    const entry = { term, fitAddon }
+    const entry = { term, fitAddon, searchAddon }
     initialFit(entry, props.terminalId)
-    resizeObserver = attachResizeObserver(containerRef, entry, props.terminalId)
+    resizeObserver = attachResizeObserver(terminalRef, entry, props.terminalId)
   })
 
   onCleanup(() => {
@@ -173,10 +212,29 @@ export const ShellTerminal: Component<Props> = (props) => {
   })
 
   return (
-    <div
-      ref={containerRef}
-      class="w-full h-full shell-terminal"
-      style={{ "background-color": "#0a0a0a", cursor: "default" }}
-    />
+    <div ref={containerRef} class="w-full h-full relative">
+      <Show when={showSearch()}>
+        <div class="absolute top-2 right-2 z-10 flex items-center gap-1 bg-surface-2 border border-border rounded px-2 py-1">
+          <input
+            ref={searchInputRef}
+            class="bg-transparent text-sm text-gray-200 outline-none w-48 placeholder-gray-500"
+            placeholder="Search..."
+            onKeyDown={handleSearchKeyDown}
+            onInput={(e) => searchAddonRef?.findNext(e.currentTarget.value)}
+          />
+          <button
+            class="text-gray-500 hover:text-gray-300 text-xs px-1"
+            onClick={() => { setShowSearch(false); searchAddonRef?.clearDecorations(); getXtermEntry(props.terminalId)?.term.focus() }}
+          >
+            Esc
+          </button>
+        </div>
+      </Show>
+      <div
+        ref={terminalRef}
+        class="w-full h-full shell-terminal"
+        style={{ "background-color": "#0a0a0a", cursor: "default" }}
+      />
+    </div>
   )
 }

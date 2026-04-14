@@ -408,48 +408,39 @@ async fn snapshot_turn_best_effort(
     })
     .await;
 
-    match result {
-        Ok(Ok((message_uuid, stash_sha))) => {
-            let now = now_ms();
-            let _ = db_tx
-                .send(DbWrite::InsertTurnSnapshot {
-                    session_id: verun_session_id.to_string(),
-                    message_uuid: message_uuid.clone(),
-                    stash_sha,
-                    created_at: now,
-                })
-                .await;
-
-            // Persist a synthetic marker line into output_lines so the frontend
-            // can attach the message uuid to the most recent assistant block on
-            // session reload, and so the fork operation can find the truncation
-            // boundary in output_lines without having to re-parse stream state.
-            let marker = serde_json::json!({
-                "type": "verun_turn_snapshot",
-                "sessionId": verun_session_id,
-                "messageUuid": message_uuid,
+    if let Ok(Ok((message_uuid, stash_sha))) = result {
+        let now = now_ms();
+        let _ = db_tx
+            .send(DbWrite::InsertTurnSnapshot {
+                session_id: verun_session_id.to_string(),
+                message_uuid: message_uuid.clone(),
+                stash_sha,
+                created_at: now,
             })
-            .to_string();
-            let _ = db_tx
-                .send(DbWrite::InsertOutputLines {
-                    session_id: verun_session_id.to_string(),
-                    lines: vec![(marker.clone(), now)],
-                })
-                .await;
+            .await;
 
-            // Also push the marker as a live event so any open chat view picks
-            // it up immediately without a session reload.
-            let _ = app.emit(
-                "session-output",
-                SessionOutputEvent {
-                    session_id: verun_session_id.to_string(),
-                    items: vec![OutputItem::TurnSnapshot {
-                        message_uuid: message_uuid.clone(),
-                    }],
-                },
-            );
-        }
-        Ok(Err(_)) | Err(_) => {}
+        let marker = serde_json::json!({
+            "type": "verun_turn_snapshot",
+            "sessionId": verun_session_id,
+            "messageUuid": message_uuid,
+        })
+        .to_string();
+        let _ = db_tx
+            .send(DbWrite::InsertOutputLines {
+                session_id: verun_session_id.to_string(),
+                lines: vec![(marker.clone(), now)],
+            })
+            .await;
+
+        let _ = app.emit(
+            "session-output",
+            SessionOutputEvent {
+                session_id: verun_session_id.to_string(),
+                items: vec![OutputItem::TurnSnapshot {
+                    message_uuid: message_uuid.clone(),
+                }],
+            },
+        );
     }
 }
 
