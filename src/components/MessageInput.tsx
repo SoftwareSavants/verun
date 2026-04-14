@@ -562,9 +562,9 @@ export const MessageInput: Component<Props> = (props) => {
     // Never show while session is running (implementing)
     if (props.isRunning && !isExitPlanMode()) return false
     if (isExitPlanMode()) return true
-    // No live approval, but plan mode on + idle + have plan file → show viewer
+    // No live approval — show viewer when plan file is pending and content is loaded
     const tid = selectedTaskId()
-    if (tid && planMode() && !props.isRunning && taskPlanFilePath[tid] && planFileContent()) return true
+    if (tid && !props.isRunning && taskPlanFilePath[tid] && planFileContent()) return true
     return false
   }
 
@@ -572,7 +572,7 @@ export const MessageInput: Component<Props> = (props) => {
   createEffect(on(
     () => {
       const tid = selectedTaskId()
-      return [isExitPlanMode(), props.sessionId, planMode(), tid ? taskPlanFilePath[tid] : null] as const
+      return [isExitPlanMode(), props.sessionId, tid ? taskPlanFilePath[tid] : null] as const
     },
     async ([isExit, _sid]) => {
       // From live ExitPlanMode approval
@@ -581,6 +581,8 @@ export const MessageInput: Component<Props> = (props) => {
         if (!approval) return
         const inlinePlan = approval.toolInput.plan as string | undefined
         const filePath = approval.toolInput.planFilePath as string | undefined
+        const tid = selectedTaskId()
+        if (tid && filePath) setTaskPlanFilePath(tid, filePath)
         setPlanFilePathSignal(filePath || null)
         if (inlinePlan) {
           setPlanFileContent(inlinePlan)
@@ -594,9 +596,9 @@ export const MessageInput: Component<Props> = (props) => {
         }
         return
       }
-      // From persisted plan file path (e.g. after restart)
+      // From persisted plan file path
       const tid = selectedTaskId()
-      if (tid && planMode()) {
+      if (tid) {
         const filePath = taskPlanFilePath[tid]
         if (filePath) {
           setPlanFilePathSignal(filePath)
@@ -604,7 +606,7 @@ export const MessageInput: Component<Props> = (props) => {
             const content = await invoke<string>('read_text_file', { path: filePath })
             setPlanFileContent(content)
           } catch {
-            setPlanFileContent(null)
+            setPlanFileContent(`*Plan file not found:* \`${filePath}\``)
           }
           return
         }
@@ -1347,7 +1349,8 @@ export const MessageInput: Component<Props> = (props) => {
         }
         if (e.key === 'Escape') {
           e.preventDefault()
-          { const tid = selectedTaskId(); if (tid) setTaskPlanFilePath(tid, null) }
+          const tid = selectedTaskId()
+          if (tid) setTaskPlanFilePath(tid, null)
           return
         }
         return
@@ -1826,7 +1829,7 @@ export const MessageInput: Component<Props> = (props) => {
             <div class="flex items-center gap-1.5">
               <button
                 class="p-1 rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                onClick={() => { { const tid = selectedTaskId(); if (tid) setTaskPlanFilePath(tid, null) } }}
+                onClick={() => { const tid = selectedTaskId(); if (tid) setTaskPlanFilePath(tid, null) }}
                 title="Dismiss (Esc)"
               >
                 <X size={14} />
