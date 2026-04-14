@@ -14,6 +14,7 @@ Track progress and discuss priorities in [Issues](https://github.com/SoftwareSav
 
 ## Planned
 
+- **Start command terminal + MCP integration** - surface errors from the project start command terminal and expose them via MCP so Claude can read logs, diagnose failures, and interact with the running process
 - **Better plan mode** - richer plan review and editing experience
 - **Customizable keybindings** - rebind any shortcut
 - **Error recovery** - guided messages instead of raw technical errors

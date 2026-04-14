@@ -12,6 +12,7 @@
 
 ## Unreleased
 
+- Plan approval prompt no longer appears falsely when navigating back to a task with plan mode toggled on but no plan generated
 - CMD+P now correctly focuses an already-open file tab even when the session view is active
 - Hide copy and fork buttons on the currently streaming assistant message - completed turns still show their buttons
 - Fix messages rendering with the wrong role (user as agent, agent as user) when switching between sessions/tasks with similar output lengths - ChatView block rebuild now tracks session ID, not just item count

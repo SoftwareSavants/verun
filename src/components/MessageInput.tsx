@@ -457,8 +457,7 @@ export const MessageInput: Component<Props> = (props) => {
     return sid ? (autoApprovedCounts[sid] || 0) : 0
   }
 
-  // Plan mode — per-session state, backed by the persisted store
-  const [planResponseSession, setPlanResponseSession] = createSignal<string | null>(null)
+  // Plan mode
   const [planFeedback, setPlanFeedback] = createSignal('')
 
   const planMode = () => {
@@ -495,46 +494,19 @@ export const MessageInput: Component<Props> = (props) => {
   }
 
   const showPlanResponse = () => {
-    const sid = props.sessionId
-    // Don't show the simple panel when the full plan viewer is active
+    const tid = selectedTaskId()
+    if (!tid || props.isRunning) return false
     if (showPlanViewer() && planContent()) return false
-    return sid !== null && planResponseSession() === sid && !currentApproval()
+    if (currentApproval()) return false
+    return !!taskPlanFilePath[tid]
   }
-
-  const setShowPlanResponse = (show: boolean) => {
-    if (show) {
-      setPlanResponseSession(props.sessionId)
-    } else {
-      // Only clear if it matches the current session
-      if (planResponseSession() === props.sessionId) {
-        setPlanResponseSession(null)
-      }
-    }
-  }
-
-  // Detect when plan response should show:
-  // 1. Running → idle transition with plan mode on
-  // 2. Session loaded (e.g. app restart) with plan mode on and already idle
-  createEffect(on(
-    () => [props.isRunning, planMode(), props.sessionId] as const,
-    ([running, plan, sid], prev) => {
-      if (!plan || !sid) return
-      // Was running, now idle → show plan response
-      if (prev && prev[0] && !running) {
-        setPlanResponseSession(sid)
-      }
-      // Session just selected, already idle, plan mode on → show plan response
-      if (!running && (!prev || prev[2] !== sid)) {
-        setPlanResponseSession(sid)
-      }
-    }
-  ))
 
   const handleApprovePlan = () => {
     const sid = props.sessionId
     if (!sid) return
+    const tid = selectedTaskId()
+    if (tid) setTaskPlanFilePath(tid, null)
     setPlanMode(false)
-    setShowPlanResponse(false)
     sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
   }
 
@@ -568,7 +540,6 @@ export const MessageInput: Component<Props> = (props) => {
     if (!text) return
     const sid = props.sessionId
     if (!sid) return
-    setShowPlanResponse(false)
     setPlanFeedback('')
     sendMessage(sid, text, undefined, currentModel(), true)
   }
@@ -599,7 +570,10 @@ export const MessageInput: Component<Props> = (props) => {
 
   // Load plan file content — from live approval or persisted path
   createEffect(on(
-    () => [isExitPlanMode(), props.sessionId, planMode()] as const,
+    () => {
+      const tid = selectedTaskId()
+      return [isExitPlanMode(), props.sessionId, planMode(), tid ? taskPlanFilePath[tid] : null] as const
+    },
     async ([isExit, _sid]) => {
       // From live ExitPlanMode approval
       if (isExit) {
@@ -1373,7 +1347,7 @@ export const MessageInput: Component<Props> = (props) => {
         }
         if (e.key === 'Escape') {
           e.preventDefault()
-          setShowPlanResponse(false)
+          { const tid = selectedTaskId(); if (tid) setTaskPlanFilePath(tid, null) }
           return
         }
         return
@@ -1852,7 +1826,7 @@ export const MessageInput: Component<Props> = (props) => {
             <div class="flex items-center gap-1.5">
               <button
                 class="p-1 rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                onClick={() => setShowPlanResponse(false)}
+                onClick={() => { { const tid = selectedTaskId(); if (tid) setTaskPlanFilePath(tid, null) } }}
                 title="Dismiss (Esc)"
               >
                 <X size={14} />
@@ -2079,10 +2053,7 @@ export const MessageInput: Component<Props> = (props) => {
                   : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
                 'disabled:opacity-30'
               )}
-              onClick={() => {
-                setPlanMode(!planMode())
-                if (!planMode()) setShowPlanResponse(false)
-              }}
+              onClick={() => setPlanMode(!planMode())}
               disabled={!props.sessionId || props.isRunning}
               title="Plan mode — Claude will plan before acting"
             >

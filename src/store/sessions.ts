@@ -46,7 +46,7 @@ export async function loadSessions(taskId: string) {
   for (const s of list) {
     if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
   }
-  // Restore mode switches from localStorage (output_lines parsing may override these later)
+  // Restore mode switches from localStorage (authoritative source for toggles)
   const savedPlan = localStorage.getItem(`verun:planMode:${taskId}`)
   const savedThinking = localStorage.getItem(`verun:thinkingMode:${taskId}`)
   const savedFast = localStorage.getItem(`verun:fastMode:${taskId}`)
@@ -153,42 +153,30 @@ export async function closeSession(sessionId: string) {
 export async function loadOutputLines(sessionId: string, taskId: string) {
   const lines = await ipc.getOutputLines(sessionId)
   const items: OutputItem[] = []
-  let lastPlanMode = false
-  let lastThinkingMode = true
-  let lastFastMode = false
   let planFilePath: string | null = null
+  let hadMessageAfterPlan = false
   for (const l of lines) {
     try {
       const v = JSON.parse(l.line)
-      // Check plan_mode on user messages for persistence
-      if (v.type === 'verun_user_message' && typeof v.plan_mode === 'boolean') {
-        lastPlanMode = v.plan_mode
-      }
-      if (v.type === 'verun_user_message' && typeof v.thinking_mode === 'boolean') {
-        lastThinkingMode = v.thinking_mode
-      }
-      if (v.type === 'verun_user_message' && typeof v.fast_mode === 'boolean') {
-        lastFastMode = v.fast_mode
-      }
-      // Extract plan file path from ExitPlanMode control_request
       if (v.type === 'control_request') {
         const req = v.request as Record<string, unknown> | undefined
         if (req?.tool_name === 'ExitPlanMode') {
           const input = req.input as Record<string, unknown> | undefined
           if (input?.planFilePath) {
             planFilePath = input.planFilePath as string
+            hadMessageAfterPlan = false
           }
         }
+      }
+      if (v.type === 'verun_user_message' && planFilePath) {
+        hadMessageAfterPlan = true
       }
     } catch { /* ignore */ }
     const parsed = parseNdjsonLine(l.line, l.emittedAt)
     if (parsed) items.push(...parsed)
   }
   setOutputItems(sessionId, items)
-  setTaskPlanMode(taskId, lastPlanMode)
-  setTaskThinkingMode(taskId, lastThinkingMode)
-  setTaskFastMode(taskId, lastFastMode)
-  setTaskPlanFilePath(taskId, planFilePath)
+  setTaskPlanFilePath(taskId, hadMessageAfterPlan ? null : planFilePath)
   // Accumulate costs + tokens from replayed output
   let replayCost = 0
   let replayInputTokens = 0
@@ -376,7 +364,6 @@ export async function initSessionListeners() {
         store[sessionId] = [...items]
       }
     }))
-    // Accumulate cost + tokens from turnEnd events
     for (const item of items) {
       if (item.kind === 'turnEnd') {
         if (item.cost) {
@@ -498,4 +485,25 @@ export async function initSessionListeners() {
   } catch {
     // getPendingApprovals may not be available yet during startup
   }
+}
+
+export function clearPlanState(taskId: string) {
+  setTaskPlanFilePath(taskId, null)
+  _setTaskPlanMode(taskId, false)
+  localStorage.removeItem(`verun:planMode:${taskId}`)
+}
+
+export function cleanupTaskModeStorage(taskId: string) {
+  const keys = [
+    `verun:planMode:${taskId}`,
+    `verun:thinkingMode:${taskId}`,
+    `verun:fastMode:${taskId}`,
+    `verun:task-model:${taskId}`,
+  ]
+  for (const k of keys) localStorage.removeItem(k)
+}
+
+export function cleanupSessionStorage(sessionId: string) {
+  localStorage.removeItem(`verun:draft-msg:${sessionId}`)
+  localStorage.removeItem(`verun:draft-att:${sessionId}`)
 }
