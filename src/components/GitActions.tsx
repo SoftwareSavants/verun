@@ -6,6 +6,8 @@ import { claudeSkills } from '../store/commands'
 import { sendMessage } from '../store/sessions'
 import { addToast } from '../store/ui'
 import { taskGit, refreshTaskGit, invalidateRemote } from '../store/git'
+import { taskById } from '../store/tasks'
+import { projectById } from '../store/projects'
 import { registerDismissable } from '../lib/dismissable'
 
 interface GitAction {
@@ -44,6 +46,10 @@ export const GitActions: Component<Props> = (props) => {
 
   // Read all git state from the centralized store
   const git = () => taskGit(props.taskId)
+  const baseBranch = () => {
+    const task = taskById(props.taskId)
+    return task ? (projectById(task.projectId)?.baseBranch ?? 'main') : 'main'
+  }
   const pr = () => git().pr
   const checks = () => git().checks
   const behind = () => git().branchStatus.behind
@@ -165,10 +171,10 @@ export const GitActions: Component<Props> = (props) => {
     fileCount() > 0
       ? { icon: ArrowUpFromLine, label: 'Commit & Push', message: 'commit all changes and push to remote' }
       : { icon: ArrowUpFromLine, label: 'Push', action: doPush }
-  const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: 'create a pull request with an appropriate title and description' })
-  const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: 'create a draft pull request with an appropriate title and description' })
-  const pullAction = (): GitAction => ({ icon: Download, label: 'Update Branch', message: 'this branch is behind the base branch. rebase onto the base branch to bring it up to date. Use git rebase, not merge.' })
-  const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: 'rebase this branch onto the base branch and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue' })
+  const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: `create a pull request targeting ${baseBranch()} with an appropriate title and description` })
+  const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: `create a draft pull request targeting ${baseBranch()} with an appropriate title and description` })
+  const pullAction = (): GitAction => ({ icon: Download, label: 'Update Branch', message: `this branch is behind ${baseBranch()}. rebase onto ${baseBranch()} to bring it up to date. Use git rebase, not merge.` })
+  const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: `rebase this branch onto ${baseBranch()} and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue` })
   const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: async () => openMergePanel() })
   const readyForReviewAction = (): GitAction => ({ icon: Eye, label: 'Ready for Review', action: doMarkReady })
 
