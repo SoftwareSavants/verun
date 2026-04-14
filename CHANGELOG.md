@@ -1,16 +1,8 @@
 # Changelog
 
-## 0.5.0 — 2026-04-13
-
-### Changes
-
-- Add project dialog now always applies the user's edits to hooks, fixing a bug where clearing pre-populated fields from .verun.json had no effect
-- Auto-detect section and "Or configure manually" label are hidden when .verun.json already provides hooks
-- Persist `claude_session_id` eagerly from the `system.init` event at stream start instead of only after process exit - prevents session context loss on crashes, aborts, or abnormal exits
-- Markdown images now render in chat, plan review, file preview, and file mention popups - local image paths are resolved to Tauri asset:// URLs via `convertFileSrc`
-- File links in markdown are now clickable - relative paths open in Verun's file viewer instead of the browser, especially useful in plan review where links were previously inert
-
 ## Unreleased
+
+## 0.6.0 — 2026-04-14
 
 - Plan approval prompt no longer appears falsely when navigating back to a task with plan mode toggled on but no plan generated
 - CMD+P now correctly focuses an already-open file tab even when the session view is active
@@ -32,6 +24,16 @@
 - Project-wide Problems panel population via debounced `tsgo --noEmit` shellout. New `tsgo_check` Rust module walks every `tsconfig.json` in the worktree (skipping `node_modules`, hidden dirs, and build output like `dist`/`.next`/`.turbo`), spawns `tsgo --noEmit --pretty false -p <config>` against each with concurrency bounded to 4, and aggregates the deduped results into a single Tauri event. Triggered once on LSP start and re-fired 3s after `file-tree-changed` events on `.ts/.tsx/.js/.jsx` files. Files currently open in an editor stay owned by the LSP shim — the project-wide check skips them so it can't overwrite a more responsive in-flight result. Known limitation: tsgo does not yet support tsserver language-service plugins, so projects using Next.js's `"plugins": [{"name": "next"}]` (or Apollo, styled-components, etc.) will see spurious errors for types those plugins synthesize in-memory. Running `pnpm build` once materializes Next.js's `.next/types/` files and resolves most of its false positives until tsgo ships plugin support.
 - Dev builds now use a separate bundle identifier (`com.softwaresavants.verun.dev`) and product name ("Verun Dev"), so dev and released apps have isolated SQLite databases and app data dirs — no more "migration N was previously applied but is missing" panics when running a released build after a newer dev session. Run dev with `pnpm tauri dev --config src-tauri/tauri.dev.conf.json` (or `make dev`).
 - Diffs now open exclusively as full-size tabs in the main editor panel — clicking a file in the Changes pane opens a side-by-side diff (backed by `@codemirror/merge`) with syntax highlighting, search, and folding, instead of expanding an inline diff in the sidebar. Double-click pins the tab. Works for both working-tree changes and files inside any branch commit; toggleable inline view; tabs persist across reloads. The old inline diff renderer (custom hunk view, expand-context buttons, word-wrap and hide-whitespace toggles) has been removed.
+
+## 0.5.0 — 2026-04-13
+
+### Changes
+
+- Add project dialog now always applies the user's edits to hooks, fixing a bug where clearing pre-populated fields from .verun.json had no effect
+- Auto-detect section and "Or configure manually" label are hidden when .verun.json already provides hooks
+- Persist `claude_session_id` eagerly from the `system.init` event at stream start instead of only after process exit - prevents session context loss on crashes, aborts, or abnormal exits
+- Markdown images now render in chat, plan review, file preview, and file mention popups - local image paths are resolved to Tauri asset:// URLs via `convertFileSrc`
+- File links in markdown are now clickable - relative paths open in Verun's file viewer instead of the browser, especially useful in plan review where links were previously inert
 
 ## 0.4.4 — 2026-04-12
 
