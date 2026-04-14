@@ -570,7 +570,12 @@ export const MessageInput: Component<Props> = (props) => {
     sendMessage(sid, text, undefined, currentModel(), true)
   }
 
-  const currentModel = () => effectiveModel(selectedTaskId())
+  const currentModel = () => {
+    const tid = selectedTaskId()
+    const task = tid ? taskById(tid) : null
+    const project = task ? projectById(task.projectId) : null
+    return effectiveModel(tid, project?.defaultModel)
+  }
 
   const currentApproval = () => {
     const sid = props.sessionId
