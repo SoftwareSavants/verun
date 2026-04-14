@@ -100,6 +100,7 @@ export interface AgentInfo {
   id: AgentType
   name: string
   installHint: string
+  docsUrl: string
   installed: boolean
   supportsStreaming: boolean
   supportsResume: boolean

@@ -15,7 +15,11 @@ impl Agent for Claude {
     fn input_mode(&self) -> InputMode { InputMode::StreamJsonStdin }
 
     fn install_hint(&self) -> &'static str {
-        "Install with: npm i -g @anthropic-ai/claude-code"
+        "npm i -g @anthropic-ai/claude-code"
+    }
+
+    fn docs_url(&self) -> &'static str {
+        "https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview"
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {

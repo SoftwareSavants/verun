@@ -18,7 +18,11 @@ impl Agent for Cursor {
     fn input_mode(&self) -> InputMode { InputMode::PositionalOrStdin }
 
     fn install_hint(&self) -> &'static str {
-        "Install with: curl https://cursor.com/install -fsSL | bash"
+        "curl https://cursor.com/install -fsSL | bash"
+    }
+
+    fn docs_url(&self) -> &'static str {
+        "https://cursor.com/docs/cli/overview"
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {

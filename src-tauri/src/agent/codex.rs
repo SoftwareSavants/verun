@@ -18,7 +18,11 @@ impl Agent for Codex {
     fn input_mode(&self) -> InputMode { InputMode::PositionalOrStdin }
 
     fn install_hint(&self) -> &'static str {
-        "Install with: npm i -g @openai/codex"
+        "npm i -g @openai/codex"
+    }
+
+    fn docs_url(&self) -> &'static str {
+        "https://github.com/openai/codex"
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {

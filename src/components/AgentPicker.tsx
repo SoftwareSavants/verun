@@ -4,7 +4,7 @@ import type { AgentType, AgentInfo } from '../types'
 import { listAvailableAgents } from '../lib/ipc'
 import { tasksForProject } from '../store/tasks'
 import { clsx } from 'clsx'
-import { ChevronDown, Check, Terminal } from 'lucide-solid'
+import { ChevronDown, Check } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
 import claudeIcon from '../assets/icons/claude.svg?raw'
 import codexIcon from '../assets/icons/codex.svg?raw'
@@ -129,21 +129,18 @@ export const AgentPicker: Component<Props> = (props) => {
                   <button
                     class={clsx(
                       'w-full text-left px-3 py-2 text-xs transition-colors flex items-center gap-2.5',
-                      agent.installed
-                        ? selected()
-                          ? 'text-accent bg-accent-muted'
-                          : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
-                        : 'text-text-dim opacity-50 cursor-default'
+                      selected()
+                        ? 'text-accent bg-accent-muted'
+                        : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
                     )}
-                    onClick={() => { if (agent.installed) { props.onChange(agent.id as AgentType); closeDropdown() } }}
-                    disabled={!agent.installed}
+                    onClick={() => { props.onChange(agent.id as AgentType); closeDropdown() }}
                   >
-                    <span class={clsx(!agent.installed && 'opacity-40')}>
+                    <span class={clsx(!agent.installed && 'opacity-50')}>
                       <SvgIcon svg={icon()} size={13} />
                     </span>
                     <div class="flex-1 min-w-0">
                       <div class="flex items-center gap-1.5">
-                        <span class="font-medium">{agent.name}</span>
+                        <span class={clsx('font-medium', !agent.installed && 'opacity-50')}>{agent.name}</span>
                         <Show when={isDefault()}>
                           <span class="text-[10px] text-text-dim">default</span>
                         </Show>
@@ -151,12 +148,6 @@ export const AgentPicker: Component<Props> = (props) => {
                           <span class="text-[10px] text-text-dim ring-1 ring-white/8 px-1 py-0.5 rounded">not installed</span>
                         </Show>
                       </div>
-                      <Show when={!agent.installed}>
-                        <div class="flex items-center gap-1 mt-0.5">
-                          <Terminal size={9} class="text-text-dim shrink-0" />
-                          <code class="text-[10px] text-text-dim font-mono truncate">{agent.installHint}</code>
-                        </div>
-                      </Show>
                     </div>
                     <Show when={selected()}>
                       <Check size={12} class="text-accent shrink-0" />

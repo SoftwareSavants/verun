@@ -19,7 +19,11 @@ impl Agent for OpenCode {
     fn input_mode(&self) -> InputMode { InputMode::PositionalOrStdin }
 
     fn install_hint(&self) -> &'static str {
-        "Install with: curl -fsSL https://opencode.ai/install | bash"
+        "curl -fsSL https://opencode.ai/install | bash"
+    }
+
+    fn docs_url(&self) -> &'static str {
+        "https://opencode.ai/docs"
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {

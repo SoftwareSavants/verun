@@ -112,6 +112,9 @@ pub trait Agent: Send + Sync {
     /// Human-readable install instructions.
     fn install_hint(&self) -> &'static str;
 
+    /// URL to the agent's official documentation / install page.
+    fn docs_url(&self) -> &'static str { "" }
+
     // ── Capability flags ─────────────────────────────────────────────────
     // Override only the ones that differ from the defaults.
 
