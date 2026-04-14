@@ -254,6 +254,9 @@ export const checkAgent = (agentType: AgentType) =>
 export const listAvailableAgents = () =>
   invoke<AgentInfo[]>('list_available_agents')
 
+export const refreshAgents = () =>
+  invoke<void>('refresh_agents')
+
 export const reloadEnvPath = () =>
   invoke<void>('reload_env_path')
 

@@ -1567,11 +1567,11 @@ fn check_agent_impl(agent: &dyn crate::agent::Agent) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Cached agent detection result — populated once at startup.
-pub type AgentCache = std::sync::RwLock<Vec<AgentInfo>>;
+/// Cached agent detection result — populated once at startup, refreshed on demand.
+pub type AgentCache = std::sync::Arc<std::sync::RwLock<Vec<AgentInfo>>>;
 
 pub fn new_agent_cache() -> AgentCache {
-    std::sync::RwLock::new(Vec::new())
+    std::sync::Arc::new(std::sync::RwLock::new(Vec::new()))
 }
 
 /// Blocking detection of all agents — run via spawn_blocking at startup.
@@ -1603,6 +1603,19 @@ pub fn detect_all_agents() -> Vec<AgentInfo> {
 #[tauri::command]
 pub async fn list_available_agents(cache: State<'_, AgentCache>) -> Result<Vec<AgentInfo>, String> {
     Ok(cache.read().unwrap().clone())
+}
+
+/// Kick off a background re-detection and return immediately.
+/// Results arrive via the `agents-updated` event.
+#[tauri::command]
+pub async fn refresh_agents(cache: State<'_, AgentCache>, app: tauri::AppHandle) -> Result<(), String> {
+    let cache = std::sync::Arc::clone(&*cache);
+    tauri::async_runtime::spawn(async move {
+        let agents = tokio::task::spawn_blocking(detect_all_agents).await.unwrap_or_default();
+        *cache.write().unwrap() = agents.clone();
+        let _ = app.emit("agents-updated", agents);
+    });
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]

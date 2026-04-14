@@ -32,6 +32,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
 
   createEffect(() => {
     if (props.open && props.projectId) {
+      ipc.refreshAgents().catch(() => {})
       const p = project()
       if (p) {
         setAgentType(p.defaultAgentType ?? 'claude')

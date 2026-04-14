@@ -62,13 +62,12 @@ pub fn run() {
             // Detect installed agents in the background so list_available_agents
             // returns instantly once the cache is warm.
             let agent_detect_handle = app.handle().clone();
+            let agent_cache = std::sync::Arc::clone(&*app.state::<ipc::AgentCache>());
             tauri::async_runtime::spawn(async move {
                 let agents = tokio::task::spawn_blocking(ipc::detect_all_agents)
                     .await
                     .unwrap_or_default();
-                if let Some(cache) = agent_detect_handle.try_state::<ipc::AgentCache>() {
-                    *cache.write().unwrap() = agents.clone();
-                }
+                *agent_cache.write().unwrap() = agents.clone();
                 let _ = agent_detect_handle.emit("agents-updated", agents);
             });
 
@@ -305,6 +304,7 @@ pub fn run() {
             ipc::check_claude,
             ipc::check_agent,
             ipc::list_available_agents,
+            ipc::refresh_agents,
             ipc::reload_env_path,
             ipc::list_worktree_files,
             ipc::check_gitignored,
