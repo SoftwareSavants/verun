@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix single-line text selection invisible in code editor - active line highlight now suppresses when text is selected so drawSelection's selection layer is visible
 - Demo mode: set `VITE_DEMO_MODE=true` to populate the app with dummy projects, tasks, sessions, and a realistic chat conversation for screenshots
 - Fix message role corruption when switching between tasks - clear stale output data before reloading and use reactive Switch/Match for block type rendering so reconcile merges can't produce wrong role display
 - Fix "delete branch with merge" failing because `gh pr merge --delete-branch` tries to checkout main, which conflicts with the main worktree - now deletes the remote branch separately after merge

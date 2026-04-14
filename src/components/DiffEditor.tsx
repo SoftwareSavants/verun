@@ -1,7 +1,7 @@
 import { Component, createSignal, createEffect, on, onCleanup, Show } from 'solid-js'
 import { MergeView, unifiedMergeView } from '@codemirror/merge'
 import { EditorState, type Extension } from '@codemirror/state'
-import { EditorView, lineNumbers, highlightActiveLine, drawSelection, highlightSpecialChars, keymap } from '@codemirror/view'
+import { EditorView, lineNumbers, drawSelection, highlightSpecialChars, keymap } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { syntaxHighlighting, foldGutter, bracketMatching, indentOnInput } from '@codemirror/language'
 import { search, searchKeymap } from '@codemirror/search'
@@ -10,7 +10,7 @@ import { Loader2, AlertCircle, Columns2, Rows2, FileText } from 'lucide-solid'
 import * as ipc from '../lib/ipc'
 import type { DiffContents } from '../types'
 import { openFilePinned, type DiffSource } from '../store/files'
-import { langFromExt, verunTheme, verunHighlightStyle } from './CodeEditor'
+import { langFromExt, verunTheme, verunHighlightStyle, selectionAwareActiveLine } from './CodeEditor'
 import { BreadcrumbBar } from './BreadcrumbBar'
 import { createSearchPanel, searchPanelTheme } from './SearchPanel'
 
@@ -70,7 +70,7 @@ function buildSideExtensions(path: string, readOnly: boolean): Extension[] {
     syntaxHighlighting(verunHighlightStyle),
     syntaxHighlighting(oneDarkHighlightStyle, { fallback: true }),
     lineNumbers(),
-    highlightActiveLine(),
+    selectionAwareActiveLine(),
     highlightSpecialChars(),
     drawSelection(),
     indentOnInput(),

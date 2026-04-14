@@ -1,5 +1,5 @@
 import { Component, createEffect, on, createSignal, Show, onCleanup, onMount } from 'solid-js'
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, hoverTooltip, tooltips, Decoration, type DecorationSet, type Tooltip } from '@codemirror/view'
+import { EditorView, keymap, lineNumbers, ViewPlugin, GutterMarker, gutterLineClass, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, hoverTooltip, tooltips, Decoration, type DecorationSet, type Tooltip } from '@codemirror/view'
 import { linter, forEachDiagnostic, type Diagnostic } from '@codemirror/lint'
 import { EditorState, StateField, StateEffect, RangeSet, Facet, type Extension } from '@codemirror/state'
 import { setChatPrefillRequest } from '../store/ui'
@@ -32,6 +32,60 @@ import * as ipc from '../lib/ipc'
 import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal, pendingGoToLine, consumeGoToLine, onTabClose, onTaskCleanup } from '../store/files'
 import { reloadNonce, checkBeforeSave } from '../store/fileSync'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
+
+// Selection-aware active line: suppresses highlight when text is selected
+// so single-line selections remain visible through drawSelection()'s z-index layer.
+const activeLineDeco = Decoration.line({ class: 'cm-activeLine' })
+
+export function selectionAwareActiveLine() {
+  return ViewPlugin.fromClass(class {
+    decorations: DecorationSet
+    constructor(view: EditorView) {
+      this.decorations = this.getDeco(view)
+    }
+    update(update: { docChanged: boolean, selectionSet: boolean, view: EditorView }) {
+      if (update.docChanged || update.selectionSet)
+        this.decorations = this.getDeco(update.view)
+    }
+    getDeco(view: EditorView): DecorationSet {
+      if (view.state.selection.ranges.some(r => !r.empty))
+        return Decoration.none
+      let lastLineStart = -1
+      const deco: ReturnType<typeof activeLineDeco.range>[] = []
+      for (const r of view.state.selection.ranges) {
+        const line = view.lineBlockAt(r.head)
+        if (line.from > lastLineStart) {
+          deco.push(activeLineDeco.range(line.from))
+          lastLineStart = line.from
+        }
+      }
+      return Decoration.set(deco)
+    }
+  }, {
+    decorations: v => v.decorations
+  })
+}
+
+const activeLineGutterDeco = new class extends GutterMarker {
+  elementClass = 'cm-activeLineGutter'
+}
+
+function selectionAwareActiveLineGutter() {
+  return gutterLineClass.compute(['selection'], state => {
+    if (state.selection.ranges.some(r => !r.empty))
+      return RangeSet.empty
+    const marks: ReturnType<typeof activeLineGutterDeco.range>[] = []
+    let last = -1
+    for (const range of state.selection.ranges) {
+      const linePos = state.doc.lineAt(range.head).from
+      if (linePos > last) {
+        last = linePos
+        marks.push(activeLineGutterDeco.range(linePos))
+      }
+    }
+    return RangeSet.of(marks)
+  })
+}
 
 interface Props {
   taskId: string
@@ -640,8 +694,8 @@ function buildExtensions(taskId: string, path: string, onDocChange: (content: st
 
     // Core editor features
     lineNumbers(),
-    highlightActiveLine(),
-    highlightActiveLineGutter(),
+    selectionAwareActiveLine(),
+    selectionAwareActiveLineGutter(),
     highlightSpecialChars(),
     drawSelection(),
     dropCursor(),
