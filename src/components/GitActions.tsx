@@ -1,9 +1,10 @@
 import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
-import { ArrowUpFromLine, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye } from 'lucide-solid'
+import { ArrowUpFromLine, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye, Archive } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import * as ipc from '../lib/ipc'
 import { claudeSkills } from '../store/commands'
 import { sendMessage } from '../store/sessions'
+import { archiveTask } from '../store/tasks'
 import { addToast } from '../store/ui'
 import { taskGit, refreshTaskGit, invalidateRemote } from '../store/git'
 import { taskById } from '../store/tasks'
@@ -72,7 +73,7 @@ export const GitActions: Component<Props> = (props) => {
   }
 
   const needsConfirmation = (label: string) =>
-    label === 'Push' || label === 'Commit & Push'
+    label === 'Push' || label === 'Commit & Push' || label === 'Archive'
 
   const runAction = async (a: GitAction) => {
     if (needsConfirmation(a.label) && confirming() !== a.label) {
@@ -177,13 +178,17 @@ export const GitActions: Component<Props> = (props) => {
   const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: `rebase this branch onto ${baseBranch()} and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue` })
   const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: async () => openMergePanel() })
   const readyForReviewAction = (): GitAction => ({ icon: Eye, label: 'Ready for Review', action: doMarkReady })
+  const archiveAction = (): GitAction => ({ icon: Archive, label: 'Archive', action: async () => { await archiveTask(props.taskId) } })
 
   const isDraft = () => pr()?.isDraft ?? false
   const isBehind = () => behind() > 0
+  const prMerged = () => pr()?.state === 'MERGED'
 
   // Smart default action based on state
   // Flow: Pull (if behind) → Push (updates existing PR) → Create PR → Ready for Review (if draft) → Resolve conflicts → Merge
   const primaryAction = (): GitAction => {
+    if (prMerged() && localClean()) return archiveAction()
+    if (prMerged()) return pushAction()
     if (failedChecks().length > 0) return { icon: Wrench, label: 'Fix CI', message: `fix the failing CI checks: ${failedChecks().map(c => c.name).join(', ')}` }
     if (isBehind() && !prDone()) return pullAction()
     if (hasOpenPr() && hasLocalChanges()) return pushAction()
@@ -243,7 +248,7 @@ export const GitActions: Component<Props> = (props) => {
 
   const hasOpenPr = () => pr()?.state === 'OPEN'
   const prDone = () => pr() && !hasOpenPr()
-  const hasAnything = () => hasOpenPr() || (!prDone() && (commitCount() > 0 || isBehind())) || fileCount() > 0
+  const hasAnything = () => hasOpenPr() || prMerged() || (!prDone() && (commitCount() > 0 || isBehind())) || fileCount() > 0
 
   const PrimaryIcon = () => {
     const Icon = primaryAction().icon
