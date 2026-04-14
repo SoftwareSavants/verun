@@ -40,6 +40,7 @@ pub fn run() {
                 .add_migrations("sqlite:verun.db", db::migrations())
                 .build(),
         )
+        .manage(ipc::new_agent_cache())
         .manage(task::new_active_map())
         .manage(task::new_pending_approvals())
         .manage(task::new_pending_approval_meta())
@@ -57,6 +58,19 @@ pub fn run() {
             // the integrated terminal looks idle after a user command.
             env_path::reload_now();
             env_path::start_idle_watcher();
+
+            // Detect installed agents in the background so list_available_agents
+            // returns instantly once the cache is warm.
+            let agent_detect_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let agents = tokio::task::spawn_blocking(ipc::detect_all_agents)
+                    .await
+                    .unwrap_or_default();
+                if let Some(cache) = agent_detect_handle.try_state::<ipc::AgentCache>() {
+                    *cache.write().unwrap() = agents.clone();
+                }
+                let _ = agent_detect_handle.emit("agents-updated", agents);
+            });
 
             // Menu setup
             #[cfg(target_os = "macos")]

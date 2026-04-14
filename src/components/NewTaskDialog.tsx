@@ -1,8 +1,9 @@
-import { Component, Show, For, createSignal, createEffect, createResource } from 'solid-js'
+import { Component, Show, For, createSignal, createEffect } from 'solid-js'
 import { startTaskCreation } from '../store/tasks'
 import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, setShowArchived } from '../store/ui'
 import { projectById, updateProjectDefaultAgentInStore } from '../store/projects'
 import * as ipc from '../lib/ipc'
+import { agents } from '../store/agents'
 import type { AgentType } from '../types'
 import { GitBranch, ExternalLink, Copy, Check } from 'lucide-solid'
 import { Dialog } from './Dialog'
@@ -21,11 +22,9 @@ export const NewTaskDialog: Component<Props> = (props) => {
   const [agentType, setAgentType] = createSignal<AgentType>('claude')
   const [copied, setCopied] = createSignal(false)
 
-  const [agents] = createResource(ipc.listAvailableAgents, { initialValue: [] })
-
   const project = () => props.projectId ? projectById(props.projectId) : null
 
-  const selectedAgent = () => agents().find(a => a.id === agentType())
+  const selectedAgent = () => agents.find(a => a.id === agentType())
   const agentNotInstalled = () => {
     const a = selectedAgent()
     return a ? !a.installed : false

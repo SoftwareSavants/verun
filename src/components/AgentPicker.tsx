@@ -1,7 +1,7 @@
-import { Component, For, Show, createResource, createSignal, createMemo, createEffect, onCleanup } from 'solid-js'
+import { Component, For, Show, createSignal, createMemo, createEffect, onCleanup } from 'solid-js'
 import { Portal } from 'solid-js/web'
-import type { AgentType, AgentInfo } from '../types'
-import { listAvailableAgents } from '../lib/ipc'
+import type { AgentType } from '../types'
+import { agents } from '../store/agents'
 import { tasksForProject } from '../store/tasks'
 import { clsx } from 'clsx'
 import { ChevronDown, Check } from 'lucide-solid'
@@ -36,7 +36,6 @@ function SvgIcon(props: { svg: string; size?: number }) {
 
 export const AgentPicker: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
-  const [agents] = createResource<AgentInfo[]>(listAvailableAgents, { initialValue: [] })
   const [dropdownRect, setDropdownRect] = createSignal<{ left: number; top: number; width: number } | null>(null)
   let buttonRef: HTMLButtonElement | undefined
 
@@ -58,7 +57,7 @@ export const AgentPicker: Component<Props> = (props) => {
 
   // Sort: default first, then by most recently used in this project, then rest
   const sortedAgents = createMemo(() => {
-    const list = agents() ?? []
+    const list = agents
     const defaultAgent = props.defaultAgent ?? 'claude'
     const projectTasks = props.projectId ? tasksForProject(props.projectId) : []
 
@@ -80,7 +79,7 @@ export const AgentPicker: Component<Props> = (props) => {
     })
   })
 
-  const current = () => agents()?.find(a => a.id === props.value)
+  const current = () => agents.find(a => a.id === props.value)
   const currentIcon = () => AGENT_ICONS[props.value] || claudeIcon
 
   return (
@@ -93,14 +92,10 @@ export const AgentPicker: Component<Props> = (props) => {
         )}
         onClick={() => open() ? closeDropdown() : openDropdown()}
       >
-        <Show when={!agents.loading} fallback={
-          <span class="text-text-dim text-xs">Detecting…</span>
-        }>
-          <SvgIcon svg={currentIcon()} size={14} />
-          <span class="flex-1 text-left text-text-primary">{current()?.name ?? props.value}</span>
-          <Show when={!current()?.installed}>
-            <span class="text-[10px] text-text-dim ring-1 ring-white/8 px-1.5 py-0.5 rounded">not installed</span>
-          </Show>
+        <SvgIcon svg={currentIcon()} size={14} />
+        <span class="flex-1 text-left text-text-primary">{current()?.name ?? props.value}</span>
+        <Show when={current() && !current()!.installed}>
+          <span class="text-[10px] text-text-dim ring-1 ring-white/8 px-1.5 py-0.5 rounded">not installed</span>
         </Show>
         <ChevronDown size={12} class={clsx('text-text-dim ml-auto shrink-0 transition-transform', open() && 'rotate-180')} />
       </button>

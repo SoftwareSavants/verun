@@ -1567,29 +1567,42 @@ fn check_agent_impl(agent: &dyn crate::agent::Agent) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Cached agent detection result — populated once at startup.
+pub type AgentCache = std::sync::RwLock<Vec<AgentInfo>>;
+
+pub fn new_agent_cache() -> AgentCache {
+    std::sync::RwLock::new(Vec::new())
+}
+
+/// Blocking detection of all agents — run via spawn_blocking at startup.
+pub fn detect_all_agents() -> Vec<AgentInfo> {
+    crate::agent::AgentKind::all()
+        .iter()
+        .map(|&kind| {
+            let agent = kind.implementation();
+            let installed = check_agent_impl(&*agent).is_ok();
+            AgentInfo {
+                id: kind.as_str().to_string(),
+                name: agent.display_name().to_string(),
+                install_hint: agent.install_hint().to_string(),
+                docs_url: agent.docs_url().to_string(),
+                installed,
+                supports_streaming: agent.supports_streaming(),
+                supports_resume: agent.supports_resume(),
+                supports_plan_mode: agent.supports_plan_mode(),
+                supports_model_selection: agent.supports_model_selection(),
+                supports_effort: agent.supports_effort(),
+                supports_skills: agent.supports_skills(),
+                supports_attachments: agent.supports_attachments(),
+                supports_fork: agent.supports_fork(),
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
-pub async fn list_available_agents() -> Result<Vec<AgentInfo>, String> {
-    let mut agents = Vec::new();
-    for &kind in crate::agent::AgentKind::all() {
-        let agent = kind.implementation();
-        let installed = check_agent_impl(&*agent).is_ok();
-        agents.push(AgentInfo {
-            id: kind.as_str().to_string(),
-            name: agent.display_name().to_string(),
-            install_hint: agent.install_hint().to_string(),
-            docs_url: agent.docs_url().to_string(),
-            installed,
-            supports_streaming: agent.supports_streaming(),
-            supports_resume: agent.supports_resume(),
-            supports_plan_mode: agent.supports_plan_mode(),
-            supports_model_selection: agent.supports_model_selection(),
-            supports_effort: agent.supports_effort(),
-            supports_skills: agent.supports_skills(),
-            supports_attachments: agent.supports_attachments(),
-            supports_fork: agent.supports_fork(),
-        });
-    }
-    Ok(agents)
+pub async fn list_available_agents(cache: State<'_, AgentCache>) -> Result<Vec<AgentInfo>, String> {
+    Ok(cache.read().unwrap().clone())
 }
 
 #[derive(Debug, Clone, Serialize)]
