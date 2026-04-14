@@ -66,7 +66,6 @@ import { clsx } from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import * as ipc from "../lib/ipc";
-import { hasOverlayTitlebar } from "../lib/platform";
 import { ExternalLink, GitBranch } from "lucide-solid";
 
 // ---------------------------------------------------------------------------
@@ -314,13 +313,11 @@ export const Sidebar: Component = () => {
       />
 
       <div class="h-full bg-surface-1 flex flex-col overflow-hidden">
-        {/* Titlebar drag region (macOS overlay titlebar) */}
-        <Show when={hasOverlayTitlebar}><div class="h-12 shrink-0 drag-region" data-tauri-drag-region /></Show>
-
-        {/* Header — just an add-project button, no redundant label */}
-        <div class="px-2 pb-1 flex items-center justify-end no-drag">
+        {/* Header — also serves as titlebar drag region */}
+        <div class="px-2 pt-10 pb-1.5 flex items-center justify-between drag-region" data-tauri-drag-region>
+          <span class="text-[10px] font-semibold uppercase tracking-wider text-text-muted px-1 no-drag">Projects</span>
           <button
-            class="p-1 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
+            class="p-1 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors no-drag"
             onClick={async () => {
               const selected = await openDialog({ directory: true, multiple: false });
               if (selected) setAddProjectPath(selected as string);

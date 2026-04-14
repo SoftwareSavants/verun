@@ -4,7 +4,9 @@
   "app": {
     "windows": [
       {
-        "title": "Verun Dev"
+        "title": "Verun Dev",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ]
   }

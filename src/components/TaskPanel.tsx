@@ -31,7 +31,7 @@ import claudeIcon from '../assets/icons/claude.svg?raw'
 import cursorIcon from '../assets/icons/cursor.svg?raw'
 import zedIcon from '../assets/icons/zed.svg?raw'
 import finderIcon from '../assets/icons/finder.svg?raw'
-import { fileManagerName, hasOverlayTitlebar } from '../lib/platform'
+import { fileManagerName } from '../lib/platform'
 
 function formatDuration(ms: number): string {
   const secs = Math.floor(ms / 1000)
@@ -303,7 +303,7 @@ export const TaskPanel: Component = () => {
               {/* Chat column */}
               <div class="flex flex-col flex-1 min-w-0 overflow-hidden bg-surface-1">
                 {/* Header — drag region for titlebar */}
-                <div class={`px-4 ${hasOverlayTitlebar ? 'pt-10' : 'pt-2'} pb-2 flex items-center justify-between bg-surface-1 drag-region`} data-tauri-drag-region>
+                <div class="px-4 pt-8 pb-2 flex items-center justify-between bg-surface-1 drag-region" data-tauri-drag-region>
                   <h2 class="text-[13px] font-medium text-text-primary truncate min-w-0 no-drag">
                     {t().name || 'New task'}
                   </h2>

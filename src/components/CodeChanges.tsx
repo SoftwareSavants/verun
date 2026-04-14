@@ -144,7 +144,7 @@ export const CodeChanges: Component<Props> = (props) => {
   return (
     <div class="flex flex-col h-full overflow-hidden min-w-0">
       {/* Header — title + stats on the left, view toggles on the right */}
-      <div class="flex items-center justify-between px-3 h-9 border-b-1 border-b-solid border-b-white/8 bg-surface-1">
+      <div class="flex items-center justify-between px-3 h-9 bg-surface-1">
         <div class="flex items-center gap-2 text-xs text-text-muted min-w-0">
           <span class="font-medium text-text-secondary shrink-0">
             {selectedCommit() ? 'Commit' : 'Changes'}
