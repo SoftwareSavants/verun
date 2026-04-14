@@ -210,13 +210,12 @@ pub fn mark_pr_ready(worktree_path: &str) -> Result<(), String> {
 pub fn merge_pr(worktree_path: &str, force: bool, delete_branch: bool) -> Result<(), String> {
     check_gh_installed()?;
 
+    // Don't pass --delete-branch to gh: it tries `git checkout main` locally,
+    // which fails when main is already checked out by the main worktree.
     let mut cmd = gh(worktree_path);
     cmd.args(["pr", "merge", "--merge"]);
     if force {
         cmd.arg("--admin");
-    }
-    if delete_branch {
-        cmd.arg("--delete-branch");
     }
 
     let output = cmd
@@ -227,6 +226,37 @@ pub fn merge_pr(worktree_path: &str, force: bool, delete_branch: bool) -> Result
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let msg = parse_merge_error(&stderr);
         return Err(msg);
+    }
+
+    if delete_branch {
+        let _ = delete_remote_branch(worktree_path);
+    }
+
+    Ok(())
+}
+
+fn delete_remote_branch(worktree_path: &str) -> Result<(), String> {
+    let branch = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .map_err(|e| format!("failed to get branch: {e}"))?;
+
+    if !branch.status.success() {
+        return Err("could not determine current branch".into());
+    }
+
+    let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+
+    let output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["push", "origin", "--delete", &branch])
+        .output()
+        .map_err(|e| format!("failed to delete remote branch: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("failed to delete remote branch: {stderr}"));
     }
 
     Ok(())

@@ -412,7 +412,7 @@ export const GitActions: Component<Props> = (props) => {
               onChange={(e) => setDeleteBranch(e.currentTarget.checked)}
               class="accent-accent w-3.5 h-3.5"
             />
-            <span class="text-[13px] text-text-secondary">Delete branch</span>
+            <span class="text-[13px] text-text-secondary">Delete remote branch</span>
           </label>
 
           <Show when={mergeFailure()} fallback={
