@@ -32,7 +32,7 @@ export const RightPanel: Component<Props> = (props) => {
   return (
     <div class="flex flex-col h-full bg-surface-1">
       {/* Tab bar */}
-      <div class="flex items-center gap-0.5 px-3 pt-10 pb-1.5 border-b border-border-subtle bg-surface-1 shrink-0 drag-region" data-tauri-drag-region>
+      <div class="flex items-center gap-0.5 px-3 pt-10 pb-1.5 bg-surface-1 shrink-0 drag-region" data-tauri-drag-region>
         {TABS.map(tab => (
           <button
             class={clsx(
