@@ -37,31 +37,16 @@ function SvgIcon(props: { svg: string; size?: number }) {
 export const AgentPicker: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [dropdownRect, setDropdownRect] = createSignal<{ left: number; top: number; width: number } | null>(null)
+  // Snapshot of the sorted list taken when the dropdown opens — stays frozen until closed
+  const [snapshotAgents, setSnapshotAgents] = createSignal<ReturnType<typeof sortAgents>>([])
   let buttonRef: HTMLButtonElement | undefined
 
-  const openDropdown = () => {
-    if (buttonRef) {
-      const r = buttonRef.getBoundingClientRect()
-      setDropdownRect({ left: r.left, top: r.bottom + 4, width: r.width })
-    }
-    setOpen(true)
-  }
-
-  const closeDropdown = () => setOpen(false)
-
-  createEffect(() => {
-    if (!open()) return
-    const unregister = registerDismissable(closeDropdown)
-    onCleanup(unregister)
-  })
-
   // Sort: default first, then by most recently used in this project, then rest
-  const sortedAgents = createMemo(() => {
+  const sortAgents = createMemo(() => {
     const list = agents
     const defaultAgent = props.defaultAgent ?? 'claude'
     const projectTasks = props.projectId ? tasksForProject(props.projectId) : []
 
-    // Build last-used map: agentType -> most recent createdAt
     const lastUsed: Record<string, number> = {}
     for (const task of projectTasks) {
       const at = task.agentType
@@ -77,6 +62,23 @@ export const AgentPicker: Component<Props> = (props) => {
       const bLast = lastUsed[b.id] ?? 0
       return bLast - aLast
     })
+  })
+
+  const openDropdown = () => {
+    if (buttonRef) {
+      const r = buttonRef.getBoundingClientRect()
+      setDropdownRect({ left: r.left, top: r.bottom + 4, width: r.width })
+    }
+    setSnapshotAgents(sortAgents())
+    setOpen(true)
+  }
+
+  const closeDropdown = () => setOpen(false)
+
+  createEffect(() => {
+    if (!open()) return
+    const unregister = registerDismissable(closeDropdown)
+    onCleanup(unregister)
   })
 
   const current = () => agents.find(a => a.id === props.value)
@@ -118,7 +120,7 @@ export const AgentPicker: Component<Props> = (props) => {
             }}
             onMouseDown={(e) => e.preventDefault()}
           >
-            <For each={sortedAgents()}>
+            <For each={snapshotAgents()}>
               {(agent) => {
                 const isDefault = () => agent.id === props.defaultAgent
                 const selected = () => props.value === agent.id
