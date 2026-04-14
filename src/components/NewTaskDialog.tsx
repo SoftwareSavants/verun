@@ -3,9 +3,11 @@ import { startTaskCreation } from '../store/tasks'
 import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, setShowArchived } from '../store/ui'
 import { projectById } from '../store/projects'
 import * as ipc from '../lib/ipc'
+import type { AgentType } from '../types'
 import { GitBranch } from 'lucide-solid'
 import { Dialog } from './Dialog'
 import { DialogFooter } from './DialogFooter'
+import { AgentPicker } from './AgentPicker'
 
 interface Props {
   open: boolean
@@ -16,6 +18,7 @@ interface Props {
 export const NewTaskDialog: Component<Props> = (props) => {
   const [baseBranch, setBaseBranch] = createSignal('main')
   const [branches, setBranches] = createSignal<string[]>([])
+  const [agentType, setAgentType] = createSignal<AgentType>('claude')
 
   createEffect(() => {
     if (props.open && props.projectId) {
@@ -39,7 +42,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
   const handleCreate = () => {
     if (!props.projectId) return
 
-    const placeholderId = startTaskCreation(props.projectId, baseBranch())
+    const placeholderId = startTaskCreation(props.projectId, baseBranch(), agentType())
     setSelectedTaskId(placeholderId)
     setSelectedProjectId(props.projectId)
     setSelectedSessionId(null)
@@ -73,6 +76,10 @@ export const NewTaskDialog: Component<Props> = (props) => {
             </Show>
           </select>
         </div>
+      </div>
+
+      <div class="mb-4">
+        <AgentPicker value={agentType()} onChange={setAgentType} />
       </div>
 
       <DialogFooter

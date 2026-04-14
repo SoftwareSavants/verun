@@ -1563,6 +1563,7 @@ pub async fn list_available_agents() -> Result<Vec<AgentInfo>, String> {
         agents.push(AgentInfo {
             id: kind.as_str().to_string(),
             name: agent.display_name().to_string(),
+            install_hint: agent.install_hint().to_string(),
             installed,
             supports_streaming: agent.supports_streaming(),
             supports_resume: agent.supports_resume(),
@@ -1582,6 +1583,7 @@ pub async fn list_available_agents() -> Result<Vec<AgentInfo>, String> {
 pub struct AgentInfo {
     pub id: String,
     pub name: String,
+    pub install_hint: String,
     pub installed: bool,
     pub supports_streaming: bool,
     pub supports_resume: bool,

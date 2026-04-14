@@ -98,6 +98,7 @@ export interface ClaudeSkill {
 export interface AgentInfo {
   id: AgentType
   name: string
+  installHint: string
   installed: boolean
   supportsStreaming: boolean
   supportsResume: boolean
