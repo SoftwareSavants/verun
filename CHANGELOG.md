@@ -12,6 +12,7 @@
 
 ## Unreleased
 
+- Plan approval prompt no longer appears falsely when navigating back to a task with plan mode toggled on but no plan generated
 - CMD+P now correctly focuses an already-open file tab even when the session view is active
 - Git action messages (rebase, PR creation) now use the project's configured base branch instead of letting Claude default to main
 - Hide copy and fork buttons on the currently streaming assistant message - completed turns still show their buttons

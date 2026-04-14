@@ -6,7 +6,7 @@ import { closeTerminalsForTask } from './terminals'
 import { clearTaskGitState } from './git'
 import { clearProblemsForTask } from './problems'
 import { fireTaskCleanup } from './files'
-import { sessionsForTask } from './sessions'
+import { sessionsForTask, cleanupTaskModeStorage, cleanupSessionStorage, clearPlanState } from './sessions'
 
 // Dynamic-imported on first use: static import would pull lib/lsp.ts's
 // module-level `listen(...)` side effects into test evaluation for any file
@@ -163,6 +163,7 @@ export async function deleteTask(id: string, deleteBranch = true, skipDestroyHoo
   closeTerminalsForTask(id)
   clearTaskGitState(id)
   clearProblemsForTask(id)
+  clearPlanState(id)
   fireTaskCleanup(id)
   cleanupTaskStorage(id)
   await ipc.deleteTask(id, deleteBranch, skipDestroyHook)
@@ -176,6 +177,7 @@ export async function archiveTask(id: string, skipDestroyHook = false) {
     closeTerminalsForTask(id)
     clearTaskGitState(id)
     clearProblemsForTask(id)
+    clearPlanState(id)
     cleanupTaskStorage(id)
     await ipc.archiveTask(id, skipDestroyHook)
     setTasks(t => t.id === id, 'archived', true)
@@ -199,17 +201,9 @@ export const taskById = (id: string) =>
 
 /** Remove all localStorage keys associated with a task */
 export function cleanupTaskStorage(id: string) {
-  const keys = [
-    `verun:planMode:${id}`,
-    `verun:thinkingMode:${id}`,
-    `verun:fastMode:${id}`,
-    `verun:task-model:${id}`,
-  ]
-  for (const k of keys) localStorage.removeItem(k)
-  // Drafts are keyed by sessionId — clean up every session that belonged to this task
+  cleanupTaskModeStorage(id)
   for (const s of sessionsForTask(id)) {
-    localStorage.removeItem(`verun:draft-msg:${s.id}`)
-    localStorage.removeItem(`verun:draft-att:${s.id}`)
+    cleanupSessionStorage(s.id)
   }
   if (localStorage.getItem('verun:selectedTaskId') === id) {
     localStorage.removeItem('verun:selectedTaskId')

@@ -2,6 +2,10 @@
 
 Parallel Claude Code session orchestrator for macOS.
 
+## Communication Style
+
+- Extremely concise replies. A few sentences max. No preamble, no restating, no over-explaining. User is highly technical.
+
 ## Data Model
 
 projects (1) → tasks (many) → sessions (many) → output_lines (many)

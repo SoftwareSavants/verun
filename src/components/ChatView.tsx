@@ -259,7 +259,7 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
     try {
       const session = await ipc.forkSessionInTask(props.sessionId, props.messageUuid)
       setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
-      await loadOutputLines(session.id, session.taskId)
+      await loadOutputLines(session.id)
       setSelectedSessionId(session.id)
       addToast('Forked in this task', 'success')
       close()
@@ -276,7 +276,7 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
       const tws = await ipc.forkSessionToNewTask(props.sessionId, props.messageUuid, worktreeState)
       setTasks(produce(t => { if (!t.find(x => x.id === tws.task.id)) t.unshift(tws.task) }))
       setSessions(produce(s => { if (!s.find(x => x.id === tws.session.id)) s.push(tws.session) }))
-      await loadOutputLines(tws.session.id, tws.task.id)
+      await loadOutputLines(tws.session.id)
       setSelectedTaskId(tws.task.id)
       setSelectedSessionId(tws.session.id)
       addToast('Forked to new task', 'success')

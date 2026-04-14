@@ -36,7 +36,16 @@ export function setTaskFastMode(taskId: string, v: boolean) {
   _setTaskFastMode(taskId, v)
   localStorage.setItem(`verun:fastMode:${taskId}`, String(v))
 }
-export const [taskPlanFilePath, setTaskPlanFilePath] = createStore<Record<string, string | null>>({})
+const [_taskPlanFilePath, _setTaskPlanFilePath] = createStore<Record<string, string | null>>({})
+export const taskPlanFilePath = _taskPlanFilePath
+export function setTaskPlanFilePath(taskId: string, path: string | null) {
+  _setTaskPlanFilePath(taskId, path)
+  if (path) {
+    localStorage.setItem(`verun:planFilePath:${taskId}`, path)
+  } else {
+    localStorage.removeItem(`verun:planFilePath:${taskId}`)
+  }
+}
 
 export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
@@ -46,13 +55,15 @@ export async function loadSessions(taskId: string) {
   for (const s of list) {
     if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
   }
-  // Restore mode switches from localStorage (output_lines parsing may override these later)
+  // Restore mode switches from localStorage (authoritative source for toggles)
   const savedPlan = localStorage.getItem(`verun:planMode:${taskId}`)
   const savedThinking = localStorage.getItem(`verun:thinkingMode:${taskId}`)
   const savedFast = localStorage.getItem(`verun:fastMode:${taskId}`)
   if (savedPlan !== null) _setTaskPlanMode(taskId, savedPlan === 'true')
   if (savedThinking !== null) _setTaskThinkingMode(taskId, savedThinking === 'true')
   if (savedFast !== null) _setTaskFastMode(taskId, savedFast === 'true')
+  const savedPlanFilePath = localStorage.getItem(`verun:planFilePath:${taskId}`)
+  if (savedPlanFilePath) _setTaskPlanFilePath(taskId, savedPlanFilePath)
 }
 
 export async function createSession(taskId: string): Promise<Session> {
@@ -150,45 +161,14 @@ export async function closeSession(sessionId: string) {
   await ipc.closeSession(sessionId)
 }
 
-export async function loadOutputLines(sessionId: string, taskId: string) {
+export async function loadOutputLines(sessionId: string) {
   const lines = await ipc.getOutputLines(sessionId)
   const items: OutputItem[] = []
-  let lastPlanMode = false
-  let lastThinkingMode = true
-  let lastFastMode = false
-  let planFilePath: string | null = null
   for (const l of lines) {
-    try {
-      const v = JSON.parse(l.line)
-      // Check plan_mode on user messages for persistence
-      if (v.type === 'verun_user_message' && typeof v.plan_mode === 'boolean') {
-        lastPlanMode = v.plan_mode
-      }
-      if (v.type === 'verun_user_message' && typeof v.thinking_mode === 'boolean') {
-        lastThinkingMode = v.thinking_mode
-      }
-      if (v.type === 'verun_user_message' && typeof v.fast_mode === 'boolean') {
-        lastFastMode = v.fast_mode
-      }
-      // Extract plan file path from ExitPlanMode control_request
-      if (v.type === 'control_request') {
-        const req = v.request as Record<string, unknown> | undefined
-        if (req?.tool_name === 'ExitPlanMode') {
-          const input = req.input as Record<string, unknown> | undefined
-          if (input?.planFilePath) {
-            planFilePath = input.planFilePath as string
-          }
-        }
-      }
-    } catch { /* ignore */ }
     const parsed = parseNdjsonLine(l.line, l.emittedAt)
     if (parsed) items.push(...parsed)
   }
   setOutputItems(sessionId, items)
-  setTaskPlanMode(taskId, lastPlanMode)
-  setTaskThinkingMode(taskId, lastThinkingMode)
-  setTaskFastMode(taskId, lastFastMode)
-  setTaskPlanFilePath(taskId, planFilePath)
   // Accumulate costs + tokens from replayed output
   let replayCost = 0
   let replayInputTokens = 0
@@ -376,7 +356,6 @@ export async function initSessionListeners() {
         store[sessionId] = [...items]
       }
     }))
-    // Accumulate cost + tokens from turnEnd events
     for (const item of items) {
       if (item.kind === 'turnEnd') {
         if (item.cost) {
@@ -498,4 +477,26 @@ export async function initSessionListeners() {
   } catch {
     // getPendingApprovals may not be available yet during startup
   }
+}
+
+export function clearPlanState(taskId: string) {
+  setTaskPlanFilePath(taskId, null) // also clears localStorage via wrapper
+  _setTaskPlanMode(taskId, false)
+  localStorage.removeItem(`verun:planMode:${taskId}`)
+}
+
+export function cleanupTaskModeStorage(taskId: string) {
+  const keys = [
+    `verun:planMode:${taskId}`,
+    `verun:thinkingMode:${taskId}`,
+    `verun:fastMode:${taskId}`,
+    `verun:task-model:${taskId}`,
+    `verun:planFilePath:${taskId}`,
+  ]
+  for (const k of keys) localStorage.removeItem(k)
+}
+
+export function cleanupSessionStorage(sessionId: string) {
+  localStorage.removeItem(`verun:draft-msg:${sessionId}`)
+  localStorage.removeItem(`verun:draft-att:${sessionId}`)
 }
