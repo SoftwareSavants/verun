@@ -26,13 +26,41 @@ impl Agent for Cursor {
     }
 
     fn available_models(&self) -> Vec<crate::agent::ModelOption> {
+        // Fallback used when `agent --list-models` is unavailable or fails.
         use crate::agent::ModelOption;
         vec![
-            ModelOption::new("claude-3-5-sonnet-20241022", "Claude Sonnet", "Balanced"),
-            ModelOption::new("gpt-4o", "GPT-4o", "Versatile"),
-            ModelOption::new("gemini-2.0-flash-exp", "Gemini Flash", "Fast"),
-            ModelOption::new("cursor-small", "Cursor Small", "Lightweight"),
+            ModelOption::new("composer-2-fast", "Composer 2 Fast", "Default"),
+            ModelOption::new("composer-2", "Composer 2", "Balanced"),
+            ModelOption::new("gpt-5.3-codex", "Codex 5.3", "Coding"),
+            ModelOption::new("claude-4.6-sonnet-medium", "Sonnet 4.6", "Anthropic"),
+            ModelOption::new("gpt-5.4-medium", "GPT-5.4", "OpenAI"),
         ]
+    }
+
+    fn model_list_args(&self) -> Option<Vec<String>> {
+        Some(vec!["--list-models".into()])
+    }
+
+    fn parse_model_list(&self, output: &str) -> Vec<crate::agent::ModelOption> {
+        // Output format (one per line):
+        //   <id> - <Name>  (default)
+        // Skip "Available models" header and "Tip:" footer.
+        output.lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let sep = line.find(" - ")?;
+                let id = line[..sep].trim();
+                if id.is_empty() { return None; }
+                // Strip trailing "(default)" from the display name
+                let name = line[sep + 3..]
+                    .trim()
+                    .trim_end_matches("(default)")
+                    .trim()
+                    .to_string();
+                if name.is_empty() { return None; }
+                Some(crate::agent::ModelOption::new(id, &name, ""))
+            })
+            .collect()
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {

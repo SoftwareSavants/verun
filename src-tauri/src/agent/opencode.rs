@@ -27,14 +27,29 @@ impl Agent for OpenCode {
     }
 
     fn available_models(&self) -> Vec<crate::agent::ModelOption> {
-        use crate::agent::ModelOption;
-        vec![
-            ModelOption::new("anthropic/claude-sonnet-4-5", "Claude Sonnet", "Balanced"),
-            ModelOption::new("anthropic/claude-opus-4-5", "Claude Opus", "Most capable"),
-            ModelOption::new("openai/gpt-4o", "GPT-4o", "Versatile"),
-            ModelOption::new("openai/o3", "o3", "Reasoning"),
-            ModelOption::new("google/gemini-2.0-flash", "Gemini Flash", "Fast"),
-        ]
+        // Fallback — OpenCode's model list is user/provider-specific.
+        // If `opencode models` succeeds at runtime this is replaced entirely.
+        vec![]
+    }
+
+    fn model_list_args(&self) -> Option<Vec<String>> {
+        Some(vec!["models".into()])
+    }
+
+    fn parse_model_list(&self, output: &str) -> Vec<crate::agent::ModelOption> {
+        // Output format (one per line): provider/model-id
+        // Ignore migration messages and any line that isn't provider/model format.
+        output.lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                // Must contain exactly one '/' and no whitespace
+                if !line.contains('/') || line.contains(' ') { return None; }
+                let label = line.split('/').last().unwrap_or(line).to_string();
+                let provider = line.split('/').next().unwrap_or("").to_string();
+                let description = if provider.is_empty() { String::new() } else { provider };
+                Some(crate::agent::ModelOption::new(line, &label, &description))
+            })
+            .collect()
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {

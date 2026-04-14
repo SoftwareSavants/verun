@@ -1581,12 +1581,30 @@ pub fn detect_all_agents() -> Vec<AgentInfo> {
         .map(|&kind| {
             let agent = kind.implementation();
             let installed = check_agent_impl(&*agent).is_ok();
+
+            // For installed agents, try to fetch the live model list.
+            // Fall back to the static list if the command fails or returns nothing.
+            let models = if installed {
+                agent.model_list_args()
+                    .and_then(|args| {
+                        std::process::Command::new(agent.cli_binary())
+                            .args(&args)
+                            .output()
+                            .ok()
+                    })
+                    .map(|out| agent.parse_model_list(&String::from_utf8_lossy(&out.stdout)))
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| agent.available_models())
+            } else {
+                agent.available_models()
+            };
+
             AgentInfo {
                 id: kind.as_str().to_string(),
                 name: agent.display_name().to_string(),
                 install_hint: agent.install_hint().to_string(),
                 docs_url: agent.docs_url().to_string(),
-                models: agent.available_models(),
+                models,
                 installed,
                 supports_streaming: agent.supports_streaming(),
                 supports_resume: agent.supports_resume(),

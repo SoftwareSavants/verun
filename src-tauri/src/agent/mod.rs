@@ -129,8 +129,16 @@ pub trait Agent: Send + Sync {
     /// Human-readable install instructions.
     fn install_hint(&self) -> &'static str;
 
-    /// Ordered list of models the agent supports (first = default).
+    /// Static fallback model list (first = default). Used when dynamic listing
+    /// is unavailable or fails.
     fn available_models(&self) -> Vec<ModelOption>;
+
+    /// CLI args to dynamically list models (e.g. `["--list-models"]`).
+    /// Returns `None` if the agent has no such command.
+    fn model_list_args(&self) -> Option<Vec<String>> { None }
+
+    /// Parse the stdout of the model-listing command into `ModelOption`s.
+    fn parse_model_list(&self, _output: &str) -> Vec<ModelOption> { vec![] }
 
     /// URL to the agent's official documentation / install page.
     fn docs_url(&self) -> &'static str { "" }
