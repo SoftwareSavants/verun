@@ -6,7 +6,7 @@ import { closeTerminalsForTask } from './terminals'
 import { clearTaskGitState } from './git'
 import { clearProblemsForTask } from './problems'
 import { fireTaskCleanup } from './files'
-import { sessionsForTask, cleanupTaskModeStorage, cleanupSessionStorage } from './sessions'
+import { sessionsForTask, cleanupTaskModeStorage, cleanupSessionStorage, clearPlanState } from './sessions'
 
 // Dynamic-imported on first use: static import would pull lib/lsp.ts's
 // module-level `listen(...)` side effects into test evaluation for any file
@@ -163,6 +163,7 @@ export async function deleteTask(id: string, deleteBranch = true, skipDestroyHoo
   closeTerminalsForTask(id)
   clearTaskGitState(id)
   clearProblemsForTask(id)
+  clearPlanState(id)
   fireTaskCleanup(id)
   cleanupTaskStorage(id)
   await ipc.deleteTask(id, deleteBranch, skipDestroyHook)
@@ -176,6 +177,7 @@ export async function archiveTask(id: string, skipDestroyHook = false) {
     closeTerminalsForTask(id)
     clearTaskGitState(id)
     clearProblemsForTask(id)
+    clearPlanState(id)
     cleanupTaskStorage(id)
     await ipc.archiveTask(id, skipDestroyHook)
     setTasks(t => t.id === id, 'archived', true)

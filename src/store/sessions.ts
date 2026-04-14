@@ -161,7 +161,7 @@ export async function closeSession(sessionId: string) {
   await ipc.closeSession(sessionId)
 }
 
-export async function loadOutputLines(sessionId: string, _taskId: string) {
+export async function loadOutputLines(sessionId: string) {
   const lines = await ipc.getOutputLines(sessionId)
   const items: OutputItem[] = []
   for (const l of lines) {
