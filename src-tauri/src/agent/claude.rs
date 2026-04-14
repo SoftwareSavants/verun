@@ -22,6 +22,15 @@ impl Agent for Claude {
         "https://docs.anthropic.com/en/docs/claude-code/quickstart"
     }
 
+    fn available_models(&self) -> Vec<crate::agent::ModelOption> {
+        use crate::agent::ModelOption;
+        vec![
+            ModelOption::new("sonnet", "Sonnet", "Balanced"),
+            ModelOption::new("opus", "Opus", "Most capable"),
+            ModelOption::new("haiku", "Haiku", "Fastest"),
+        ]
+    }
+
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {
         let mut v = vec![
             "-p".into(),

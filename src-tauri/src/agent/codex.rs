@@ -25,6 +25,15 @@ impl Agent for Codex {
         "https://github.com/openai/codex#installation"
     }
 
+    fn available_models(&self) -> Vec<crate::agent::ModelOption> {
+        use crate::agent::ModelOption;
+        vec![
+            ModelOption::new("codex-mini-latest", "Codex Mini", "Lightweight"),
+            ModelOption::new("o4-mini", "o4-mini", "Balanced"),
+            ModelOption::new("o3", "o3", "Most capable"),
+        ]
+    }
+
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {
         let mut v: Vec<String> = vec!["exec".into(), "--json".into()];
 

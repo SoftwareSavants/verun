@@ -25,6 +25,16 @@ impl Agent for Cursor {
         "https://cursor.com/docs/cli/overview#installation"
     }
 
+    fn available_models(&self) -> Vec<crate::agent::ModelOption> {
+        use crate::agent::ModelOption;
+        vec![
+            ModelOption::new("claude-3-5-sonnet-20241022", "Claude Sonnet", "Balanced"),
+            ModelOption::new("gpt-4o", "GPT-4o", "Versatile"),
+            ModelOption::new("gemini-2.0-flash-exp", "Gemini Flash", "Fast"),
+            ModelOption::new("cursor-small", "Cursor Small", "Lightweight"),
+        ]
+    }
+
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {
         let mut v = vec![
             "-p".into(),

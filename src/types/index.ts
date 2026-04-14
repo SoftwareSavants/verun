@@ -83,13 +83,13 @@ export interface RepoInfo {
   branches: string[]
 }
 
-export type ModelId = 'opus' | 'sonnet' | 'haiku'
+export type ModelId = string
 
-export const MODEL_OPTIONS: { id: ModelId; label: string; description: string }[] = [
-  { id: 'sonnet', label: 'Sonnet', description: 'Balanced' },
-  { id: 'opus', label: 'Opus', description: 'Most capable' },
-  { id: 'haiku', label: 'Haiku', description: 'Fastest' },
-]
+export interface ModelOption {
+  id: string
+  label: string
+  description: string
+}
 
 export interface ClaudeSkill {
   name: string
@@ -101,6 +101,7 @@ export interface AgentInfo {
   name: string
   installHint: string
   docsUrl: string
+  models: ModelOption[]
   installed: boolean
   supportsStreaming: boolean
   supportsResume: boolean

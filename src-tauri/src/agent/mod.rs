@@ -65,6 +65,23 @@ impl std::fmt::Display for AgentKind {
 }
 
 // ---------------------------------------------------------------------------
+// Per-agent model definition
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelOption {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+}
+
+impl ModelOption {
+    pub fn new(id: &str, label: &str, description: &str) -> Self {
+        Self { id: id.into(), label: label.into(), description: description.into() }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // How the agent accepts user messages
 // ---------------------------------------------------------------------------
 
@@ -111,6 +128,9 @@ pub trait Agent: Send + Sync {
 
     /// Human-readable install instructions.
     fn install_hint(&self) -> &'static str;
+
+    /// Ordered list of models the agent supports (first = default).
+    fn available_models(&self) -> Vec<ModelOption>;
 
     /// URL to the agent's official documentation / install page.
     fn docs_url(&self) -> &'static str { "" }

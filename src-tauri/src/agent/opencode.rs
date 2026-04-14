@@ -26,6 +26,17 @@ impl Agent for OpenCode {
         "https://opencode.ai/docs#install"
     }
 
+    fn available_models(&self) -> Vec<crate::agent::ModelOption> {
+        use crate::agent::ModelOption;
+        vec![
+            ModelOption::new("anthropic/claude-sonnet-4-5", "Claude Sonnet", "Balanced"),
+            ModelOption::new("anthropic/claude-opus-4-5", "Claude Opus", "Most capable"),
+            ModelOption::new("openai/gpt-4o", "GPT-4o", "Versatile"),
+            ModelOption::new("openai/o3", "o3", "Reasoning"),
+            ModelOption::new("google/gemini-2.0-flash", "Gemini Flash", "Fast"),
+        ]
+    }
+
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {
         let mut v: Vec<String> = vec!["run".into(), "--format".into(), "json".into()];
 

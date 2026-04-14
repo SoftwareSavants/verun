@@ -1,6 +1,7 @@
-import { Component, For, createSignal } from 'solid-js'
-import { MODEL_OPTIONS, AGENT_DISPLAY_NAMES } from '../types'
+import { Component, For, createSignal, createEffect, createMemo } from 'solid-js'
+import { AGENT_DISPLAY_NAMES } from '../types'
 import type { ModelId, AgentType } from '../types'
+import { agents } from '../store/agents'
 import { ChevronDown } from 'lucide-solid'
 import { clsx } from 'clsx'
 import { Popover } from './Popover'
@@ -24,15 +25,40 @@ const AGENT_ICONS: Record<string, string> = {
 }
 
 function SvgIcon(props: { svg: string; size?: number; class?: string }) {
-  const s = props.size ?? 12
-  const sized = props.svg.replace('<svg ', `<svg width="${s}" height="${s}" `)
-  return <span class={clsx('inline-flex items-center justify-center shrink-0', props.class)} innerHTML={sized} />
+  return (
+    <span
+      class={clsx('inline-flex items-center justify-center shrink-0', props.class)}
+      innerHTML={props.svg.replace('<svg ', `<svg width="${props.size ?? 12}" height="${props.size ?? 12}" `)}
+    />
+  )
 }
 
 export const ModelSelector: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
-  const currentOpt = () => MODEL_OPTIONS.find(o => o.id === props.model)!
+
+  const agentInfo = () => agents.find(a => a.id === props.agentType)
+  const agentModels = () => agentInfo()?.models ?? []
   const agentSvg = () => AGENT_ICONS[props.agentType] || claudeIcon
+
+  // Resolved model: stored value if valid for this agent, else first in list
+  const resolvedModel = createMemo(() => {
+    const models = agentModels()
+    if (models.length === 0) return props.model
+    return models.find(m => m.id === props.model) ? props.model : models[0].id
+  })
+
+  // Auto-correct stored model when agent changes and stored model isn't in list
+  createEffect(() => {
+    const resolved = resolvedModel()
+    if (resolved !== props.model) {
+      props.onChange(resolved)
+    }
+  })
+
+  const currentOpt = () => {
+    const models = agentModels()
+    return models.find(m => m.id === resolvedModel()) ?? models[0]
+  }
 
   return (
     <div class="relative">
@@ -45,18 +71,18 @@ export const ModelSelector: Component<Props> = (props) => {
         disabled={props.disabled}
       >
         <SvgIcon svg={agentSvg()} size={12} />
-        <span>{currentOpt().label}</span>
+        <span>{currentOpt()?.label ?? resolvedModel()}</span>
         <ChevronDown size={9} class={clsx('transition-transform', open() && 'rotate-180')} />
       </button>
 
-      <Popover open={open()} onClose={() => setOpen(false)} class="py-1 min-w-40 absolute bottom-full left-0 mb-1">
+      <Popover open={open()} onClose={() => setOpen(false)} class="py-1 min-w-44 absolute bottom-full left-0 mb-1">
         <div class="px-3 py-1.5 text-[10px] text-text-dim uppercase tracking-wider flex items-center gap-1.5">
           <SvgIcon svg={agentSvg()} size={10} />
           {AGENT_DISPLAY_NAMES[props.agentType]}
         </div>
-        <For each={MODEL_OPTIONS}>
+        <For each={agentModels()}>
           {(opt) => {
-            const selected = () => props.model === opt.id
+            const selected = () => resolvedModel() === opt.id
             return (
               <button
                 class={clsx(
