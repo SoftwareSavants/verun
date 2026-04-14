@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Demo mode: set `VITE_DEMO_MODE=true` to populate the app with dummy projects, tasks, sessions, and a realistic chat conversation for screenshots
+
 ## 0.6.0 — 2026-04-14
 
 - Plan approval prompt no longer appears falsely when navigating back to a task with plan mode toggled on but no plan generated

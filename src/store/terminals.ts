@@ -85,6 +85,15 @@ export function refitActiveTerminal(taskId: string) {
 // Actions
 // ---------------------------------------------------------------------------
 
+/** Inject fake running start-command terminals for demo/screenshot mode. */
+export function seedDemoStartCommands(taskIds: string[]) {
+  setTerminals(produce(t => {
+    for (const taskId of taskIds) {
+      t.push({ id: `demo-pty-${taskId}`, taskId, name: 'Dev Server', isStartCommand: true })
+    }
+  }))
+}
+
 export async function spawnTerminal(taskId: string, rows: number, cols: number, initialCommand?: string, isStartCommand?: boolean): Promise<TerminalInstance> {
   const result = await ipc.ptySpawn(taskId, rows, cols, initialCommand, isStartCommand || undefined)
   const name = isStartCommand ? 'Dev Server' : result.shellName

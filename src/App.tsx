@@ -13,7 +13,7 @@ import { loadTasks, taskById } from './store/tasks'
 import { initProblemsListener } from './store/problems'
 import { loadClaudeSkills } from './store/commands'
 import * as ipc from './lib/ipc'
-import { selectedTaskId, setSelectedTaskId, setSelectedProjectId } from './store/ui'
+import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, markTaskUnread } from './store/ui'
 import { initNotifications } from './lib/notifications'
 import { initUpdateListener } from './lib/updater'
 
@@ -40,6 +40,25 @@ const MainApp: Component = () => {
       } else {
         setSelectedTaskId(null)
       }
+    }
+
+    // Demo mode: override selection to show a rich screenshot
+    if (import.meta.env.VITE_DEMO_MODE === 'true') {
+      const [
+        { DEMO_SELECTED, DEMO_UNREAD_TASK_IDS, DEMO_PROBLEMS, DEMO_START_COMMAND_TASK_IDS },
+        { seedDemoProblems },
+        { seedDemoStartCommands },
+      ] = await Promise.all([
+        import('./lib/seedData'),
+        import('./store/problems'),
+        import('./store/terminals'),
+      ])
+      setSelectedProjectId(DEMO_SELECTED.projectId)
+      setSelectedTaskId(DEMO_SELECTED.taskId)
+      setSelectedSessionId(DEMO_SELECTED.sessionId)
+      for (const id of DEMO_UNREAD_TASK_IDS) markTaskUnread(id)
+      seedDemoProblems(DEMO_PROBLEMS)
+      seedDemoStartCommands(DEMO_START_COMMAND_TASK_IDS)
     }
 
     dismissSplash()
