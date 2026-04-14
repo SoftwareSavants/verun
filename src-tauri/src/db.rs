@@ -178,6 +178,12 @@ pub fn migrations() -> Vec<Migration> {
         description: "add agent_type to tasks",
         sql: "ALTER TABLE tasks ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'claude';",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 14,
+        description: "add default_agent_type to projects",
+        sql: "ALTER TABLE projects ADD COLUMN default_agent_type TEXT NOT NULL DEFAULT 'claude';",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -197,6 +203,8 @@ pub struct Project {
     pub start_command: String,
     pub auto_start: bool,
     pub created_at: i64,
+    #[sqlx(default)]
+    pub default_agent_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -296,6 +304,7 @@ pub enum DbWrite {
     InsertProject(Project),
     UpdateProjectBaseBranch { id: String, base_branch: String },
     UpdateProjectHooks { id: String, setup_hook: String, destroy_hook: String, start_command: String, auto_start: bool },
+    UpdateProjectDefaultAgent { id: String, default_agent_type: String },
     DeleteProject { id: String },
 
     // Tasks
@@ -394,6 +403,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .bind(&destroy_hook)
                 .bind(&start_command)
                 .bind(auto_start)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        DbWrite::UpdateProjectDefaultAgent { id, default_agent_type } => {
+            sqlx::query("UPDATE projects SET default_agent_type = ? WHERE id = ?")
+                .bind(&default_agent_type)
                 .bind(&id)
                 .execute(pool)
                 .await?;

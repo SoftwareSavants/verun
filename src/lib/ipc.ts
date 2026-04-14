@@ -21,6 +21,9 @@ export const updateProjectBaseBranch = (id: string, baseBranch: string) =>
 export const updateProjectHooks = (id: string, setupHook: string, destroyHook: string, startCommand: string, autoStart: boolean) =>
   invoke<void>('update_project_hooks', { id, setupHook, destroyHook, startCommand, autoStart })
 
+export const updateProjectDefaultAgent = (id: string, defaultAgentType: string) =>
+  invoke<void>('update_project_default_agent', { id, defaultAgentType })
+
 export const exportProjectConfig = (projectId: string, taskId: string) =>
   invoke<void>('export_project_config', { projectId, taskId })
 

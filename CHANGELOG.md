@@ -22,6 +22,7 @@
 - Fix "delete branch with merge" failing because `gh pr merge --delete-branch` tries to checkout main, which conflicts with the main worktree - now deletes the remote branch separately after merge
 - Multi-agent foundation: new `AgentKind` enum (Claude, Codex, Cursor) with CLI abstraction, `agent_type` column on tasks (migration 13), agent-aware session spawning, `check_agent` and `list_available_agents` IPC commands, per-agent icons and display names in the UI, and capability flags (streaming, resume, plan mode, model selection, effort, skills, attachments, fork) so the frontend can adapt to each agent's feature set
 - OpenCode agent backend: `opencode run --format json` with plan mode (`--agent plan`), model selection (`--model provider/model`), and session resume (`--session <id>`)
+- Agent picker dropdown in New Task dialog: shows all detected agents with install hints for non-installed ones, sorted by project default first then last-used; persists per-project default agent in DB (migration 14)
 
 ## 0.6.0 — 2026-04-14
 

@@ -1,7 +1,7 @@
 import { Component, Show, For, createSignal, createEffect } from 'solid-js'
 import { startTaskCreation } from '../store/tasks'
 import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, setShowArchived } from '../store/ui'
-import { projectById } from '../store/projects'
+import { projectById, updateProjectDefaultAgentInStore } from '../store/projects'
 import * as ipc from '../lib/ipc'
 import type { AgentType } from '../types'
 import { GitBranch } from 'lucide-solid'
@@ -20,14 +20,17 @@ export const NewTaskDialog: Component<Props> = (props) => {
   const [branches, setBranches] = createSignal<string[]>([])
   const [agentType, setAgentType] = createSignal<AgentType>('claude')
 
+  const project = () => props.projectId ? projectById(props.projectId) : null
+
   createEffect(() => {
     if (props.open && props.projectId) {
-      const project = projectById(props.projectId)
-      if (project) {
-        const defaultBranch = project.baseBranch
+      const p = project()
+      if (p) {
+        setAgentType(p.defaultAgentType ?? 'claude')
+        const defaultBranch = p.baseBranch
         setBaseBranch(defaultBranch)
         setBranches([])
-        ipc.getRepoInfo(project.repoPath).then(info => {
+        ipc.getRepoInfo(p.repoPath).then(info => {
           const sorted = [
             ...info.branches.filter(b => b === defaultBranch),
             ...info.branches.filter(b => b !== defaultBranch),
@@ -39,9 +42,17 @@ export const NewTaskDialog: Component<Props> = (props) => {
     }
   })
 
+  const handleAgentChange = (agent: AgentType) => {
+    setAgentType(agent)
+    const p = project()
+    if (p) {
+      updateProjectDefaultAgentInStore(p.id, agent)
+      ipc.updateProjectDefaultAgent(p.id, agent).catch(() => {})
+    }
+  }
+
   const handleCreate = () => {
     if (!props.projectId) return
-
     const placeholderId = startTaskCreation(props.projectId, baseBranch(), agentType())
     setSelectedTaskId(placeholderId)
     setSelectedProjectId(props.projectId)
@@ -79,7 +90,13 @@ export const NewTaskDialog: Component<Props> = (props) => {
       </div>
 
       <div class="mb-4">
-        <AgentPicker value={agentType()} onChange={setAgentType} />
+        <label class="text-xs text-text-dim mb-1.5 block">Agent</label>
+        <AgentPicker
+          value={agentType()}
+          onChange={handleAgentChange}
+          projectId={props.projectId}
+          defaultAgent={project()?.defaultAgentType ?? 'claude'}
+        />
       </div>
 
       <DialogFooter

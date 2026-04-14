@@ -10,6 +10,7 @@ export interface Project {
   startCommand: string
   autoStart: boolean
   createdAt: number
+  defaultAgentType: AgentType
 }
 
 export type AgentType = 'claude' | 'codex' | 'cursor' | 'opencode'

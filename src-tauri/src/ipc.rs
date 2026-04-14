@@ -80,6 +80,7 @@ pub async fn add_project(
         start_command,
         auto_start: false,
         created_at: epoch_ms(),
+        default_agent_type: "claude".to_string(),
     };
 
     db_tx
@@ -143,6 +144,18 @@ pub async fn update_project_hooks(
 ) -> Result<(), String> {
     db_tx
         .send(db::DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command, auto_start })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
+}
+
+#[tauri::command]
+pub async fn update_project_default_agent(
+    db_tx: State<'_, DbWriteTx>,
+    id: String,
+    default_agent_type: String,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::UpdateProjectDefaultAgent { id, default_agent_type })
         .await
         .map_err(|e| format!("DB write failed: {e}"))
 }
