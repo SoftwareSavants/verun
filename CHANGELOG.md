@@ -8,6 +8,7 @@
 - Normal mode now blocks gh repo/release delete and detects dangerous commands inside shell re-invocations
 - `git worktree prune/remove` and `rm` targeting `.verun` directories are now hard-blocked regardless of trust level - Verun manages worktree lifecycle, not Claude
 - Policy engine now strips `git -C <path>` flags to detect cross-repo worktree attacks
+- Fix archiving a task from the GitActions replacement button not closing the task panel - deselection now happens inside `archiveTask` so all callers get it
 - Demo mode: set `VITE_DEMO_MODE=true` to populate the app with dummy projects, tasks, sessions, and a realistic chat conversation for screenshots
 - Fix message role corruption when switching between tasks - clear stale output data before reloading and use reactive Switch/Match for block type rendering so reconcile merges can't produce wrong role display
 - Fix "delete branch with merge" failing because `gh pr merge --delete-branch` tries to checkout main, which conflicts with the main worktree - now deletes the remote branch separately after merge
