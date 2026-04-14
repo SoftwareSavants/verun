@@ -35,7 +35,7 @@ export interface Task {
   archivedAt: number | null
   lastCommitMessage: string | null
   parentTaskId: string | null
-  agentType: AgentType
+  agentType: AgentType // legacy DB column, not used - agent lives on sessions
 }
 
 export interface Session {
@@ -49,6 +49,8 @@ export interface Session {
   totalCost: number
   parentSessionId: string | null
   forkedAtMessageUuid: string | null
+  agentType: AgentType
+  model: string | null
 }
 
 export interface OutputLine {

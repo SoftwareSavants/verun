@@ -330,7 +330,7 @@ pub struct CreateTaskParams {
     pub setup_hook: String,
     pub port_offset: i64,
     pub from_task_window: bool,
-    pub agent_type: String,
+    pub agent_type: String, // flows to the first session, not stored on the task
 }
 
 pub async fn create_task(
@@ -371,7 +371,7 @@ pub async fn create_task(
         archived_at: None,
         last_commit_message: None,
         parent_task_id: None,
-        agent_type,
+        agent_type: "claude".into(),
     };
 
     db_tx
@@ -379,8 +379,8 @@ pub async fn create_task(
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
 
-    // Auto-create the first session
-    let session = create_session(db_tx, task.id.clone()).await?;
+    // Auto-create the first session with the chosen agent
+    let session = create_session(db_tx, task.id.clone(), agent_type, None).await?;
 
     // Notify all windows about the new task so other windows can reload
     let _ = app.emit(
@@ -542,7 +542,7 @@ pub async fn archive_task(
 // ---------------------------------------------------------------------------
 
 /// Create a new session record (no process spawned yet — that happens on send_message)
-pub async fn create_session(db_tx: &DbWriteTx, task_id: String) -> Result<Session, String> {
+pub async fn create_session(db_tx: &DbWriteTx, task_id: String, agent_type: String, model: Option<String>) -> Result<Session, String> {
     let session = Session {
         id: Uuid::new_v4().to_string(),
         task_id,
@@ -554,6 +554,8 @@ pub async fn create_session(db_tx: &DbWriteTx, task_id: String) -> Result<Sessio
         total_cost: 0.0,
         parent_session_id: None,
         forked_at_message_uuid: None,
+        agent_type,
+        model,
     };
 
     db_tx
@@ -682,10 +684,16 @@ pub async fn send_message(
         plan_mode,
         thinking_mode,
         fast_mode,
+        message: &message,
     };
 
+    let args_list = agent.build_session_args(&session_args);
+    eprintln!("[verun][{}] spawn: {} {}", agent.display_name(), agent.cli_binary(), args_list.join(" "));
+    eprintln!("[verun][{}] cwd: {}", agent.display_name(), worktree_path);
+    eprintln!("[verun][{}] input_mode: {:?}", agent.display_name(), agent.input_mode());
+
     let mut cmd = tokio::process::Command::new(agent.cli_binary());
-    cmd.args(agent.build_session_args(&session_args));
+    cmd.args(&args_list);
     for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
         cmd.env(&k, &v);
     }
@@ -698,65 +706,74 @@ pub async fn send_message(
         .spawn()
         .map_err(|e| format!("Failed to spawn {}: {e}", agent.display_name()))?;
 
-    // Write user message to stdin (always via stream-json input)
-    let mut stdin_handle = child.stdin.take()
-        .ok_or_else(|| "Failed to capture stdin".to_string())?;
+    eprintln!("[verun][{}] spawned pid={:?}", agent.display_name(), child.id());
 
-    // Build content blocks
-    let mut content_blocks = Vec::new();
-    for attachment in &attachments {
-        content_blocks.push(serde_json::json!({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": attachment.mime_type,
-                "data": attachment.data_base64,
+    let stdin = match agent.input_mode() {
+        crate::agent::InputMode::StreamJsonStdin => {
+            // Claude: send the message as a stream-json payload on stdin, keep open for control_response
+            let mut stdin_handle = child.stdin.take()
+                .ok_or_else(|| "Failed to capture stdin".to_string())?;
+
+            let mut content_blocks = Vec::new();
+            for attachment in &attachments {
+                content_blocks.push(serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": attachment.mime_type,
+                        "data": attachment.data_base64,
+                    }
+                }));
             }
-        }));
-    }
-    if !message.is_empty() {
-        content_blocks.push(serde_json::json!({
-            "type": "text",
-            "text": message,
-        }));
-    }
+            if !message.is_empty() {
+                content_blocks.push(serde_json::json!({ "type": "text", "text": message }));
+            }
 
-    let user_msg = serde_json::json!({
-        "type": "user",
-        "session_id": "",
-        "parent_tool_use_id": null,
-        "message": {
-            "role": "user",
-            "content": content_blocks,
+            let user_msg = serde_json::json!({
+                "type": "user",
+                "session_id": "",
+                "parent_tool_use_id": null,
+                "message": { "role": "user", "content": content_blocks },
+            });
+
+            let mut payload = serde_json::to_string(&user_msg)
+                .map_err(|e| format!("Failed to serialize message: {e}"))?;
+            payload.push('\n');
+
+            stdin_handle.write_all(payload.as_bytes()).await
+                .map_err(|e| format!("Failed to write to stdin: {e}"))?;
+            stdin_handle.flush().await
+                .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+
+            // Keep stdin open — needed for control_response messages
+            Arc::new(TokioMutex::new(Some(stdin_handle)))
         }
-    });
-
-    let mut payload = serde_json::to_string(&user_msg)
-        .map_err(|e| format!("Failed to serialize message: {e}"))?;
-    payload.push('\n');
-
-    stdin_handle.write_all(payload.as_bytes()).await
-        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
-    stdin_handle.flush().await
-        .map_err(|e| format!("Failed to flush stdin: {e}"))?;
-
-    // Keep stdin open — we need it for control_response messages
-    let stdin = Arc::new(TokioMutex::new(Some(stdin_handle)));
-
-
+        crate::agent::InputMode::PositionalOrStdin => {
+            // Non-Claude agents receive the prompt as a positional arg (already in args_list).
+            // Close stdin immediately so the process doesn't wait for input.
+            let stdin_handle = child.stdin.take();
+            drop(stdin_handle);
+            Arc::new(TokioMutex::new(None::<tokio::process::ChildStdin>))
+        }
+    };
 
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "Failed to capture stdout".to_string())?;
 
-    // Drain stderr so the OS pipe buffer (~64KB) never fills.
-    // If it fills, the child blocks on stderr writes and appears frozen.
+    // Forward stderr to logs (previously silently discarded — critical for debugging non-Claude agents).
     if let Some(stderr) = child.stderr.take() {
+        let agent_name = agent.display_name().to_string();
+        let sid = session_id.clone();
         tokio::spawn(async move {
             let mut reader = tokio::io::BufReader::new(stderr);
             let mut line = String::new();
             while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                let trimmed = line.trim_end();
+                if !trimmed.is_empty() {
+                    eprintln!("[verun][{agent_name}][stderr][{sid}] {trimmed}");
+                }
                 line.clear();
             }
         });
@@ -823,8 +840,10 @@ pub async fn send_message(
 
         // Process exited — get exit code
         let status = if let Some((_, mut proc)) = monitor_active.remove(&monitor_sid) {
-            let exit = proc.child.wait().await.ok().and_then(|s| s.code());
-            stream::map_exit_status(exit)
+            let exit_status = proc.child.wait().await.ok();
+            let exit_code = exit_status.as_ref().and_then(|s| s.code());
+            eprintln!("[verun][{}] exited code={:?}", monitor_sid, exit_code);
+            stream::map_exit_status(exit_code)
         } else {
             // Aborted by abort_message
             return;
@@ -1005,16 +1024,22 @@ pub fn parse_verun_config_file(path: &str) -> Option<(String, String, String)> {
 fn extract_claude_session_id(lines: &[String]) -> Option<String> {
     for line in lines.iter().rev() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if v.get("type").and_then(|t| t.as_str()) == Some("result") {
+            let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            // Claude: result.session_id or system.init.session_id
+            if t == "result" {
                 if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
                     return Some(sid.to_string());
                 }
             }
-            if v.get("type").and_then(|t| t.as_str()) == Some("system")
-                && v.get("subtype").and_then(|t| t.as_str()) == Some("init")
-            {
+            if t == "system" && v.get("subtype").and_then(|t| t.as_str()) == Some("init") {
                 if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
                     return Some(sid.to_string());
+                }
+            }
+            // Codex: thread.started.thread_id (used as resume session_id)
+            if t == "thread.started" {
+                if let Some(tid) = v.get("thread_id").and_then(|s| s.as_str()) {
+                    return Some(tid.to_string());
                 }
             }
         }
@@ -1114,6 +1139,8 @@ pub async fn fork_session_in_task(
         total_cost: 0.0,
         parent_session_id: Some(parent.id.clone()),
         forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
+        agent_type: parent.agent_type.clone(),
+        model: parent.model.clone(),
     };
 
     // Single transaction: insert session row + copy output_lines up to the
@@ -1200,8 +1227,8 @@ async fn insert_session_row_tx(
     s: &Session,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.task_id)
@@ -1213,6 +1240,8 @@ async fn insert_session_row_tx(
     .bind(s.total_cost)
     .bind(&s.parent_session_id)
     .bind(&s.forked_at_message_uuid)
+    .bind(&s.agent_type)
+    .bind(&s.model)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert session: {e}"))?;
@@ -1372,7 +1401,7 @@ pub async fn fork_session_to_new_task(
         archived_at: None,
         last_commit_message: None,
         parent_task_id: Some(parent_task.id.clone()),
-        agent_type: parent_task.agent_type.clone(),
+        agent_type: "claude".into(),
     };
 
     // Write the truncated on-disk JSONL into the NEW worktree's projects dir
@@ -1416,6 +1445,8 @@ pub async fn fork_session_to_new_task(
         total_cost: 0.0,
         parent_session_id: Some(parent_session.id.clone()),
         forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
+        agent_type: parent_session.agent_type.clone(),
+        model: parent_session.model.clone(),
     };
 
     // Single transaction: task row + session row + copied output_lines.

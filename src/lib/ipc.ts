@@ -67,8 +67,8 @@ export const stopHook = (taskId: string) =>
   invoke<void>('stop_hook', { taskId })
 
 // Sessions
-export const createSession = (taskId: string) =>
-  invoke<Session>('create_session', { taskId })
+export const createSession = (taskId: string, agentType: string, model?: string) =>
+  invoke<Session>('create_session', { taskId, agentType, model })
 
 export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) => {
   const wireAttachments = attachments?.map(a => ({

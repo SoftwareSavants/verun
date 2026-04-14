@@ -50,6 +50,11 @@ impl Agent for Codex {
             v.extend(["resume".into(), rid.to_string()]);
         }
 
+        // Prompt as positional arg — codex exec [flags] <prompt>
+        if !args.message.is_empty() {
+            v.push(args.message.to_string());
+        }
+
         v
     }
 

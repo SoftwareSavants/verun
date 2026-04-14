@@ -184,6 +184,18 @@ pub fn migrations() -> Vec<Migration> {
         description: "add default_agent_type to projects",
         sql: "ALTER TABLE projects ADD COLUMN default_agent_type TEXT NOT NULL DEFAULT 'claude';",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 15,
+        description: "add agent_type and model to sessions",
+        sql: "ALTER TABLE sessions ADD COLUMN agent_type TEXT; ALTER TABLE sessions ADD COLUMN model TEXT;",
+        kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 16,
+        description: "backfill session agent_type from task, default claude",
+        sql: "UPDATE sessions SET agent_type = COALESCE(agent_type, (SELECT agent_type FROM tasks WHERE tasks.id = sessions.task_id), 'claude') WHERE agent_type IS NULL;",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -245,6 +257,10 @@ pub struct Session {
     pub parent_session_id: Option<String>,
     #[sqlx(default)]
     pub forked_at_message_uuid: Option<String>,
+    #[sqlx(default)]
+    pub agent_type: String,
+    #[sqlx(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -523,8 +539,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Sessions --
         DbWrite::CreateSession(s) => {
             sqlx::query(
-                "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(&s.task_id)
@@ -536,6 +552,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(s.total_cost)
             .bind(&s.parent_session_id)
             .bind(&s.forked_at_message_uuid)
+            .bind(&s.agent_type)
+            .bind(&s.model)
             .execute(pool)
             .await?;
         }
@@ -990,6 +1008,8 @@ mod tests {
             total_cost: 0.0,
             parent_session_id: None,
             forked_at_message_uuid: None,
+            agent_type: "claude".into(),
+            model: None,
         }
     }
 

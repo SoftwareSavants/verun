@@ -2,7 +2,6 @@ import { Component, For, Show, createSignal, createMemo, createEffect, onCleanup
 import { Portal } from 'solid-js/web'
 import type { AgentType } from '../types'
 import { agents } from '../store/agents'
-import { tasksForProject } from '../store/tasks'
 import { clsx } from 'clsx'
 import { ChevronDown, Check } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
@@ -41,26 +40,14 @@ export const AgentPicker: Component<Props> = (props) => {
   const [snapshotAgents, setSnapshotAgents] = createSignal<ReturnType<typeof sortAgents>>([])
   let buttonRef: HTMLButtonElement | undefined
 
-  // Sort: default first, then by most recently used in this project, then rest
+  // Sort: default first, rest alphabetical
   const sortAgents = createMemo(() => {
     const list = agents
     const defaultAgent = props.defaultAgent ?? 'claude'
-    const projectTasks = props.projectId ? tasksForProject(props.projectId) : []
-
-    const lastUsed: Record<string, number> = {}
-    for (const task of projectTasks) {
-      const at = task.agentType
-      if (!lastUsed[at] || task.createdAt > lastUsed[at]) {
-        lastUsed[at] = task.createdAt
-      }
-    }
-
     return [...list].sort((a, b) => {
       if (a.id === defaultAgent && b.id !== defaultAgent) return -1
       if (b.id === defaultAgent && a.id !== defaultAgent) return 1
-      const aLast = lastUsed[a.id] ?? 0
-      const bLast = lastUsed[b.id] ?? 0
-      return bLast - aLast
+      return a.name.localeCompare(b.name)
     })
   })
 

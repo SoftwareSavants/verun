@@ -44,7 +44,7 @@ impl Agent for OpenCode {
                 let line = line.trim();
                 // Must contain exactly one '/' and no whitespace
                 if !line.contains('/') || line.contains(' ') { return None; }
-                let label = line.split('/').last().unwrap_or(line).to_string();
+                let label = line.split('/').next_back().unwrap_or(line).to_string();
                 let provider = line.split('/').next().unwrap_or("").to_string();
                 let description = if provider.is_empty() { String::new() } else { provider };
                 Some(crate::agent::ModelOption::new(line, &label, &description))
@@ -63,6 +63,11 @@ impl Agent for OpenCode {
         }
         if let Some(rid) = args.resume_session_id {
             v.extend(["--session".into(), rid.to_string()]);
+        }
+
+        // Prompt as positional arg — opencode run <prompt> [flags]
+        if !args.message.is_empty() {
+            v.push(args.message.to_string());
         }
 
         v

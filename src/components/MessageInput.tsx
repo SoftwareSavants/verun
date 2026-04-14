@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps } from '../store/sessions'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps, sessionById } from '../store/sessions'
 import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
@@ -91,89 +91,98 @@ function UsageChip(chipProps: { sessionId: string | null }) {
     const sid = chipProps.sessionId
     return sid ? sessionTokens[sid] : undefined
   }
+  const isClaudeSession = () => {
+    const sid = chipProps.sessionId
+    return sid ? sessionById(sid)?.agentType === 'claude' : false
+  }
+  const rl = () => isClaudeSession() ? rateLimitInfo() : null
+
+  const hasAnything = () => cost() > 0 || tokens() || rl()
 
   const chipLabel = () => {
     const c = cost()
-    const rl = rateLimitInfo()
-    if (c > 0 && rl) return `${fmtCost(c)} · Resets ${formatTimeUntil(rl.resetsAt)}`
+    const r = rl()
+    if (c > 0 && r) return `${fmtCost(c)} · Resets ${formatTimeUntil(r.resetsAt)}`
     if (c > 0) return fmtCost(c)
-    if (rl) return `Resets ${formatTimeUntil(rl.resetsAt)}`
+    if (r) return `Resets ${formatTimeUntil(r.resetsAt)}`
     return 'Usage'
   }
 
   return (
-    <div class="relative">
-      <button
-        class={clsx(
-          'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
-          rateLimitInfo()?.isUsingOverage
-            ? 'text-status-error/80 hover:text-status-error hover:bg-status-error/10'
-            : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-        )}
-        onClick={() => setShowUsagePopover(!showUsagePopover())}
-        title="Usage info"
-      >
-        <Activity size={13} />
-        <span>{chipLabel()}</span>
-      </button>
-      <Popover open={showUsagePopover()} onClose={() => setShowUsagePopover(false)} class="py-3 px-4 min-w-64 absolute bottom-full left-0 mb-1">
-        {/* Rate limit windows */}
-        <Show when={rateLimitInfo()}>
-          {(() => {
-            const rl = rateLimitInfo()!
-            return (
-              <>
-                <div class="mb-3">
-                  <div class="text-[11px] font-medium text-text-primary mb-0.5">Current session</div>
-                  <div class="text-[10px] text-text-dim">
-                    Resets {formatResetTime(rl.resetsAt)}
-                  </div>
-                </div>
-                <Show when={rl.overageResetsAt > 0}>
+    <Show when={hasAnything()}>
+      <div class="relative">
+        <button
+          class={clsx(
+            'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+            rl()?.isUsingOverage
+              ? 'text-status-error/80 hover:text-status-error hover:bg-status-error/10'
+              : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+          )}
+          onClick={() => setShowUsagePopover(!showUsagePopover())}
+          title="Usage info"
+        >
+          <Activity size={13} />
+          <span>{chipLabel()}</span>
+        </button>
+        <Popover open={showUsagePopover()} onClose={() => setShowUsagePopover(false)} class="py-3 px-4 min-w-64 absolute bottom-full left-0 mb-1">
+          {/* Rate limit windows (Claude only) */}
+          <Show when={rl()}>
+            {(() => {
+              const r = rl()!
+              return (
+                <>
                   <div class="mb-3">
-                    <div class="flex items-center gap-1.5">
-                      <span class="text-[11px] font-medium text-text-primary">Overage window</span>
-                      <Show when={rl.isUsingOverage}>
-                        <span class="text-[9px] px-1 py-0.5 rounded bg-status-error/15 text-status-error font-medium">Active</span>
-                      </Show>
-                    </div>
-                    <div class="text-[10px] text-text-dim mt-0.5">
-                      Resets {formatResetTime(rl.overageResetsAt)}
+                    <div class="text-[11px] font-medium text-text-primary mb-0.5">Current session</div>
+                    <div class="text-[10px] text-text-dim">
+                      Resets {formatResetTime(r.resetsAt)}
                     </div>
                   </div>
-                </Show>
-              </>
-            )
-          })()}
-        </Show>
-
-        {/* Session stats */}
-        <Show when={cost() > 0 || tokens()}>
-          <Show when={rateLimitInfo()}>
-            <div class="border-t border-border-subtle my-2.5" />
+                  <Show when={r.overageResetsAt > 0}>
+                    <div class="mb-3">
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-[11px] font-medium text-text-primary">Overage window</span>
+                        <Show when={r.isUsingOverage}>
+                          <span class="text-[9px] px-1 py-0.5 rounded bg-status-error/15 text-status-error font-medium">Active</span>
+                        </Show>
+                      </div>
+                      <div class="text-[10px] text-text-dim mt-0.5">
+                        Resets {formatResetTime(r.overageResetsAt)}
+                      </div>
+                    </div>
+                  </Show>
+                </>
+              )
+            })()}
           </Show>
-          <div class="text-[11px] font-medium text-text-primary mb-1.5">This session</div>
-          <div class="space-y-1 text-[11px]">
-            <Show when={cost() > 0}>
-              <div class="flex justify-between gap-6">
-                <span class="text-text-dim">Cost</span>
-                <span class="text-text-secondary font-mono">{fmtCost(cost())}</span>
-              </div>
+
+          {/* Session stats */}
+          <Show when={cost() > 0 || tokens()}>
+            <Show when={rl()}>
+              <div class="border-t border-border-subtle my-2.5" />
             </Show>
-            <Show when={tokens()}>
-              <div class="flex justify-between gap-6">
-                <span class="text-text-dim">Input</span>
-                <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.input)} tokens</span>
-              </div>
-              <div class="flex justify-between gap-6">
-                <span class="text-text-dim">Output</span>
-                <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.output)} tokens</span>
-              </div>
-            </Show>
-          </div>
-        </Show>
-      </Popover>
-    </div>
+            <div class="text-[11px] font-medium text-text-primary mb-1.5">This session</div>
+            <div class="space-y-1 text-[11px]">
+              <Show when={cost() > 0}>
+                <div class="flex justify-between gap-6">
+                  <span class="text-text-dim">Cost</span>
+                  <span class="text-text-secondary font-mono">{fmtCost(cost())}</span>
+                </div>
+              </Show>
+              <Show when={tokens()}>
+                <div class="flex justify-between gap-6">
+                  <span class="text-text-dim">Input</span>
+                  <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.input)} tokens</span>
+                </div>
+                <div class="flex justify-between gap-6">
+                  <span class="text-text-dim">Output</span>
+                  <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.output)} tokens</span>
+                </div>
+              </Show>
+            </div>
+          </Show>
+        </Popover>
+      </div>
+    </Show>
   )
 }
 
@@ -865,7 +874,8 @@ export const MessageInput: Component<Props> = (props) => {
       case 'new-session': {
         const tid = selectedTaskId()
         if (tid) {
-          const session = await createSession(tid)
+          const currentAgent = sessionById(props.sessionId ?? '')?.agentType ?? 'claude'
+          const session = await createSession(tid, currentAgent)
           setSelectedSessionId(session.id)
         }
         break
@@ -2090,7 +2100,7 @@ export const MessageInput: Component<Props> = (props) => {
             {/* Model selector */}
             <ModelSelector
               model={currentModel()}
-              agentType={taskById(selectedTaskId() ?? '')?.agentType ?? 'claude'}
+              agentType={sessionById(props.sessionId ?? '')?.agentType ?? 'claude'}
               onChange={(m) => {
                 const tid = selectedTaskId()
                 if (tid) setTaskModel(tid, m)

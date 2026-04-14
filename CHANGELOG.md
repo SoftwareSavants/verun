@@ -20,9 +20,19 @@
 - Demo mode: set `VITE_DEMO_MODE=true` to populate the app with dummy projects, tasks, sessions, and a realistic chat conversation for screenshots
 - Fix message role corruption when switching between tasks - clear stale output data before reloading and use reactive Switch/Match for block type rendering so reconcile merges can't produce wrong role display
 - Fix "delete branch with merge" failing because `gh pr merge --delete-branch` tries to checkout main, which conflicts with the main worktree - now deletes the remote branch separately after merge
+- New session "+" button opens a cascading menu: pick an agent, then optionally pick a model from its submenu — session stores `agent_type` and `model` (migration 15), overriding the task's default when set; `send_message` prefers session-level agent type over task-level
+- Dynamic per-agent model lists: Cursor uses `agent --list-models`, OpenCode uses `opencode models`, fetched at agent detection time and cached; model selector shows the session's agent models when the session has a per-session agent override
 - Multi-agent foundation: new `AgentKind` enum (Claude, Codex, Cursor) with CLI abstraction, `agent_type` column on tasks (migration 13), agent-aware session spawning, `check_agent` and `list_available_agents` IPC commands, per-agent icons and display names in the UI, and capability flags (streaming, resume, plan mode, model selection, effort, skills, attachments, fork) so the frontend can adapt to each agent's feature set
 - OpenCode agent backend: `opencode run --format json` with plan mode (`--agent plan`), model selection (`--model provider/model`), and session resume (`--session <id>`)
-- Agent picker dropdown in New Task dialog: shows all detected agents with install hints for non-installed ones, sorted by project default first then last-used; persists per-project default agent in DB (migration 14)
+- Agent picker dropdown in New Task dialog: shows all detected agents with install hints for non-installed ones, sorted by project default first; persists per-project default agent in DB (migration 14)
+- Agent type moved from tasks to sessions - each session owns its agent, tasks are agent-agnostic (migration 16 backfills existing sessions from their task's agent type, defaulting to Claude)
+- Pre-parsed output items (`verun_items`) persisted in Rust so frontend reload skips agent-specific re-parsing
+- Fix forked sessions missing `agent_type` and `model` columns in DB insert
+- Cursor word-by-word streaming via `--stream-partial-output` flag
+- Cursor tool calls (`tool_call` events) and thinking deltas now displayed in chat
+- Token usage extraction for all providers: Cursor (camelCase `usage` in `result`), OpenCode (`part.tokens` + `part.cost` in `step_finish`), Codex (`usage` in `turn.completed`)
+- OpenCode event parsing: `text`, `tool_use`, `step_start`/`step_finish` events with session ID capture for resume
+- Removed all agent-specific NDJSON parsing from frontend - Rust `verun_items` is the single source of truth
 
 ## 0.6.0 — 2026-04-14
 

@@ -44,7 +44,7 @@ impl AgentKind {
     }
 
     pub fn all() -> &'static [AgentKind] {
-        &[Self::Claude, Self::Codex, Self::Cursor, Self::OpenCode]
+        &[Self::Claude, Self::Codex, Self::OpenCode, Self::Cursor]
     }
 
     /// Return a boxed trait object for this agent kind.
@@ -103,6 +103,8 @@ pub struct SessionArgs<'a> {
     pub plan_mode: bool,
     pub thinking_mode: bool,
     pub fast_mode: bool,
+    /// For `PositionalOrStdin` agents: the user message appended as the final positional arg.
+    pub message: &'a str,
 }
 
 // ---------------------------------------------------------------------------

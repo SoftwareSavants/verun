@@ -13,6 +13,8 @@ const makeSession = (overrides: Partial<Session> = {}): Session => ({
   totalCost: 0,
   parentSessionId: null,
   forkedAtMessageUuid: null,
+  agentType: 'claude' as const,
+  model: null,
   ...overrides,
 })
 

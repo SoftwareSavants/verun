@@ -17,8 +17,9 @@ import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/files'
-import { Square, Plus, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy, GitCompare } from 'lucide-solid'
+import { Square, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy, GitCompare } from 'lucide-solid'
 import { GitActions, hasGitActionsContent } from './GitActions'
+import { NewSessionMenu } from './NewSessionMenu'
 import { ContextMenu } from './ContextMenu'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
@@ -221,17 +222,11 @@ export const TaskPanel: Component = () => {
   const [tabMenu, setTabMenu] = createSignal<{ x: number; y: number; path: string; taskId: string } | null>(null)
   const closeTabMenu = () => setTabMenu(null)
 
-  const [creatingSession, setCreatingSession] = createSignal(false)
-  const handleNewSession = async () => {
+  const handleNewSession = async (agentType: string, model?: string) => {
     const tid = selectedTaskId()
-    if (!tid || creatingSession()) return
-    setCreatingSession(true)
-    try {
-      const session = await createSession(tid)
-      setSelectedSessionId(session.id)
-    } finally {
-      setCreatingSession(false)
-    }
+    if (!tid) return
+    const session = await createSession(tid, agentType, model)
+    setSelectedSessionId(session.id)
   }
 
   const currentSession = () => {
@@ -496,14 +491,9 @@ export const TaskPanel: Component = () => {
                   {/* Unified tab bar — sessions + open files */}
                   <div ref={tabBarRef} class="relative z-10 flex items-stretch overflow-x-auto scrollbar-hide tab-bar-bg">
                     {/* New session button */}
-                    <button
-                      class="h-8 w-8 shrink-0 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-white/3 transition-colors disabled:opacity-40"
-                      onClick={handleNewSession}
-                      disabled={creatingSession()}
-                      title="New Session"
-                    >
-                      <Plus size={13} class={creatingSession() ? 'animate-spin' : ''} />
-                    </button>
+                    <NewSessionMenu
+                      onCreate={(agentType, model) => handleNewSession(agentType, model)}
+                    />
                     {/* Session tabs */}
                     <For each={taskSessions()}>
                       {(session) => {
@@ -521,8 +511,8 @@ export const TaskPanel: Component = () => {
                             )}
                             onClick={() => { setSelectedSessionId(session.id); setMainView(t().id, 'session') }}
                           >
-                            <SvgIcon svg={agentIcon(t().agentType)} size={10} />
-                            <span>{session.name || AGENT_DISPLAY_NAMES[t().agentType]}</span>
+                            <SvgIcon svg={agentIcon(session.agentType)} size={10} />
+                            <span>{session.name || AGENT_DISPLAY_NAMES[session.agentType]}</span>
                             <SessionTime session={session} />
                             <Show when={sessionCosts[session.id] > 0}>
                               <span class="text-text-dim">${sessionCosts[session.id] < 1 ? sessionCosts[session.id].toFixed(3) : sessionCosts[session.id].toFixed(2)}</span>

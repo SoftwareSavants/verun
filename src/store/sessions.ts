@@ -66,8 +66,8 @@ export async function loadSessions(taskId: string) {
   if (savedPlanFilePath) _setTaskPlanFilePath(taskId, savedPlanFilePath)
 }
 
-export async function createSession(taskId: string): Promise<Session> {
-  const session = await ipc.createSession(taskId)
+export async function createSession(taskId: string, agentType: string, model?: string): Promise<Session> {
+  const session = await ipc.createSession(taskId, agentType, model)
   setSessions(produce(s => s.push(session)))
   setOutputItems(session.id, [])
   return session
@@ -211,81 +211,19 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
     return null
   }
 
-  // Stream event (content_block_delta)
-  if (type === 'stream_event') {
-    const event = v.event as Record<string, unknown> | undefined
-    if (!event) return null
-    const eventType = event.type as string | undefined
-    if (eventType === 'content_block_delta') {
-      const delta = event.delta as Record<string, unknown> | undefined
-      if (!delta) return null
-      if (delta.type === 'text_delta' && delta.text) {
-        return [{ kind: 'text', text: delta.text as string }]
-      }
-      if (delta.type === 'thinking_delta' && delta.thinking) {
-        return [{ kind: 'thinking', text: delta.thinking as string }]
+  // Pre-parsed items persisted by Rust - all agent-specific parsing lives in Rust only
+  if (type === 'verun_items') {
+    const items = v.items as OutputItem[]
+    if (!items?.length) return null
+    for (const item of items) {
+      if (item.kind === 'turnEnd' && emittedAt && !item.timestamp) {
+        (item as any).timestamp = emittedAt
       }
     }
-    if (eventType === 'content_block_start') {
-      const block = event.content_block as Record<string, unknown> | undefined
-      if (!block) return null
-      const blockType = block.type as string
-      if (blockType === 'tool_use' || blockType === 'server_tool_use' || blockType === 'mcp_tool_use') {
-        const input = block.input as Record<string, unknown> | undefined
-        const inputStr = input && Object.keys(input).length > 0 ? JSON.stringify(input, null, 2) : ''
-        return [{ kind: 'toolStart', tool: (block.name as string) || 'tool', input: inputStr }]
-      }
-    }
-    return null
+    return items
   }
 
-  // User message (tool results)
-  if (type === 'user') {
-    const msg = v.message as Record<string, unknown> | undefined
-    const content = msg?.content as Array<Record<string, unknown>> | undefined
-    if (!content) return null
-    const items: OutputItem[] = []
-    for (const block of content) {
-      if (block.type === 'tool_result') {
-        const text = extractText(block.content)
-        if (text) items.push({ kind: 'toolResult', text, isError: block.is_error === true })
-      }
-    }
-    return items.length > 0 ? items : null
-  }
-
-  // Control request (tool approval) — extract tool name for ToolStart
-  if (type === 'control_request') {
-    const request = v.request as Record<string, unknown> | undefined
-    if (request?.subtype === 'can_use_tool') {
-      const toolName = (request.tool_name as string) || 'tool'
-      const input = request.input as Record<string, unknown> | undefined
-      const inputStr = input && Object.keys(input).length > 0 ? JSON.stringify(input, null, 2) : ''
-      return [{ kind: 'toolStart', tool: toolName, input: inputStr }]
-    }
-  }
-
-  // Turn completed (result)
-  if (type === 'result') {
-    const subtype = (v.subtype as string) || 'unknown'
-    const status = subtype === 'success' ? 'completed' : 'error'
-    const cost = typeof v.total_cost_usd === 'number' ? v.total_cost_usd : undefined
-    const usage = v.usage as Record<string, unknown> | undefined
-    const inputTokens = typeof usage?.input_tokens === 'number' ? usage.input_tokens as number : undefined
-    const outputTokens = typeof usage?.output_tokens === 'number' ? usage.output_tokens as number : undefined
-    return [{ kind: 'turnEnd', status, timestamp: emittedAt, cost, inputTokens, outputTokens }]
-  }
-
-  // Skip system, rate_limit_event, etc.
   return null
-}
-
-function extractText(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content.map(c => (c as Record<string, unknown>)?.text || '').filter(Boolean).join('')
-  }
-  return ''
 }
 
 export async function clearOutputItems(sessionId: string) {

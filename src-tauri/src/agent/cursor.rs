@@ -67,6 +67,7 @@ impl Agent for Cursor {
         let mut v = vec![
             "-p".into(),
             "--output-format".into(), "stream-json".into(),
+            "--stream-partial-output".into(),
             "--force".into(),
             "--trust".into(),
         ];
@@ -79,6 +80,11 @@ impl Agent for Cursor {
         }
         if let Some(rid) = args.resume_session_id {
             v.extend(["--resume".into(), rid.to_string()]);
+        }
+
+        // Prompt as positional arg — agent -p [flags] <prompt>
+        if !args.message.is_empty() {
+            v.push(args.message.to_string());
         }
 
         v

@@ -493,8 +493,10 @@ pub async fn rename_task(
 pub async fn create_session(
     db_tx: State<'_, DbWriteTx>,
     task_id: String,
+    agent_type: String,
+    model: Option<String>,
 ) -> Result<Session, String> {
-    task::create_session(db_tx.inner(), task_id).await
+    task::create_session(db_tx.inner(), task_id, agent_type, model).await
 }
 
 /// Fork an existing session at a specific assistant message uuid into a new
@@ -612,7 +614,7 @@ pub async fn send_message(
             thinking_mode: thinking_mode.unwrap_or(false),
             fast_mode: fast_mode.unwrap_or(false),
             task_name: t.name,
-            agent_type: t.agent_type,
+            agent_type: session.agent_type.clone(),
         },
     )
     .await
