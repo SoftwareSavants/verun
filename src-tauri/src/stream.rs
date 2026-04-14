@@ -449,8 +449,7 @@ async fn snapshot_turn_best_effort(
                 },
             );
         }
-        Ok(Err(e)) => eprintln!("[verun] snapshot_turn skipped: {e}"),
-        Err(e) => eprintln!("[verun] snapshot_turn join error: {e}"),
+        Ok(Err(_)) | Err(_) => {}
     }
 }
 

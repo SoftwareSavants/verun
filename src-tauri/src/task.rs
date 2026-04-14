@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use serde::Deserialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
 use uuid::Uuid;
@@ -755,12 +755,24 @@ pub async fn send_message(
     // Keep stdin open — we need it for control_response messages
     let stdin = Arc::new(TokioMutex::new(Some(stdin_handle)));
 
-    let pid = child.id();
+
 
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "Failed to capture stdout".to_string())?;
+
+    // Drain stderr so the OS pipe buffer (~64KB) never fills.
+    // If it fills, the child blocks on stderr writes and appears frozen.
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(stderr);
+            let mut line = String::new();
+            while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                line.clear();
+            }
+        });
+    }
 
     // Mark session as running
     let _ = db_tx
@@ -869,7 +881,6 @@ pub async fn send_message(
                 "destroyHook": destroy,
                 "startCommand": start,
             }));
-            eprintln!("[verun] auto-applied config from {config_path}");
         }
 
         // Update session status
@@ -905,10 +916,6 @@ pub async fn send_message(
             },
         );
     });
-
-    if let Some(p) = pid {
-        eprintln!("[verun] message sent in session {session_id} (pid {p})");
-    }
 
     Ok(())
 }
