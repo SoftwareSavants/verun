@@ -4,7 +4,7 @@ import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, setShowA
 import { projectById, updateProjectDefaultAgentInStore } from '../store/projects'
 import * as ipc from '../lib/ipc'
 import type { AgentType } from '../types'
-import { GitBranch, Terminal, ExternalLink } from 'lucide-solid'
+import { GitBranch, ExternalLink, Copy, Check } from 'lucide-solid'
 import { Dialog } from './Dialog'
 import { DialogFooter } from './DialogFooter'
 import { AgentPicker } from './AgentPicker'
@@ -19,6 +19,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
   const [baseBranch, setBaseBranch] = createSignal('main')
   const [branches, setBranches] = createSignal<string[]>([])
   const [agentType, setAgentType] = createSignal<AgentType>('claude')
+  const [copied, setCopied] = createSignal(false)
 
   const [agents] = createResource(ipc.listAvailableAgents, { initialValue: [] })
 
@@ -50,7 +51,17 @@ export const NewTaskDialog: Component<Props> = (props) => {
     }
   })
 
+  const copyInstallHint = () => {
+    const hint = selectedAgent()?.installHint
+    if (!hint) return
+    navigator.clipboard.writeText(hint).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    }).catch(() => {})
+  }
+
   const handleAgentChange = (agent: AgentType) => {
+    setCopied(false)
     setAgentType(agent)
     const p = project()
     if (p) {
@@ -70,7 +81,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
   }
 
   return (
-    <Dialog open={props.open} onClose={props.onClose} onConfirm={handleCreate}>
+    <Dialog open={props.open} onClose={props.onClose} onConfirm={handleCreate} width="26rem">
       <h2 class="text-base font-semibold text-text-primary mb-2">New Task</h2>
       <p class="text-sm text-text-muted mb-4">
         Creates a new worktree branched from the selected base. An agent session starts automatically.
@@ -106,28 +117,34 @@ export const NewTaskDialog: Component<Props> = (props) => {
           defaultAgent={project()?.defaultAgentType ?? 'claude'}
         />
         <Show when={agentNotInstalled()}>
-          <div class="mt-2 px-3 py-2.5 rounded-lg bg-amber-500/8 ring-1 ring-amber-500/20 flex items-start gap-2.5">
-            <Terminal size={13} class="text-amber-400 shrink-0 mt-0.5" />
-            <div class="flex-1 min-w-0">
-              <p class="text-xs text-amber-300/90 leading-relaxed">
-                {selectedAgent()?.name} is not installed. Install it to create a task.
-              </p>
-              <div class="flex items-center gap-1.5 mt-1.5">
-                <code class="text-[11px] text-amber-200/70 font-mono">{selectedAgent()?.installHint}</code>
-              </div>
-              <Show when={selectedAgent()?.docsUrl}>
-                <a
-                  href={selectedAgent()!.docsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="inline-flex items-center gap-1 mt-1.5 text-[11px] text-amber-400 hover:text-amber-300 transition-colors"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <ExternalLink size={10} />
-                  View install docs
-                </a>
-              </Show>
-            </div>
+          <div class="mt-2 px-3 py-2.5 rounded-lg bg-surface-3 ring-1 ring-white/6">
+            <p class="text-xs text-text-secondary mb-2">
+              {selectedAgent()?.name} is not installed. Run this command to install it:
+            </p>
+            <button
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded bg-surface-1 ring-1 ring-white/8 hover:ring-white/14 transition-colors group text-left"
+              onClick={copyInstallHint}
+              title="Click to copy"
+            >
+              <code class="flex-1 text-[11px] text-text-secondary font-mono truncate">{selectedAgent()?.installHint}</code>
+              <span class="shrink-0 text-text-dim group-hover:text-text-secondary transition-colors">
+                <Show when={copied()} fallback={<Copy size={11} />}>
+                  <Check size={11} class="text-green-400" />
+                </Show>
+              </span>
+            </button>
+            <Show when={selectedAgent()?.docsUrl}>
+              <a
+                href={selectedAgent()!.docsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex items-center gap-1 mt-2 text-[11px] text-text-dim hover:text-text-secondary transition-colors"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ExternalLink size={10} />
+                View install docs
+              </a>
+            </Show>
           </div>
         </Show>
       </div>

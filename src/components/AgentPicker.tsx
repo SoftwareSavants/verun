@@ -26,9 +26,12 @@ const AGENT_ICONS: Record<string, string> = {
 }
 
 function SvgIcon(props: { svg: string; size?: number }) {
-  const s = props.size ?? 14
-  const sized = props.svg.replace('<svg ', `<svg width="${s}" height="${s}" `)
-  return <span class="inline-flex items-center justify-center shrink-0" innerHTML={sized} />
+  return (
+    <span
+      class="inline-flex items-center justify-center shrink-0"
+      innerHTML={props.svg.replace('<svg ', `<svg width="${props.size ?? 14}" height="${props.size ?? 14}" `)}
+    />
+  )
 }
 
 export const AgentPicker: Component<Props> = (props) => {
