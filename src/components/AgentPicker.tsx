@@ -1,10 +1,11 @@
-import { Component, For, Show, createResource, createSignal, createMemo } from 'solid-js'
+import { Component, For, Show, createResource, createSignal, createMemo, createEffect, onCleanup } from 'solid-js'
+import { Portal } from 'solid-js/web'
 import type { AgentType, AgentInfo } from '../types'
 import { listAvailableAgents } from '../lib/ipc'
 import { tasksForProject } from '../store/tasks'
 import { clsx } from 'clsx'
 import { ChevronDown, Check, Terminal } from 'lucide-solid'
-import { Popover } from './Popover'
+import { registerDismissable } from '../lib/dismissable'
 import claudeIcon from '../assets/icons/claude.svg?raw'
 import codexIcon from '../assets/icons/codex.svg?raw'
 import cursorIcon from '../assets/icons/cursor.svg?raw'
@@ -33,6 +34,24 @@ function SvgIcon(props: { svg: string; size?: number }) {
 export const AgentPicker: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [agents] = createResource<AgentInfo[]>(listAvailableAgents, { initialValue: [] })
+  const [dropdownRect, setDropdownRect] = createSignal<{ left: number; top: number; width: number } | null>(null)
+  let buttonRef: HTMLButtonElement | undefined
+
+  const openDropdown = () => {
+    if (buttonRef) {
+      const r = buttonRef.getBoundingClientRect()
+      setDropdownRect({ left: r.left, top: r.bottom + 4, width: r.width })
+    }
+    setOpen(true)
+  }
+
+  const closeDropdown = () => setOpen(false)
+
+  createEffect(() => {
+    if (!open()) return
+    const unregister = registerDismissable(closeDropdown)
+    onCleanup(unregister)
+  })
 
   // Sort: default first, then by most recently used in this project, then rest
   const sortedAgents = createMemo(() => {
@@ -64,11 +83,12 @@ export const AgentPicker: Component<Props> = (props) => {
   return (
     <div class="relative">
       <button
+        ref={buttonRef}
         class={clsx(
           'input-base flex items-center gap-2 cursor-pointer pr-3 text-sm',
           open() && 'border-accent/40'
         )}
-        onClick={() => setOpen(o => !o)}
+        onClick={() => open() ? closeDropdown() : openDropdown()}
       >
         <Show when={!agents.loading} fallback={
           <span class="text-text-dim text-xs">Detecting…</span>
@@ -82,53 +102,72 @@ export const AgentPicker: Component<Props> = (props) => {
         <ChevronDown size={12} class={clsx('text-text-dim ml-auto shrink-0 transition-transform', open() && 'rotate-180')} />
       </button>
 
-      <Popover open={open()} onClose={() => setOpen(false)} class="py-1 w-full absolute top-full left-0 mt-1 min-w-56">
-        <For each={sortedAgents()}>
-          {(agent) => {
-            const isDefault = () => agent.id === props.defaultAgent
-            const selected = () => props.value === agent.id
-            const icon = () => AGENT_ICONS[agent.id] || claudeIcon
-            return (
-              <button
-                class={clsx(
-                  'w-full text-left px-3 py-2 text-xs transition-colors flex items-center gap-2.5',
-                  agent.installed
-                    ? selected()
-                      ? 'text-accent bg-accent-muted'
-                      : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
-                    : 'text-text-dim opacity-50 cursor-default'
-                )}
-                onClick={() => { if (agent.installed) { props.onChange(agent.id as AgentType); setOpen(false) } }}
-                disabled={!agent.installed}
-              >
-                <span class={clsx(!agent.installed && 'opacity-40')}>
-                  <SvgIcon svg={icon()} size={13} />
-                </span>
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-1.5">
-                    <span class="font-medium">{agent.name}</span>
-                    <Show when={isDefault()}>
-                      <span class="text-[10px] text-text-dim">default</span>
-                    </Show>
-                    <Show when={!agent.installed}>
-                      <span class="text-[10px] text-text-dim ring-1 ring-white/8 px-1 py-0.5 rounded">not installed</span>
-                    </Show>
-                  </div>
-                  <Show when={!agent.installed}>
-                    <div class="flex items-center gap-1 mt-0.5">
-                      <Terminal size={9} class="text-text-dim shrink-0" />
-                      <code class="text-[10px] text-text-dim font-mono truncate">{agent.installHint}</code>
+      <Show when={open()}>
+        <Portal>
+          {/* backdrop */}
+          <div
+            class="fixed inset-0 z-[100]"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={closeDropdown}
+            onContextMenu={(e) => { e.preventDefault(); closeDropdown() }}
+          />
+          <div
+            class="fixed z-[101] bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl animate-in py-1 min-w-56"
+            style={{
+              left: `${dropdownRect()?.left ?? 0}px`,
+              top: `${dropdownRect()?.top ?? 0}px`,
+              width: `${dropdownRect()?.width ?? 0}px`,
+            }}
+            onMouseDown={(e) => e.preventDefault()}
+          >
+            <For each={sortedAgents()}>
+              {(agent) => {
+                const isDefault = () => agent.id === props.defaultAgent
+                const selected = () => props.value === agent.id
+                const icon = () => AGENT_ICONS[agent.id] || claudeIcon
+                return (
+                  <button
+                    class={clsx(
+                      'w-full text-left px-3 py-2 text-xs transition-colors flex items-center gap-2.5',
+                      agent.installed
+                        ? selected()
+                          ? 'text-accent bg-accent-muted'
+                          : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
+                        : 'text-text-dim opacity-50 cursor-default'
+                    )}
+                    onClick={() => { if (agent.installed) { props.onChange(agent.id as AgentType); closeDropdown() } }}
+                    disabled={!agent.installed}
+                  >
+                    <span class={clsx(!agent.installed && 'opacity-40')}>
+                      <SvgIcon svg={icon()} size={13} />
+                    </span>
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-1.5">
+                        <span class="font-medium">{agent.name}</span>
+                        <Show when={isDefault()}>
+                          <span class="text-[10px] text-text-dim">default</span>
+                        </Show>
+                        <Show when={!agent.installed}>
+                          <span class="text-[10px] text-text-dim ring-1 ring-white/8 px-1 py-0.5 rounded">not installed</span>
+                        </Show>
+                      </div>
+                      <Show when={!agent.installed}>
+                        <div class="flex items-center gap-1 mt-0.5">
+                          <Terminal size={9} class="text-text-dim shrink-0" />
+                          <code class="text-[10px] text-text-dim font-mono truncate">{agent.installHint}</code>
+                        </div>
+                      </Show>
                     </div>
-                  </Show>
-                </div>
-                <Show when={selected()}>
-                  <Check size={12} class="text-accent shrink-0" />
-                </Show>
-              </button>
-            )
-          }}
-        </For>
-      </Popover>
+                    <Show when={selected()}>
+                      <Check size={12} class="text-accent shrink-0" />
+                    </Show>
+                  </button>
+                )
+              }}
+            </For>
+          </div>
+        </Portal>
+      </Show>
     </div>
   )
 }
