@@ -2,12 +2,15 @@ import { invoke } from '@tauri-apps/api/core'
 import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
 import { bytesToBase64 } from './binary'
 
+const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
+const seed = () => import('./seedData')
+
 // Projects
 export const addProject = (repoPath: string) =>
   invoke<Project>('add_project', { repoPath })
 
-export const listProjects = () =>
-  invoke<Project[]>('list_projects')
+export const listProjects = (): Promise<Project[]> =>
+  DEMO ? seed().then(d => d.DEMO_PROJECTS) : invoke<Project[]>('list_projects')
 
 export const deleteProject = (id: string) =>
   invoke<void>('delete_project', { id })
@@ -28,8 +31,10 @@ export const importProjectConfig = (projectId: string) =>
 export const createTask = (projectId: string, baseBranch?: string) =>
   invoke<TaskWithSession>('create_task', { projectId, baseBranch })
 
-export const listTasks = (projectId: string) =>
-  invoke<Task[]>('list_tasks', { projectId })
+export const listTasks = (projectId: string): Promise<Task[]> =>
+  DEMO
+    ? seed().then(d => d.DEMO_TASKS.filter(t => t.projectId === projectId))
+    : invoke<Task[]>('list_tasks', { projectId })
 
 export const getTask = (id: string) =>
   invoke<Task | null>('get_task', { id })
@@ -80,17 +85,19 @@ export const clearSession = (sessionId: string) =>
 export const abortMessage = (sessionId: string) =>
   invoke<void>('abort_message', { sessionId })
 
-export const getActiveSessions = () =>
-  invoke<string[]>('get_active_sessions')
+export const getActiveSessions = (): Promise<string[]> =>
+  DEMO ? Promise.resolve([]) : invoke<string[]>('get_active_sessions')
 
 export const respondToApproval = (requestId: string, behavior: 'allow' | 'deny', updatedInput?: Record<string, unknown>) =>
   invoke<void>('respond_to_approval', { requestId, behavior, updatedInput })
 
-export const getPendingApprovals = () =>
-  invoke<ToolApprovalRequest[]>('get_pending_approvals')
+export const getPendingApprovals = (): Promise<ToolApprovalRequest[]> =>
+  DEMO ? Promise.resolve([]) : invoke<ToolApprovalRequest[]>('get_pending_approvals')
 
-export const listSessions = (taskId: string) =>
-  invoke<Session[]>('list_sessions', { taskId })
+export const listSessions = (taskId: string): Promise<Session[]> =>
+  DEMO
+    ? seed().then(d => d.DEMO_SESSIONS.filter(s => s.taskId === taskId))
+    : invoke<Session[]>('list_sessions', { taskId })
 
 export const getSession = (id: string) =>
   invoke<Session | null>('get_session', { id })
@@ -109,8 +116,10 @@ export const forkSessionToNewTask = (
     worktreeState,
   })
 
-export const getOutputLines = (sessionId: string) =>
-  invoke<OutputLine[]>('get_output_lines', { sessionId })
+export const getOutputLines = (sessionId: string): Promise<OutputLine[]> =>
+  DEMO
+    ? seed().then(d => d.DEMO_OUTPUT_LINES[sessionId] ?? [])
+    : invoke<OutputLine[]>('get_output_lines', { sessionId })
 
 // Policy / Trust levels
 export const setTrustLevel = (taskId: string, trustLevel: TrustLevel) =>
@@ -129,15 +138,19 @@ export const getDiff = (taskId: string) =>
 export const mergeBranch = (taskId: string, targetBranch: string) =>
   invoke<void>('merge_branch', { taskId, targetBranch })
 
-export const getBranchStatus = (taskId: string) =>
-  invoke<[number, number, number]>('get_branch_status', { taskId })
+export const getBranchStatus = (taskId: string): Promise<[number, number, number]> =>
+  DEMO
+    ? seed().then(d => d.DEMO_GIT_DATA[taskId]?.branchStatus ?? [0, 0, 0])
+    : invoke<[number, number, number]>('get_branch_status', { taskId })
 
 export const getRepoInfo = (path: string) =>
   invoke<RepoInfo>('get_repo_info', { path })
 
 // Git operations
-export const getGitStatus = (taskId: string) =>
-  invoke<GitStatus>('get_git_status', { taskId })
+export const getGitStatus = (taskId: string): Promise<GitStatus> =>
+  DEMO
+    ? seed().then(d => d.DEMO_GIT_DATA[taskId]?.status ?? { files: [], stats: [], totalInsertions: 0, totalDeletions: 0 })
+    : invoke<GitStatus>('get_git_status', { taskId })
 
 export const getFileDiff = (taskId: string, filePath: string, contextLines?: number, ignoreWhitespace?: boolean) =>
   invoke<FileDiff>('get_file_diff', { taskId, filePath, contextLines, ignoreWhitespace })
@@ -145,8 +158,10 @@ export const getFileDiff = (taskId: string, filePath: string, contextLines?: num
 export const getFileContext = (taskId: string, filePath: string, startLine: number, endLine: number, version: 'old' | 'new') =>
   invoke<string[]>('get_file_context', { taskId, filePath, startLine, endLine, version })
 
-export const getBranchCommits = (taskId: string) =>
-  invoke<BranchCommit[]>('get_branch_commits', { taskId })
+export const getBranchCommits = (taskId: string): Promise<BranchCommit[]> =>
+  DEMO
+    ? seed().then(d => d.DEMO_GIT_DATA[taskId]?.commits ?? [])
+    : invoke<BranchCommit[]>('get_branch_commits', { taskId })
 
 export const getCommitFiles = (taskId: string, commitHash: string) =>
   invoke<GitStatus>('get_commit_files', { taskId, commitHash })
@@ -179,14 +194,18 @@ export const gitCommitAndPush = (taskId: string, message: string) =>
   invoke<string>('git_commit_and_push', { taskId, message })
 
 // GitHub
-export const checkGithub = (taskId: string) =>
-  invoke<GitHubRepo | null>('check_github', { taskId })
+export const checkGithub = (taskId: string): Promise<GitHubRepo | null> =>
+  DEMO
+    ? seed().then(d => d.DEMO_GIT_DATA[taskId]?.github ?? null)
+    : invoke<GitHubRepo | null>('check_github', { taskId })
 
 export const createPullRequest = (taskId: string, title: string, body: string, base: string) =>
   invoke<PrInfo>('create_pull_request', { taskId, title, body, base })
 
-export const getPullRequest = (taskId: string) =>
-  invoke<PrInfo | null>('get_pull_request', { taskId })
+export const getPullRequest = (taskId: string): Promise<PrInfo | null> =>
+  DEMO
+    ? seed().then(d => d.DEMO_GIT_DATA[taskId]?.pr ?? null)
+    : invoke<PrInfo | null>('get_pull_request', { taskId })
 
 export const markPrReady = (taskId: string) =>
   invoke<void>('mark_pr_ready', { taskId })
@@ -197,14 +216,20 @@ export const mergePullRequest = (taskId: string, force?: boolean, deleteBranch?:
 export const gitShip = (taskId: string, commitMessage: string, prTitle: string, prBody: string, base: string) =>
   invoke<PrInfo>('git_ship', { taskId, commitMessage, prTitle, prBody, base })
 
-export const getCiChecks = (taskId: string) =>
-  invoke<CiCheck[]>('get_ci_checks', { taskId })
+export const getCiChecks = (taskId: string): Promise<CiCheck[]> =>
+  DEMO
+    ? seed().then(d => d.DEMO_GIT_DATA[taskId]?.checks ?? [])
+    : invoke<CiCheck[]>('get_ci_checks', { taskId })
 
-export const getBranchUrl = (taskId: string) =>
-  invoke<string | null>('get_branch_url', { taskId })
+export const getBranchUrl = (taskId: string): Promise<string | null> =>
+  DEMO
+    ? seed().then(d => d.DEMO_GIT_DATA[taskId]?.branchUrl ?? null)
+    : invoke<string | null>('get_branch_url', { taskId })
 
-export const hasConflicts = (taskId: string) =>
-  invoke<boolean>('has_conflicts', { taskId })
+export const hasConflicts = (taskId: string): Promise<boolean> =>
+  DEMO
+    ? seed().then(d => d.DEMO_GIT_DATA[taskId]?.pr?.mergeable === 'CONFLICTING')
+    : invoke<boolean>('has_conflicts', { taskId })
 
 // File listing
 export const listWorktreeFiles = (taskId: string) =>
@@ -217,8 +242,8 @@ export const checkGitignored = (taskId: string, paths: string[]) =>
 export const listClaudeSkills = () =>
   invoke<ClaudeSkill[]>('list_claude_skills')
 
-export const checkClaude = () =>
-  invoke<string>('check_claude')
+export const checkClaude = (): Promise<string> =>
+  DEMO ? Promise.resolve('1.0.0') : invoke<string>('check_claude')
 
 export const reloadEnvPath = () =>
   invoke<void>('reload_env_path')
@@ -295,8 +320,8 @@ export const tsgoCheckCancel = (taskId: string) =>
   invoke<void>('tsgo_check_cancel', { taskId })
 
 // Steps
-export const listSteps = (sessionId: string) =>
-  invoke<Step[]>('list_steps', { sessionId })
+export const listSteps = (sessionId: string): Promise<Step[]> =>
+  DEMO ? Promise.resolve([]) : invoke<Step[]>('list_steps', { sessionId })
 
 export const addStep = (id: string, sessionId: string, message: string, attachmentsJson: string | null, armed: boolean, model: string | null, planMode: boolean | null, thinkingMode: boolean | null, fastMode: boolean | null, sortOrder: number) =>
   invoke<void>('add_step', { id, sessionId, message, attachmentsJson, armed, model, planMode, thinkingMode, fastMode, sortOrder })

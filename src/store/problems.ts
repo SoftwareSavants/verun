@@ -351,6 +351,11 @@ export function setProjectErrors(taskId: string, errors: ProjectError[]) {
 // (the dynamic import pattern breaks an import cycle for tests).
 let lspHelpersForProjectErrors: { isFileOpenInEditor: (w: string, r: string) => boolean } | null = null
 
+/** Directly inject problems for demo/screenshot mode — bypasses LSP and IPC. */
+export function seedDemoProblems(data: Record<string, Record<string, import('../types').Problem[]>>) {
+  setProblemMap(prev => ({ ...prev, ...data }))
+}
+
 export function clearProblemsForTask(taskId: string) {
   setProblemMap(prev => {
     const next = { ...prev }
