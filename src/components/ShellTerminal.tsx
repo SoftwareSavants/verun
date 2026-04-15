@@ -53,7 +53,7 @@ function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId:
     if (mod && e.key === 'v') {
       e.preventDefault()
       e.stopImmediatePropagation()
-      ipc.readClipboard().then(text => { if (text) ipc.ptyWrite(terminalId, text) })
+      ipc.readClipboard().then(text => { if (text) term.paste(text) })
       return
     }
     if (mod && e.key === 'ArrowLeft') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x01'); return }

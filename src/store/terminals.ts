@@ -25,6 +25,26 @@ export interface XtermEntry {
 }
 const xtermInstances = new Map<string, XtermEntry>()
 
+const ptyWriteBuffers = new Map<string, string[]>()
+const ptyRafIds = new Map<string, number>()
+
+function flushPtyBuffer(terminalId: string) {
+  const buf = ptyWriteBuffers.get(terminalId)
+  const entry = xtermInstances.get(terminalId)
+  if (buf && buf.length > 0 && entry) {
+    entry.term.write(buf.join(''))
+    buf.length = 0
+  }
+  ptyRafIds.delete(terminalId)
+}
+
+function cleanupPtyBuffer(terminalId: string) {
+  const rafId = ptyRafIds.get(terminalId)
+  if (rafId != null) cancelAnimationFrame(rafId)
+  ptyRafIds.delete(terminalId)
+  ptyWriteBuffers.delete(terminalId)
+}
+
 // ---------------------------------------------------------------------------
 // Accessors
 // ---------------------------------------------------------------------------
@@ -166,6 +186,7 @@ export async function closeTerminal(terminalId: string) {
 }
 
 function removeTerminal(terminalId: string) {
+  cleanupPtyBuffer(terminalId)
   const term = terminals.find(t => t.id === terminalId)
   const taskId = term?.taskId
   const isSpecial = !!term?.hookType || !!term?.isStartCommand
@@ -192,6 +213,7 @@ export function closeTerminalsForTask(taskId: string) {
   deletingTasks.add(taskId)
   const ids = terminals.filter(t => t.taskId === taskId).map(t => t.id)
   for (const id of ids) {
+    cleanupPtyBuffer(id)
     xtermInstances.get(id)?.term.dispose()
     xtermInstances.delete(id)
   }
@@ -207,7 +229,16 @@ export function closeTerminalsForTask(taskId: string) {
 export async function initTerminalListeners() {
   await listen<PtyOutputEvent>('pty-output', (event) => {
     const { terminalId, data } = event.payload
-    xtermInstances.get(terminalId)?.term.write(data)
+    if (!xtermInstances.has(terminalId)) return
+    let buf = ptyWriteBuffers.get(terminalId)
+    if (!buf) {
+      buf = []
+      ptyWriteBuffers.set(terminalId, buf)
+    }
+    buf.push(data)
+    if (!ptyRafIds.has(terminalId)) {
+      ptyRafIds.set(terminalId, requestAnimationFrame(() => flushPtyBuffer(terminalId)))
+    }
   })
 
   await listen<PtyExitedEvent>('pty-exited', (event) => {
