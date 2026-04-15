@@ -87,7 +87,6 @@ export function consumePendingNav(id: number): { taskId: string; sessionId: stri
 }
 
 export function clearDeliveredNotifications() {
-  pendingNavMap.clear()
   removeAllActive().catch(() => {})
 }
 
