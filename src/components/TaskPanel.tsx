@@ -301,9 +301,21 @@ export const TaskPanel: Component = () => {
               <div class="flex flex-col flex-1 min-w-0 overflow-hidden bg-surface-1">
                 {/* Header — drag region for titlebar */}
                 <div class="px-4 pt-8 pb-2 flex items-center justify-between bg-surface-1 drag-region" data-tauri-drag-region>
-                  <h2 class="text-[13px] font-medium text-text-primary truncate min-w-0 no-drag">
-                    {t().name || 'New task'}
-                  </h2>
+                  <div class="flex items-center gap-2 min-w-0 no-drag">
+                    <h2 class="text-[13px] font-medium text-text-primary truncate shrink-0">
+                      {t().name || 'New task'}
+                    </h2>
+                    <button
+                      class="text-[11px] text-text-tertiary hover:text-text-secondary truncate min-w-0 transition-colors"
+                      title="Click to copy path"
+                      onClick={() => {
+                        navigator.clipboard.writeText(t().worktreePath)
+                        addToast('Path copied to clipboard', 'info')
+                      }}
+                    >
+                      {t().worktreePath.split('/').slice(-2).join('/')}
+                    </button>
+                  </div>
                   <Show when={!creating() && !error()}>
                     <div class="flex items-center gap-2 no-drag shrink-0">
                       <OpenInButton path={t().worktreePath} />
@@ -607,8 +619,11 @@ export const TaskPanel: Component = () => {
                             <ChatView
                               output={currentOutput()}
                               sessionStatus={currentSession()?.status}
+                              sessionError={currentSession()?.error}
                               sessionId={selectedSessionId()}
                               taskId={t().id}
+                              agentType={currentSession()?.agentType}
+                              model={currentSession()?.model}
                             />
                           </div>
                           <Show

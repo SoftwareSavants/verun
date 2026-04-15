@@ -45,6 +45,7 @@ export interface Session {
   name: string | null
   resumeSessionId: string | null
   status: SessionStatus
+  error?: string
   startedAt: number
   endedAt: number | null
   totalCost: number
@@ -130,7 +131,7 @@ export type OutputItem =
   | { kind: 'toolStart'; tool: string; input: string }
   | { kind: 'toolResult'; text: string; isError: boolean }
   | { kind: 'system'; text: string }
-  | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }
+  | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; error?: string }
   | { kind: 'turnSnapshot'; messageUuid: string }
   | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; data: Uint8Array }>; timestamp?: number }
   | { kind: 'raw'; text: string }
@@ -143,6 +144,7 @@ export interface SessionOutputEvent {
 export interface SessionStatusEvent {
   sessionId: string
   status: SessionStatus
+  error?: string
 }
 
 export interface RateLimitInfo {

@@ -167,13 +167,15 @@ export async function closeSession(sessionId: string) {
 }
 
 export async function loadOutputLines(sessionId: string) {
-  setOutputItems(sessionId, [])
   const lines = await ipc.getOutputLines(sessionId)
   const items: OutputItem[] = []
   for (const l of lines) {
     const parsed = parseNdjsonLine(l.line, l.emittedAt)
     if (parsed) items.push(...parsed)
   }
+  // Don't overwrite live items (from sendMessage/streaming) when DB returned nothing
+  const current = outputItems[sessionId]
+  if (current && current.length > 0 && items.length === 0) return
   setOutputItems(sessionId, items)
   // Accumulate costs + tokens from replayed output
   let replayCost = 0
@@ -326,10 +328,11 @@ export async function initSessionListeners() {
   })
 
   await listen<SessionStatusEvent>('session-status', (event) => {
-    const { sessionId, status } = event.payload
+    const { sessionId, status, error } = event.payload
     const prevSession = sessions.find(s => s.id === sessionId)
     const wasRunning = prevSession?.status === 'running'
     setSessions(s => s.id === sessionId, 'status', status)
+    setSessions(s => s.id === sessionId, 'error', status === 'error' ? error : undefined)
     // Clear pending approvals when session stops running
     if (status !== 'running') {
       setPendingApprovals(produce(store => { delete store[sessionId] }))

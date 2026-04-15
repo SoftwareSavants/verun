@@ -792,6 +792,7 @@ pub async fn send_message(
         stream::SessionStatusEvent {
             session_id: session_id.clone(),
             status: "running".to_string(),
+            error: None,
         },
     );
 
@@ -899,11 +900,17 @@ pub async fn send_message(
                 .await;
         }
 
+        let error_msg = if final_status == "error" {
+            stream_result.error.or_else(|| Some("Session exited unexpectedly".to_string()))
+        } else {
+            None
+        };
         let _ = monitor_app.emit(
             "session-status",
             stream::SessionStatusEvent {
                 session_id: monitor_sid,
                 status: final_status.to_string(),
+                error: error_msg,
             },
         );
 
@@ -942,6 +949,7 @@ pub async fn abort_message(
             stream::SessionStatusEvent {
                 session_id: session_id.to_string(),
                 status: "idle".to_string(),
+                error: None,
             },
         );
     }

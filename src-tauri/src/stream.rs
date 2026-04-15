@@ -60,6 +60,7 @@ pub enum OutputItem {
         output_tokens: Option<u64>,
         cache_read_tokens: Option<u64>,
         cache_write_tokens: Option<u64>,
+        error: Option<String>,
     },
 
     /// Per-turn snapshot marker — frontend attaches the message uuid to the
@@ -78,6 +79,7 @@ pub enum OutputItem {
 pub struct SessionStatusEvent {
     pub session_id: String,
     pub status: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -209,7 +211,14 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
             let cache_write_tokens = usage.and_then(|u|
                 u.get("cache_creation_input_tokens").or_else(|| u.get("cacheWriteTokens"))
             ).and_then(|t| t.as_u64());
-            vec![OutputItem::TurnEnd { status: status.to_string(), cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens }]
+            let error = if status == "error" {
+                v.get("error")
+                    .and_then(|e| e.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
+            vec![OutputItem::TurnEnd { status: status.to_string(), cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, error }]
         }
 
         // -- Telemetry events we can surface --
@@ -323,7 +332,7 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
             let input_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(|t| t.as_u64());
             let output_tokens = usage.and_then(|u| u.get("output_tokens")).and_then(|t| t.as_u64());
             let cache_read_tokens = usage.and_then(|u| u.get("cached_input_tokens")).and_then(|t| t.as_u64());
-            vec![OutputItem::TurnEnd { status: "completed".to_string(), cost: None, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens: None }]
+            vec![OutputItem::TurnEnd { status: "completed".to_string(), cost: None, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens: None, error: None }]
         }
 
         // Ignored Codex lifecycle events
@@ -392,7 +401,7 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
                 let cache_read_tokens = cache.and_then(|c| c.get("read")).and_then(|t| t.as_u64());
                 let cache_write_tokens = cache.and_then(|c| c.get("write")).and_then(|t| t.as_u64());
                 let cost = part.and_then(|p| p.get("cost")).and_then(|c| c.as_f64()).filter(|c| *c > 0.0);
-                vec![OutputItem::TurnEnd { status: "completed".to_string(), cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens }]
+                vec![OutputItem::TurnEnd { status: "completed".to_string(), cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, error: None }]
             } else {
                 vec![]
             }
@@ -633,6 +642,7 @@ fn extract_cursor_tool_result(tc: &serde_json::Map<String, serde_json::Value>) -
 
 pub struct StreamResult {
     pub total_cost: f64,
+    pub error: Option<String>,
 }
 
 /// After a turn ends, snapshot the worktree and persist a `turn_snapshots`
@@ -785,6 +795,7 @@ pub async fn stream_and_capture(
     let mut last_flush = Instant::now();
     let mut total_persisted: usize = 0;
     let mut total_cost: f64 = 0.0;
+    let mut last_error: Option<String> = None;
     // Captured from `system.init` events for the per-turn snapshot hook.
     let mut resume_id_for_snapshot: Option<String> = None;
 
@@ -861,10 +872,13 @@ pub async fn stream_and_capture(
                                     emit_item(&app, &session_id, item.clone());
                                     has_immediate = true;
                                 }
-                                OutputItem::TurnEnd { cost, .. } => {
+                                OutputItem::TurnEnd { cost, error: ref err, .. } => {
                                     is_turn_end = true;
                                     if let Some(c) = cost {
                                         total_cost += *c;
+                                    }
+                                    if err.is_some() {
+                                        last_error.clone_from(err);
                                     }
                                     buffer.push(item.clone());
                                 }
@@ -931,7 +945,7 @@ pub async fn stream_and_capture(
     }
 
     flush_buffer(&app, &session_id, &mut buffer);
-    StreamResult { total_cost }
+    StreamResult { total_cost, error: last_error }
 }
 
 /// Check if a line is a `control_request` for tool approval.
@@ -1247,11 +1261,12 @@ mod tests {
         let items = parse_sdk_event(line);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::TurnEnd { status, cost, input_tokens, output_tokens, .. } => {
+            OutputItem::TurnEnd { status, cost, input_tokens, output_tokens, error, .. } => {
                 assert_eq!(status, "completed");
                 assert_eq!(*cost, Some(0.042));
                 assert_eq!(*input_tokens, Some(100));
                 assert_eq!(*output_tokens, Some(50));
+                assert!(error.is_none());
             }
             _ => panic!("Expected TurnEnd item"),
         }
@@ -1267,6 +1282,20 @@ mod tests {
                 assert_eq!(*cost, None);
                 assert_eq!(*input_tokens, None);
                 assert_eq!(*output_tokens, None);
+            }
+            _ => panic!("Expected TurnEnd item"),
+        }
+    }
+
+    #[test]
+    fn parse_result_error_with_message() {
+        let line = r#"{"type":"result","subtype":"error","error":"API Error: 529 overloaded","session_id":"abc"}"#;
+        let items = parse_sdk_event(line);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::TurnEnd { status, error, .. } => {
+                assert_eq!(status, "error");
+                assert_eq!(error.as_deref(), Some("API Error: 529 overloaded"));
             }
             _ => panic!("Expected TurnEnd item"),
         }
@@ -1305,6 +1334,7 @@ mod tests {
         let event = SessionStatusEvent {
             session_id: "s-001".into(),
             status: "done".into(),
+            error: None,
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["sessionId"], "s-001");

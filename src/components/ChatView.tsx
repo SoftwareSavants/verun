@@ -3,7 +3,7 @@ import { createStore, produce, reconcile } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { OutputItem, SessionStatus } from '../types'
-import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch } from 'lucide-solid'
+import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
@@ -11,7 +11,7 @@ import { parseMentions } from '../lib/mentions'
 import { Popover } from './Popover'
 import * as ipc from '../lib/ipc'
 import { addToast, setSelectedTaskId, setSelectedSessionId } from '../store/ui'
-import { setSessions, loadOutputLines } from '../store/sessions'
+import { setSessions, loadOutputLines, sendMessage, createSession, taskPlanMode, taskThinkingMode, taskFastMode } from '../store/sessions'
 import { setTasks } from '../store/tasks'
 
 function formatDuration(ms: number): string {
@@ -53,8 +53,11 @@ function renderMarkdownForTask(text: string, taskId?: string): string {
 interface Props {
   output: OutputItem[]
   sessionStatus?: SessionStatus
+  sessionError?: string
   sessionId?: string | null
   taskId?: string
+  agentType?: string
+  model?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +597,94 @@ function clearHighlights(container: HTMLElement) {
 const savedScrollPositions = new Map<string, { scrollTop: number; autoScroll: boolean }>()
 
 // ---------------------------------------------------------------------------
+// Error banner with retry actions
+// ---------------------------------------------------------------------------
+
+function getLastUserMessage(output: OutputItem[]): string | undefined {
+  for (let i = output.length - 1; i >= 0; i--) {
+    if (output[i].kind === 'userMessage') return (output[i] as { kind: 'userMessage'; text: string }).text
+  }
+  return undefined
+}
+
+const ErrorBanner: Component<{
+  error?: string
+  output: OutputItem[]
+  sessionId?: string | null
+  taskId?: string
+  agentType?: string
+  model?: string | null
+}> = (props) => {
+  const [retrying, setRetrying] = createSignal(false)
+  const lastMessage = () => getLastUserMessage(props.output)
+
+  const modeArgs = (): [string | undefined, boolean | undefined, boolean | undefined, boolean | undefined] => {
+    const tid = props.taskId
+    return [
+      props.model ?? undefined,
+      tid ? taskPlanMode[tid] ?? undefined : undefined,
+      tid ? taskThinkingMode[tid] ?? undefined : undefined,
+      tid ? taskFastMode[tid] ?? undefined : undefined,
+    ]
+  }
+
+  const retry = async () => {
+    const msg = lastMessage()
+    if (!msg || !props.sessionId) return
+    setRetrying(true)
+    try {
+      const [model, plan, thinking, fast] = modeArgs()
+      await sendMessage(props.sessionId, msg, undefined, model, plan, thinking, fast)
+    } catch { /* status will update via event */ }
+    setRetrying(false)
+  }
+
+  const retryNewSession = async () => {
+    const msg = lastMessage()
+    if (!msg || !props.taskId) return
+    setRetrying(true)
+    try {
+      const session = await createSession(props.taskId, props.agentType ?? 'claude', props.model ?? undefined)
+      setSelectedSessionId(session.id)
+      const [model, plan, thinking, fast] = modeArgs()
+      await sendMessage(session.id, msg, undefined, model, plan, thinking, fast)
+    } catch { /* status will update via event */ }
+    setRetrying(false)
+  }
+
+  return (
+    <div class="mx-5 flex flex-col gap-2 px-3 py-2.5 rounded-lg bg-status-error/8 ring-1 ring-status-error/15">
+      <div class="flex items-start gap-2">
+        <AlertTriangle size={14} class="text-status-error shrink-0 mt-0.5" />
+        <span class="text-xs text-status-error">
+          {props.error || 'Session encountered an error'}
+        </span>
+      </div>
+      <Show when={lastMessage()}>
+        <div class="flex items-center gap-2 ml-5.5">
+          <button
+            class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-status-error/12 text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"
+            onClick={retry}
+            disabled={retrying()}
+          >
+            <RotateCw size={11} />
+            Retry
+          </button>
+          <button
+            class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-2 text-text-secondary hover:bg-surface-3 transition-colors disabled:opacity-50"
+            onClick={retryNewSession}
+            disabled={retrying()}
+          >
+            <Plus size={11} />
+            Retry in new session
+          </button>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main ChatView
 // ---------------------------------------------------------------------------
 
@@ -851,13 +942,6 @@ export const ChatView: Component<Props> = (props) => {
         onClick={handleLinkClick}
       >
       <div ref={contentRef} class="flex flex-col gap-2 pt-4 pb-6">
-        <Show when={props.sessionStatus === 'error'}>
-          <div class="mx-5 flex items-center gap-2 px-3 py-2 rounded-lg bg-status-error/8 border border-status-error/15">
-            <AlertTriangle size={14} class="text-status-error shrink-0" />
-            <span class="text-xs text-status-error">Session encountered an error. Create a new session to continue.</span>
-          </div>
-        </Show>
-
         <For each={blocks}>
           {(block) => (
             <Switch>
@@ -966,6 +1050,17 @@ export const ChatView: Component<Props> = (props) => {
             </Switch>
           )}
         </For>
+
+        <Show when={props.sessionStatus === 'error'}>
+          <ErrorBanner
+            error={props.sessionError}
+            output={props.output}
+            sessionId={props.sessionId}
+            taskId={props.taskId}
+            agentType={props.agentType}
+            model={props.model}
+          />
+        </Show>
 
         <Show when={props.sessionStatus === 'running'}>
           <div class="px-5 py-2">
