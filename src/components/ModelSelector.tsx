@@ -62,6 +62,7 @@ export const ModelSelector: Component<Props> = (props) => {
           <SvgIcon svg={agentSvg()} size={10} />
           {AGENT_DISPLAY_NAMES[props.agentType]}
         </div>
+        <div class="max-h-52 overflow-y-auto">
         <For each={agentModels()}>
           {(opt) => {
             const selected = () => resolvedModel() === opt.id
@@ -84,6 +85,7 @@ export const ModelSelector: Component<Props> = (props) => {
             )
           }}
         </For>
+        </div>
       </Popover>
     </div>
   )
