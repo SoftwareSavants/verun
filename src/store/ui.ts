@@ -12,24 +12,13 @@ export function setSelectedTaskId(id: string | null) {
   else localStorage.removeItem('verun:selectedTaskId')
 }
 
-const LAST_SESSION_KEY = 'verun:lastSessionPerTask'
-
-function loadLastSessionMap(): Record<string, string> {
-  try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(LAST_SESSION_KEY) : null
-    return raw ? JSON.parse(raw) : {}
-  } catch { return {} }
-}
-
 export function getLastSessionForTask(taskId: string): string | null {
-  return loadLastSessionMap()[taskId] ?? null
+  return typeof localStorage !== 'undefined' ? localStorage.getItem(`verun:lastSession:${taskId}`) : null
 }
 
 export function setLastSessionForTask(taskId: string, sessionId: string | null) {
-  const map = loadLastSessionMap()
-  if (sessionId) map[taskId] = sessionId
-  else delete map[taskId]
-  localStorage.setItem(LAST_SESSION_KEY, JSON.stringify(map))
+  if (sessionId) localStorage.setItem(`verun:lastSession:${taskId}`, sessionId)
+  else localStorage.removeItem(`verun:lastSession:${taskId}`)
 }
 
 const [_selectedSessionId, _setSelectedSessionId] = createSignal<string | null>(null)
