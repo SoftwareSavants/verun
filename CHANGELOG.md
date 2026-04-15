@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix setup script opening a terminal in the wrong task when the user navigates away before the hook starts - terminal panel now only auto-shows if the task is still selected
 - Fix clicking a notification not selecting the source task - visibility change was clearing the nav map before the click handler could consume it
 - Fix single-line text selection invisible in code editor - active line highlight now suppresses when text is selected so drawSelection's selection layer is visible
 - Rewrote bash policy engine to use AST-based shell parsing (yash-syntax) instead of substring matching - handles compound commands, subshells, combined flags, and wrapper programs (env, sudo, bash -c)
