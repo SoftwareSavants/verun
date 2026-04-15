@@ -11,6 +11,7 @@
 - Fix archiving a task from the GitActions replacement button not closing the task panel - deselection now happens inside `archiveTask` so all callers get it
 - Fix slow pasting of long text in session composer - disable spellcheck/autocorrect overhead, use Range API for large pastes (>10KB) while keeping `execCommand` + native undo for normal-sized pastes
 - Fix slow pasting of long text in shell terminals - use `term.paste()` for bracketed paste support and rAF-batch `pty-output` writes to prevent render storms
+- Cmd+F / Ctrl+F search in shell terminals - highlights matches, Enter/Shift+Enter to navigate, Escape to dismiss
 - Demo mode: set `VITE_DEMO_MODE=true` to populate the app with dummy projects, tasks, sessions, and a realistic chat conversation for screenshots
 - Fix message role corruption when switching between tasks - clear stale output data before reloading and use reactive Switch/Match for block type rendering so reconcile merges can't produce wrong role display
 - Fix "delete branch with merge" failing because `gh pr merge --delete-branch` tries to checkout main, which conflicts with the main worktree - now deletes the remote branch separately after merge

@@ -70,11 +70,25 @@ export const Terminal: Component<Props> = (props) => {
   let term: XTerm
   let fitAddon: FitAddon
   let searchAddon: SearchAddon
+  let resultsDisposable: { dispose(): void } | undefined
   let writeBuffer: string[] = []
   let rafId: number | null = null
   let lastWrittenIndex = 0
 
+  const searchOpts = {
+    decorations: {
+      matchBorder: '#2d6e4f',
+      matchOverviewRuler: '#2d6e4f',
+      activeMatchBackground: '#2d6e4f',
+      activeMatchBorder: '#3a8562',
+      activeMatchColorOverviewRuler: '#3a8562',
+    },
+  }
+
   const [showSearch, setShowSearch] = createSignal(false)
+  const [searchQuery, setSearchQuery] = createSignal('')
+  const [resultIndex, setResultIndex] = createSignal(-1)
+  const [resultCount, setResultCount] = createSignal(0)
   const [isAtBottom, setIsAtBottom] = createSignal(true)
 
   const flushBuffer = () => {
@@ -98,26 +112,43 @@ export const Terminal: Component<Props> = (props) => {
     }
   }
 
+  const closeSearch = () => {
+    setShowSearch(false)
+    setSearchQuery('')
+    setResultIndex(-1)
+    setResultCount(0)
+    searchAddon?.clearDecorations()
+    term?.focus()
+  }
+
   const toggleSearch = () => {
-    const next = !showSearch()
-    setShowSearch(next)
-    if (next) {
-      requestAnimationFrame(() => searchInputRef?.focus())
+    if (showSearch()) {
+      closeSearch()
     } else {
-      searchAddon?.clearDecorations()
+      setShowSearch(true)
+      requestAnimationFrame(() => {
+        searchInputRef?.focus()
+        searchInputRef?.select()
+      })
     }
+  }
+
+  const findNext = () => {
+    const val = searchInputRef?.value
+    if (val) searchAddon?.findNext(val, searchOpts)
+  }
+
+  const findPrev = () => {
+    const val = searchInputRef?.value
+    if (val) searchAddon?.findPrevious(val, searchOpts)
   }
 
   const handleSearchKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
-      setShowSearch(false)
-      searchAddon?.clearDecorations()
+      closeSearch()
     } else if (e.key === 'Enter') {
-      if (e.shiftKey) {
-        searchAddon?.findPrevious((e.target as HTMLInputElement).value)
-      } else {
-        searchAddon?.findNext((e.target as HTMLInputElement).value)
-      }
+      if (e.shiftKey) findPrev()
+      else findNext()
     }
   }
 
@@ -127,7 +158,7 @@ export const Terminal: Component<Props> = (props) => {
         background: '#0a0a0a',
         foreground: '#e5e5e5',
         cursor: '#e5e5e5',
-        selectionBackground: '#6366f140',
+        selectionBackground: '#2d6e4f80',
       },
       fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       fontSize: 13,
@@ -140,6 +171,10 @@ export const Terminal: Component<Props> = (props) => {
 
     fitAddon = new FitAddon()
     searchAddon = new SearchAddon()
+    resultsDisposable = searchAddon.onDidChangeResults((e) => {
+      setResultIndex(e.resultIndex)
+      setResultCount(e.resultCount)
+    })
     term.loadAddon(fitAddon)
     term.loadAddon(new WebLinksAddon())
     term.loadAddon(searchAddon)
@@ -169,6 +204,7 @@ export const Terminal: Component<Props> = (props) => {
     onCleanup(() => {
       containerRef.removeEventListener('keydown', handleKeyboard)
       resizeObserver.disconnect()
+      resultsDisposable?.dispose()
       if (rafId !== null) cancelAnimationFrame(rafId)
       term.dispose()
     })
@@ -198,21 +234,46 @@ export const Terminal: Component<Props> = (props) => {
 
   return (
     <div class="w-full h-full relative" tabIndex={0}>
-      {/* Search bar */}
       <Show when={showSearch()}>
-        <div class="absolute top-2 right-2 z-10 flex items-center gap-1 bg-surface-2 border border-border rounded px-2 py-1">
+        <div class="absolute top-2 right-3 z-20 flex items-center gap-1 bg-surface-2 border border-border rounded-lg px-2 py-1 shadow-lg">
           <input
             ref={searchInputRef}
-            class="bg-transparent text-sm text-gray-200 outline-none w-48 placeholder-gray-500"
-            placeholder="Search..."
+            class="bg-transparent text-sm text-text-primary outline-none w-52 placeholder-text-dim"
+            placeholder="Find in session..."
+            value={searchQuery()}
             onKeyDown={handleSearchKeyDown}
-            onInput={(e) => searchAddon?.findNext(e.currentTarget.value)}
+            onInput={(e) => {
+              const val = e.currentTarget.value
+              setSearchQuery(val)
+              if (val) searchAddon?.findPrevious(val, searchOpts)
+              else { searchAddon?.clearDecorations(); setResultIndex(-1); setResultCount(0) }
+            }}
           />
+          <span class="text-[11px] text-text-dim whitespace-nowrap w-16 text-right">
+            {searchQuery() ? (resultCount() === 0 ? 'No results' : `${resultIndex() + 1} of ${resultCount()}`) : '\u00A0'}
+          </span>
           <button
-            class="text-gray-500 hover:text-gray-300 text-xs px-1"
-            onClick={() => { setShowSearch(false); searchAddon?.clearDecorations() }}
+            class="p-0.5 text-text-dim hover:text-text-muted transition-colors disabled:opacity-30"
+            onClick={findPrev}
+            disabled={resultCount() === 0}
+            title="Previous (Shift+Enter)"
           >
-            Esc
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+          </button>
+          <button
+            class="p-0.5 text-text-dim hover:text-text-muted transition-colors disabled:opacity-30"
+            onClick={findNext}
+            disabled={resultCount() === 0}
+            title="Next (Enter)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <button
+            class="p-0.5 text-text-dim hover:text-text-muted transition-colors"
+            onClick={closeSearch}
+            title="Close (Esc)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
         </div>
       </Show>
