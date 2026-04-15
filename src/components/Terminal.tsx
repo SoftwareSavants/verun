@@ -70,11 +70,25 @@ export const Terminal: Component<Props> = (props) => {
   let term: XTerm
   let fitAddon: FitAddon
   let searchAddon: SearchAddon
+  let resultsDisposable: { dispose(): void } | undefined
   let writeBuffer: string[] = []
   let rafId: number | null = null
   let lastWrittenIndex = 0
 
+  const searchOpts = {
+    decorations: {
+      matchBackground: '#6366f130',
+      matchBorder: '#6366f150',
+      matchOverviewRuler: '#6366f180',
+      activeMatchBackground: '#6366f160',
+      activeMatchBorder: '#818cf8',
+      activeMatchColorOverviewRuler: '#818cf8',
+    },
+  }
+
   const [showSearch, setShowSearch] = createSignal(false)
+  const [resultIndex, setResultIndex] = createSignal(-1)
+  const [resultCount, setResultCount] = createSignal(0)
   const [isAtBottom, setIsAtBottom] = createSignal(true)
 
   const flushBuffer = () => {
@@ -98,26 +112,42 @@ export const Terminal: Component<Props> = (props) => {
     }
   }
 
+  const closeSearch = () => {
+    setShowSearch(false)
+    setResultIndex(-1)
+    setResultCount(0)
+    searchAddon?.clearDecorations()
+    term?.focus()
+  }
+
   const toggleSearch = () => {
-    const next = !showSearch()
-    setShowSearch(next)
-    if (next) {
-      requestAnimationFrame(() => searchInputRef?.focus())
+    if (showSearch()) {
+      closeSearch()
     } else {
-      searchAddon?.clearDecorations()
+      setShowSearch(true)
+      requestAnimationFrame(() => {
+        searchInputRef?.focus()
+        searchInputRef?.select()
+      })
     }
+  }
+
+  const findNext = () => {
+    const val = searchInputRef?.value
+    if (val) searchAddon?.findNext(val, searchOpts)
+  }
+
+  const findPrev = () => {
+    const val = searchInputRef?.value
+    if (val) searchAddon?.findPrevious(val, searchOpts)
   }
 
   const handleSearchKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
-      setShowSearch(false)
-      searchAddon?.clearDecorations()
+      closeSearch()
     } else if (e.key === 'Enter') {
-      if (e.shiftKey) {
-        searchAddon?.findPrevious((e.target as HTMLInputElement).value)
-      } else {
-        searchAddon?.findNext((e.target as HTMLInputElement).value)
-      }
+      if (e.shiftKey) findPrev()
+      else findNext()
     }
   }
 
@@ -140,6 +170,10 @@ export const Terminal: Component<Props> = (props) => {
 
     fitAddon = new FitAddon()
     searchAddon = new SearchAddon()
+    resultsDisposable = searchAddon.onDidChangeResults((e) => {
+      setResultIndex(e.resultIndex)
+      setResultCount(e.resultCount)
+    })
     term.loadAddon(fitAddon)
     term.loadAddon(new WebLinksAddon())
     term.loadAddon(searchAddon)
@@ -169,6 +203,7 @@ export const Terminal: Component<Props> = (props) => {
     onCleanup(() => {
       containerRef.removeEventListener('keydown', handleKeyboard)
       resizeObserver.disconnect()
+      resultsDisposable?.dispose()
       if (rafId !== null) cancelAnimationFrame(rafId)
       term.dispose()
     })
@@ -198,22 +233,47 @@ export const Terminal: Component<Props> = (props) => {
 
   return (
     <div class="w-full h-full relative" tabIndex={0}>
-      {/* Search bar */}
       <Show when={showSearch()}>
-        <div class="absolute top-2 right-2 z-10 flex items-center gap-1 bg-surface-2 border border-border rounded px-2 py-1">
+        <div class="absolute top-2 right-2 z-10 flex items-center gap-1.5 bg-surface-2 border border-border rounded-lg px-2 py-1">
           <input
             ref={searchInputRef}
-            class="bg-transparent text-sm text-gray-200 outline-none w-48 placeholder-gray-500"
+            class="bg-transparent text-sm text-gray-200 outline-none w-40 placeholder-gray-500"
             placeholder="Search..."
             onKeyDown={handleSearchKeyDown}
-            onInput={(e) => searchAddon?.findNext(e.currentTarget.value)}
+            onInput={(e) => {
+              const val = e.currentTarget.value
+              if (val) searchAddon?.findPrevious(val, searchOpts)
+              else { searchAddon?.clearDecorations(); setResultIndex(-1); setResultCount(0) }
+            }}
           />
-          <button
-            class="text-gray-500 hover:text-gray-300 text-xs px-1"
-            onClick={() => { setShowSearch(false); searchAddon?.clearDecorations() }}
-          >
-            Esc
-          </button>
+          <Show when={resultCount() > 0}>
+            <span class="text-xs text-gray-500 tabular-nums whitespace-nowrap">
+              {resultIndex() + 1}/{resultCount()}
+            </span>
+          </Show>
+          <div class="flex items-center gap-0.5">
+            <button
+              class="text-gray-500 hover:text-gray-200 p-0.5 rounded hover:bg-white/5"
+              onClick={findPrev}
+              title="Previous (Shift+Enter)"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+            </button>
+            <button
+              class="text-gray-500 hover:text-gray-200 p-0.5 rounded hover:bg-white/5"
+              onClick={findNext}
+              title="Next (Enter)"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <button
+              class="text-gray-500 hover:text-gray-200 p-0.5 rounded hover:bg-white/5"
+              onClick={closeSearch}
+              title="Close (Escape)"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+          </div>
         </div>
       </Show>
 
