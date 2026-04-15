@@ -1,4 +1,5 @@
 import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
+import { Dynamic } from 'solid-js/web'
 import { ArrowUpFromLine, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye, Archive } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import * as ipc from '../lib/ipc'
@@ -251,8 +252,7 @@ export const GitActions: Component<Props> = (props) => {
   const hasAnything = () => hasOpenPr() || prMerged() || (!prDone() && (commitCount() > 0 || isBehind())) || fileCount() > 0
 
   const PrimaryIcon = () => {
-    const Icon = primaryAction().icon
-    return <Icon size={12} />
+    return <Dynamic component={primaryAction().icon} size={12} />
   }
 
   return (
