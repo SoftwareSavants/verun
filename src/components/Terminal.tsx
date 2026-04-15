@@ -80,6 +80,7 @@ export const Terminal: Component<Props> = (props) => {
       matchBorder: '#2d6e4f',
       matchOverviewRuler: '#2d6e4f',
       activeMatchBackground: '#2d6e4f',
+      activeMatchBorder: '#3a8562',
       activeMatchColorOverviewRuler: '#3a8562',
     },
   }
@@ -157,7 +158,7 @@ export const Terminal: Component<Props> = (props) => {
         background: '#0a0a0a',
         foreground: '#e5e5e5',
         cursor: '#e5e5e5',
-        selectionBackground: '#6366f140',
+        selectionBackground: '#2d6e4f80',
       },
       fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       fontSize: 13,
