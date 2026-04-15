@@ -119,8 +119,8 @@ interface Props {
 
 const SEARCH_DECORATIONS = {
   matchBorder: '#2d6e4f',
-  matchOverviewRuler: '#2d6e4f80',
-  activeMatchBackground: '#2d6e4f60',
+  matchOverviewRuler: '#2d6e4f',
+  activeMatchBackground: '#2d6e4f',
   activeMatchColorOverviewRuler: '#3a8562',
 }
 
