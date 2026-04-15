@@ -291,8 +291,24 @@ fn check_hard_block_args(args: &[String]) -> Option<&'static str> {
             None
         }
         "rm" => check_rm_verun(rest),
+        "sudo" => check_hard_block_args(skip_sudo_flags(rest)),
         _ => None,
     }
+}
+
+fn skip_sudo_flags(args: &[String]) -> &[String] {
+    let mut i = 0;
+    while i < args.len() && args[i].starts_with('-') {
+        if matches!(
+            args[i].as_str(),
+            "-u" | "-g" | "-C" | "-D" | "-r" | "-t" | "-p"
+        ) {
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    &args[i..]
 }
 
 fn check_git_hard_block(args: &[String]) -> Option<&'static str> {
@@ -1175,74 +1191,254 @@ mod tests {
         assert!(!has_long_flag(&["-f", "origin"], &["--force"]));
     }
 
-    // -- Hard blocks (bypass trust level) --
+    // =====================================================================
+    // Hard blocks — worktree ops & .verun deletion (all trust levels)
+    // =====================================================================
+
+    // -- Core: worktree prune/remove blocked at every trust level --
 
     #[test]
-    fn hard_block_worktree_prune_in_full_auto() {
-        let result = evaluate("Bash", &json!({"command": "git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
-        assert!(result.reason.contains("hard-blocked"));
+    fn hard_block_worktree_prune_full_auto() {
+        let r = evaluate("Bash", &json!({"command": "git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+        assert!(r.reason.contains("hard-blocked"));
+        assert!(r.reason.contains("verun-managed"));
     }
 
     #[test]
-    fn hard_block_worktree_remove_in_full_auto() {
-        let result = evaluate("Bash", &json!({"command": "git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
-        assert!(result.reason.contains("hard-blocked"));
+    fn hard_block_worktree_prune_normal() {
+        let r = evaluate("Bash", &json!({"command": "git worktree prune"}), WORKTREE, REPO, TrustLevel::Normal);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+        assert!(r.reason.contains("hard-blocked"));
     }
+
+    #[test]
+    fn hard_block_worktree_prune_supervised() {
+        let r = evaluate("Bash", &json!({"command": "git worktree prune"}), WORKTREE, REPO, TrustLevel::Supervised);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_worktree_remove_full_auto() {
+        let r = evaluate("Bash", &json!({"command": "git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+        assert!(r.reason.contains("hard-blocked"));
+    }
+
+    #[test]
+    fn hard_block_worktree_remove_normal() {
+        let r = evaluate("Bash", &json!({"command": "git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::Normal);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+        assert!(r.reason.contains("hard-blocked"));
+    }
+
+    #[test]
+    fn hard_block_worktree_remove_force_flag() {
+        let r = evaluate("Bash", &json!({"command": "git worktree remove --force /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- git -C cross-repo attacks --
 
     #[test]
     fn hard_block_git_c_worktree_prune() {
-        let result = evaluate("Bash", &json!({"command": "git -C /other/project worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        let r = evaluate("Bash", &json!({"command": "git -C /other/project worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
 
     #[test]
-    fn hard_block_rm_verun_dir() {
-        let result = evaluate("Bash", &json!({"command": "rm -rf .verun/worktrees/some-task"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
-        assert!(result.reason.contains(".verun"));
+    fn hard_block_git_c_worktree_remove() {
+        let r = evaluate("Bash", &json!({"command": "git -C /other/repo worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_git_multiple_c_flags() {
+        let r = evaluate("Bash", &json!({"command": "git -C /a -C /b worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn deny_git_c_push_force() {
+        assert!(matches_deny_pattern("git -C /other/repo push --force").is_some());
+    }
+
+    // -- .verun directory deletion --
+
+    #[test]
+    fn hard_block_rm_verun_relative() {
+        let r = evaluate("Bash", &json!({"command": "rm -rf .verun/worktrees/some-task"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+        assert!(r.reason.contains(".verun"));
     }
 
     #[test]
     fn hard_block_rm_verun_absolute() {
-        let result = evaluate("Bash", &json!({"command": "rm -rf /projects/repo/.verun/worktrees"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        let r = evaluate("Bash", &json!({"command": "rm -rf /projects/repo/.verun/worktrees"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
+
+    #[test]
+    fn hard_block_rm_verun_without_rf() {
+        let r = evaluate("Bash", &json!({"command": "rm .verun/worktrees/task/.git"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_rm_verun_parent() {
+        let r = evaluate("Bash", &json!({"command": "rm -rf .verun"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_rm_verun_sibling_worktree() {
+        let r = evaluate("Bash", &json!({"command": "rm -rf ../other-task/.verun"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- Compound command evasions --
 
     #[test]
     fn hard_block_worktree_in_subshell() {
-        let result = evaluate("Bash", &json!({"command": "(git worktree prune)"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        let r = evaluate("Bash", &json!({"command": "(git worktree prune)"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
 
     #[test]
-    fn hard_block_worktree_chained() {
-        let result = evaluate("Bash", &json!({"command": "echo ok && git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    fn hard_block_worktree_in_brace_group() {
+        let r = evaluate("Bash", &json!({"command": "{ git worktree remove /tmp/wt; }"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
+
+    #[test]
+    fn hard_block_worktree_chained_and() {
+        let r = evaluate("Bash", &json!({"command": "echo ok && git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_worktree_chained_or() {
+        let r = evaluate("Bash", &json!({"command": "false || git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_worktree_chained_semicolon() {
+        let r = evaluate("Bash", &json!({"command": "echo ok; git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_rm_verun_chained() {
+        let r = evaluate("Bash", &json!({"command": "echo ok && rm -rf .verun/worktrees/task"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- Wrapper evasions --
+
+    #[test]
+    fn hard_block_env_worktree_prune() {
+        let r = evaluate("Bash", &json!({"command": "env git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_env_with_vars_worktree() {
+        let r = evaluate("Bash", &json!({"command": "env GIT_TERMINAL_PROMPT=0 git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_command_worktree() {
+        let r = evaluate("Bash", &json!({"command": "command git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_sudo_worktree_prune() {
+        let r = evaluate("Bash", &json!({"command": "sudo git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_sudo_u_worktree_prune() {
+        let r = evaluate("Bash", &json!({"command": "sudo -u root git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_sudo_rm_verun() {
+        let r = evaluate("Bash", &json!({"command": "sudo rm -rf .verun/worktrees"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- Shell re-invocation --
 
     #[test]
     fn hard_block_bash_c_worktree() {
-        let result = evaluate("Bash", &json!({"command": "bash -c 'git worktree prune'"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        let r = evaluate("Bash", &json!({"command": "bash -c 'git worktree prune'"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
 
     #[test]
-    fn full_auto_allows_safe_commands() {
-        let result = evaluate("Bash", &json!({"command": "git push --force"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::AutoAllow);
+    fn hard_block_sh_c_worktree() {
+        let r = evaluate("Bash", &json!({"command": "sh -c 'git worktree remove /tmp/wt'"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
 
     #[test]
-    fn full_auto_allows_git_worktree_list() {
-        let result = evaluate("Bash", &json!({"command": "git worktree list"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::AutoAllow);
+    fn hard_block_bash_c_rm_verun() {
+        let r = evaluate("Bash", &json!({"command": "bash -c 'rm -rf .verun'"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- Safe ops that must NOT be hard-blocked --
+
+    #[test]
+    fn full_auto_allows_non_worktree_destructive() {
+        let r = evaluate("Bash", &json!({"command": "git push --force"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
 
     #[test]
-    fn hard_block_env_wrapped_worktree() {
-        let result = evaluate("Bash", &json!({"command": "env git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    fn full_auto_allows_worktree_list() {
+        let r = evaluate("Bash", &json!({"command": "git worktree list"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_worktree_add() {
+        let r = evaluate("Bash", &json!({"command": "git worktree add /tmp/new-wt feature-branch"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_rm_without_verun() {
+        let r = evaluate("Bash", &json!({"command": "rm -rf ./node_modules"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_git_status() {
+        let r = evaluate("Bash", &json!({"command": "git status"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_git_c_safe_op() {
+        let r = evaluate("Bash", &json!({"command": "git -C /other/repo status"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn hard_block_does_not_affect_non_bash_tools() {
+        let r = evaluate("Read", &json!({"file_path": "/tmp/project/src/main.rs"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn hard_block_does_not_affect_write_tool() {
+        let r = evaluate("Write", &json!({"file_path": "/tmp/.verun/foo"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
 }
