@@ -1,5 +1,4 @@
 import { createSignal } from 'solid-js'
-import type { ModelId } from '../types'
 import { registerWindowedTaskChecker } from '../lib/windowContext'
 
 export const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
@@ -89,31 +88,6 @@ export const [rightPanelWidth, setRightPanelWidth] = createSignal(savedRightPane
 
 export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
 
-// Model selection — per task, persisted per project as the default for new tasks
-const [taskModels, setTaskModels] = createSignal<Record<string, ModelId>>({})
-
-export function setTaskModel(taskId: string, model: ModelId) {
-  setTaskModels(prev => ({ ...prev, [taskId]: model }))
-  localStorage.setItem(`verun:task-model:${taskId}`, model)
-  const pid = selectedProjectId()
-  if (pid) localStorage.setItem(`verun:model:${pid}`, model)
-}
-
-export function effectiveModel(taskId: string | null): ModelId {
-  if (taskId) {
-    let m = taskModels()[taskId]
-    if (m) return m
-    // Restore from storage on first access
-    const saved = localStorage.getItem(`verun:task-model:${taskId}`) as ModelId | null
-    if (saved) {
-      setTaskModels(prev => ({ ...prev, [taskId]: saved }))
-      return saved
-    }
-  }
-  const pid = selectedProjectId()
-  if (pid) return (localStorage.getItem(`verun:model:${pid}`) as ModelId | null) || 'sonnet'
-  return 'sonnet'
-}
 export const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null)
 export const [showSettings, setShowSettings] = createSignal(false)
 export const [showArchived, setShowArchived] = createSignal(false)

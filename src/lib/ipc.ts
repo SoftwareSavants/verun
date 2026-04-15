@@ -79,6 +79,9 @@ export const sendMessage = (sessionId: string, message: string, attachments?: At
   return invoke<void>('send_message', { sessionId, message, attachments: wireAttachments, model, planMode, thinkingMode, fastMode })
 }
 
+export const updateSessionModel = (sessionId: string, model: string | null) =>
+  invoke<void>('update_session_model', { sessionId, model })
+
 export const closeSession = (sessionId: string) =>
   invoke<void>('close_session', { sessionId })
 

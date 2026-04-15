@@ -29,11 +29,11 @@ impl Agent for Cursor {
         // Fallback used when `agent --list-models` is unavailable or fails.
         use crate::agent::ModelOption;
         vec![
+            ModelOption::new("auto", "Auto", ""),
             ModelOption::new("composer-2-fast", "Composer 2 Fast", "Default"),
             ModelOption::new("composer-2", "Composer 2", "Balanced"),
             ModelOption::new("gpt-5.3-codex", "Codex 5.3", "Coding"),
-            ModelOption::new("claude-4.6-sonnet-medium", "Sonnet 4.6", "Anthropic"),
-            ModelOption::new("gpt-5.4-medium", "GPT-5.4", "OpenAI"),
+            ModelOption::new("gpt-5.2", "GPT-5.2", "OpenAI"),
         ]
     }
 

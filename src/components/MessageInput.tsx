@@ -1,6 +1,6 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps, sessionById } from '../store/sessions'
-import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
+import { setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
@@ -13,7 +13,7 @@ import type { Command } from '../store/commands'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
-import type { Attachment, ModelId, TrustLevel, AgentType } from '../types'
+import type { Attachment, TrustLevel, AgentType } from '../types'
 import { agents } from '../store/agents'
 import * as ipc from '../lib/ipc'
 import { Popover } from './Popover'
@@ -602,7 +602,11 @@ export const MessageInput: Component<Props> = (props) => {
     sendMessage(sid, text, undefined, currentModel(), true)
   }
 
-  const currentModel = () => effectiveModel(selectedTaskId())
+  const currentModel = (): string | undefined => {
+    const sid = props.sessionId
+    const session = sid ? sessionById(sid) : undefined
+    return session?.model ?? undefined
+  }
 
   const currentApproval = () => {
     const sid = props.sessionId
@@ -904,12 +908,11 @@ export const MessageInput: Component<Props> = (props) => {
         break
       }
       case 'model': {
-        // Extract model from remaining text, e.g. "/model opus"
         const parts = message().trim().split(/\s+/)
-        const modelArg = parts[1] as ModelId | undefined
-        const modelTaskId = selectedTaskId()
-        if (modelArg && ['opus', 'sonnet', 'haiku'].includes(modelArg) && modelTaskId) {
-          setTaskModel(modelTaskId, modelArg)
+        const modelArg = parts[1] ?? null
+        const sid = props.sessionId
+        if (sid && modelArg) {
+          updateSessionModel(sid, modelArg)
         }
         break
       }
@@ -2120,8 +2123,8 @@ export const MessageInput: Component<Props> = (props) => {
               model={currentModel()}
               agentType={sessionAgent()?.id ?? 'claude' as AgentType}
               onChange={(m) => {
-                const tid = selectedTaskId()
-                if (tid) setTaskModel(tid, m)
+                const sid = props.sessionId
+                if (sid) updateSessionModel(sid, m)
               }}
               disabled={!props.sessionId || props.isRunning}
             />

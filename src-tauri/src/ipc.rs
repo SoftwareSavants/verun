@@ -620,6 +620,18 @@ pub async fn send_message(
     .await
 }
 
+#[tauri::command]
+pub async fn update_session_model(
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+    model: Option<String>,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::UpdateSessionModel { id: session_id, model })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
+}
+
 /// Close a session (hides from UI, persists in DB as 'closed')
 #[tauri::command]
 pub async fn close_session(

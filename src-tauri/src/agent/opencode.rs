@@ -45,9 +45,7 @@ impl Agent for OpenCode {
                 // Must contain exactly one '/' and no whitespace
                 if !line.contains('/') || line.contains(' ') { return None; }
                 let label = line.split('/').next_back().unwrap_or(line).to_string();
-                let provider = line.split('/').next().unwrap_or("").to_string();
-                let description = if provider.is_empty() { String::new() } else { provider };
-                Some(crate::agent::ModelOption::new(line, &label, &description))
+                Some(crate::agent::ModelOption::new(line, &label, ""))
             })
             .collect()
     }

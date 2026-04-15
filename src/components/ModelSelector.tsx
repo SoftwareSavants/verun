@@ -1,4 +1,4 @@
-import { Component, For, createSignal, createEffect, createMemo } from 'solid-js'
+import { Component, For, Show, createSignal, createEffect, createMemo } from 'solid-js'
 import { AGENT_DISPLAY_NAMES } from '../types'
 import type { ModelId, AgentType } from '../types'
 import { agents } from '../store/agents'
@@ -9,7 +9,7 @@ import { agentIcon } from '../lib/agents'
 import SvgIcon from './SvgIcon'
 
 interface Props {
-  model: ModelId
+  model: ModelId | null | undefined
   agentType: AgentType
   onChange: (model: ModelId) => void
   disabled?: boolean
@@ -25,14 +25,15 @@ export const ModelSelector: Component<Props> = (props) => {
   // Resolved model: stored value if valid for this agent, else first in list
   const resolvedModel = createMemo(() => {
     const models = agentModels()
-    if (models.length === 0) return props.model
-    return models.find(m => m.id === props.model) ? props.model : models[0].id
+    if (models.length === 0) return props.model ?? undefined
+    const match = models.find(m => m.id === props.model)
+    return match ? props.model! : models[0].id
   })
 
   // Auto-correct stored model when agent changes and stored model isn't in list
   createEffect(() => {
     const resolved = resolvedModel()
-    if (resolved !== props.model) {
+    if (resolved && resolved !== props.model) {
       props.onChange(resolved)
     }
   })
@@ -57,7 +58,7 @@ export const ModelSelector: Component<Props> = (props) => {
         <ChevronDown size={9} class={clsx('transition-transform', open() && 'rotate-180')} />
       </button>
 
-      <Popover open={open()} onClose={() => setOpen(false)} class="py-1 min-w-44 absolute bottom-full left-0 mb-1">
+      <Popover open={open()} onClose={() => setOpen(false)} class="py-1 min-w-52 absolute bottom-full left-0 mb-1">
         <div class="px-3 py-1.5 text-[10px] text-text-dim uppercase tracking-wider flex items-center gap-1.5">
           <SvgIcon svg={agentSvg()} size={10} />
           {AGENT_DISPLAY_NAMES[props.agentType]}
@@ -69,7 +70,7 @@ export const ModelSelector: Component<Props> = (props) => {
             return (
               <button
                 class={clsx(
-                  'w-full text-left px-3 py-1.5 text-xs transition-colors flex items-center justify-between gap-3',
+                  'w-full text-left px-3 py-1.5 text-xs transition-colors',
                   selected()
                     ? 'text-accent bg-accent-muted'
                     : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
@@ -80,7 +81,9 @@ export const ModelSelector: Component<Props> = (props) => {
                 }}
               >
                 <span class="font-medium">{opt.label}</span>
-                <span class="text-[10px] text-text-dim">{opt.description}</span>
+                <Show when={opt.description}>
+                  <span class="block text-[10px] text-text-dim mt-0.5">{opt.description}</span>
+                </Show>
               </button>
             )
           }}

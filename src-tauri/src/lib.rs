@@ -244,6 +244,7 @@ pub fn run() {
             // Sessions
             ipc::create_session,
             ipc::send_message,
+            ipc::update_session_model,
             ipc::close_session,
             ipc::clear_session,
             ipc::abort_message,

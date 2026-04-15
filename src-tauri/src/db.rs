@@ -341,6 +341,7 @@ pub enum DbWrite {
     CreateSession(Session),
     UpdateSessionName { id: String, name: String },
     UpdateSessionStatus { id: String, status: String },
+    UpdateSessionModel { id: String, model: Option<String> },
     SetResumeSessionId { id: String, resume_session_id: String },
     EndSession { id: String, ended_at: i64 },
     AccumulateSessionCost { id: String, cost: f64 },
@@ -573,6 +574,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         DbWrite::UpdateSessionStatus { id, status } => {
             sqlx::query("UPDATE sessions SET status = ? WHERE id = ?")
                 .bind(&status)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        DbWrite::UpdateSessionModel { id, model } => {
+            sqlx::query("UPDATE sessions SET model = ? WHERE id = ?")
+                .bind(&model)
                 .bind(&id)
                 .execute(pool)
                 .await?;

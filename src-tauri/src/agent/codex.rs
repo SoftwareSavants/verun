@@ -28,10 +28,12 @@ impl Agent for Codex {
     fn available_models(&self) -> Vec<crate::agent::ModelOption> {
         use crate::agent::ModelOption;
         vec![
-            ModelOption::new("gpt-5.4", "GPT-5.4", "Flagship"),
-            ModelOption::new("gpt-5.3-codex-spark", "Codex 5.3 Spark", "Fast"),
-            ModelOption::new("gpt-5.3-codex", "Codex 5.3", "Balanced"),
-            ModelOption::new("gpt-5.2-codex", "Codex 5.2", "Previous gen"),
+            ModelOption::new("gpt-5.4", "GPT-5.4", "Latest frontier agentic coding model"),
+            ModelOption::new("gpt-5.4-mini", "GPT-5.4 Mini", "Smaller frontier agentic coding model"),
+            ModelOption::new("gpt-5.3-codex", "GPT-5.3 Codex", "Codex-optimized agentic coding model"),
+            ModelOption::new("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark", "Lightweight Codex model"),
+            ModelOption::new("gpt-5.2-codex", "GPT-5.2 Codex", "Codex-optimized agentic coding model"),
+            ModelOption::new("gpt-5.2", "GPT-5.2", "Optimized for professional work and long-running tasks"),
         ]
     }
 

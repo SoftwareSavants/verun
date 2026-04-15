@@ -73,6 +73,11 @@ export async function createSession(taskId: string, agentType: string, model?: s
   return session
 }
 
+export function updateSessionModel(sessionId: string, model: string | null) {
+  setSessions(s => s.id === sessionId, 'model', model)
+  ipc.updateSessionModel(sessionId, model)
+}
+
 export async function sendMessage(sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) {
   const images = attachments
     ?.filter(a => a.mimeType.startsWith('image/'))
@@ -434,7 +439,6 @@ export function cleanupTaskModeStorage(taskId: string) {
     `verun:planMode:${taskId}`,
     `verun:thinkingMode:${taskId}`,
     `verun:fastMode:${taskId}`,
-    `verun:task-model:${taskId}`,
     `verun:planFilePath:${taskId}`,
   ]
   for (const k of keys) localStorage.removeItem(k)

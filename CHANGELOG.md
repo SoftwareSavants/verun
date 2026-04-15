@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Per-session model selection: model is now stored on the session (not the task), `updateSessionModel` IPC command added, `/model` command and model selector both update the session's model
+- Model selector layout: description rendered below model name, scrollable dropdown with max-height, wider overlay
+- Claude model list updated to full IDs matching Claude Code: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`
+- Codex model list updated to match Codex CLI: `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2-codex`, `gpt-5.2`
+- Cursor static fallback model list corrected: added `auto`, removed fabricated model IDs
+- OpenCode model list no longer shows provider name as description hint
+
 - Fix setup script opening a terminal in the wrong task when the user navigates away before the hook starts - terminal panel now only auto-shows if the task is still selected
 - Fix clicking a notification not selecting the source task - visibility change was clearing the nav map before the click handler could consume it
 - Fix step edit highlight persisting when switching tasks - clear editing state on session change
