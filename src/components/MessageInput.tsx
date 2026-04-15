@@ -296,8 +296,10 @@ export const MessageInput: Component<Props> = (props) => {
 
   const autoResizeInput = () => {
     if (!inputRef) return
+    const prev = inputRef.scrollTop
     inputRef.style.height = 'auto'
     inputRef.style.height = Math.min(inputRef.scrollHeight, 200) + 'px'
+    inputRef.scrollTop = prev
   }
   // Drafts are keyed by sessionId so each session inside a task has its own
   // composer text + attachments. Task-scoped settings (plan mode, model,
@@ -1337,6 +1339,7 @@ export const MessageInput: Component<Props> = (props) => {
       } else {
         document.execCommand('insertText', false, text)
       }
+      if (inputRef) inputRef.scrollTop = inputRef.scrollHeight
     }
   }
 
