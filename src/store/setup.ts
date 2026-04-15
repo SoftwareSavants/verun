@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { Attachment } from '../types'
 import * as ipc from '../lib/ipc'
 import { registerHookTerminal } from './terminals'
-import { setShowTerminal } from './ui'
+import { selectedTaskId, setShowTerminal } from './ui'
 import { isTaskOwnedByThisWindow } from '../lib/windowContext'
 
 interface SetupState {
@@ -56,7 +56,7 @@ export async function initSetupListeners() {
       if (terminalId) {
         const ht = (hookType === 'destroy' ? 'destroy' : 'setup') as 'setup' | 'destroy'
         registerHookTerminal(taskId, terminalId, ht)
-        setShowTerminal(true)
+        if (selectedTaskId() === taskId) setShowTerminal(true)
       }
     } else if (status === 'completed') {
       setSetupTasks(produce(store => { delete store[taskId] }))
