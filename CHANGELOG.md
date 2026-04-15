@@ -3,6 +3,9 @@
 ## Unreleased
 
 - Fix single-line text selection invisible in code editor - active line highlight now suppresses when text is selected so drawSelection's selection layer is visible
+- Rewrote bash policy engine to use AST-based shell parsing (yash-syntax) instead of substring matching - handles compound commands, subshells, combined flags, and wrapper programs (env, sudo, bash -c)
+- Normal mode now blocks destructive git ops: branch delete, worktree remove/prune, stash drop/clear, tag delete, remote remove, reflog expire, gc --prune, filter-branch, update-ref -d, push --force-with-lease
+- Normal mode now blocks gh repo/release delete and detects dangerous commands inside shell re-invocations
 - Demo mode: set `VITE_DEMO_MODE=true` to populate the app with dummy projects, tasks, sessions, and a realistic chat conversation for screenshots
 - Fix message role corruption when switching between tasks - clear stale output data before reloading and use reactive Switch/Match for block type rendering so reconcile merges can't produce wrong role display
 - Fix "delete branch with merge" failing because `gh pr merge --delete-branch` tries to checkout main, which conflicts with the main worktree - now deletes the remote branch separately after merge
