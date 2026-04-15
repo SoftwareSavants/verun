@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 - 2026-04-15
+
+### Changes
 
 - Session input textarea now shrinks back to default height after sending a message
 - Persist last open session per task across navigation and restarts via localStorage
