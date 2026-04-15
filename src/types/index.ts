@@ -13,12 +13,13 @@ export interface Project {
   defaultAgentType: AgentType
 }
 
-export type AgentType = 'claude' | 'codex' | 'cursor' | 'opencode'
+export type AgentType = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode'
 
 export const AGENT_DISPLAY_NAMES: Record<AgentType, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
   cursor: 'Cursor',
+  gemini: 'Gemini CLI',
   opencode: 'OpenCode',
 }
 

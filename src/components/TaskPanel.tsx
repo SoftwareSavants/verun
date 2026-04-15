@@ -475,6 +475,7 @@ export const TaskPanel: Component = () => {
                   <div ref={tabBarRef} class="relative z-10 flex items-stretch overflow-x-auto scrollbar-hide tab-bar-bg">
                     {/* New session button */}
                     <NewSessionMenu
+                      defaultAgent={projectById(t().projectId)?.defaultAgentType}
                       onCreate={(agentType, model) => handleNewSession(agentType, model)}
                     />
                     {/* Session tabs */}

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Gemini CLI agent: `gemini --output-format stream-json --yolo`, plan mode, model selection, resume, attachments; stream parser handles `message`, `tool_use`, `tool_result`, and `result` event types
+- New session menu agent order matches new task dropdown (default agent first, then alphabetical); accepts `defaultAgent` prop from TaskPanel
+
 - Model search bar in ModelSelector and NewSessionMenu submenus for agents with >10 models - filters by label/id, auto-focuses, clears on close
 
 - Per-session model selection: model is now stored on the session (not the task), `updateSessionModel` IPC command added, `/model` command and model selector both update the session's model

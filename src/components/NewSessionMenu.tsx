@@ -12,6 +12,7 @@ const MODEL_SEARCH_THRESHOLD = 10
 
 interface Props {
   disabled?: boolean
+  defaultAgent?: AgentType
   onCreate: (agentType: AgentType, model?: string) => Promise<void>
 }
 
@@ -23,7 +24,15 @@ export const NewSessionMenu: Component<Props> = (props) => {
   const [submenuRect, setSubmenuRect] = createSignal<{ left: number; top: number } | null>(null)
   let buttonRef: HTMLButtonElement | undefined
 
-  const installedAgents = () => agents.filter(a => a.installed)
+  const installedAgents = () => {
+    const list = agents.filter(a => a.installed)
+    const def = props.defaultAgent ?? 'claude'
+    return [...list].sort((a, b) => {
+      if (a.id === def && b.id !== def) return -1
+      if (b.id === def && a.id !== def) return 1
+      return a.name.localeCompare(b.name)
+    })
+  }
 
   const openMenu = () => {
     if (buttonRef) {

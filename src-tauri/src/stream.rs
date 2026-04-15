@@ -185,13 +185,17 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // -- Result (turn completed) --
         // Text is already delivered via stream_event deltas; skip result.result to avoid duplication.
         "result" => {
-            let subtype = v.get("subtype").and_then(|s| s.as_str()).unwrap_or("unknown");
-            let status = match subtype {
+            // Claude/Cursor use `subtype`, Gemini uses `status` at top level
+            let status_str = v.get("subtype").and_then(|s| s.as_str())
+                .or_else(|| v.get("status").and_then(|s| s.as_str()))
+                .unwrap_or("unknown");
+            let status = match status_str {
                 "success" => "completed",
                 _ => "error",
             };
             let cost = v.get("total_cost_usd").and_then(|c| c.as_f64());
-            let usage = v.get("usage");
+            // Claude/Cursor: `usage`, Gemini: `stats`
+            let usage = v.get("usage").or_else(|| v.get("stats"));
             // Claude: snake_case, Cursor: camelCase
             let input_tokens = usage.and_then(|u|
                 u.get("input_tokens").or_else(|| u.get("inputTokens"))
@@ -200,7 +204,7 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
                 u.get("output_tokens").or_else(|| u.get("outputTokens"))
             ).and_then(|t| t.as_u64());
             let cache_read_tokens = usage.and_then(|u|
-                u.get("cache_read_input_tokens").or_else(|| u.get("cacheReadTokens"))
+                u.get("cache_read_input_tokens").or_else(|| u.get("cacheReadTokens")).or_else(|| u.get("cached"))
             ).and_then(|t| t.as_u64());
             let cache_write_tokens = usage.and_then(|u|
                 u.get("cache_creation_input_tokens").or_else(|| u.get("cacheWriteTokens"))
@@ -341,22 +345,31 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         }
 
         "tool_use" => {
-            let part = match v.get("part") { Some(p) => p, None => return vec![] };
-            let tool = part.get("tool").and_then(|t| t.as_str()).unwrap_or("tool").to_string();
-            let state = part.get("state");
-            let status = state.and_then(|s| s.get("status")).and_then(|s| s.as_str()).unwrap_or("");
-            if status == "completed" {
-                let input = state.and_then(|s| s.get("input"))
-                    .map(|i| serde_json::to_string_pretty(i).unwrap_or_default())
-                    .unwrap_or_default();
-                let output = state.and_then(|s| s.get("output")).and_then(|o| o.as_str()).unwrap_or("").to_string();
-                vec![
-                    OutputItem::ToolStart { tool, input },
-                    OutputItem::ToolResult { text: output, is_error: false },
-                ]
+            if let Some(part) = v.get("part") {
+                // OpenCode format: { type: "tool_use", part: { tool, state: { status, input, output } } }
+                let tool = part.get("tool").and_then(|t| t.as_str()).unwrap_or("tool").to_string();
+                let state = part.get("state");
+                let status = state.and_then(|s| s.get("status")).and_then(|s| s.as_str()).unwrap_or("");
+                if status == "completed" {
+                    let input = state.and_then(|s| s.get("input"))
+                        .map(|i| serde_json::to_string_pretty(i).unwrap_or_default())
+                        .unwrap_or_default();
+                    let output = state.and_then(|s| s.get("output")).and_then(|o| o.as_str()).unwrap_or("").to_string();
+                    vec![
+                        OutputItem::ToolStart { tool, input },
+                        OutputItem::ToolResult { text: output, is_error: false },
+                    ]
+                } else {
+                    let input = state.and_then(|s| s.get("input"))
+                        .map(|i| serde_json::to_string_pretty(i).unwrap_or_default())
+                        .unwrap_or_default();
+                    vec![OutputItem::ToolStart { tool, input }]
+                }
             } else {
-                let input = state.and_then(|s| s.get("input"))
-                    .map(|i| serde_json::to_string_pretty(i).unwrap_or_default())
+                // Gemini format: { type: "tool_use", tool_name, tool_id, parameters }
+                let tool = v.get("tool_name").and_then(|t| t.as_str()).unwrap_or("tool").to_string();
+                let input = v.get("parameters")
+                    .map(|p| serde_json::to_string_pretty(p).unwrap_or_default())
                     .unwrap_or_default();
                 vec![OutputItem::ToolStart { tool, input }]
             }
@@ -386,6 +399,23 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         }
 
         "step_start" => vec![],
+
+        // ── Gemini CLI event format ──────────────────────────────────────
+        "message" => {
+            let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            if role != "assistant" { return vec![] }
+            match v.get("content").and_then(|c| c.as_str()) {
+                Some(text) if !text.is_empty() => vec![OutputItem::Text { text: text.to_string() }],
+                _ => vec![],
+            }
+        }
+
+        "tool_result" if v.get("tool_id").is_some() => {
+            // Gemini format: { type: "tool_result", tool_id, status, output }
+            let output = v.get("output").and_then(|o| o.as_str()).unwrap_or("").to_string();
+            let is_error = v.get("status").and_then(|s| s.as_str()) == Some("error");
+            vec![OutputItem::ToolResult { text: output, is_error }]
+        }
 
         _ => vec![],
     }

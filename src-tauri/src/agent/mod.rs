@@ -1,6 +1,7 @@
 mod claude;
 mod codex;
 mod cursor;
+mod gemini;
 mod opencode;
 
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub use claude::Claude;
 pub use codex::Codex;
 pub use cursor::Cursor;
+pub use gemini::Gemini;
 pub use opencode::OpenCode;
 
 // ---------------------------------------------------------------------------
@@ -21,6 +23,7 @@ pub enum AgentKind {
     Claude,
     Codex,
     Cursor,
+    Gemini,
     OpenCode,
 }
 
@@ -29,6 +32,7 @@ impl AgentKind {
         match s {
             "codex" => Self::Codex,
             "cursor" => Self::Cursor,
+            "gemini" => Self::Gemini,
             "opencode" => Self::OpenCode,
             _ => Self::Claude,
         }
@@ -39,12 +43,13 @@ impl AgentKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Cursor => "cursor",
+            Self::Gemini => "gemini",
             Self::OpenCode => "opencode",
         }
     }
 
     pub fn all() -> &'static [AgentKind] {
-        &[Self::Claude, Self::Codex, Self::OpenCode, Self::Cursor]
+        &[Self::Claude, Self::Codex, Self::Gemini, Self::OpenCode, Self::Cursor]
     }
 
     /// Return a boxed trait object for this agent kind.
@@ -53,6 +58,7 @@ impl AgentKind {
             Self::Claude => Box::new(Claude),
             Self::Codex => Box::new(Codex),
             Self::Cursor => Box::new(Cursor),
+            Self::Gemini => Box::new(Gemini),
             Self::OpenCode => Box::new(OpenCode),
         }
     }
@@ -443,6 +449,74 @@ mod tests {
         assert_eq!(models[0].id, "anthropic/claude-sonnet-4-5");
         assert_eq!(models[0].label, "claude-sonnet-4-5");
         assert_eq!(models[1].id, "openai/gpt-5.3");
+    }
+
+    // ── Gemini ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn gemini_build_args_basic() {
+        let agent = Gemini;
+        let args = agent.build_session_args(&SessionArgs { message: "hello", ..default_args() });
+        assert!(args.contains(&"stream-json".to_string()));
+        assert!(args.contains(&"--yolo".to_string()));
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"hello".to_string()));
+    }
+
+    #[test]
+    fn gemini_build_args_plan_mode() {
+        let agent = Gemini;
+        let args = agent.build_session_args(&SessionArgs { plan_mode: true, ..default_args() });
+        assert!(args.contains(&"--approval-mode".to_string()));
+        assert!(args.contains(&"plan".to_string()));
+    }
+
+    #[test]
+    fn gemini_build_args_resume() {
+        let agent = Gemini;
+        let args = agent.build_session_args(&SessionArgs { resume_session_id: Some("g-1"), ..default_args() });
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"g-1".to_string()));
+    }
+
+    #[test]
+    fn gemini_build_args_model() {
+        let agent = Gemini;
+        let args = agent.build_session_args(&SessionArgs { model: Some("pro"), ..default_args() });
+        assert!(args.contains(&"-m".to_string()));
+        assert!(args.contains(&"pro".to_string()));
+    }
+
+    #[test]
+    fn gemini_extract_resume_id() {
+        let agent = Gemini;
+        let v = json!({"sessionId":"g-42","type":"init"});
+        assert_eq!(agent.extract_resume_id(&v), Some("g-42".into()));
+    }
+
+    #[test]
+    fn gemini_extract_resume_id_snake_case() {
+        let agent = Gemini;
+        let v = json!({"session_id":"g-43"});
+        assert_eq!(agent.extract_resume_id(&v), Some("g-43".into()));
+    }
+
+    #[test]
+    fn gemini_extract_resume_id_missing() {
+        let agent = Gemini;
+        let v = json!({"type":"message","content":"hi"});
+        assert_eq!(agent.extract_resume_id(&v), None);
+    }
+
+    #[test]
+    fn gemini_capabilities() {
+        let agent = Gemini;
+        assert!(agent.supports_plan_mode());
+        assert!(!agent.supports_effort());
+        assert!(!agent.supports_skills());
+        assert!(agent.supports_attachments());
+        assert!(!agent.supports_fork());
+        assert!(!agent.uses_claude_jsonl());
     }
 
     // ── All agents have non-empty basics ────────────────────────────────
