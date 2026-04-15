@@ -181,6 +181,9 @@ export async function archiveTask(id: string, skipDestroyHook = false) {
     cleanupTaskStorage(id)
     await ipc.archiveTask(id, skipDestroyHook)
     setTasks(t => t.id === id, 'archived', true)
+    import('./ui').then(({ selectedTaskId, setSelectedTaskId }) => {
+      if (selectedTaskId() === id) setSelectedTaskId(null)
+    })
   } finally {
     removeArchiving(id)
   }

@@ -579,7 +579,6 @@ export const Sidebar: Component = () => {
         onConfirm={() => {
           const target = archiveTaskTarget();
           if (target) {
-            if (selectedTaskId() === target) setSelectedTaskId(null)
             archiveTask(target)
           }
           setArchiveTaskTarget(null);
