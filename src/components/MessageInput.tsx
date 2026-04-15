@@ -377,6 +377,10 @@ export const MessageInput: Component<Props> = (props) => {
   const [savedDraft, setSavedDraft] = createSignal<string>('')
   const [savedDraftAttachments, setSavedDraftAttachments] = createSignal<Attachment[]>([])
 
+  // Per-session edit state so switching tasks preserves in-progress edits
+  type SessionEditState = { messageIdx: number | null; stepId: string | null; draft: string; draftAttachments: Attachment[] }
+  const sessionEditStates = new Map<string, SessionEditState>()
+
   // React to edit requests from StepList (clicking Edit on a step)
   createEffect(on(editStepRequest, (req) => {
     if (!req) return
@@ -424,14 +428,33 @@ export const MessageInput: Component<Props> = (props) => {
   }))
 
   // Restore persisted draft when the visible session changes
+  let prevSessionId: string | undefined
   createEffect(on(() => props.sessionId, (sid) => {
     if (!sid) return
-    if (editingStepId() !== null || editingMessageIdx() !== null) {
+    // Save edit state for the session we're leaving
+    if (prevSessionId && (editingStepId() !== null || editingMessageIdx() !== null)) {
+      sessionEditStates.set(prevSessionId, {
+        messageIdx: editingMessageIdx(),
+        stepId: editingStepId(),
+        draft: savedDraft(),
+        draftAttachments: savedDraftAttachments(),
+      })
+    }
+    // Restore edit state for the session we're entering, or clear
+    const saved = sessionEditStates.get(sid)
+    if (saved) {
+      sessionEditStates.delete(sid)
+      setEditingMessageIdx(saved.messageIdx)
+      setEditingStepId(saved.stepId)
+      setSavedDraft(saved.draft)
+      setSavedDraftAttachments(saved.draftAttachments)
+    } else {
       setEditingMessageIdx(null)
       setEditingStepId(null)
       setSavedDraft('')
       setSavedDraftAttachments([])
     }
+    prevSessionId = sid
     if (!sessionMessages()[sid]) {
       const savedMsg = localStorage.getItem(`verun:draft-msg:${sid}`)
       if (savedMsg) setSessionMessages(prev => ({ ...prev, [sid]: savedMsg }))
