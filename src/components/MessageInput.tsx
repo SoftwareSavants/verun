@@ -426,6 +426,12 @@ export const MessageInput: Component<Props> = (props) => {
   // Restore persisted draft when the visible session changes
   createEffect(on(() => props.sessionId, (sid) => {
     if (!sid) return
+    if (editingStepId() !== null || editingMessageIdx() !== null) {
+      setEditingMessageIdx(null)
+      setEditingStepId(null)
+      setSavedDraft('')
+      setSavedDraftAttachments([])
+    }
     if (!sessionMessages()[sid]) {
       const savedMsg = localStorage.getItem(`verun:draft-msg:${sid}`)
       if (savedMsg) setSessionMessages(prev => ({ ...prev, [sid]: savedMsg }))
