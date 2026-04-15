@@ -42,7 +42,7 @@ export interface Session {
   id: string
   taskId: string
   name: string | null
-  claudeSessionId: string | null
+  resumeSessionId: string | null
   status: SessionStatus
   startedAt: number
   endedAt: number | null
@@ -93,7 +93,7 @@ export interface ModelOption {
   description: string
 }
 
-export interface ClaudeSkill {
+export interface AgentSkill {
   name: string
   description: string
 }
@@ -129,7 +129,7 @@ export type OutputItem =
   | { kind: 'toolStart'; tool: string; input: string }
   | { kind: 'toolResult'; text: string; isError: boolean }
   | { kind: 'system'; text: string }
-  | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number }
+  | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }
   | { kind: 'turnSnapshot'; messageUuid: string }
   | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; data: Uint8Array }>; timestamp?: number }
   | { kind: 'raw'; text: string }

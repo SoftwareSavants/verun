@@ -33,6 +33,15 @@
 - Token usage extraction for all providers: Cursor (camelCase `usage` in `result`), OpenCode (`part.tokens` + `part.cost` in `step_finish`), Codex (`usage` in `turn.completed`)
 - OpenCode event parsing: `text`, `tool_use`, `step_start`/`step_finish` events with session ID capture for resume
 - Removed all agent-specific NDJSON parsing from frontend - Rust `verun_items` is the single source of truth
+- Cache token tracking (read/write) for all providers that report it: Claude, Cursor, Codex, OpenCode - shown inline in turn tooltips and session usage popover
+- OpenCode now shows `tokens.total` (cumulative context) instead of the fixed-overhead `input` field
+- Decoupled agent abstractions: `extract_resume_id` on Agent trait replaces hardcoded 3-way branch in stream.rs, snapshot/fork JSONL ops gated on `uses_claude_jsonl()`, fork preserves parent session's agent type instead of hardcoding Claude
+- Renamed `claude_session_id` to `resume_session_id` across DB (migration 17), Rust, and TypeScript
+- Renamed `ClaudeSkill`/`list_claude_skills` to `AgentSkill`/`list_agent_skills`, removed dead `check_claude` command
+- Centralized agent icons into `src/lib/agents.ts`, removing duplicate icon maps from 4 components
+- "Question from Claude" label now shows the session's actual agent name
+- Plan/Think/Fast toggles hidden when the session's agent doesn't support those capabilities
+- `checkCli` on startup checks all agents, not just Claude
 
 ## 0.6.0 — 2026-04-14
 

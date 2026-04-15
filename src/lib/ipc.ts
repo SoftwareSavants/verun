@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
 import { bytesToBase64 } from './binary'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
@@ -242,11 +242,8 @@ export const checkGitignored = (taskId: string, paths: string[]) =>
   invoke<string[]>('check_gitignored', { taskId, paths })
 
 // Utility
-export const listClaudeSkills = () =>
-  invoke<ClaudeSkill[]>('list_claude_skills')
-
-export const checkClaude = (): Promise<string> =>
-  DEMO ? Promise.resolve('1.0.0') : invoke<string>('check_claude')
+export const listAgentSkills = () =>
+  invoke<AgentSkill[]>('list_agent_skills')
 
 export const checkAgent = (agentType: AgentType) =>
   invoke<string>('check_agent', { agentType })

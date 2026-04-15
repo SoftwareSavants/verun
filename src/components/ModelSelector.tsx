@@ -5,23 +5,13 @@ import { agents } from '../store/agents'
 import { ChevronDown } from 'lucide-solid'
 import { clsx } from 'clsx'
 import { Popover } from './Popover'
-import claudeIcon from '../assets/icons/claude.svg?raw'
-import codexIcon from '../assets/icons/codex.svg?raw'
-import cursorIcon from '../assets/icons/cursor.svg?raw'
-import opencodeIcon from '../assets/icons/opencode.svg?raw'
+import { agentIcon } from '../lib/agents'
 
 interface Props {
   model: ModelId
   agentType: AgentType
   onChange: (model: ModelId) => void
   disabled?: boolean
-}
-
-const AGENT_ICONS: Record<string, string> = {
-  claude: claudeIcon,
-  codex: codexIcon,
-  cursor: cursorIcon,
-  opencode: opencodeIcon,
 }
 
 function SvgIcon(props: { svg: string; size?: number; class?: string }) {
@@ -38,7 +28,7 @@ export const ModelSelector: Component<Props> = (props) => {
 
   const agentInfo = () => agents.find(a => a.id === props.agentType)
   const agentModels = () => agentInfo()?.models ?? []
-  const agentSvg = () => AGENT_ICONS[props.agentType] || claudeIcon
+  const agentSvg = () => agentIcon(props.agentType)
 
   // Resolved model: stored value if valid for this agent, else first in list
   const resolvedModel = createMemo(() => {

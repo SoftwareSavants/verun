@@ -59,4 +59,12 @@ impl Agent for Codex {
     }
 
     fn supports_attachments(&self) -> bool { true }
+
+    fn extract_resume_id(&self, v: &serde_json::Value) -> Option<String> {
+        if v.get("type")?.as_str()? == "thread.started" {
+            v.get("thread_id")?.as_str().map(str::to_string)
+        } else {
+            None
+        }
+    }
 }

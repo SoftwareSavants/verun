@@ -24,6 +24,7 @@ export const DEMO_PROJECTS: Project[] = [
     startCommand: 'pnpm tauri dev',
     autoStart: false,
     createdAt: T - 30 * 24 * 3_600_000,
+    defaultAgentType: 'claude',
   },
   {
     id: 'demo-proj-dashboard',
@@ -35,6 +36,7 @@ export const DEMO_PROJECTS: Project[] = [
     startCommand: 'pnpm dev',
     autoStart: false,
     createdAt: T - 20 * 24 * 3_600_000,
+    defaultAgentType: 'claude',
   },
   {
     id: 'demo-proj-api',
@@ -46,6 +48,7 @@ export const DEMO_PROJECTS: Project[] = [
     startCommand: 'cargo run',
     autoStart: false,
     createdAt: T - 10 * 24 * 3_600_000,
+    defaultAgentType: 'claude',
   },
 ]
 
@@ -68,6 +71,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: null,
     parentTaskId: null,
+    agentType: 'claude',
   },
   {
     id: 'demo-task-ctx',
@@ -82,6 +86,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: 'refactor: extract ContextMenu into shared component',
     parentTaskId: null,
+    agentType: 'claude',
   },
   {
     id: 'demo-task-diff',
@@ -96,6 +101,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: null,
     parentTaskId: null,
+    agentType: 'claude',
   },
   // phase: pr-open
   {
@@ -111,6 +117,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: 'feat: render file tree in right panel',
     parentTaskId: null,
+    agentType: 'claude',
   },
   // phase: ci-failed
   {
@@ -126,6 +133,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: 'perf: lazy-load heavy modules on first use',
     parentTaskId: null,
+    agentType: 'claude',
   },
   // ── dashboard ─────────────────────────────────────────────────────────────
   {
@@ -141,6 +149,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: null,
     parentTaskId: null,
+    agentType: 'claude',
   },
   {
     id: 'demo-task-perf',
@@ -155,6 +164,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: 'chore: replace moment.js with date-fns',
     parentTaskId: null,
+    agentType: 'claude',
   },
   // phase: conflicts
   {
@@ -170,6 +180,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: 'chore: convert JSON configs to TOML',
     parentTaskId: null,
+    agentType: 'claude',
   },
   // phase: pr-merged
   {
@@ -185,6 +196,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: 'feat: export table data to CSV',
     parentTaskId: null,
+    agentType: 'claude',
   },
   // ── api-server ────────────────────────────────────────────────────────────
   {
@@ -200,6 +212,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: 'feat: implement /auth/refresh endpoint',
     parentTaskId: null,
+    agentType: 'claude',
   },
   {
     id: 'demo-task-rate',
@@ -214,6 +227,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: null,
     parentTaskId: null,
+    agentType: 'claude',
   },
   // phase: error
   {
@@ -229,6 +243,7 @@ export const DEMO_TASKS: Task[] = [
     archivedAt: null,
     lastCommitMessage: null,
     parentTaskId: null,
+    agentType: 'claude',
   },
 ]
 
@@ -242,38 +257,42 @@ export const DEMO_SESSIONS: Session[] = [
     id: 'demo-sess-md-1',
     taskId: 'demo-task-md',
     name: 'Session 1',
-    claudeSessionId: 'cs-demo-001',
+    resumeSessionId: 'cs-demo-001',
     status: 'idle',
     startedAt: T - 2 * 3_600_000,
     endedAt: T - 30 * 60_000,
     totalCost: 0.045,
     parentSessionId: null,
     forkedAtMessageUuid: null,
+    agentType: 'claude',
+    model: null,
   },
   {
     id: 'demo-sess-md-2',
     taskId: 'demo-task-md',
     name: 'Session 2',
-    claudeSessionId: 'cs-demo-002',
+    resumeSessionId: 'cs-demo-002',
     status: 'idle',
     startedAt: T - 25 * 60_000,
     endedAt: T - 10 * 60_000,
     totalCost: 0.009,
     parentSessionId: null,
     forkedAtMessageUuid: null,
+    agentType: 'claude',
+    model: null,
   },
   // other tasks
-  { id: 'demo-sess-ctx-1',      taskId: 'demo-task-ctx',      name: null, claudeSessionId: null, status: 'running', startedAt: T - 5  * 3_600_000, endedAt: null, totalCost: 0.021, parentSessionId: null, forkedAtMessageUuid: null },
-  { id: 'demo-sess-diff-1',     taskId: 'demo-task-diff',     name: null, claudeSessionId: null, status: 'running', startedAt: T - 18 * 60_000,    endedAt: null, totalCost: 0.007, parentSessionId: null, forkedAtMessageUuid: null },
-  { id: 'demo-sess-pr-1',       taskId: 'demo-task-pr',       name: null, claudeSessionId: null, status: 'idle',    startedAt: T - 12 * 3_600_000, endedAt: null, totalCost: 0.052, parentSessionId: null, forkedAtMessageUuid: null },
-  { id: 'demo-sess-ci-1',       taskId: 'demo-task-ci',       name: null, claudeSessionId: null, status: 'idle',    startedAt: T - 16 * 3_600_000, endedAt: null, totalCost: 0.038, parentSessionId: null, forkedAtMessageUuid: null },
-  { id: 'demo-sess-dark-1',     taskId: 'demo-task-dark',     name: null, claudeSessionId: null, status: 'running', startedAt: T - 3  * 3_600_000, endedAt: null, totalCost: 0,     parentSessionId: null, forkedAtMessageUuid: null },
-  { id: 'demo-sess-perf-1',     taskId: 'demo-task-perf',     name: null, claudeSessionId: null, status: 'idle',    startedAt: T - 6  * 3_600_000, endedAt: null, totalCost: 0.033, parentSessionId: null, forkedAtMessageUuid: null },
-  { id: 'demo-sess-conflict-1', taskId: 'demo-task-conflict', name: null, claudeSessionId: null, status: 'idle',    startedAt: T - 24 * 3_600_000, endedAt: null, totalCost: 0.041, parentSessionId: null, forkedAtMessageUuid: null },
-  { id: 'demo-sess-merged-1',   taskId: 'demo-task-merged',   name: null, claudeSessionId: null, status: 'idle',    startedAt: T - 48 * 3_600_000, endedAt: null, totalCost: 0.067, parentSessionId: null, forkedAtMessageUuid: null },
-  { id: 'demo-sess-jwt-1',      taskId: 'demo-task-jwt',      name: null, claudeSessionId: null, status: 'idle',    startedAt: T - 4  * 3_600_000, endedAt: null, totalCost: 0.018, parentSessionId: null, forkedAtMessageUuid: null },
-  { id: 'demo-sess-rate-1',     taskId: 'demo-task-rate',     name: null, claudeSessionId: null, status: 'running', startedAt: T - 1  * 3_600_000, endedAt: null, totalCost: 0,     parentSessionId: null, forkedAtMessageUuid: null },
-  { id: 'demo-sess-err-1',      taskId: 'demo-task-err',      name: null, claudeSessionId: null, status: 'error',   startedAt: T - 7  * 3_600_000, endedAt: null, totalCost: 0.011, parentSessionId: null, forkedAtMessageUuid: null },
+  { id: 'demo-sess-ctx-1',      taskId: 'demo-task-ctx',      name: null, resumeSessionId: null, status: 'running', startedAt: T - 5  * 3_600_000, endedAt: null, totalCost: 0.021, parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
+  { id: 'demo-sess-diff-1',     taskId: 'demo-task-diff',     name: null, resumeSessionId: null, status: 'running', startedAt: T - 18 * 60_000,    endedAt: null, totalCost: 0.007, parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
+  { id: 'demo-sess-pr-1',       taskId: 'demo-task-pr',       name: null, resumeSessionId: null, status: 'idle',    startedAt: T - 12 * 3_600_000, endedAt: null, totalCost: 0.052, parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
+  { id: 'demo-sess-ci-1',       taskId: 'demo-task-ci',       name: null, resumeSessionId: null, status: 'idle',    startedAt: T - 16 * 3_600_000, endedAt: null, totalCost: 0.038, parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
+  { id: 'demo-sess-dark-1',     taskId: 'demo-task-dark',     name: null, resumeSessionId: null, status: 'running', startedAt: T - 3  * 3_600_000, endedAt: null, totalCost: 0,     parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
+  { id: 'demo-sess-perf-1',     taskId: 'demo-task-perf',     name: null, resumeSessionId: null, status: 'idle',    startedAt: T - 6  * 3_600_000, endedAt: null, totalCost: 0.033, parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
+  { id: 'demo-sess-conflict-1', taskId: 'demo-task-conflict', name: null, resumeSessionId: null, status: 'idle',    startedAt: T - 24 * 3_600_000, endedAt: null, totalCost: 0.041, parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
+  { id: 'demo-sess-merged-1',   taskId: 'demo-task-merged',   name: null, resumeSessionId: null, status: 'idle',    startedAt: T - 48 * 3_600_000, endedAt: null, totalCost: 0.067, parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
+  { id: 'demo-sess-jwt-1',      taskId: 'demo-task-jwt',      name: null, resumeSessionId: null, status: 'idle',    startedAt: T - 4  * 3_600_000, endedAt: null, totalCost: 0.018, parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
+  { id: 'demo-sess-rate-1',     taskId: 'demo-task-rate',     name: null, resumeSessionId: null, status: 'running', startedAt: T - 1  * 3_600_000, endedAt: null, totalCost: 0,     parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
+  { id: 'demo-sess-err-1',      taskId: 'demo-task-err',      name: null, resumeSessionId: null, status: 'error',   startedAt: T - 7  * 3_600_000, endedAt: null, totalCost: 0.011, parentSessionId: null, forkedAtMessageUuid: null, agentType: 'claude', model: null },
 ]
 
 // ---------------------------------------------------------------------------

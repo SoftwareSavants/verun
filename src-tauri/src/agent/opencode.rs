@@ -75,4 +75,8 @@ impl Agent for OpenCode {
 
     fn supports_plan_mode(&self) -> bool { true }
     fn supports_attachments(&self) -> bool { true }
+
+    fn extract_resume_id(&self, v: &serde_json::Value) -> Option<String> {
+        v.get("sessionID")?.as_str().map(str::to_string)
+    }
 }

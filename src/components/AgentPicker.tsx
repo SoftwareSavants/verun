@@ -5,23 +5,13 @@ import { agents } from '../store/agents'
 import { clsx } from 'clsx'
 import { ChevronDown, Check } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
-import claudeIcon from '../assets/icons/claude.svg?raw'
-import codexIcon from '../assets/icons/codex.svg?raw'
-import cursorIcon from '../assets/icons/cursor.svg?raw'
-import opencodeIcon from '../assets/icons/opencode.svg?raw'
+import { agentIcon } from '../lib/agents'
 
 interface Props {
   value: AgentType
   onChange: (agent: AgentType) => void
   projectId?: string | null
   defaultAgent?: AgentType
-}
-
-const AGENT_ICONS: Record<string, string> = {
-  claude: claudeIcon,
-  codex: codexIcon,
-  cursor: cursorIcon,
-  opencode: opencodeIcon,
 }
 
 function SvgIcon(props: { svg: string; size?: number }) {
@@ -69,7 +59,7 @@ export const AgentPicker: Component<Props> = (props) => {
   })
 
   const current = () => agents.find(a => a.id === props.value)
-  const currentIcon = () => AGENT_ICONS[props.value] || claudeIcon
+  const currentIcon = () => agentIcon(props.value)
 
   return (
     <div class="relative">
@@ -111,7 +101,7 @@ export const AgentPicker: Component<Props> = (props) => {
               {(agent) => {
                 const isDefault = () => agent.id === props.defaultAgent
                 const selected = () => props.value === agent.id
-                const icon = () => AGENT_ICONS[agent.id] || claudeIcon
+                const icon = () => agentIcon(agent.id)
                 return (
                   <button
                     class={clsx(

@@ -29,24 +29,11 @@ import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
 import { AGENT_DISPLAY_NAMES } from '../types'
 import vscodeIcon from '../assets/icons/vscode.svg?raw'
-import claudeIcon from '../assets/icons/claude.svg?raw'
-import codexIcon from '../assets/icons/codex.svg?raw'
 import cursorIcon from '../assets/icons/cursor.svg?raw'
-import opencodeIcon from '../assets/icons/opencode.svg?raw'
+import { agentIcon } from '../lib/agents'
 import zedIcon from '../assets/icons/zed.svg?raw'
 import finderIcon from '../assets/icons/finder.svg?raw'
 import { fileManagerName } from '../lib/platform'
-
-const AGENT_ICONS: Record<string, string> = {
-  claude: claudeIcon,
-  codex: codexIcon,
-  cursor: cursorIcon,
-  opencode: opencodeIcon,
-}
-
-function agentIcon(agentType: string): string {
-  return AGENT_ICONS[agentType] || claudeIcon
-}
 
 function formatDuration(ms: number): string {
   const secs = Math.floor(ms / 1000)

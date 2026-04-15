@@ -80,7 +80,7 @@ pub async fn add_project(
         start_command,
         auto_start: false,
         created_at: epoch_ms(),
-        default_agent_type: "claude".to_string(),
+        default_agent_type: crate::agent::AgentKind::Claude.as_str().to_string(),
     };
 
     db_tx
@@ -263,7 +263,7 @@ pub async fn create_task(
             setup_hook: project.setup_hook,
             port_offset,
             from_task_window,
-            agent_type: agent_type.unwrap_or_else(|| "claude".to_string()),
+            agent_type: agent_type.unwrap_or_else(|| crate::agent::AgentKind::Claude.as_str().to_string()),
         },
     ).await?;
 
@@ -607,7 +607,7 @@ pub async fn send_message(
             port_offset: t.port_offset,
             trust_level,
             message,
-            claude_session_id: session.claude_session_id,
+            resume_session_id: session.resume_session_id,
             attachments: attachments.unwrap_or_default(),
             model,
             plan_mode: plan_mode.unwrap_or(false),
@@ -638,11 +638,11 @@ pub async fn clear_session(
     db_tx: State<'_, DbWriteTx>,
     session_id: String,
 ) -> Result<(), String> {
-    // Clear the claude_session_id so next message starts fresh
+    // Clear the resume_session_id so next message starts fresh
     db_tx
-        .send(db::DbWrite::SetClaudeSessionId {
+        .send(db::DbWrite::SetResumeSessionId {
             id: session_id.clone(),
-            claude_session_id: String::new(),
+            resume_session_id: String::new(),
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
@@ -1495,13 +1495,13 @@ pub async fn write_binary_file(request: tauri::ipc::Request<'_>) -> Result<(), S
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ClaudeSkill {
+pub struct AgentSkill {
     pub name: String,
     pub description: String,
 }
 
 #[tauri::command]
-pub async fn list_claude_skills() -> Result<Vec<ClaudeSkill>, String> {
+pub async fn list_agent_skills() -> Result<Vec<AgentSkill>, String> {
     let agent = crate::agent::AgentKind::Claude.implementation();
     if !agent.supports_skills() {
         return Ok(vec![]);
@@ -1529,7 +1529,7 @@ pub async fn list_claude_skills() -> Result<Vec<ClaudeSkill>, String> {
                     .trim()
                     .to_string();
                 if !name.is_empty() {
-                    skills.push(ClaudeSkill { name, description: desc });
+                    skills.push(AgentSkill { name, description: desc });
                 }
             }
         }
@@ -1545,11 +1545,6 @@ pub async fn reload_env_path() -> Result<(), String> {
     tokio::task::spawn_blocking(crate::env_path::reload_now)
         .await
         .map_err(|e| format!("reload task failed: {e}"))
-}
-
-#[tauri::command]
-pub async fn check_claude() -> Result<String, String> {
-    check_agent_impl(&*crate::agent::AgentKind::Claude.implementation())
 }
 
 #[tauri::command]

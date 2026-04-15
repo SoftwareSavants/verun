@@ -371,7 +371,7 @@ pub async fn create_task(
         archived_at: None,
         last_commit_message: None,
         parent_task_id: None,
-        agent_type: "claude".into(),
+        agent_type: agent_type.clone(),
     };
 
     db_tx
@@ -547,7 +547,7 @@ pub async fn create_session(db_tx: &DbWriteTx, task_id: String, agent_type: Stri
         id: Uuid::new_v4().to_string(),
         task_id,
         name: None,
-        claude_session_id: None,
+        resume_session_id: None,
         status: "idle".to_string(),
         started_at: epoch_ms(),
         ended_at: None,
@@ -584,7 +584,7 @@ pub struct SendMessageParams {
     pub port_offset: i64,
     pub trust_level: TrustLevel,
     pub message: String,
-    pub claude_session_id: Option<String>,
+    pub resume_session_id: Option<String>,
     pub attachments: Vec<Attachment>,
     pub model: Option<String>,
     pub plan_mode: bool,
@@ -605,14 +605,14 @@ pub async fn send_message(
     pending_approval_meta: PendingApprovalMeta,
     params: SendMessageParams,
 ) -> Result<(), String> {
-    let SendMessageParams { session_id, task_id, project_id, worktree_path, repo_path, port_offset, trust_level, message, claude_session_id, attachments, model, plan_mode, thinking_mode, fast_mode, task_name, agent_type } = params;
+    let SendMessageParams { session_id, task_id, project_id, worktree_path, repo_path, port_offset, trust_level, message, resume_session_id, attachments, model, plan_mode, thinking_mode, fast_mode, task_name, agent_type } = params;
     let agent = AgentKind::parse(&agent_type).implementation();
     // Don't allow concurrent messages on the same session
     if active.contains_key(&session_id) {
         return Err("Session is already processing a message".to_string());
     }
 
-    let is_first_turn = claude_session_id.as_ref().is_none_or(|s| s.is_empty());
+    let is_first_turn = resume_session_id.as_ref().is_none_or(|s| s.is_empty());
 
     // Generate AI title in background (non-blocking, tab shows "New session" until it arrives)
     let needs_session_name = is_first_turn && !message.is_empty();
@@ -677,7 +677,7 @@ pub async fn send_message(
         })
         .await;
 
-    let resume_id = claude_session_id.as_deref().filter(|s| !s.is_empty());
+    let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let session_args = crate::agent::SessionArgs {
         resume_session_id: resume_id,
         model: model.as_deref(),
@@ -810,6 +810,7 @@ pub async fn send_message(
     let monitor_wt = worktree_path.clone();
     let monitor_repo = repo_path;
     let monitor_trust = trust_level;
+    let monitor_agent = AgentKind::parse(&agent_type).implementation();
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let wt_for_hooks = monitor_wt.clone();
@@ -825,6 +826,7 @@ pub async fn send_message(
             monitor_wt,
             monitor_repo,
             monitor_trust,
+            monitor_agent,
         )
         .await;
 
@@ -850,11 +852,11 @@ pub async fn send_message(
         };
 
         // Try to extract claude session_id from captured output
-        if let Some(csid) = extract_claude_session_id(&stream_result.lines) {
+        if let Some(csid) = extract_resume_session_id(&stream_result.lines) {
             let _ = monitor_db_tx
-                .send(db::DbWrite::SetClaudeSessionId {
+                .send(db::DbWrite::SetResumeSessionId {
                     id: monitor_sid.clone(),
-                    claude_session_id: csid,
+                    resume_session_id: csid,
                 })
                 .await;
         }
@@ -1021,7 +1023,7 @@ pub fn parse_verun_config_file(path: &str) -> Option<(String, String, String)> {
     Some((setup, destroy, start))
 }
 
-fn extract_claude_session_id(lines: &[String]) -> Option<String> {
+fn extract_resume_session_id(lines: &[String]) -> Option<String> {
     for line in lines.iter().rev() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -1090,39 +1092,42 @@ pub async fn fork_session_in_task(
         .await?
         .ok_or_else(|| format!("Session {source_session_id} not found"))?;
     let parent_csid = parent
-        .claude_session_id
+        .resume_session_id
         .clone()
-        .ok_or_else(|| "Parent session has no claude session id (never started?)".to_string())?;
+        .ok_or_else(|| "Parent session has no resume session id (never started?)".to_string())?;
 
     let task = db::get_task(pool, &parent.task_id)
         .await?
         .ok_or_else(|| format!("Task {} not found", parent.task_id))?;
 
+    let agent_impl = AgentKind::parse(&parent.agent_type).implementation();
     let new_csid = Uuid::new_v4().to_string();
     let new_verun_sid = Uuid::new_v4().to_string();
     let now = epoch_ms();
 
-    // Truncate the on-disk JSONL transcript.
-    let worktree_path = task.worktree_path.clone();
-    let parent_csid_for_blocking = parent_csid.clone();
-    let new_csid_for_blocking = new_csid.clone();
-    let fork_uuid_for_blocking = fork_after_message_uuid.clone();
-    tokio::task::spawn_blocking(move || {
-        let wt = std::path::Path::new(&worktree_path);
-        let src = crate::claude_jsonl::session_path(wt, &parent_csid_for_blocking)
-            .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
-        let dest = crate::claude_jsonl::session_path(wt, &new_csid_for_blocking)
-            .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
-        crate::claude_jsonl::truncate_after_message(
-            &src,
-            &dest,
-            &new_csid_for_blocking,
-            &fork_uuid_for_blocking,
-        )
-        .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
+    // Truncate the on-disk JSONL transcript (Claude only).
+    if agent_impl.uses_claude_jsonl() {
+        let worktree_path = task.worktree_path.clone();
+        let parent_csid_for_blocking = parent_csid.clone();
+        let new_csid_for_blocking = new_csid.clone();
+        let fork_uuid_for_blocking = fork_after_message_uuid.clone();
+        tokio::task::spawn_blocking(move || {
+            let wt = std::path::Path::new(&worktree_path);
+            let src = crate::claude_jsonl::session_path(wt, &parent_csid_for_blocking)
+                .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
+            let dest = crate::claude_jsonl::session_path(wt, &new_csid_for_blocking)
+                .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
+            crate::claude_jsonl::truncate_after_message(
+                &src,
+                &dest,
+                &new_csid_for_blocking,
+                &fork_uuid_for_blocking,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))??;
+    }
 
     // Load parent output_lines outside the transaction so we can hold the
     // boundary check's error path separate from DB state.
@@ -1132,7 +1137,7 @@ pub async fn fork_session_in_task(
         id: new_verun_sid.clone(),
         task_id: parent.task_id.clone(),
         name: parent.name.as_ref().map(|n| format!("{n} (fork)")),
-        claude_session_id: Some(new_csid),
+        resume_session_id: Some(new_csid),
         status: "idle".to_string(),
         started_at: now,
         ended_at: None,
@@ -1227,13 +1232,13 @@ async fn insert_session_row_tx(
     s: &Session,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model) \
+        "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.task_id)
     .bind(&s.name)
-    .bind(&s.claude_session_id)
+    .bind(&s.resume_session_id)
     .bind(&s.status)
     .bind(s.started_at)
     .bind(s.ended_at)
@@ -1290,7 +1295,7 @@ pub async fn fork_session_to_new_task(
         .await?
         .ok_or_else(|| format!("Session {source_session_id} not found"))?;
     let parent_csid = parent_session
-        .claude_session_id
+        .resume_session_id
         .clone()
         .ok_or_else(|| "Parent session has no claude session id (never started?)".to_string())?;
     let parent_task = db::get_task(pool, &parent_session.task_id)
@@ -1401,44 +1406,45 @@ pub async fn fork_session_to_new_task(
         archived_at: None,
         last_commit_message: None,
         parent_task_id: Some(parent_task.id.clone()),
-        agent_type: "claude".into(),
+        agent_type: parent_session.agent_type.clone(),
     };
 
-    // Write the truncated on-disk JSONL into the NEW worktree's projects dir
-    // (Claude keys transcripts by cwd, so the new session's cwd is what
-    // matters for `claude --resume`).
+    let parent_agent = AgentKind::parse(&parent_session.agent_type).implementation();
     let new_csid = Uuid::new_v4().to_string();
     let new_verun_sid = Uuid::new_v4().to_string();
     let now = epoch_ms();
 
-    let parent_csid_for_blocking = parent_csid.clone();
-    let new_csid_for_blocking = new_csid.clone();
-    let fork_uuid_for_blocking = fork_after_message_uuid.clone();
-    let new_wt_for_blocking = new_task.worktree_path.clone();
-    let parent_wt_for_blocking = parent_task.worktree_path.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let parent_wt = std::path::Path::new(&parent_wt_for_blocking);
-        let new_wt = std::path::Path::new(&new_wt_for_blocking);
-        let src = crate::claude_jsonl::session_path(parent_wt, &parent_csid_for_blocking)
-            .ok_or_else(|| "no $HOME for src jsonl".to_string())?;
-        let dest = crate::claude_jsonl::session_path(new_wt, &new_csid_for_blocking)
-            .ok_or_else(|| "no $HOME for dest jsonl".to_string())?;
-        crate::claude_jsonl::truncate_after_message(
-            &src,
-            &dest,
-            &new_csid_for_blocking,
-            &fork_uuid_for_blocking,
-        )
-        .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
+    // Truncate on-disk JSONL transcript (Claude only)
+    if parent_agent.uses_claude_jsonl() {
+        let parent_csid_for_blocking = parent_csid.clone();
+        let new_csid_for_blocking = new_csid.clone();
+        let fork_uuid_for_blocking = fork_after_message_uuid.clone();
+        let new_wt_for_blocking = new_task.worktree_path.clone();
+        let parent_wt_for_blocking = parent_task.worktree_path.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let parent_wt = std::path::Path::new(&parent_wt_for_blocking);
+            let new_wt = std::path::Path::new(&new_wt_for_blocking);
+            let src = crate::claude_jsonl::session_path(parent_wt, &parent_csid_for_blocking)
+                .ok_or_else(|| "no $HOME for src jsonl".to_string())?;
+            let dest = crate::claude_jsonl::session_path(new_wt, &new_csid_for_blocking)
+                .ok_or_else(|| "no $HOME for dest jsonl".to_string())?;
+            crate::claude_jsonl::truncate_after_message(
+                &src,
+                &dest,
+                &new_csid_for_blocking,
+                &fork_uuid_for_blocking,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))??;
+    }
 
     let new_session = Session {
         id: new_verun_sid.clone(),
         task_id: new_task.id.clone(),
         name: parent_session.name.as_ref().map(|n| format!("{n} (fork)")),
-        claude_session_id: Some(new_csid),
+        resume_session_id: Some(new_csid),
         status: "idle".to_string(),
         started_at: now,
         ended_at: None,
@@ -1555,7 +1561,7 @@ mod tests {
             r#"{"type":"assistant","content":"hello"}"#.into(),
             r#"{"type":"result","session_id":"abc-123","cost":0.01}"#.into(),
         ];
-        assert_eq!(extract_claude_session_id(&lines), Some("abc-123".to_string()));
+        assert_eq!(extract_resume_session_id(&lines), Some("abc-123".to_string()));
     }
 
     #[test]
@@ -1563,7 +1569,7 @@ mod tests {
         let lines = vec![
             r#"{"type":"system","subtype":"init","session_id":"init-456","tools":[]}"#.into(),
         ];
-        assert_eq!(extract_claude_session_id(&lines), Some("init-456".to_string()));
+        assert_eq!(extract_resume_session_id(&lines), Some("init-456".to_string()));
     }
 
     #[test]
@@ -1571,6 +1577,6 @@ mod tests {
         let lines = vec![
             r#"{"type":"assistant","content":"hello"}"#.into(),
         ];
-        assert_eq!(extract_claude_session_id(&lines), None);
+        assert_eq!(extract_resume_session_id(&lines), None);
     }
 }

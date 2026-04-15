@@ -5,17 +5,7 @@ import { agents } from '../store/agents'
 import { clsx } from 'clsx'
 import { Plus, ChevronRight, Loader2 } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
-import claudeIcon from '../assets/icons/claude.svg?raw'
-import codexIcon from '../assets/icons/codex.svg?raw'
-import cursorIcon from '../assets/icons/cursor.svg?raw'
-import opencodeIcon from '../assets/icons/opencode.svg?raw'
-
-const AGENT_ICONS: Record<string, string> = {
-  claude: claudeIcon,
-  codex: codexIcon,
-  cursor: cursorIcon,
-  opencode: opencodeIcon,
-}
+import { agentIcon } from '../lib/agents'
 
 function SvgIcon(props: { svg: string; size?: number }) {
   return (
@@ -129,7 +119,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
                   let rowRef: HTMLButtonElement | undefined
                   const hasModels = () => agent.models.length > 0
                   const isHovered = () => hoveredAgent() === agent.id
-                  const icon = () => AGENT_ICONS[agent.id] || claudeIcon
+                  const icon = () => agentIcon(agent.id)
 
                   return (
                     <button

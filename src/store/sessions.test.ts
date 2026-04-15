@@ -6,7 +6,7 @@ const makeSession = (overrides: Partial<Session> = {}): Session => ({
   id: 's-001',
   taskId: 't-001',
   name: null,
-  claudeSessionId: null,
+  resumeSessionId: null,
   status: 'idle',
   startedAt: 1000,
   endedAt: null,

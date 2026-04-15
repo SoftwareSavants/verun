@@ -13,7 +13,8 @@ import type { Command } from '../store/commands'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
-import type { Attachment, ModelId, TrustLevel } from '../types'
+import type { Attachment, ModelId, TrustLevel, AgentType } from '../types'
+import { agents } from '../store/agents'
 import * as ipc from '../lib/ipc'
 import { Popover } from './Popover'
 import { ImageViewer } from './ImageViewer'
@@ -173,6 +174,17 @@ function UsageChip(chipProps: { sessionId: string | null }) {
                   <span class="text-text-dim">Input</span>
                   <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.input)} tokens</span>
                 </div>
+                <Show when={tokens()!.cacheRead > 0 || tokens()!.cacheWrite > 0}>
+                  <div class="flex justify-between gap-6">
+                    <span class="text-text-dim">Cached</span>
+                    <span class="text-text-secondary font-mono">
+                      {[
+                        tokens()!.cacheRead > 0 ? `${fmtTokens(tokens()!.cacheRead)} read` : '',
+                        tokens()!.cacheWrite > 0 ? `${fmtTokens(tokens()!.cacheWrite)} write` : '',
+                      ].filter(Boolean).join(' / ')}
+                    </span>
+                  </div>
+                </Show>
                 <div class="flex justify-between gap-6">
                   <span class="text-text-dim">Output</span>
                   <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.output)} tokens</span>
@@ -190,6 +202,12 @@ export const MessageInput: Component<Props> = (props) => {
   let fileInputRef!: HTMLInputElement
   let inputRef!: HTMLDivElement
   let customAnswerRef!: HTMLInputElement
+
+  const sessionAgent = () => {
+    const sid = props.sessionId
+    const at = sid ? sessionById(sid)?.agentType : undefined
+    return at ? agents.find(a => a.id === at) : undefined
+  }
 
   // ── Contenteditable helpers ──────────────────────────────────────────
   // The input is a contenteditable div with text nodes + badge spans.
@@ -874,7 +892,7 @@ export const MessageInput: Component<Props> = (props) => {
       case 'new-session': {
         const tid = selectedTaskId()
         if (tid) {
-          const currentAgent = sessionById(props.sessionId ?? '')?.agentType ?? 'claude'
+          const currentAgent = sessionById(props.sessionId ?? '')?.agentType ?? 'claude' as AgentType
           const session = await createSession(tid, currentAgent)
           setSelectedSessionId(session.id)
         }
@@ -1562,7 +1580,7 @@ export const MessageInput: Component<Props> = (props) => {
               <div class="flex items-center justify-between mb-2">
                 <div class="flex items-center gap-2">
                   <HelpCircle size={14} class="text-accent" />
-                  <span class="text-xs font-medium text-accent">Question from Claude</span>
+                  <span class="text-xs font-medium text-accent">Question from {sessionAgent()?.name ?? 'Agent'}</span>
                   <Show when={qs().length > 1}>
                     <span class="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded-full">
                       {questionIndex() + 1}/{qs().length}
@@ -2100,7 +2118,7 @@ export const MessageInput: Component<Props> = (props) => {
             {/* Model selector */}
             <ModelSelector
               model={currentModel()}
-              agentType={sessionById(props.sessionId ?? '')?.agentType ?? 'claude'}
+              agentType={sessionAgent()?.id ?? 'claude' as AgentType}
               onChange={(m) => {
                 const tid = selectedTaskId()
                 if (tid) setTaskModel(tid, m)
@@ -2108,56 +2126,59 @@ export const MessageInput: Component<Props> = (props) => {
               disabled={!props.sessionId || props.isRunning}
             />
 
-            {/* Plan mode toggle */}
-            <button
-              class={clsx(
-                'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
-                planMode()
-                  ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
-                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
-                'disabled:opacity-30'
-              )}
-              onClick={() => setPlanMode(!planMode())}
-              disabled={!props.sessionId || props.isRunning}
-              title="Plan mode - agent will plan before acting"
-            >
-              <ListChecks size={13} />
-              <span>Plan</span>
-            </button>
+            <Show when={sessionAgent()?.supportsPlanMode !== false}>
+              <button
+                class={clsx(
+                  'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+                  planMode()
+                    ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
+                  'disabled:opacity-30'
+                )}
+                onClick={() => setPlanMode(!planMode())}
+                disabled={!props.sessionId || props.isRunning}
+                title="Plan mode - agent will plan before acting"
+              >
+                <ListChecks size={13} />
+                <span>Plan</span>
+              </button>
+            </Show>
 
-            {/* Thinking mode toggle */}
-            <button
-              class={clsx(
-                'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
-                thinkingMode()
-                  ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
-                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
-                'disabled:opacity-30'
-              )}
-              onClick={() => setThinking(!thinkingMode())}
-              disabled={!props.sessionId || props.isRunning}
-              title="Thinking mode — extended thinking for complex tasks"
-            >
-              <Brain size={13} />
-              <span>Think</span>
-            </button>
+            <Show when={sessionAgent()?.supportsEffort !== false}>
+              <button
+                class={clsx(
+                  'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+                  thinkingMode()
+                    ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
+                  'disabled:opacity-30'
+                )}
+                onClick={() => setThinking(!thinkingMode())}
+                disabled={!props.sessionId || props.isRunning}
+                title="Thinking mode - extended thinking for complex tasks"
+              >
+                <Brain size={13} />
+                <span>Think</span>
+              </button>
+            </Show>
 
-            {/* Fast mode toggle */}
-            <button
-              class={clsx(
-                'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
-                fastMode()
-                  ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
-                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
-                'disabled:opacity-30'
-              )}
-              onClick={() => setFast(!fastMode())}
-              disabled={!props.sessionId || props.isRunning}
-              title="Fast mode — less thinking, quicker responses"
-            >
-              <Zap size={13} />
-              <span>Fast</span>
-            </button>
+            <Show when={sessionAgent()?.supportsEffort !== false}>
+              <button
+                class={clsx(
+                  'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+                  fastMode()
+                    ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
+                  'disabled:opacity-30'
+                )}
+                onClick={() => setFast(!fastMode())}
+                disabled={!props.sessionId || props.isRunning}
+                title="Fast mode - less thinking, quicker responses"
+              >
+                <Zap size={13} />
+                <span>Fast</span>
+              </button>
+            </Show>
 
             {/* Trust level selector */}
             <div class="relative">

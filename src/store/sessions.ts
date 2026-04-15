@@ -16,7 +16,7 @@ export const [outputItems, setOutputItems] = createStore<Record<string, OutputIt
 export const [pendingApprovals, setPendingApprovals] = createStore<Record<string, ToolApprovalRequest[]>>({})
 export const [autoApprovedCounts, setAutoApprovedCounts] = createStore<Record<string, number>>({})
 export const [sessionCosts, setSessionCosts] = createStore<Record<string, number>>({})
-export const [sessionTokens, setSessionTokens] = createStore<Record<string, { input: number; output: number }>>({})
+export const [sessionTokens, setSessionTokens] = createStore<Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>>({})
 export const [rateLimitInfo, setRateLimitInfo] = createSignal<RateLimitInfo | null>(null)
 const [_taskPlanMode, _setTaskPlanMode] = createStore<Record<string, boolean>>({})
 const [_taskThinkingMode, _setTaskThinkingMode] = createStore<Record<string, boolean>>({})
@@ -174,16 +174,20 @@ export async function loadOutputLines(sessionId: string) {
   let replayCost = 0
   let replayInputTokens = 0
   let replayOutputTokens = 0
+  let replayCacheRead = 0
+  let replayCacheWrite = 0
   for (const item of items) {
     if (item.kind === 'turnEnd') {
       if (item.cost) replayCost += item.cost
       if (item.inputTokens) replayInputTokens += item.inputTokens
       if (item.outputTokens) replayOutputTokens += item.outputTokens
+      if (item.cacheReadTokens) replayCacheRead += item.cacheReadTokens
+      if (item.cacheWriteTokens) replayCacheWrite += item.cacheWriteTokens
     }
   }
   if (replayCost > 0) setSessionCosts(sessionId, replayCost)
   if (replayInputTokens > 0 || replayOutputTokens > 0) {
-    setSessionTokens(sessionId, { input: replayInputTokens, output: replayOutputTokens })
+    setSessionTokens(sessionId, { input: replayInputTokens, output: replayOutputTokens, cacheRead: replayCacheRead, cacheWrite: replayCacheWrite })
   }
 }
 
@@ -230,8 +234,7 @@ export async function clearOutputItems(sessionId: string) {
   setOutputItems(sessionId, [])
   // Also clear the Claude session context + persisted output in DB
   await ipc.clearSession(sessionId)
-  // Reset the local session's claudeSessionId so next message starts fresh
-  setSessions(s => s.id === sessionId, 'claudeSessionId', null)
+  setSessions(s => s.id === sessionId, 'resumeSessionId', null)
 }
 
 export async function syncSessionStatuses() {
@@ -304,10 +307,12 @@ export async function initSessionListeners() {
         }
         if (item.inputTokens || item.outputTokens) {
           setSessionTokens(produce(store => {
-            const prev = store[sessionId] || { input: 0, output: 0 }
+            const prev = store[sessionId] || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
             store[sessionId] = {
               input: prev.input + (item.inputTokens || 0),
               output: prev.output + (item.outputTokens || 0),
+              cacheRead: prev.cacheRead + (item.cacheReadTokens || 0),
+              cacheWrite: prev.cacheWrite + (item.cacheWriteTokens || 0),
             }
           }))
         }

@@ -58,6 +58,8 @@ pub enum OutputItem {
         cost: Option<f64>,
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
     },
 
     /// Per-turn snapshot marker — frontend attaches the message uuid to the
@@ -197,7 +199,13 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
             let output_tokens = usage.and_then(|u|
                 u.get("output_tokens").or_else(|| u.get("outputTokens"))
             ).and_then(|t| t.as_u64());
-            vec![OutputItem::TurnEnd { status: status.to_string(), cost, input_tokens, output_tokens }]
+            let cache_read_tokens = usage.and_then(|u|
+                u.get("cache_read_input_tokens").or_else(|| u.get("cacheReadTokens"))
+            ).and_then(|t| t.as_u64());
+            let cache_write_tokens = usage.and_then(|u|
+                u.get("cache_creation_input_tokens").or_else(|| u.get("cacheWriteTokens"))
+            ).and_then(|t| t.as_u64());
+            vec![OutputItem::TurnEnd { status: status.to_string(), cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens }]
         }
 
         // -- Telemetry events we can surface --
@@ -310,7 +318,8 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
             let usage = v.get("usage");
             let input_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(|t| t.as_u64());
             let output_tokens = usage.and_then(|u| u.get("output_tokens")).and_then(|t| t.as_u64());
-            vec![OutputItem::TurnEnd { status: "completed".to_string(), cost: None, input_tokens, output_tokens }]
+            let cache_read_tokens = usage.and_then(|u| u.get("cached_input_tokens")).and_then(|t| t.as_u64());
+            vec![OutputItem::TurnEnd { status: "completed".to_string(), cost: None, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens: None }]
         }
 
         // Ignored Codex lifecycle events
@@ -361,14 +370,16 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
                 .unwrap_or("stop");
             if reason == "stop" {
                 let tokens = part.and_then(|p| p.get("tokens"));
-                let cache = tokens.and_then(|t| t.get("cache"));
-                let raw_input = tokens.and_then(|t| t.get("input")).and_then(|t| t.as_u64()).unwrap_or(0);
-                let cache_read = cache.and_then(|c| c.get("read")).and_then(|r| r.as_u64()).unwrap_or(0);
-                let cache_write = cache.and_then(|c| c.get("write")).and_then(|w| w.as_u64()).unwrap_or(0);
-                let input_tokens = Some(raw_input + cache_read + cache_write).filter(|&t| t > 0);
+                // OpenCode's `input` is a fixed overhead (not user message tokens)
+                // and `total` is the cumulative context window. Only `output` is
+                // meaningful per-turn, so we skip input to avoid misleading numbers.
                 let output_tokens = tokens.and_then(|t| t.get("output")).and_then(|t| t.as_u64());
+                let input_tokens = tokens.and_then(|t| t.get("total")).and_then(|t| t.as_u64());
+                let cache = tokens.and_then(|t| t.get("cache"));
+                let cache_read_tokens = cache.and_then(|c| c.get("read")).and_then(|t| t.as_u64());
+                let cache_write_tokens = cache.and_then(|c| c.get("write")).and_then(|t| t.as_u64());
                 let cost = part.and_then(|p| p.get("cost")).and_then(|c| c.as_f64()).filter(|c| *c > 0.0);
-                vec![OutputItem::TurnEnd { status: "completed".to_string(), cost, input_tokens, output_tokens }]
+                vec![OutputItem::TurnEnd { status: "completed".to_string(), cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens }]
             } else {
                 vec![]
             }
@@ -604,11 +615,11 @@ pub struct StreamResult {
 async fn snapshot_turn_best_effort(
     verun_session_id: &str,
     worktree_path: &str,
-    claude_session_id: Option<&str>,
+    resume_session_id: Option<&str>,
     db_tx: &DbWriteTx,
     app: &AppHandle,
 ) {
-    let csid = match claude_session_id {
+    let csid = match resume_session_id {
         Some(s) => s.to_string(),
         None => return,
     };
@@ -739,6 +750,7 @@ pub async fn stream_and_capture(
     worktree_path: String,
     repo_path: String,
     trust_level: TrustLevel,
+    agent: Box<dyn crate::agent::Agent>,
 ) -> StreamResult {
     let mut reader = BufReader::new(stdout).lines();
     let mut buffer: Vec<OutputItem> = Vec::new();
@@ -747,7 +759,7 @@ pub async fn stream_and_capture(
     let mut total_persisted: usize = 0;
     let mut total_cost: f64 = 0.0;
     // Captured from `system.init` events for the per-turn snapshot hook.
-    let mut claude_session_id_for_snapshot: Option<String> = None;
+    let mut resume_id_for_snapshot: Option<String> = None;
 
     loop {
         let deadline = tokio::time::sleep(FLUSH_INTERVAL);
@@ -778,29 +790,14 @@ pub async fn stream_and_capture(
                             }
                         }
 
-                        // Extract the resume session id from any agent's init/started event.
-                        // Claude: system.init → session_id
-                        // Codex:  thread.started → thread_id
-                        if claude_session_id_for_snapshot.is_none() {
+                        // Extract the resume session id via the agent's own logic
+                        if resume_id_for_snapshot.is_none() {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                                let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                                let resume_id = if t == "system"
-                                    && v.get("subtype").and_then(|t| t.as_str()) == Some("init")
-                                {
-                                    v.get("session_id").and_then(|s| s.as_str()).map(str::to_string)
-                                } else if t == "thread.started" {
-                                    v.get("thread_id").and_then(|s| s.as_str()).map(str::to_string)
-                                } else if t == "step_start" || t == "text" {
-                                    // OpenCode: sessionID on any early event
-                                    v.get("sessionID").and_then(|s| s.as_str()).map(str::to_string)
-                                } else {
-                                    None
-                                };
-                                if let Some(sid) = resume_id {
-                                    claude_session_id_for_snapshot = Some(sid.clone());
-                                    let _ = db_tx.send(crate::db::DbWrite::SetClaudeSessionId {
+                                if let Some(sid) = agent.extract_resume_id(&v) {
+                                    resume_id_for_snapshot = Some(sid.clone());
+                                    let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
                                         id: session_id.clone(),
-                                        claude_session_id: sid,
+                                        resume_session_id: sid,
                                     }).await;
                                 }
                             }
@@ -877,10 +874,10 @@ pub async fn stream_and_capture(
                         // row keyed to the latest assistant message uuid in the on-disk JSONL.
                         // Used by the "fork from this message" feature. We deliberately do
                         // NOT await this so the stream loop is never blocked on git I/O.
-                        if is_turn_end {
+                        if is_turn_end && agent.uses_claude_jsonl() {
                             let sid = session_id.clone();
                             let wt = worktree_path.clone();
-                            let csid = claude_session_id_for_snapshot.clone();
+                            let csid = resume_id_for_snapshot.clone();
                             let dbtx = db_tx.clone();
                             let app2 = app.clone();
                             tokio::spawn(async move {
@@ -1225,7 +1222,7 @@ mod tests {
         let items = parse_sdk_event(line);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::TurnEnd { status, cost, input_tokens, output_tokens } => {
+            OutputItem::TurnEnd { status, cost, input_tokens, output_tokens, .. } => {
                 assert_eq!(status, "completed");
                 assert_eq!(*cost, Some(0.042));
                 assert_eq!(*input_tokens, Some(100));

@@ -65,4 +65,15 @@ impl Agent for Claude {
     fn supports_attachments(&self) -> bool { true }
     fn supports_fork(&self) -> bool { true }
     fn uses_claude_jsonl(&self) -> bool { true }
+
+    fn extract_resume_id(&self, v: &serde_json::Value) -> Option<String> {
+        let t = v.get("type")?.as_str()?;
+        match t {
+            "system" if v.get("subtype").and_then(|s| s.as_str()) == Some("init") => {
+                v.get("session_id")?.as_str().map(str::to_string)
+            }
+            "result" => v.get("session_id")?.as_str().map(str::to_string),
+            _ => None,
+        }
+    }
 }

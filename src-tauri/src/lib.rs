@@ -300,8 +300,7 @@ pub fn run() {
             ipc::copy_image_to_clipboard,
             ipc::write_binary_file,
             // Utility
-            ipc::list_claude_skills,
-            ipc::check_claude,
+            ipc::list_agent_skills,
             ipc::check_agent,
             ipc::list_available_agents,
             ipc::refresh_agents,

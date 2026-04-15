@@ -103,12 +103,15 @@ export function dismissSplash() {
   }
 }
 
-/** Check Claude CLI availability */
+/** Check that at least one agent CLI is installed */
 export async function checkCli() {
   try {
-    await ipc.checkClaude()
+    const agents = await ipc.listAvailableAgents()
+    if (agents.length > 0 && !agents.some(a => a.installed)) {
+      addToast('No coding agent CLIs found. Install at least one (e.g. npm i -g @anthropic-ai/claude-code)', 'error')
+    }
   } catch {
-    addToast('Claude Code CLI not found. Install with: npm i -g @anthropic-ai/claude-code', 'error')
+    // best effort
   }
 }
 

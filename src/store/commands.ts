@@ -1,11 +1,11 @@
 import { createSignal } from 'solid-js'
-import type { ClaudeSkill } from '../types'
+import type { AgentSkill } from '../types'
 import * as ipc from '../lib/ipc'
 
 export interface Command {
   name: string
   description: string
-  category: 'app' | 'claude'
+  category: 'app' | 'skill'
 }
 
 export const APP_COMMANDS: Command[] = [
@@ -15,29 +15,29 @@ export const APP_COMMANDS: Command[] = [
   { name: 'plan', description: 'Toggle plan mode', category: 'app' },
 ]
 
-const [claudeSkills, setClaudeSkills] = createSignal<ClaudeSkill[]>([])
+const [agentSkills, setAgentSkills] = createSignal<AgentSkill[]>([])
 const [skillsLoaded, setSkillsLoaded] = createSignal(false)
 
-export { claudeSkills }
+export { agentSkills }
 
-export async function loadClaudeSkills() {
+export async function loadAgentSkills() {
   if (skillsLoaded()) return
   try {
-    const skills = await ipc.listClaudeSkills()
-    setClaudeSkills(skills)
+    const skills = await ipc.listAgentSkills()
+    setAgentSkills(skills)
     setSkillsLoaded(true)
   } catch (e) {
-    console.warn('Failed to load Claude skills:', e)
+    console.warn('Failed to load agent skills:', e)
   }
 }
 
 export function allCommands(): Command[] {
   return [
     ...APP_COMMANDS,
-    ...claudeSkills().map(s => ({
+    ...agentSkills().map(s => ({
       name: s.name,
       description: s.description,
-      category: 'claude' as const,
+      category: 'skill' as const,
     })),
   ]
 }

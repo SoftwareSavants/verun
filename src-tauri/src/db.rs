@@ -196,6 +196,12 @@ pub fn migrations() -> Vec<Migration> {
         description: "backfill session agent_type from task, default claude",
         sql: "UPDATE sessions SET agent_type = COALESCE(agent_type, (SELECT agent_type FROM tasks WHERE tasks.id = sessions.task_id), 'claude') WHERE agent_type IS NULL;",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 17,
+        description: "rename claude_session_id to resume_session_id",
+        sql: "ALTER TABLE sessions RENAME COLUMN claude_session_id TO resume_session_id;",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -248,7 +254,7 @@ pub struct Session {
     pub id: String,
     pub task_id: String,
     pub name: Option<String>,
-    pub claude_session_id: Option<String>,
+    pub resume_session_id: Option<String>,
     pub status: String,
     pub started_at: i64,
     pub ended_at: Option<i64>,
@@ -335,7 +341,7 @@ pub enum DbWrite {
     CreateSession(Session),
     UpdateSessionName { id: String, name: String },
     UpdateSessionStatus { id: String, status: String },
-    SetClaudeSessionId { id: String, claude_session_id: String },
+    SetResumeSessionId { id: String, resume_session_id: String },
     EndSession { id: String, ended_at: i64 },
     AccumulateSessionCost { id: String, cost: f64 },
     CloseSession { id: String },
@@ -539,13 +545,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Sessions --
         DbWrite::CreateSession(s) => {
             sqlx::query(
-                "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model) \
+                "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(&s.task_id)
             .bind(&s.name)
-            .bind(&s.claude_session_id)
+            .bind(&s.resume_session_id)
             .bind(&s.status)
             .bind(s.started_at)
             .bind(s.ended_at)
@@ -571,9 +577,9 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .execute(pool)
                 .await?;
         }
-        DbWrite::SetClaudeSessionId { id, claude_session_id } => {
-            sqlx::query("UPDATE sessions SET claude_session_id = ? WHERE id = ?")
-                .bind(&claude_session_id)
+        DbWrite::SetResumeSessionId { id, resume_session_id } => {
+            sqlx::query("UPDATE sessions SET resume_session_id = ? WHERE id = ?")
+                .bind(&resume_session_id)
                 .bind(&id)
                 .execute(pool)
                 .await?;
@@ -935,7 +941,7 @@ mod tests {
     #[test]
     fn has_twelve_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 12);
+        assert_eq!(m.len(), 17);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
@@ -948,6 +954,11 @@ mod tests {
         assert_eq!(m[9].version, 10);
         assert_eq!(m[10].version, 11);
         assert_eq!(m[11].version, 12);
+        assert_eq!(m[12].version, 13);
+        assert_eq!(m[13].version, 14);
+        assert_eq!(m[14].version, 15);
+        assert_eq!(m[15].version, 16);
+        assert_eq!(m[16].version, 17);
     }
 
     #[test]
@@ -975,6 +986,7 @@ mod tests {
             start_command: String::new(),
             auto_start: false,
             created_at: 1000,
+            default_agent_type: "claude".into(),
         }
     }
 
@@ -1001,7 +1013,7 @@ mod tests {
             id: "s-001".into(),
             task_id: task_id.into(),
             name: None,
-            claude_session_id: None,
+            resume_session_id: None,
             status: "running".into(),
             started_at: 3000,
             ended_at: None,
@@ -1244,22 +1256,22 @@ mod tests {
 
         let s = get_session(&pool, "s-001").await.unwrap().unwrap();
         assert_eq!(s.status, "running");
-        assert!(s.claude_session_id.is_none());
+        assert!(s.resume_session_id.is_none());
         assert!(s.ended_at.is_none());
 
-        // Set claude session id once we get it from CLI
+        // Set resume session id once we get it from CLI
         process_write(
             &pool,
-            DbWrite::SetClaudeSessionId {
+            DbWrite::SetResumeSessionId {
                 id: "s-001".into(),
-                claude_session_id: "claude-xyz".into(),
+                resume_session_id: "claude-xyz".into(),
             },
         )
         .await
         .unwrap();
 
         let s = get_session(&pool, "s-001").await.unwrap().unwrap();
-        assert_eq!(s.claude_session_id.as_deref(), Some("claude-xyz"));
+        assert_eq!(s.resume_session_id.as_deref(), Some("claude-xyz"));
 
         // End session
         process_write(
@@ -1380,7 +1392,7 @@ mod tests {
         let s = make_session("t-001");
         let json = serde_json::to_value(&s).unwrap();
         assert!(json.get("taskId").is_some());
-        assert!(json.get("claudeSessionId").is_some());
+        assert!(json.get("resumeSessionId").is_some());
         assert!(json.get("startedAt").is_some());
         assert!(json.get("endedAt").is_some());
     }

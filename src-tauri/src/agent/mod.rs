@@ -161,4 +161,10 @@ pub trait Agent: Send + Sync {
     /// format at ~/.claude/projects/. Gates transcript manipulation
     /// in fork operations.
     fn uses_claude_jsonl(&self) -> bool { false }
+
+    /// Extract the agent's native resume/session ID from a parsed NDJSON event.
+    /// Called on each line during streaming; returns `Some(id)` on the first
+    /// event that carries one (e.g. Claude's `system.init`, Codex's
+    /// `thread.started`, OpenCode's `step_start`).
+    fn extract_resume_id(&self, _v: &serde_json::Value) -> Option<String> { None }
 }

@@ -91,4 +91,15 @@ impl Agent for Cursor {
     }
 
     fn supports_plan_mode(&self) -> bool { true }
+
+    fn extract_resume_id(&self, v: &serde_json::Value) -> Option<String> {
+        let t = v.get("type")?.as_str()?;
+        match t {
+            "system" if v.get("subtype").and_then(|s| s.as_str()) == Some("init") => {
+                v.get("session_id")?.as_str().map(str::to_string)
+            }
+            "result" => v.get("session_id")?.as_str().map(str::to_string),
+            _ => None,
+        }
+    }
 }
