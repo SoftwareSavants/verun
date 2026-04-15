@@ -377,6 +377,7 @@ export const MessageInput: Component<Props> = (props) => {
         setInputContent(v)
         setCursorToEnd()
       }
+      autoResizeInput()
     }
   }
   const attachments = () => sessionAttachments()[props.sessionId ?? ''] ?? []
