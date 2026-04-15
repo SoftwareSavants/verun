@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Session input textarea now shrinks back to default height after sending a message
+- Persist last open session per task across navigation and restarts via localStorage
+
 - Gemini CLI agent: `gemini --output-format stream-json --yolo`, plan mode, model selection, resume, attachments; stream parser handles `message`, `tool_use`, `tool_result`, and `result` event types
 - New session menu agent order matches new task dropdown (default agent first, then alphabetical); accepts `defaultAgent` prop from TaskPanel
 

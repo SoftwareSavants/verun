@@ -1,5 +1,5 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth, consumePendingSessionNav } from '../store/ui'
+import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth, consumePendingSessionNav, getLastSessionForTask } from '../store/ui'
 import { refitActiveTerminal, setActiveTerminalForTask, startCommandTerminalId, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
 import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
@@ -148,10 +148,15 @@ export const TaskPanel: Component = () => {
       const taskSessions = sessionsForTask(taskId)
       if (pending && taskSessions.some(s => s.id === pending)) {
         setSelectedSessionId(pending)
-      } else if (taskSessions.length > 0) {
-        setSelectedSessionId(taskSessions[0].id)
       } else {
-        setSelectedSessionId(null)
+        const last = getLastSessionForTask(taskId)
+        if (last && taskSessions.some(s => s.id === last)) {
+          setSelectedSessionId(last)
+        } else if (taskSessions.length > 0) {
+          setSelectedSessionId(taskSessions[0].id)
+        } else {
+          setSelectedSessionId(null)
+        }
       }
       // Start LSP eagerly so project-wide diagnostics populate the problems
       // panel without waiting for the user to open a file in the editor.

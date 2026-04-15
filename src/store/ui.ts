@@ -12,7 +12,22 @@ export function setSelectedTaskId(id: string | null) {
   else localStorage.removeItem('verun:selectedTaskId')
 }
 
-export const [selectedSessionId, setSelectedSessionId] = createSignal<string | null>(null)
+export function getLastSessionForTask(taskId: string): string | null {
+  return typeof localStorage !== 'undefined' ? localStorage.getItem(`verun:lastSession:${taskId}`) : null
+}
+
+export function setLastSessionForTask(taskId: string, sessionId: string | null) {
+  if (sessionId) localStorage.setItem(`verun:lastSession:${taskId}`, sessionId)
+  else localStorage.removeItem(`verun:lastSession:${taskId}`)
+}
+
+const [_selectedSessionId, _setSelectedSessionId] = createSignal<string | null>(null)
+export const selectedSessionId = _selectedSessionId
+export function setSelectedSessionId(id: string | null) {
+  _setSelectedSessionId(id)
+  const taskId = selectedTaskId()
+  if (taskId) setLastSessionForTask(taskId, id)
+}
 
 // When set, the next task-selection effect should navigate to this session
 // instead of defaulting to the first one. Consumed (cleared) after use.
