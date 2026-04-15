@@ -118,12 +118,10 @@ interface Props {
 }
 
 const SEARCH_DECORATIONS = {
-  matchBackground: '#6366f130',
-  matchBorder: '#6366f150',
-  matchOverviewRuler: '#6366f180',
-  activeMatchBackground: '#6366f160',
-  activeMatchBorder: '#818cf8',
-  activeMatchColorOverviewRuler: '#818cf8',
+  matchBorder: '#2d6e4f',
+  matchOverviewRuler: '#2d6e4f80',
+  activeMatchBackground: '#2d6e4f60',
+  activeMatchColorOverviewRuler: '#3a8562',
 }
 
 export const ShellTerminal: Component<Props> = (props) => {
