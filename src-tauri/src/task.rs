@@ -1,3 +1,4 @@
+use crate::agent::AgentKind;
 use crate::db::{self, DbWriteTx, Session, Task};
 use crate::policy::TrustLevel;
 use crate::stream;
@@ -329,6 +330,7 @@ pub struct CreateTaskParams {
     pub setup_hook: String,
     pub port_offset: i64,
     pub from_task_window: bool,
+    pub agent_type: String, // flows to the first session, not stored on the task
 }
 
 pub async fn create_task(
@@ -339,7 +341,7 @@ pub async fn create_task(
     setup_in_progress: &SetupInProgress,
     params: CreateTaskParams,
 ) -> Result<(Task, Session), String> {
-    let CreateTaskParams { project_id, repo_path, base_branch, setup_hook, port_offset, from_task_window } = params;
+    let CreateTaskParams { project_id, repo_path, base_branch, setup_hook, port_offset, from_task_window, agent_type } = params;
     let id = Uuid::new_v4().to_string();
     let branch = funny_branch_name();
     let now = epoch_ms();
@@ -369,6 +371,7 @@ pub async fn create_task(
         archived_at: None,
         last_commit_message: None,
         parent_task_id: None,
+        agent_type: agent_type.clone(),
     };
 
     db_tx
@@ -376,8 +379,8 @@ pub async fn create_task(
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
 
-    // Auto-create the first session
-    let session = create_session(db_tx, task.id.clone()).await?;
+    // Auto-create the first session with the chosen agent
+    let session = create_session(db_tx, task.id.clone(), agent_type, None).await?;
 
     // Notify all windows about the new task so other windows can reload
     let _ = app.emit(
@@ -539,18 +542,20 @@ pub async fn archive_task(
 // ---------------------------------------------------------------------------
 
 /// Create a new session record (no process spawned yet — that happens on send_message)
-pub async fn create_session(db_tx: &DbWriteTx, task_id: String) -> Result<Session, String> {
+pub async fn create_session(db_tx: &DbWriteTx, task_id: String, agent_type: String, model: Option<String>) -> Result<Session, String> {
     let session = Session {
         id: Uuid::new_v4().to_string(),
         task_id,
         name: None,
-        claude_session_id: None,
+        resume_session_id: None,
         status: "idle".to_string(),
         started_at: epoch_ms(),
         ended_at: None,
         total_cost: 0.0,
         parent_session_id: None,
         forked_at_message_uuid: None,
+        agent_type,
+        model,
     };
 
     db_tx
@@ -570,7 +575,6 @@ pub struct Attachment {
     pub data_base64: String,
 }
 
-/// Parameters for sending a message to Claude
 pub struct SendMessageParams {
     pub session_id: String,
     pub task_id: String,
@@ -580,13 +584,14 @@ pub struct SendMessageParams {
     pub port_offset: i64,
     pub trust_level: TrustLevel,
     pub message: String,
-    pub claude_session_id: Option<String>,
+    pub resume_session_id: Option<String>,
     pub attachments: Vec<Attachment>,
     pub model: Option<String>,
     pub plan_mode: bool,
     pub thinking_mode: bool,
     pub fast_mode: bool,
     pub task_name: Option<String>,
+    pub agent_type: String,
 }
 
 /// Send a message to Claude in this session's worktree.
@@ -600,13 +605,14 @@ pub async fn send_message(
     pending_approval_meta: PendingApprovalMeta,
     params: SendMessageParams,
 ) -> Result<(), String> {
-    let SendMessageParams { session_id, task_id, project_id, worktree_path, repo_path, port_offset, trust_level, message, claude_session_id, attachments, model, plan_mode, thinking_mode, fast_mode, task_name } = params;
+    let SendMessageParams { session_id, task_id, project_id, worktree_path, repo_path, port_offset, trust_level, message, resume_session_id, attachments, model, plan_mode, thinking_mode, fast_mode, task_name, agent_type } = params;
+    let agent = AgentKind::parse(&agent_type).implementation();
     // Don't allow concurrent messages on the same session
     if active.contains_key(&session_id) {
         return Err("Session is already processing a message".to_string());
     }
 
-    let is_first_turn = claude_session_id.as_ref().is_none_or(|s| s.is_empty());
+    let is_first_turn = resume_session_id.as_ref().is_none_or(|s| s.is_empty());
 
     // Generate AI title in background (non-blocking, tab shows "New session" until it arrives)
     let needs_session_name = is_first_turn && !message.is_empty();
@@ -671,104 +677,103 @@ pub async fn send_message(
         })
         .await;
 
-    let mut cmd = tokio::process::Command::new("claude");
-    cmd.args([
-        "-p",
-        "--output-format", "stream-json",
-        "--input-format", "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-    ]);
-    cmd.args(["--permission-prompt-tool", "stdio"]);
+    let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
+    let session_args = crate::agent::SessionArgs {
+        resume_session_id: resume_id,
+        model: model.as_deref(),
+        plan_mode,
+        thinking_mode,
+        fast_mode,
+        message: &message,
+    };
+
+    let args_list = agent.build_session_args(&session_args);
+    eprintln!("[verun][{}] spawn: {} {}", agent.display_name(), agent.cli_binary(), args_list.join(" "));
+    eprintln!("[verun][{}] cwd: {}", agent.display_name(), worktree_path);
+    eprintln!("[verun][{}] input_mode: {:?}", agent.display_name(), agent.input_mode());
+
+    let mut cmd = tokio::process::Command::new(agent.cli_binary());
+    cmd.args(&args_list);
     for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
         cmd.env(&k, &v);
     }
-    if plan_mode {
-        cmd.args(["--permission-mode", "plan"]);
-    }
-    cmd.stdin(std::process::Stdio::piped());
-
-    if let Some(ref rid) = claude_session_id {
-        if !rid.is_empty() {
-            cmd.args(["--resume", rid]);
-        }
-    }
-    if let Some(ref m) = model {
-        cmd.args(["--model", m]);
-    }
-    if thinking_mode {
-        cmd.args(["--effort", "max"]);
-    }
-    if fast_mode {
-        cmd.args(["--effort", "low"]);
-    }
-    cmd.current_dir(&worktree_path)
+    cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped())
+        .current_dir(&worktree_path);
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to spawn claude: {e}"))?;
+        .map_err(|e| format!("Failed to spawn {}: {e}", agent.display_name()))?;
 
-    // Write user message to stdin (always via stream-json input)
-    let mut stdin_handle = child.stdin.take()
-        .ok_or_else(|| "Failed to capture stdin".to_string())?;
+    eprintln!("[verun][{}] spawned pid={:?}", agent.display_name(), child.id());
 
-    // Build content blocks
-    let mut content_blocks = Vec::new();
-    for attachment in &attachments {
-        content_blocks.push(serde_json::json!({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": attachment.mime_type,
-                "data": attachment.data_base64,
+    let stdin = match agent.input_mode() {
+        crate::agent::InputMode::StreamJsonStdin => {
+            // Claude: send the message as a stream-json payload on stdin, keep open for control_response
+            let mut stdin_handle = child.stdin.take()
+                .ok_or_else(|| "Failed to capture stdin".to_string())?;
+
+            let mut content_blocks = Vec::new();
+            for attachment in &attachments {
+                content_blocks.push(serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": attachment.mime_type,
+                        "data": attachment.data_base64,
+                    }
+                }));
             }
-        }));
-    }
-    if !message.is_empty() {
-        content_blocks.push(serde_json::json!({
-            "type": "text",
-            "text": message,
-        }));
-    }
+            if !message.is_empty() {
+                content_blocks.push(serde_json::json!({ "type": "text", "text": message }));
+            }
 
-    let user_msg = serde_json::json!({
-        "type": "user",
-        "session_id": "",
-        "parent_tool_use_id": null,
-        "message": {
-            "role": "user",
-            "content": content_blocks,
+            let user_msg = serde_json::json!({
+                "type": "user",
+                "session_id": "",
+                "parent_tool_use_id": null,
+                "message": { "role": "user", "content": content_blocks },
+            });
+
+            let mut payload = serde_json::to_string(&user_msg)
+                .map_err(|e| format!("Failed to serialize message: {e}"))?;
+            payload.push('\n');
+
+            stdin_handle.write_all(payload.as_bytes()).await
+                .map_err(|e| format!("Failed to write to stdin: {e}"))?;
+            stdin_handle.flush().await
+                .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+
+            // Keep stdin open — needed for control_response messages
+            Arc::new(TokioMutex::new(Some(stdin_handle)))
         }
-    });
-
-    let mut payload = serde_json::to_string(&user_msg)
-        .map_err(|e| format!("Failed to serialize message: {e}"))?;
-    payload.push('\n');
-
-    stdin_handle.write_all(payload.as_bytes()).await
-        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
-    stdin_handle.flush().await
-        .map_err(|e| format!("Failed to flush stdin: {e}"))?;
-
-    // Keep stdin open — we need it for control_response messages
-    let stdin = Arc::new(TokioMutex::new(Some(stdin_handle)));
-
-
+        crate::agent::InputMode::PositionalOrStdin => {
+            // Non-Claude agents receive the prompt as a positional arg (already in args_list).
+            // Close stdin immediately so the process doesn't wait for input.
+            let stdin_handle = child.stdin.take();
+            drop(stdin_handle);
+            Arc::new(TokioMutex::new(None::<tokio::process::ChildStdin>))
+        }
+    };
 
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "Failed to capture stdout".to_string())?;
 
-    // Drain stderr so the OS pipe buffer (~64KB) never fills.
-    // If it fills, the child blocks on stderr writes and appears frozen.
+    // Forward stderr to logs (previously silently discarded — critical for debugging non-Claude agents).
     if let Some(stderr) = child.stderr.take() {
+        let agent_name = agent.display_name().to_string();
+        let sid = session_id.clone();
         tokio::spawn(async move {
             let mut reader = tokio::io::BufReader::new(stderr);
             let mut line = String::new();
             while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                let trimmed = line.trim_end();
+                if !trimmed.is_empty() {
+                    eprintln!("[verun][{agent_name}][stderr][{sid}] {trimmed}");
+                }
                 line.clear();
             }
         });
@@ -805,6 +810,7 @@ pub async fn send_message(
     let monitor_wt = worktree_path.clone();
     let monitor_repo = repo_path;
     let monitor_trust = trust_level;
+    let monitor_agent = AgentKind::parse(&agent_type).implementation();
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let wt_for_hooks = monitor_wt.clone();
@@ -820,6 +826,7 @@ pub async fn send_message(
             monitor_wt,
             monitor_repo,
             monitor_trust,
+            monitor_agent,
         )
         .await;
 
@@ -835,22 +842,14 @@ pub async fn send_message(
 
         // Process exited — get exit code
         let status = if let Some((_, mut proc)) = monitor_active.remove(&monitor_sid) {
-            let exit = proc.child.wait().await.ok().and_then(|s| s.code());
-            stream::map_exit_status(exit)
+            let exit_status = proc.child.wait().await.ok();
+            let exit_code = exit_status.as_ref().and_then(|s| s.code());
+            eprintln!("[verun][{}] exited code={:?}", monitor_sid, exit_code);
+            stream::map_exit_status(exit_code)
         } else {
             // Aborted by abort_message
             return;
         };
-
-        // Try to extract claude session_id from captured output
-        if let Some(csid) = extract_claude_session_id(&stream_result.lines) {
-            let _ = monitor_db_tx
-                .send(db::DbWrite::SetClaudeSessionId {
-                    id: monitor_sid.clone(),
-                    claude_session_id: csid,
-                })
-                .await;
-        }
 
         // Check for .verun.json config written by Claude auto-detect
         let config_path = format!("{wt_for_hooks}/.verun.json");
@@ -949,16 +948,14 @@ pub async fn abort_message(
     Ok(())
 }
 
-/// Extract the claude session_id from stream-json output.
-/// Looks for `{"type":"system","subtype":"init",...,"session_id":"..."}` or
-/// `{"type":"result",...,"session_id":"..."}` in the captured lines.
 /// Generate a short title using a standalone Haiku call (fast, doesn't affect session).
+/// Uses the Claude CLI regardless of agent type since title generation is a Verun feature.
 async fn generate_session_title(first_message: &str, worktree_path: &str) -> Option<String> {
     let prompt = format!(
         "Generate a 3-5 word title summarizing what the user wants. Reply with ONLY the title, nothing else. If the message is too vague or unclear to summarize (e.g. just a greeting), reply with exactly NONE.\n\nUser message: {}",
         first_message.chars().take(300).collect::<String>()
     );
-    let output = tokio::process::Command::new("claude")
+    let output = tokio::process::Command::new(AgentKind::Claude.implementation().cli_binary())
         .args([
             "-p", &prompt,
             "--output-format", "text",
@@ -1016,26 +1013,6 @@ pub fn parse_verun_config_file(path: &str) -> Option<(String, String, String)> {
     Some((setup, destroy, start))
 }
 
-fn extract_claude_session_id(lines: &[String]) -> Option<String> {
-    for line in lines.iter().rev() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if v.get("type").and_then(|t| t.as_str()) == Some("result") {
-                if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
-                    return Some(sid.to_string());
-                }
-            }
-            if v.get("type").and_then(|t| t.as_str()) == Some("system")
-                && v.get("subtype").and_then(|t| t.as_str()) == Some("init")
-            {
-                if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
-                    return Some(sid.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
 pub fn epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1079,39 +1056,42 @@ pub async fn fork_session_in_task(
         .await?
         .ok_or_else(|| format!("Session {source_session_id} not found"))?;
     let parent_csid = parent
-        .claude_session_id
+        .resume_session_id
         .clone()
-        .ok_or_else(|| "Parent session has no claude session id (never started?)".to_string())?;
+        .ok_or_else(|| "Parent session has no resume session id (never started?)".to_string())?;
 
     let task = db::get_task(pool, &parent.task_id)
         .await?
         .ok_or_else(|| format!("Task {} not found", parent.task_id))?;
 
+    let agent_impl = AgentKind::parse(&parent.agent_type).implementation();
     let new_csid = Uuid::new_v4().to_string();
     let new_verun_sid = Uuid::new_v4().to_string();
     let now = epoch_ms();
 
-    // Truncate the on-disk JSONL transcript.
-    let worktree_path = task.worktree_path.clone();
-    let parent_csid_for_blocking = parent_csid.clone();
-    let new_csid_for_blocking = new_csid.clone();
-    let fork_uuid_for_blocking = fork_after_message_uuid.clone();
-    tokio::task::spawn_blocking(move || {
-        let wt = std::path::Path::new(&worktree_path);
-        let src = crate::claude_jsonl::session_path(wt, &parent_csid_for_blocking)
-            .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
-        let dest = crate::claude_jsonl::session_path(wt, &new_csid_for_blocking)
-            .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
-        crate::claude_jsonl::truncate_after_message(
-            &src,
-            &dest,
-            &new_csid_for_blocking,
-            &fork_uuid_for_blocking,
-        )
-        .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
+    // Truncate the on-disk JSONL transcript (Claude only).
+    if agent_impl.uses_claude_jsonl() {
+        let worktree_path = task.worktree_path.clone();
+        let parent_csid_for_blocking = parent_csid.clone();
+        let new_csid_for_blocking = new_csid.clone();
+        let fork_uuid_for_blocking = fork_after_message_uuid.clone();
+        tokio::task::spawn_blocking(move || {
+            let wt = std::path::Path::new(&worktree_path);
+            let src = crate::claude_jsonl::session_path(wt, &parent_csid_for_blocking)
+                .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
+            let dest = crate::claude_jsonl::session_path(wt, &new_csid_for_blocking)
+                .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
+            crate::claude_jsonl::truncate_after_message(
+                &src,
+                &dest,
+                &new_csid_for_blocking,
+                &fork_uuid_for_blocking,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))??;
+    }
 
     // Load parent output_lines outside the transaction so we can hold the
     // boundary check's error path separate from DB state.
@@ -1121,13 +1101,15 @@ pub async fn fork_session_in_task(
         id: new_verun_sid.clone(),
         task_id: parent.task_id.clone(),
         name: parent.name.as_ref().map(|n| format!("{n} (fork)")),
-        claude_session_id: Some(new_csid),
+        resume_session_id: Some(new_csid),
         status: "idle".to_string(),
         started_at: now,
         ended_at: None,
         total_cost: 0.0,
         parent_session_id: Some(parent.id.clone()),
         forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
+        agent_type: parent.agent_type.clone(),
+        model: parent.model.clone(),
     };
 
     // Single transaction: insert session row + copy output_lines up to the
@@ -1214,19 +1196,21 @@ async fn insert_session_row_tx(
     s: &Session,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.task_id)
     .bind(&s.name)
-    .bind(&s.claude_session_id)
+    .bind(&s.resume_session_id)
     .bind(&s.status)
     .bind(s.started_at)
     .bind(s.ended_at)
     .bind(s.total_cost)
     .bind(&s.parent_session_id)
     .bind(&s.forked_at_message_uuid)
+    .bind(&s.agent_type)
+    .bind(&s.model)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert session: {e}"))?;
@@ -1238,8 +1222,8 @@ async fn insert_task_row_tx(
     t: &Task,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id, agent_type) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&t.id)
     .bind(&t.project_id)
@@ -1249,6 +1233,7 @@ async fn insert_task_row_tx(
     .bind(t.created_at)
     .bind(t.port_offset)
     .bind(&t.parent_task_id)
+    .bind(&t.agent_type)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert task: {e}"))?;
@@ -1274,9 +1259,9 @@ pub async fn fork_session_to_new_task(
         .await?
         .ok_or_else(|| format!("Session {source_session_id} not found"))?;
     let parent_csid = parent_session
-        .claude_session_id
+        .resume_session_id
         .clone()
-        .ok_or_else(|| "Parent session has no claude session id (never started?)".to_string())?;
+        .ok_or_else(|| "Parent session has no resume session id (never started?)".to_string())?;
     let parent_task = db::get_task(pool, &parent_session.task_id)
         .await?
         .ok_or_else(|| format!("Task {} not found", parent_session.task_id))?;
@@ -1385,49 +1370,53 @@ pub async fn fork_session_to_new_task(
         archived_at: None,
         last_commit_message: None,
         parent_task_id: Some(parent_task.id.clone()),
+        agent_type: parent_session.agent_type.clone(),
     };
 
-    // Write the truncated on-disk JSONL into the NEW worktree's projects dir
-    // (Claude keys transcripts by cwd, so the new session's cwd is what
-    // matters for `claude --resume`).
+    let parent_agent = AgentKind::parse(&parent_session.agent_type).implementation();
     let new_csid = Uuid::new_v4().to_string();
     let new_verun_sid = Uuid::new_v4().to_string();
     let now = epoch_ms();
 
-    let parent_csid_for_blocking = parent_csid.clone();
-    let new_csid_for_blocking = new_csid.clone();
-    let fork_uuid_for_blocking = fork_after_message_uuid.clone();
-    let new_wt_for_blocking = new_task.worktree_path.clone();
-    let parent_wt_for_blocking = parent_task.worktree_path.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let parent_wt = std::path::Path::new(&parent_wt_for_blocking);
-        let new_wt = std::path::Path::new(&new_wt_for_blocking);
-        let src = crate::claude_jsonl::session_path(parent_wt, &parent_csid_for_blocking)
-            .ok_or_else(|| "no $HOME for src jsonl".to_string())?;
-        let dest = crate::claude_jsonl::session_path(new_wt, &new_csid_for_blocking)
-            .ok_or_else(|| "no $HOME for dest jsonl".to_string())?;
-        crate::claude_jsonl::truncate_after_message(
-            &src,
-            &dest,
-            &new_csid_for_blocking,
-            &fork_uuid_for_blocking,
-        )
-        .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {e}"))??;
+    // Truncate on-disk JSONL transcript (Claude only)
+    if parent_agent.uses_claude_jsonl() {
+        let parent_csid_for_blocking = parent_csid.clone();
+        let new_csid_for_blocking = new_csid.clone();
+        let fork_uuid_for_blocking = fork_after_message_uuid.clone();
+        let new_wt_for_blocking = new_task.worktree_path.clone();
+        let parent_wt_for_blocking = parent_task.worktree_path.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let parent_wt = std::path::Path::new(&parent_wt_for_blocking);
+            let new_wt = std::path::Path::new(&new_wt_for_blocking);
+            let src = crate::claude_jsonl::session_path(parent_wt, &parent_csid_for_blocking)
+                .ok_or_else(|| "no $HOME for src jsonl".to_string())?;
+            let dest = crate::claude_jsonl::session_path(new_wt, &new_csid_for_blocking)
+                .ok_or_else(|| "no $HOME for dest jsonl".to_string())?;
+            crate::claude_jsonl::truncate_after_message(
+                &src,
+                &dest,
+                &new_csid_for_blocking,
+                &fork_uuid_for_blocking,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))??;
+    }
 
     let new_session = Session {
         id: new_verun_sid.clone(),
         task_id: new_task.id.clone(),
         name: parent_session.name.as_ref().map(|n| format!("{n} (fork)")),
-        claude_session_id: Some(new_csid),
+        resume_session_id: Some(new_csid),
         status: "idle".to_string(),
         started_at: now,
         ended_at: None,
         total_cost: 0.0,
         parent_session_id: Some(parent_session.id.clone()),
         forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
+        agent_type: parent_session.agent_type.clone(),
+        model: parent_session.model.clone(),
     };
 
     // Single transaction: task row + session row + copied output_lines.
@@ -1530,28 +1519,4 @@ mod tests {
         assert!(ANIMALS.len() >= 20);
     }
 
-    #[test]
-    fn extract_session_id_from_result() {
-        let lines = vec![
-            r#"{"type":"assistant","content":"hello"}"#.into(),
-            r#"{"type":"result","session_id":"abc-123","cost":0.01}"#.into(),
-        ];
-        assert_eq!(extract_claude_session_id(&lines), Some("abc-123".to_string()));
-    }
-
-    #[test]
-    fn extract_session_id_from_init() {
-        let lines = vec![
-            r#"{"type":"system","subtype":"init","session_id":"init-456","tools":[]}"#.into(),
-        ];
-        assert_eq!(extract_claude_session_id(&lines), Some("init-456".to_string()));
-    }
-
-    #[test]
-    fn extract_session_id_missing() {
-        let lines = vec![
-            r#"{"type":"assistant","content":"hello"}"#.into(),
-        ];
-        assert_eq!(extract_claude_session_id(&lines), None);
-    }
 }

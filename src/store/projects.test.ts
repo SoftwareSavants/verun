@@ -12,6 +12,7 @@ const makeProject = (overrides: Partial<Project> = {}): Project => ({
   startCommand: '',
   autoStart: false,
   createdAt: 1000,
+  defaultAgentType: 'claude',
   ...overrides,
 })
 

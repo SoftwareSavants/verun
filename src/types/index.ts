@@ -10,6 +10,17 @@ export interface Project {
   startCommand: string
   autoStart: boolean
   createdAt: number
+  defaultAgentType: AgentType
+}
+
+export type AgentType = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode'
+
+export const AGENT_DISPLAY_NAMES: Record<AgentType, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  cursor: 'Cursor',
+  gemini: 'Gemini CLI',
+  opencode: 'OpenCode',
 }
 
 export interface Task {
@@ -25,19 +36,22 @@ export interface Task {
   archivedAt: number | null
   lastCommitMessage: string | null
   parentTaskId: string | null
+  agentType: AgentType // legacy DB column, not used - agent lives on sessions
 }
 
 export interface Session {
   id: string
   taskId: string
   name: string | null
-  claudeSessionId: string | null
+  resumeSessionId: string | null
   status: SessionStatus
   startedAt: number
   endedAt: number | null
   totalCost: number
   parentSessionId: string | null
   forkedAtMessageUuid: string | null
+  agentType: AgentType
+  model: string | null
 }
 
 export interface OutputLine {
@@ -72,17 +86,34 @@ export interface RepoInfo {
   branches: string[]
 }
 
-export type ModelId = 'opus' | 'sonnet' | 'haiku'
+export type ModelId = string
 
-export const MODEL_OPTIONS: { id: ModelId; label: string; description: string }[] = [
-  { id: 'sonnet', label: 'Sonnet', description: 'Balanced' },
-  { id: 'opus', label: 'Opus', description: 'Most capable' },
-  { id: 'haiku', label: 'Haiku', description: 'Fastest' },
-]
+export interface ModelOption {
+  id: string
+  label: string
+  description: string
+}
 
-export interface ClaudeSkill {
+export interface AgentSkill {
   name: string
   description: string
+}
+
+export interface AgentInfo {
+  id: AgentType
+  name: string
+  installHint: string
+  docsUrl: string
+  models: ModelOption[]
+  installed: boolean
+  supportsStreaming: boolean
+  supportsResume: boolean
+  supportsPlanMode: boolean
+  supportsModelSelection: boolean
+  supportsEffort: boolean
+  supportsSkills: boolean
+  supportsAttachments: boolean
+  supportsFork: boolean
 }
 
 export interface Attachment {
@@ -99,7 +130,7 @@ export type OutputItem =
   | { kind: 'toolStart'; tool: string; input: string }
   | { kind: 'toolResult'; text: string; isError: boolean }
   | { kind: 'system'; text: string }
-  | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number }
+  | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }
   | { kind: 'turnSnapshot'; messageUuid: string }
   | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; data: Uint8Array }>; timestamp?: number }
   | { kind: 'raw'; text: string }

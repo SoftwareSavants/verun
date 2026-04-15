@@ -193,7 +193,7 @@ export const CodeChanges: Component<Props> = (props) => {
               {selectedCommit() ? 'No files in this commit' : 'No changes yet'}
             </p>
             <Show when={!selectedCommit()}>
-              <p class="text-xs text-text-dim">File modifications will appear here as Claude works.</p>
+              <p class="text-xs text-text-dim">File modifications will appear here as the agent works.</p>
             </Show>
           </div>
         </Show>

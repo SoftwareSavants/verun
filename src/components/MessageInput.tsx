@@ -1,6 +1,6 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps } from '../store/sessions'
-import { effectiveModel, setTaskModel, setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
+import { setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
@@ -13,7 +13,8 @@ import type { Command } from '../store/commands'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
-import type { Attachment, ModelId, TrustLevel } from '../types'
+import type { Attachment, TrustLevel, AgentType } from '../types'
+import { agents } from '../store/agents'
 import * as ipc from '../lib/ipc'
 import { Popover } from './Popover'
 import { ImageViewer } from './ImageViewer'
@@ -91,89 +92,109 @@ function UsageChip(chipProps: { sessionId: string | null }) {
     const sid = chipProps.sessionId
     return sid ? sessionTokens[sid] : undefined
   }
+  const isClaudeSession = () => {
+    const sid = chipProps.sessionId
+    return sid ? sessionById(sid)?.agentType === 'claude' : false
+  }
+  const rl = () => isClaudeSession() ? rateLimitInfo() : null
+
+  const hasAnything = () => cost() > 0 || tokens() || rl()
 
   const chipLabel = () => {
     const c = cost()
-    const rl = rateLimitInfo()
-    if (c > 0 && rl) return `${fmtCost(c)} · Resets ${formatTimeUntil(rl.resetsAt)}`
+    const r = rl()
+    if (c > 0 && r) return `${fmtCost(c)} · Resets ${formatTimeUntil(r.resetsAt)}`
     if (c > 0) return fmtCost(c)
-    if (rl) return `Resets ${formatTimeUntil(rl.resetsAt)}`
+    if (r) return `Resets ${formatTimeUntil(r.resetsAt)}`
     return 'Usage'
   }
 
   return (
-    <div class="relative">
-      <button
-        class={clsx(
-          'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
-          rateLimitInfo()?.isUsingOverage
-            ? 'text-status-error/80 hover:text-status-error hover:bg-status-error/10'
-            : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
-        )}
-        onClick={() => setShowUsagePopover(!showUsagePopover())}
-        title="Usage info"
-      >
-        <Activity size={13} />
-        <span>{chipLabel()}</span>
-      </button>
-      <Popover open={showUsagePopover()} onClose={() => setShowUsagePopover(false)} class="py-3 px-4 min-w-64 absolute bottom-full left-0 mb-1">
-        {/* Rate limit windows */}
-        <Show when={rateLimitInfo()}>
-          {(() => {
-            const rl = rateLimitInfo()!
-            return (
-              <>
-                <div class="mb-3">
-                  <div class="text-[11px] font-medium text-text-primary mb-0.5">Current session</div>
-                  <div class="text-[10px] text-text-dim">
-                    Resets {formatResetTime(rl.resetsAt)}
-                  </div>
-                </div>
-                <Show when={rl.overageResetsAt > 0}>
+    <Show when={hasAnything()}>
+      <div class="relative">
+        <button
+          class={clsx(
+            'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+            rl()?.isUsingOverage
+              ? 'text-status-error/80 hover:text-status-error hover:bg-status-error/10'
+              : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+          )}
+          onClick={() => setShowUsagePopover(!showUsagePopover())}
+          title="Usage info"
+        >
+          <Activity size={13} />
+          <span>{chipLabel()}</span>
+        </button>
+        <Popover open={showUsagePopover()} onClose={() => setShowUsagePopover(false)} class="py-3 px-4 min-w-64 absolute bottom-full left-0 mb-1">
+          {/* Rate limit windows (Claude only) */}
+          <Show when={rl()}>
+            {(() => {
+              const r = rl()!
+              return (
+                <>
                   <div class="mb-3">
-                    <div class="flex items-center gap-1.5">
-                      <span class="text-[11px] font-medium text-text-primary">Overage window</span>
-                      <Show when={rl.isUsingOverage}>
-                        <span class="text-[9px] px-1 py-0.5 rounded bg-status-error/15 text-status-error font-medium">Active</span>
-                      </Show>
+                    <div class="text-[11px] font-medium text-text-primary mb-0.5">Current session</div>
+                    <div class="text-[10px] text-text-dim">
+                      Resets {formatResetTime(r.resetsAt)}
                     </div>
-                    <div class="text-[10px] text-text-dim mt-0.5">
-                      Resets {formatResetTime(rl.overageResetsAt)}
+                  </div>
+                  <Show when={r.overageResetsAt > 0}>
+                    <div class="mb-3">
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-[11px] font-medium text-text-primary">Overage window</span>
+                        <Show when={r.isUsingOverage}>
+                          <span class="text-[9px] px-1 py-0.5 rounded bg-status-error/15 text-status-error font-medium">Active</span>
+                        </Show>
+                      </div>
+                      <div class="text-[10px] text-text-dim mt-0.5">
+                        Resets {formatResetTime(r.overageResetsAt)}
+                      </div>
                     </div>
+                  </Show>
+                </>
+              )
+            })()}
+          </Show>
+
+          {/* Session stats */}
+          <Show when={cost() > 0 || tokens()}>
+            <Show when={rl()}>
+              <div class="border-t border-border-subtle my-2.5" />
+            </Show>
+            <div class="text-[11px] font-medium text-text-primary mb-1.5">This session</div>
+            <div class="space-y-1 text-[11px]">
+              <Show when={cost() > 0}>
+                <div class="flex justify-between gap-6">
+                  <span class="text-text-dim">Cost</span>
+                  <span class="text-text-secondary font-mono">{fmtCost(cost())}</span>
+                </div>
+              </Show>
+              <Show when={tokens()}>
+                <div class="flex justify-between gap-6">
+                  <span class="text-text-dim">Input</span>
+                  <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.input)} tokens</span>
+                </div>
+                <Show when={tokens()!.cacheRead > 0 || tokens()!.cacheWrite > 0}>
+                  <div class="flex justify-between gap-6">
+                    <span class="text-text-dim">Cached</span>
+                    <span class="text-text-secondary font-mono">
+                      {[
+                        tokens()!.cacheRead > 0 ? `${fmtTokens(tokens()!.cacheRead)} read` : '',
+                        tokens()!.cacheWrite > 0 ? `${fmtTokens(tokens()!.cacheWrite)} write` : '',
+                      ].filter(Boolean).join(' / ')}
+                    </span>
                   </div>
                 </Show>
-              </>
-            )
-          })()}
-        </Show>
-
-        {/* Session stats */}
-        <Show when={cost() > 0 || tokens()}>
-          <Show when={rateLimitInfo()}>
-            <div class="border-t border-border-subtle my-2.5" />
+                <div class="flex justify-between gap-6">
+                  <span class="text-text-dim">Output</span>
+                  <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.output)} tokens</span>
+                </div>
+              </Show>
+            </div>
           </Show>
-          <div class="text-[11px] font-medium text-text-primary mb-1.5">This session</div>
-          <div class="space-y-1 text-[11px]">
-            <Show when={cost() > 0}>
-              <div class="flex justify-between gap-6">
-                <span class="text-text-dim">Cost</span>
-                <span class="text-text-secondary font-mono">{fmtCost(cost())}</span>
-              </div>
-            </Show>
-            <Show when={tokens()}>
-              <div class="flex justify-between gap-6">
-                <span class="text-text-dim">Input</span>
-                <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.input)} tokens</span>
-              </div>
-              <div class="flex justify-between gap-6">
-                <span class="text-text-dim">Output</span>
-                <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.output)} tokens</span>
-              </div>
-            </Show>
-          </div>
-        </Show>
-      </Popover>
-    </div>
+        </Popover>
+      </div>
+    </Show>
   )
 }
 
@@ -181,6 +202,12 @@ export const MessageInput: Component<Props> = (props) => {
   let fileInputRef!: HTMLInputElement
   let inputRef!: HTMLDivElement
   let customAnswerRef!: HTMLInputElement
+
+  const sessionAgent = () => {
+    const sid = props.sessionId
+    const at = sid ? sessionById(sid)?.agentType : undefined
+    return at ? agents.find(a => a.id === at) : undefined
+  }
 
   // ── Contenteditable helpers ──────────────────────────────────────────
   // The input is a contenteditable div with text nodes + badge spans.
@@ -575,7 +602,11 @@ export const MessageInput: Component<Props> = (props) => {
     sendMessage(sid, text, undefined, currentModel(), true)
   }
 
-  const currentModel = () => effectiveModel(selectedTaskId())
+  const currentModel = (): string | undefined => {
+    const sid = props.sessionId
+    const session = sid ? sessionById(sid) : undefined
+    return session?.model ?? undefined
+  }
 
   const currentApproval = () => {
     const sid = props.sessionId
@@ -865,7 +896,8 @@ export const MessageInput: Component<Props> = (props) => {
       case 'new-session': {
         const tid = selectedTaskId()
         if (tid) {
-          const session = await createSession(tid)
+          const currentAgent = sessionById(props.sessionId ?? '')?.agentType ?? 'claude' as AgentType
+          const session = await createSession(tid, currentAgent)
           setSelectedSessionId(session.id)
         }
         break
@@ -876,12 +908,11 @@ export const MessageInput: Component<Props> = (props) => {
         break
       }
       case 'model': {
-        // Extract model from remaining text, e.g. "/model opus"
         const parts = message().trim().split(/\s+/)
-        const modelArg = parts[1] as ModelId | undefined
-        const modelTaskId = selectedTaskId()
-        if (modelArg && ['opus', 'sonnet', 'haiku'].includes(modelArg) && modelTaskId) {
-          setTaskModel(modelTaskId, modelArg)
+        const modelArg = parts[1] ?? null
+        const sid = props.sessionId
+        if (sid && modelArg) {
+          updateSessionModel(sid, modelArg)
         }
         break
       }
@@ -1552,7 +1583,7 @@ export const MessageInput: Component<Props> = (props) => {
               <div class="flex items-center justify-between mb-2">
                 <div class="flex items-center gap-2">
                   <HelpCircle size={14} class="text-accent" />
-                  <span class="text-xs font-medium text-accent">Question from Claude</span>
+                  <span class="text-xs font-medium text-accent">Question from {sessionAgent()?.name ?? 'Agent'}</span>
                   <Show when={qs().length > 1}>
                     <span class="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded-full">
                       {questionIndex() + 1}/{qs().length}
@@ -2090,63 +2121,67 @@ export const MessageInput: Component<Props> = (props) => {
             {/* Model selector */}
             <ModelSelector
               model={currentModel()}
+              agentType={sessionAgent()?.id ?? 'claude' as AgentType}
               onChange={(m) => {
-                const tid = selectedTaskId()
-                if (tid) setTaskModel(tid, m)
+                const sid = props.sessionId
+                if (sid) updateSessionModel(sid, m)
               }}
               disabled={!props.sessionId || props.isRunning}
             />
 
-            {/* Plan mode toggle */}
-            <button
-              class={clsx(
-                'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
-                planMode()
-                  ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
-                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
-                'disabled:opacity-30'
-              )}
-              onClick={() => setPlanMode(!planMode())}
-              disabled={!props.sessionId || props.isRunning}
-              title="Plan mode — Claude will plan before acting"
-            >
-              <ListChecks size={13} />
-              <span>Plan</span>
-            </button>
+            <Show when={sessionAgent()?.supportsPlanMode !== false}>
+              <button
+                class={clsx(
+                  'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+                  planMode()
+                    ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
+                  'disabled:opacity-30'
+                )}
+                onClick={() => setPlanMode(!planMode())}
+                disabled={!props.sessionId || props.isRunning}
+                title="Plan mode - agent will plan before acting"
+              >
+                <ListChecks size={13} />
+                <span>Plan</span>
+              </button>
+            </Show>
 
-            {/* Thinking mode toggle */}
-            <button
-              class={clsx(
-                'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
-                thinkingMode()
-                  ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
-                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
-                'disabled:opacity-30'
-              )}
-              onClick={() => setThinking(!thinkingMode())}
-              disabled={!props.sessionId || props.isRunning}
-              title="Thinking mode — extended thinking for complex tasks"
-            >
-              <Brain size={13} />
-              <span>Think</span>
-            </button>
+            <Show when={sessionAgent()?.supportsEffort !== false}>
+              <button
+                class={clsx(
+                  'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+                  thinkingMode()
+                    ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
+                  'disabled:opacity-30'
+                )}
+                onClick={() => setThinking(!thinkingMode())}
+                disabled={!props.sessionId || props.isRunning}
+                title="Thinking mode - extended thinking for complex tasks"
+              >
+                <Brain size={13} />
+                <span>Think</span>
+              </button>
+            </Show>
 
-            {/* Fast mode toggle */}
-            <button
-              class={clsx(
-                'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
-                fastMode()
-                  ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
-                  : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
-                'disabled:opacity-30'
-              )}
-              onClick={() => setFast(!fastMode())}
-              disabled={!props.sessionId || props.isRunning}
-              title="Fast mode — less thinking, quicker responses"
-            >
-              <Zap size={13} />
-              <span>Fast</span>
-            </button>
+            <Show when={sessionAgent()?.supportsEffort !== false}>
+              <button
+                class={clsx(
+                  'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+                  fastMode()
+                    ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
+                  'disabled:opacity-30'
+                )}
+                onClick={() => setFast(!fastMode())}
+                disabled={!props.sessionId || props.isRunning}
+                title="Fast mode - less thinking, quicker responses"
+              >
+                <Zap size={13} />
+                <span>Fast</span>
+              </button>
+            </Show>
 
             {/* Trust level selector */}
             <div class="relative">

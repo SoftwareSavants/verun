@@ -80,6 +80,7 @@ pub async fn add_project(
         start_command,
         auto_start: false,
         created_at: epoch_ms(),
+        default_agent_type: crate::agent::AgentKind::Claude.as_str().to_string(),
     };
 
     db_tx
@@ -143,6 +144,18 @@ pub async fn update_project_hooks(
 ) -> Result<(), String> {
     db_tx
         .send(db::DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command, auto_start })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
+}
+
+#[tauri::command]
+pub async fn update_project_default_agent(
+    db_tx: State<'_, DbWriteTx>,
+    id: String,
+    default_agent_type: String,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::UpdateProjectDefaultAgent { id, default_agent_type })
         .await
         .map_err(|e| format!("DB write failed: {e}"))
 }
@@ -227,6 +240,7 @@ pub async fn create_task(
     setup_in_progress: State<'_, SetupInProgress>,
     project_id: String,
     base_branch: Option<String>,
+    agent_type: Option<String>,
 ) -> Result<TaskWithSession, String> {
     let project = db::get_project(pool.inner(), &project_id)
         .await?
@@ -249,6 +263,7 @@ pub async fn create_task(
             setup_hook: project.setup_hook,
             port_offset,
             from_task_window,
+            agent_type: agent_type.unwrap_or_else(|| crate::agent::AgentKind::Claude.as_str().to_string()),
         },
     ).await?;
 
@@ -478,8 +493,10 @@ pub async fn rename_task(
 pub async fn create_session(
     db_tx: State<'_, DbWriteTx>,
     task_id: String,
+    agent_type: String,
+    model: Option<String>,
 ) -> Result<Session, String> {
-    task::create_session(db_tx.inner(), task_id).await
+    task::create_session(db_tx.inner(), task_id, agent_type, model).await
 }
 
 /// Fork an existing session at a specific assistant message uuid into a new
@@ -590,16 +607,29 @@ pub async fn send_message(
             port_offset: t.port_offset,
             trust_level,
             message,
-            claude_session_id: session.claude_session_id,
+            resume_session_id: session.resume_session_id,
             attachments: attachments.unwrap_or_default(),
             model,
             plan_mode: plan_mode.unwrap_or(false),
             thinking_mode: thinking_mode.unwrap_or(false),
             fast_mode: fast_mode.unwrap_or(false),
             task_name: t.name,
+            agent_type: session.agent_type.clone(),
         },
     )
     .await
+}
+
+#[tauri::command]
+pub async fn update_session_model(
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+    model: Option<String>,
+) -> Result<(), String> {
+    db_tx
+        .send(db::DbWrite::UpdateSessionModel { id: session_id, model })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))
 }
 
 /// Close a session (hides from UI, persists in DB as 'closed')
@@ -620,11 +650,11 @@ pub async fn clear_session(
     db_tx: State<'_, DbWriteTx>,
     session_id: String,
 ) -> Result<(), String> {
-    // Clear the claude_session_id so next message starts fresh
+    // Clear the resume_session_id so next message starts fresh
     db_tx
-        .send(db::DbWrite::SetClaudeSessionId {
+        .send(db::DbWrite::SetResumeSessionId {
             id: session_id.clone(),
-            claude_session_id: String::new(),
+            resume_session_id: String::new(),
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
@@ -1477,20 +1507,24 @@ pub async fn write_binary_file(request: tauri::ipc::Request<'_>) -> Result<(), S
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ClaudeSkill {
+pub struct AgentSkill {
     pub name: String,
     pub description: String,
 }
 
 #[tauri::command]
-pub async fn list_claude_skills() -> Result<Vec<ClaudeSkill>, String> {
-    let output = std::process::Command::new("claude")
+pub async fn list_agent_skills() -> Result<Vec<AgentSkill>, String> {
+    let agent = crate::agent::AgentKind::Claude.implementation();
+    if !agent.supports_skills() {
+        return Ok(vec![]);
+    }
+    let output = std::process::Command::new(agent.cli_binary())
         .args(["skills", "list"])
         .output()
-        .map_err(|e| format!("Failed to run claude skills list: {e}"))?;
+        .map_err(|e| format!("Failed to run {} skills list: {e}", agent.display_name()))?;
 
     if !output.status.success() {
-        return Err("claude skills list failed".to_string());
+        return Err(format!("{} skills list failed", agent.display_name()));
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
@@ -1498,18 +1532,16 @@ pub async fn list_claude_skills() -> Result<Vec<ClaudeSkill>, String> {
 
     for line in text.lines() {
         let trimmed = line.trim();
-        // Parse lines like: - `/name` — description
-        // or:                - `/name` — description
         if let Some(rest) = trimmed.strip_prefix("- `/").or_else(|| trimmed.strip_prefix("- `/")) {
             if let Some(idx) = rest.find('`') {
                 let name = rest[..idx].to_string();
                 let desc = rest[idx + 1..]
-                    .trim_start_matches(" — ")
-                    .trim_start_matches(" — ")
+                    .trim_start_matches(" - ")
+                    .trim_start_matches(" - ")
                     .trim()
                     .to_string();
                 if !name.is_empty() {
-                    skills.push(ClaudeSkill { name, description: desc });
+                    skills.push(AgentSkill { name, description: desc });
                 }
             }
         }
@@ -1528,15 +1560,113 @@ pub async fn reload_env_path() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn check_claude() -> Result<String, String> {
-    let output = std::process::Command::new("claude")
-        .arg("--version")
+pub async fn check_agent(agent_type: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let agent = crate::agent::AgentKind::parse(&agent_type).implementation();
+        check_agent_impl(&*agent)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {e}"))?
+}
+
+fn check_agent_impl(agent: &dyn crate::agent::Agent) -> Result<String, String> {
+    let output = std::process::Command::new(agent.cli_binary())
+        .args(agent.version_args())
         .output()
-        .map_err(|_| "Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code".to_string())?;
+        .map_err(|_| format!("{} CLI not found. {}", agent.display_name(), agent.install_hint()))?;
     if !output.status.success() {
-        return Err("Claude CLI returned an error".to_string());
+        return Err(format!("{} CLI returned an error", agent.display_name()));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Cached agent detection result — populated once at startup, refreshed on demand.
+pub type AgentCache = std::sync::Arc<std::sync::RwLock<Vec<AgentInfo>>>;
+
+pub fn new_agent_cache() -> AgentCache {
+    std::sync::Arc::new(std::sync::RwLock::new(Vec::new()))
+}
+
+/// Blocking detection of all agents — run via spawn_blocking at startup.
+pub fn detect_all_agents() -> Vec<AgentInfo> {
+    crate::agent::AgentKind::all()
+        .iter()
+        .map(|&kind| {
+            let agent = kind.implementation();
+            let installed = check_agent_impl(&*agent).is_ok();
+
+            // For installed agents, try to fetch the live model list.
+            // Fall back to the static list if the command fails or returns nothing.
+            let models = if installed {
+                agent.model_list_args()
+                    .and_then(|args| {
+                        std::process::Command::new(agent.cli_binary())
+                            .args(&args)
+                            .output()
+                            .ok()
+                    })
+                    .map(|out| agent.parse_model_list(&String::from_utf8_lossy(&out.stdout)))
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| agent.available_models())
+            } else {
+                agent.available_models()
+            };
+
+            AgentInfo {
+                id: kind.as_str().to_string(),
+                name: agent.display_name().to_string(),
+                install_hint: agent.install_hint().to_string(),
+                docs_url: agent.docs_url().to_string(),
+                models,
+                installed,
+                supports_streaming: agent.supports_streaming(),
+                supports_resume: agent.supports_resume(),
+                supports_plan_mode: agent.supports_plan_mode(),
+                supports_model_selection: agent.supports_model_selection(),
+                supports_effort: agent.supports_effort(),
+                supports_skills: agent.supports_skills(),
+                supports_attachments: agent.supports_attachments(),
+                supports_fork: agent.supports_fork(),
+            }
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn list_available_agents(cache: State<'_, AgentCache>) -> Result<Vec<AgentInfo>, String> {
+    Ok(cache.read().unwrap().clone())
+}
+
+/// Kick off a background re-detection and return immediately.
+/// Results arrive via the `agents-updated` event.
+#[tauri::command]
+pub async fn refresh_agents(cache: State<'_, AgentCache>, app: tauri::AppHandle) -> Result<(), String> {
+    let cache = std::sync::Arc::clone(&*cache);
+    tauri::async_runtime::spawn(async move {
+        let agents = tokio::task::spawn_blocking(detect_all_agents).await.unwrap_or_default();
+        *cache.write().unwrap() = agents.clone();
+        let _ = app.emit("agents-updated", agents);
+    });
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInfo {
+    pub id: String,
+    pub name: String,
+    pub install_hint: String,
+    pub docs_url: String,
+    pub models: Vec<crate::agent::ModelOption>,
+    pub installed: bool,
+    pub supports_streaming: bool,
+    pub supports_resume: bool,
+    pub supports_plan_mode: bool,
+    pub supports_model_selection: bool,
+    pub supports_effort: bool,
+    pub supports_skills: bool,
+    pub supports_attachments: bool,
+    pub supports_fork: bool,
 }
 
 #[tauri::command]

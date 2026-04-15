@@ -60,6 +60,10 @@ export function updateStoreHooks(id: string, setupHook: string, destroyHook: str
 export const projectById = (id: string) =>
   projects.find(p => p.id === id)
 
+export function updateProjectDefaultAgentInStore(id: string, defaultAgentType: import('../types').AgentType) {
+  setProjects(p => p.id === id, 'defaultAgentType', defaultAgentType)
+}
+
 // Listen for hooks auto-applied by Claude auto-detect
 export async function initProjectListeners() {
   await listen<{ projectId: string; setupHook: string; destroyHook: string; startCommand: string }>('project-hooks-updated', (event) => {

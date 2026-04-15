@@ -1,6 +1,7 @@
 import { createSignal } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { loadProjects, initProjectListeners } from '../store/projects'
+import { loadAgents, initAgentListeners } from '../store/agents'
 import { initSessionListeners, syncSessionStatuses } from '../store/sessions'
 import { initTerminalListeners } from '../store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from '../store/git'
@@ -40,6 +41,7 @@ export async function initListeners() {
     initGitListeners(),
     initProjectListeners(),
     initSetupListeners(),
+    initAgentListeners(),
   ])
   initWindowFocusRefresh()
   initEnvPathFocusRefresh()
@@ -87,7 +89,7 @@ export async function initListeners() {
 
 /** Load initial data from the database */
 export async function loadInitialData() {
-  await Promise.all([loadProjects(), syncSessionStatuses()])
+  await Promise.all([loadProjects(), syncSessionStatuses(), loadAgents()])
 }
 
 /** Dismiss the splash screen and reveal the app */
@@ -101,12 +103,15 @@ export function dismissSplash() {
   }
 }
 
-/** Check Claude CLI availability */
+/** Check that at least one agent CLI is installed */
 export async function checkCli() {
   try {
-    await ipc.checkClaude()
+    const agents = await ipc.listAvailableAgents()
+    if (agents.length > 0 && !agents.some(a => a.installed)) {
+      addToast('No coding agent CLIs found. Install at least one (e.g. npm i -g @anthropic-ai/claude-code)', 'error')
+    }
   } catch {
-    addToast('Claude CLI not found. Install with: npm i -g @anthropic-ai/claude-code', 'error')
+    // best effort
   }
 }
 

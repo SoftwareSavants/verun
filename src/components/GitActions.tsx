@@ -3,7 +3,7 @@ import { Dynamic } from 'solid-js/web'
 import { ArrowUpFromLine, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye, Archive } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import * as ipc from '../lib/ipc'
-import { claudeSkills } from '../store/commands'
+import { agentSkills } from '../store/commands'
 import { sendMessage } from '../store/sessions'
 import { archiveTask } from '../store/tasks'
 import { addToast } from '../store/ui'
@@ -150,7 +150,7 @@ export const GitActions: Component<Props> = (props) => {
     }
   }
 
-  const hasReviewSkill = () => claudeSkills().some(s => s.name === 'review')
+  const hasReviewSkill = () => agentSkills().some(s => s.name === 'review')
   const conflicts = () => pr()?.mergeable === 'CONFLICTING'
   const failedChecks = () => checks().filter(c => c.status === 'FAILURE' || c.status === 'ERROR')
   const pendingChecks = () => checks().filter(c => c.status === 'PENDING' || c.status === 'QUEUED' || c.status === 'IN_PROGRESS')

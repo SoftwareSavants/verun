@@ -1,3 +1,4 @@
+pub mod agent;
 mod claude_jsonl;
 mod db;
 mod env_path;
@@ -39,6 +40,7 @@ pub fn run() {
                 .add_migrations("sqlite:verun.db", db::migrations())
                 .build(),
         )
+        .manage(ipc::new_agent_cache())
         .manage(task::new_active_map())
         .manage(task::new_pending_approvals())
         .manage(task::new_pending_approval_meta())
@@ -51,11 +53,23 @@ pub fn run() {
         .manage(WindowTaskMap::new())
         .setup(|app| {
             // Capture the user's full PATH from their interactive shell so
-            // children (claude, lsp, git, gh, …) inherit nvm/homebrew/etc.
+            // children (agents, lsp, git, gh, ...) inherit nvm/homebrew/etc.
             // Then start the background watcher that re-captures whenever
             // the integrated terminal looks idle after a user command.
             env_path::reload_now();
             env_path::start_idle_watcher();
+
+            // Detect installed agents in the background so list_available_agents
+            // returns instantly once the cache is warm.
+            let agent_detect_handle = app.handle().clone();
+            let agent_cache = std::sync::Arc::clone(&*app.state::<ipc::AgentCache>());
+            tauri::async_runtime::spawn(async move {
+                let agents = tokio::task::spawn_blocking(ipc::detect_all_agents)
+                    .await
+                    .unwrap_or_default();
+                *agent_cache.write().unwrap() = agents.clone();
+                let _ = agent_detect_handle.emit("agents-updated", agents);
+            });
 
             // Menu setup
             #[cfg(target_os = "macos")]
@@ -212,6 +226,7 @@ pub fn run() {
             ipc::delete_project,
             ipc::update_project_base_branch,
             ipc::update_project_hooks,
+            ipc::update_project_default_agent,
             ipc::export_project_config,
             ipc::import_project_config,
             // Tasks
@@ -229,6 +244,7 @@ pub fn run() {
             // Sessions
             ipc::create_session,
             ipc::send_message,
+            ipc::update_session_model,
             ipc::close_session,
             ipc::clear_session,
             ipc::abort_message,
@@ -285,8 +301,10 @@ pub fn run() {
             ipc::copy_image_to_clipboard,
             ipc::write_binary_file,
             // Utility
-            ipc::list_claude_skills,
-            ipc::check_claude,
+            ipc::list_agent_skills,
+            ipc::check_agent,
+            ipc::list_available_agents,
+            ipc::refresh_agents,
             ipc::reload_env_path,
             ipc::list_worktree_files,
             ipc::check_gitignored,

@@ -172,6 +172,36 @@ pub fn migrations() -> Vec<Migration> {
             CREATE INDEX IF NOT EXISTS idx_turn_snapshots_session ON turn_snapshots(session_id);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 13,
+        description: "add agent_type to tasks",
+        sql: "ALTER TABLE tasks ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'claude';",
+        kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 14,
+        description: "add default_agent_type to projects",
+        sql: "ALTER TABLE projects ADD COLUMN default_agent_type TEXT NOT NULL DEFAULT 'claude';",
+        kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 15,
+        description: "add agent_type and model to sessions",
+        sql: "ALTER TABLE sessions ADD COLUMN agent_type TEXT; ALTER TABLE sessions ADD COLUMN model TEXT;",
+        kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 16,
+        description: "backfill session agent_type from task, default claude",
+        sql: "UPDATE sessions SET agent_type = COALESCE(agent_type, (SELECT agent_type FROM tasks WHERE tasks.id = sessions.task_id), 'claude') WHERE agent_type IS NULL;",
+        kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 17,
+        description: "rename claude_session_id to resume_session_id",
+        sql: "ALTER TABLE sessions RENAME COLUMN claude_session_id TO resume_session_id;",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -191,6 +221,8 @@ pub struct Project {
     pub start_command: String,
     pub auto_start: bool,
     pub created_at: i64,
+    #[sqlx(default)]
+    pub default_agent_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -212,6 +244,8 @@ pub struct Task {
     pub last_commit_message: Option<String>,
     #[sqlx(default)]
     pub parent_task_id: Option<String>,
+    #[sqlx(default)]
+    pub agent_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -220,7 +254,7 @@ pub struct Session {
     pub id: String,
     pub task_id: String,
     pub name: Option<String>,
-    pub claude_session_id: Option<String>,
+    pub resume_session_id: Option<String>,
     pub status: String,
     pub started_at: i64,
     pub ended_at: Option<i64>,
@@ -229,6 +263,10 @@ pub struct Session {
     pub parent_session_id: Option<String>,
     #[sqlx(default)]
     pub forked_at_message_uuid: Option<String>,
+    #[sqlx(default)]
+    pub agent_type: String,
+    #[sqlx(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -288,6 +326,7 @@ pub enum DbWrite {
     InsertProject(Project),
     UpdateProjectBaseBranch { id: String, base_branch: String },
     UpdateProjectHooks { id: String, setup_hook: String, destroy_hook: String, start_command: String, auto_start: bool },
+    UpdateProjectDefaultAgent { id: String, default_agent_type: String },
     DeleteProject { id: String },
 
     // Tasks
@@ -302,7 +341,8 @@ pub enum DbWrite {
     CreateSession(Session),
     UpdateSessionName { id: String, name: String },
     UpdateSessionStatus { id: String, status: String },
-    SetClaudeSessionId { id: String, claude_session_id: String },
+    UpdateSessionModel { id: String, model: Option<String> },
+    SetResumeSessionId { id: String, resume_session_id: String },
     EndSession { id: String, ended_at: i64 },
     AccumulateSessionCost { id: String, cost: f64 },
     CloseSession { id: String },
@@ -390,6 +430,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .execute(pool)
                 .await?;
         }
+        DbWrite::UpdateProjectDefaultAgent { id, default_agent_type } => {
+            sqlx::query("UPDATE projects SET default_agent_type = ? WHERE id = ?")
+                .bind(&default_agent_type)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
         DbWrite::DeleteProject { id } => {
             // Cascade: audit_log → trust_levels → steps → output_lines → turn_snapshots → sessions → tasks → project
             sqlx::query(
@@ -431,8 +478,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Tasks --
         DbWrite::InsertTask(t) => {
             sqlx::query(
-                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id, agent_type) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&t.id)
             .bind(&t.project_id)
@@ -442,6 +489,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(t.created_at)
             .bind(t.port_offset)
             .bind(&t.parent_task_id)
+            .bind(&t.agent_type)
             .execute(pool)
             .await?;
         }
@@ -498,19 +546,21 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Sessions --
         DbWrite::CreateSession(s) => {
             sqlx::query(
-                "INSERT INTO sessions (id, task_id, name, claude_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(&s.task_id)
             .bind(&s.name)
-            .bind(&s.claude_session_id)
+            .bind(&s.resume_session_id)
             .bind(&s.status)
             .bind(s.started_at)
             .bind(s.ended_at)
             .bind(s.total_cost)
             .bind(&s.parent_session_id)
             .bind(&s.forked_at_message_uuid)
+            .bind(&s.agent_type)
+            .bind(&s.model)
             .execute(pool)
             .await?;
         }
@@ -528,9 +578,16 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .execute(pool)
                 .await?;
         }
-        DbWrite::SetClaudeSessionId { id, claude_session_id } => {
-            sqlx::query("UPDATE sessions SET claude_session_id = ? WHERE id = ?")
-                .bind(&claude_session_id)
+        DbWrite::UpdateSessionModel { id, model } => {
+            sqlx::query("UPDATE sessions SET model = ? WHERE id = ?")
+                .bind(&model)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        DbWrite::SetResumeSessionId { id, resume_session_id } => {
+            sqlx::query("UPDATE sessions SET resume_session_id = ? WHERE id = ?")
+                .bind(&resume_session_id)
                 .bind(&id)
                 .execute(pool)
                 .await?;
@@ -892,7 +949,7 @@ mod tests {
     #[test]
     fn has_twelve_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 12);
+        assert_eq!(m.len(), 17);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
@@ -905,6 +962,11 @@ mod tests {
         assert_eq!(m[9].version, 10);
         assert_eq!(m[10].version, 11);
         assert_eq!(m[11].version, 12);
+        assert_eq!(m[12].version, 13);
+        assert_eq!(m[13].version, 14);
+        assert_eq!(m[14].version, 15);
+        assert_eq!(m[15].version, 16);
+        assert_eq!(m[16].version, 17);
     }
 
     #[test]
@@ -932,6 +994,7 @@ mod tests {
             start_command: String::new(),
             auto_start: false,
             created_at: 1000,
+            default_agent_type: "claude".into(),
         }
     }
 
@@ -949,6 +1012,7 @@ mod tests {
             archived_at: None,
             last_commit_message: None,
             parent_task_id: None,
+            agent_type: "claude".into(),
         }
     }
 
@@ -957,13 +1021,15 @@ mod tests {
             id: "s-001".into(),
             task_id: task_id.into(),
             name: None,
-            claude_session_id: None,
+            resume_session_id: None,
             status: "running".into(),
             started_at: 3000,
             ended_at: None,
             total_cost: 0.0,
             parent_session_id: None,
             forked_at_message_uuid: None,
+            agent_type: "claude".into(),
+            model: None,
         }
     }
 
@@ -1198,22 +1264,22 @@ mod tests {
 
         let s = get_session(&pool, "s-001").await.unwrap().unwrap();
         assert_eq!(s.status, "running");
-        assert!(s.claude_session_id.is_none());
+        assert!(s.resume_session_id.is_none());
         assert!(s.ended_at.is_none());
 
-        // Set claude session id once we get it from CLI
+        // Set resume session id once we get it from CLI
         process_write(
             &pool,
-            DbWrite::SetClaudeSessionId {
+            DbWrite::SetResumeSessionId {
                 id: "s-001".into(),
-                claude_session_id: "claude-xyz".into(),
+                resume_session_id: "claude-xyz".into(),
             },
         )
         .await
         .unwrap();
 
         let s = get_session(&pool, "s-001").await.unwrap().unwrap();
-        assert_eq!(s.claude_session_id.as_deref(), Some("claude-xyz"));
+        assert_eq!(s.resume_session_id.as_deref(), Some("claude-xyz"));
 
         // End session
         process_write(
@@ -1334,7 +1400,7 @@ mod tests {
         let s = make_session("t-001");
         let json = serde_json::to_value(&s).unwrap();
         assert!(json.get("taskId").is_some());
-        assert!(json.get("claudeSessionId").is_some());
+        assert!(json.get("resumeSessionId").is_some());
         assert!(json.get("startedAt").is_some());
         assert!(json.get("endedAt").is_some());
     }

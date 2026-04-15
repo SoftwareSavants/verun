@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, ClaudeSkill, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
 import { bytesToBase64 } from './binary'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
@@ -21,6 +21,9 @@ export const updateProjectBaseBranch = (id: string, baseBranch: string) =>
 export const updateProjectHooks = (id: string, setupHook: string, destroyHook: string, startCommand: string, autoStart: boolean) =>
   invoke<void>('update_project_hooks', { id, setupHook, destroyHook, startCommand, autoStart })
 
+export const updateProjectDefaultAgent = (id: string, defaultAgentType: string) =>
+  invoke<void>('update_project_default_agent', { id, defaultAgentType })
+
 export const exportProjectConfig = (projectId: string, taskId: string) =>
   invoke<void>('export_project_config', { projectId, taskId })
 
@@ -28,8 +31,8 @@ export const importProjectConfig = (projectId: string) =>
   invoke<{ setupHook: string; destroyHook: string; startCommand: string }>('import_project_config', { projectId })
 
 // Tasks
-export const createTask = (projectId: string, baseBranch?: string) =>
-  invoke<TaskWithSession>('create_task', { projectId, baseBranch })
+export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType) =>
+  invoke<TaskWithSession>('create_task', { projectId, baseBranch, agentType })
 
 export const listTasks = (projectId: string): Promise<Task[]> =>
   DEMO
@@ -64,8 +67,8 @@ export const stopHook = (taskId: string) =>
   invoke<void>('stop_hook', { taskId })
 
 // Sessions
-export const createSession = (taskId: string) =>
-  invoke<Session>('create_session', { taskId })
+export const createSession = (taskId: string, agentType: string, model?: string) =>
+  invoke<Session>('create_session', { taskId, agentType, model })
 
 export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) => {
   const wireAttachments = attachments?.map(a => ({
@@ -75,6 +78,9 @@ export const sendMessage = (sessionId: string, message: string, attachments?: At
   }))
   return invoke<void>('send_message', { sessionId, message, attachments: wireAttachments, model, planMode, thinkingMode, fastMode })
 }
+
+export const updateSessionModel = (sessionId: string, model: string | null) =>
+  invoke<void>('update_session_model', { sessionId, model })
 
 export const closeSession = (sessionId: string) =>
   invoke<void>('close_session', { sessionId })
@@ -239,11 +245,17 @@ export const checkGitignored = (taskId: string, paths: string[]) =>
   invoke<string[]>('check_gitignored', { taskId, paths })
 
 // Utility
-export const listClaudeSkills = () =>
-  invoke<ClaudeSkill[]>('list_claude_skills')
+export const listAgentSkills = () =>
+  invoke<AgentSkill[]>('list_agent_skills')
 
-export const checkClaude = (): Promise<string> =>
-  DEMO ? Promise.resolve('1.0.0') : invoke<string>('check_claude')
+export const checkAgent = (agentType: AgentType) =>
+  invoke<string>('check_agent', { agentType })
+
+export const listAvailableAgents = () =>
+  invoke<AgentInfo[]>('list_available_agents')
+
+export const refreshAgents = () =>
+  invoke<void>('refresh_agents')
 
 export const reloadEnvPath = () =>
   invoke<void>('reload_env_path')

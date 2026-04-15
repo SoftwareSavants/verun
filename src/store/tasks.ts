@@ -1,6 +1,6 @@
 import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
-import type { Task, Session } from '../types'
+import type { Task, Session, AgentType } from '../types'
 import * as ipc from '../lib/ipc'
 import { closeTerminalsForTask } from './terminals'
 import { clearTaskGitState } from './git'
@@ -72,7 +72,7 @@ export async function createTask(projectId: string, baseBranch?: string): Promis
 }
 
 /** Create a placeholder task immediately, then set up worktree in the background. */
-export function startTaskCreation(projectId: string, baseBranch: string): string {
+export function startTaskCreation(projectId: string, baseBranch: string, agentType: AgentType = 'claude'): string {
   const placeholderId = crypto.randomUUID()
   const now = Date.now()
 
@@ -89,13 +89,14 @@ export function startTaskCreation(projectId: string, baseBranch: string): string
     archivedAt: null,
     lastCommitMessage: null,
     parentTaskId: null,
+    agentType,
   }
 
   setTasks(produce(t => t.unshift(placeholder)))
   addCreating(placeholderId)
 
   // Fire and forget — runs in background
-  ipc.createTask(projectId, baseBranch).then(result => {
+  ipc.createTask(projectId, baseBranch, agentType).then(result => {
     // Replace placeholder with real task
     setTasks(prev => prev.map(t => t.id === placeholderId ? result.task : t))
     removeCreating(placeholderId)

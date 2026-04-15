@@ -58,6 +58,8 @@ pub enum OutputItem {
         cost: Option<f64>,
         input_tokens: Option<u64>,
         output_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
     },
 
     /// Per-turn snapshot marker — frontend attaches the message uuid to the
@@ -160,8 +162,18 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // -- Streaming token deltas (real-time) --
         "stream_event" => parse_stream_event(&v),
 
-        // -- Full assistant message snapshot --
-        "assistant" => parse_assistant_message(&v),
+        // -- Assistant message --
+        // Cursor with --stream-partial-output sends per-token `assistant` events
+        // with a `timestamp_ms` field. The final snapshot has no `timestamp_ms`.
+        "assistant" => {
+            if v.get("timestamp_ms").is_some() {
+                // Streaming delta: extract just the text content
+                parse_assistant_text_only(&v)
+            } else {
+                // Final snapshot or non-streaming: extract text + tool_use blocks
+                parse_assistant_message(&v)
+            }
+        }
 
         // -- User message (tool results) --
         "user" => parse_user_message(&v),
@@ -173,16 +185,31 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // -- Result (turn completed) --
         // Text is already delivered via stream_event deltas; skip result.result to avoid duplication.
         "result" => {
-            let subtype = v.get("subtype").and_then(|s| s.as_str()).unwrap_or("unknown");
-            let status = match subtype {
+            // Claude/Cursor use `subtype`, Gemini uses `status` at top level
+            let status_str = v.get("subtype").and_then(|s| s.as_str())
+                .or_else(|| v.get("status").and_then(|s| s.as_str()))
+                .unwrap_or("unknown");
+            let status = match status_str {
                 "success" => "completed",
                 _ => "error",
             };
             let cost = v.get("total_cost_usd").and_then(|c| c.as_f64());
-            let usage = v.get("usage");
-            let input_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(|t| t.as_u64());
-            let output_tokens = usage.and_then(|u| u.get("output_tokens")).and_then(|t| t.as_u64());
-            vec![OutputItem::TurnEnd { status: status.to_string(), cost, input_tokens, output_tokens }]
+            // Claude/Cursor: `usage`, Gemini: `stats`
+            let usage = v.get("usage").or_else(|| v.get("stats"));
+            // Claude: snake_case, Cursor: camelCase
+            let input_tokens = usage.and_then(|u|
+                u.get("input_tokens").or_else(|| u.get("inputTokens"))
+            ).and_then(|t| t.as_u64());
+            let output_tokens = usage.and_then(|u|
+                u.get("output_tokens").or_else(|| u.get("outputTokens"))
+            ).and_then(|t| t.as_u64());
+            let cache_read_tokens = usage.and_then(|u|
+                u.get("cache_read_input_tokens").or_else(|| u.get("cacheReadTokens")).or_else(|| u.get("cached"))
+            ).and_then(|t| t.as_u64());
+            let cache_write_tokens = usage.and_then(|u|
+                u.get("cache_creation_input_tokens").or_else(|| u.get("cacheWriteTokens"))
+            ).and_then(|t| t.as_u64());
+            vec![OutputItem::TurnEnd { status: status.to_string(), cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens }]
         }
 
         // -- Telemetry events we can surface --
@@ -203,9 +230,194 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // Control requests are handled separately in stream_and_capture
         "control_request" | "control_response" => vec![],
 
-        _ => {
+        // ── Cursor-specific events ───────────────────────────────────────
+        "tool_call" => {
+            let subtype = v.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+            let tc = v.get("tool_call").and_then(|t| t.as_object());
+            match subtype {
+                "started" => {
+                    if let Some(tc) = tc {
+                        let (tool, input) = parse_cursor_tool_call(tc);
+                        vec![OutputItem::ToolStart { tool, input }]
+                    } else { vec![] }
+                }
+                "completed" => {
+                    if let Some(tc) = tc {
+                        let output = extract_cursor_tool_result(tc);
+                        vec![OutputItem::ToolResult { text: output, is_error: false }]
+                    } else { vec![] }
+                }
+                _ => vec![],
+            }
+        }
+
+        "thinking" => {
+            let subtype = v.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+            if subtype == "delta" {
+                if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        return vec![OutputItem::Thinking { text: text.to_string() }];
+                    }
+                }
+            }
             vec![]
         }
+
+        // ── Codex event format ────────────────────────────────────────────
+        // Streaming text delta
+        "item.delta" => {
+            let delta = v.get("delta");
+            if delta.and_then(|d| d.get("type")).and_then(|t| t.as_str()) == Some("text_delta") {
+                if let Some(text) = delta.and_then(|d| d.get("text")).and_then(|t| t.as_str()) {
+                    return vec![OutputItem::Text { text: text.to_string() }];
+                }
+            }
+            vec![]
+        }
+
+        // Tool started: show the command/tool being invoked
+        "item.started" => {
+            let item = match v.get("item") { Some(i) => i, None => return vec![] };
+            match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                "command_execution" => {
+                    let cmd = item.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                    vec![OutputItem::ToolStart { tool: "shell".to_string(), input: cmd }]
+                }
+                _ => vec![],
+            }
+        }
+
+        // Completed item: agent message, command result, tool call, or tool result
+        "item.completed" => {
+            let item = match v.get("item") { Some(i) => i, None => return vec![] };
+            match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                "agent_message" => {
+                    item.get("text").and_then(|t| t.as_str())
+                        .map(|text| vec![OutputItem::Text { text: text.to_string() }])
+                        .unwrap_or_default()
+                }
+                "command_execution" => {
+                    let output = item.get("aggregated_output").and_then(|o| o.as_str()).unwrap_or("").to_string();
+                    let is_error = item.get("exit_code").and_then(|c| c.as_i64()).map(|c| c != 0).unwrap_or(false);
+                    vec![OutputItem::ToolResult { text: output, is_error }]
+                }
+                "tool_call" => {
+                    let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                    let args = item.get("arguments")
+                        .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
+                        .unwrap_or_default();
+                    vec![OutputItem::ToolStart { tool: name.to_string(), input: args }]
+                }
+                "tool_result" => {
+                    let output = item.get("output").and_then(|o| o.as_str()).unwrap_or("").to_string();
+                    let is_error = item.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                    vec![OutputItem::ToolResult { text: output, is_error }]
+                }
+                _ => vec![],
+            }
+        }
+
+        // Turn completed: emit TurnEnd with token usage
+        "turn.completed" => {
+            let usage = v.get("usage");
+            let input_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(|t| t.as_u64());
+            let output_tokens = usage.and_then(|u| u.get("output_tokens")).and_then(|t| t.as_u64());
+            let cache_read_tokens = usage.and_then(|u| u.get("cached_input_tokens")).and_then(|t| t.as_u64());
+            vec![OutputItem::TurnEnd { status: "completed".to_string(), cost: None, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens: None }]
+        }
+
+        // Ignored Codex lifecycle events
+        "thread.started" | "turn.started" | "item.created" => vec![],
+
+        // ── OpenCode event format ────────────────────────────────────────
+        "text" => {
+            let part = match v.get("part") { Some(p) => p, None => return vec![] };
+            // OpenCode nests the assistant text inside part — try known field names
+            let content = part.get("content").and_then(|c| c.as_str())
+                .or_else(|| part.get("text").and_then(|t| t.as_str()));
+            match content {
+                Some(text) if !text.is_empty() => vec![OutputItem::Text { text: text.to_string() }],
+                _ => {
+                    eprintln!("[verun][opencode] unhandled text part: {}", serde_json::to_string(part).unwrap_or_default());
+                    vec![]
+                }
+            }
+        }
+
+        "tool_use" => {
+            if let Some(part) = v.get("part") {
+                // OpenCode format: { type: "tool_use", part: { tool, state: { status, input, output } } }
+                let tool = part.get("tool").and_then(|t| t.as_str()).unwrap_or("tool").to_string();
+                let state = part.get("state");
+                let status = state.and_then(|s| s.get("status")).and_then(|s| s.as_str()).unwrap_or("");
+                if status == "completed" {
+                    let input = state.and_then(|s| s.get("input"))
+                        .map(|i| serde_json::to_string_pretty(i).unwrap_or_default())
+                        .unwrap_or_default();
+                    let output = state.and_then(|s| s.get("output")).and_then(|o| o.as_str()).unwrap_or("").to_string();
+                    vec![
+                        OutputItem::ToolStart { tool, input },
+                        OutputItem::ToolResult { text: output, is_error: false },
+                    ]
+                } else {
+                    let input = state.and_then(|s| s.get("input"))
+                        .map(|i| serde_json::to_string_pretty(i).unwrap_or_default())
+                        .unwrap_or_default();
+                    vec![OutputItem::ToolStart { tool, input }]
+                }
+            } else {
+                // Gemini format: { type: "tool_use", tool_name, tool_id, parameters }
+                let tool = v.get("tool_name").and_then(|t| t.as_str()).unwrap_or("tool").to_string();
+                let input = v.get("parameters")
+                    .map(|p| serde_json::to_string_pretty(p).unwrap_or_default())
+                    .unwrap_or_default();
+                vec![OutputItem::ToolStart { tool, input }]
+            }
+        }
+
+        "step_finish" => {
+            let part = v.get("part");
+            let reason = part
+                .and_then(|p| p.get("reason"))
+                .and_then(|r| r.as_str())
+                .unwrap_or("stop");
+            if reason == "stop" {
+                let tokens = part.and_then(|p| p.get("tokens"));
+                // OpenCode's `input` is a fixed overhead (not user message tokens)
+                // and `total` is the cumulative context window. Only `output` is
+                // meaningful per-turn, so we skip input to avoid misleading numbers.
+                let output_tokens = tokens.and_then(|t| t.get("output")).and_then(|t| t.as_u64());
+                let input_tokens = tokens.and_then(|t| t.get("total")).and_then(|t| t.as_u64());
+                let cache = tokens.and_then(|t| t.get("cache"));
+                let cache_read_tokens = cache.and_then(|c| c.get("read")).and_then(|t| t.as_u64());
+                let cache_write_tokens = cache.and_then(|c| c.get("write")).and_then(|t| t.as_u64());
+                let cost = part.and_then(|p| p.get("cost")).and_then(|c| c.as_f64()).filter(|c| *c > 0.0);
+                vec![OutputItem::TurnEnd { status: "completed".to_string(), cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens }]
+            } else {
+                vec![]
+            }
+        }
+
+        "step_start" => vec![],
+
+        // ── Gemini CLI event format ──────────────────────────────────────
+        "message" => {
+            let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            if role != "assistant" { return vec![] }
+            match v.get("content").and_then(|c| c.as_str()) {
+                Some(text) if !text.is_empty() => vec![OutputItem::Text { text: text.to_string() }],
+                _ => vec![],
+            }
+        }
+
+        "tool_result" if v.get("tool_id").is_some() => {
+            // Gemini format: { type: "tool_result", tool_id, status, output }
+            let output = v.get("output").and_then(|o| o.as_str()).unwrap_or("").to_string();
+            let is_error = v.get("status").and_then(|s| s.as_str()) == Some("error");
+            vec![OutputItem::ToolResult { text: output, is_error }]
+        }
+
+        _ => vec![],
     }
 }
 
@@ -314,6 +526,35 @@ fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
     items
 }
 
+/// Extract text from a Cursor streaming assistant delta (has `timestamp_ms`).
+fn parse_assistant_text_only(v: &serde_json::Value) -> Vec<OutputItem> {
+    let content = match v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+        Some(c) => c,
+        None => return vec![],
+    };
+    let mut items = Vec::new();
+    for block in content {
+        match block.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "text" => {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        items.push(OutputItem::Text { text: text.to_string() });
+                    }
+                }
+            }
+            "thinking" => {
+                if let Some(text) = block.get("thinking").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        items.push(OutputItem::Thinking { text: text.to_string() });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    items
+}
+
 /// Parse user messages (typically tool results)
 fn parse_user_message(v: &serde_json::Value) -> Vec<OutputItem> {
     let content = match v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
@@ -358,13 +599,39 @@ fn extract_text_content(content: Option<&serde_json::Value>) -> String {
     }
 }
 
+/// Parse a Cursor tool_call object like `{"readToolCall": {"args": {"path": "..."}, ...}}`
+/// into (tool_name, input_string).
+fn parse_cursor_tool_call(tc: &serde_json::Map<String, serde_json::Value>) -> (String, String) {
+    // The object has a single key like "readToolCall", "editToolCall", "bashToolCall", etc.
+    if let Some((key, val)) = tc.iter().next() {
+        let tool = key.trim_end_matches("ToolCall").trim_end_matches("Tool_call").to_string();
+        let args = val.get("args");
+        let input = args
+            .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
+            .unwrap_or_default();
+        (tool, input)
+    } else {
+        ("tool".to_string(), String::new())
+    }
+}
+
+/// Extract result text from a Cursor completed tool_call object.
+fn extract_cursor_tool_result(tc: &serde_json::Map<String, serde_json::Value>) -> String {
+    if let Some((_key, val)) = tc.iter().next() {
+        val.get("result").and_then(|r| r.as_str())
+            .or_else(|| val.get("output").and_then(|o| o.as_str()))
+            .unwrap_or("")
+            .to_string()
+    } else {
+        String::new()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main streaming loop
 // ---------------------------------------------------------------------------
 
-/// Result of streaming a session — captured lines + accumulated cost
 pub struct StreamResult {
-    pub lines: Vec<String>,
     pub total_cost: f64,
 }
 
@@ -376,11 +643,11 @@ pub struct StreamResult {
 async fn snapshot_turn_best_effort(
     verun_session_id: &str,
     worktree_path: &str,
-    claude_session_id: Option<&str>,
+    resume_session_id: Option<&str>,
     db_tx: &DbWriteTx,
     app: &AppHandle,
 ) {
-    let csid = match claude_session_id {
+    let csid = match resume_session_id {
         Some(s) => s.to_string(),
         None => return,
     };
@@ -511,15 +778,15 @@ pub async fn stream_and_capture(
     worktree_path: String,
     repo_path: String,
     trust_level: TrustLevel,
+    agent: Box<dyn crate::agent::Agent>,
 ) -> StreamResult {
     let mut reader = BufReader::new(stdout).lines();
     let mut buffer: Vec<OutputItem> = Vec::new();
-    let mut captured: Vec<String> = Vec::new();
     let mut last_flush = Instant::now();
     let mut total_persisted: usize = 0;
     let mut total_cost: f64 = 0.0;
     // Captured from `system.init` events for the per-turn snapshot hook.
-    let mut claude_session_id_for_snapshot: Option<String> = None;
+    let mut resume_id_for_snapshot: Option<String> = None;
 
     loop {
         let deadline = tokio::time::sleep(FLUSH_INTERVAL);
@@ -529,8 +796,8 @@ pub async fn stream_and_capture(
             line = reader.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        captured.push(line.clone());
-
+                        let preview = if line.len() > 200 { &line[..200] } else { &line };
+                        eprintln!("[verun][stream][{session_id}] {preview}");
                         // Intercept control_request for tool approval
                         if let Some(cr) = handle_control_request(
                             &app, &session_id, &task_id, &line, &stdin,
@@ -541,28 +808,22 @@ pub async fn stream_and_capture(
                             if cr.handled {
                                 // Emit ToolStart so the frontend knows which tool is running
                                 if let Some(tool_start) = cr.tool_start {
-                                    buffer.push(tool_start);
+                                    buffer.push(tool_start.clone());
+                                    persist_items(&db_tx, &session_id, &[tool_start], &mut total_persisted);
                                 }
-                                persist_line(&db_tx, &session_id, &line, &mut total_persisted);
                                 continue;
                             }
                         }
 
-                        // Capture claude session_id from `system.init` so the snapshot hook
-                        // at turn end can locate the on-disk JSONL transcript.
-                        // Also persist it to the DB immediately so it survives crashes/aborts.
-                        if claude_session_id_for_snapshot.is_none() {
+                        // Extract the resume session id via the agent's own logic
+                        if resume_id_for_snapshot.is_none() {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                                if v.get("type").and_then(|t| t.as_str()) == Some("system")
-                                    && v.get("subtype").and_then(|t| t.as_str()) == Some("init")
-                                {
-                                    if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
-                                        claude_session_id_for_snapshot = Some(sid.to_string());
-                                        let _ = db_tx.send(crate::db::DbWrite::SetClaudeSessionId {
-                                            id: session_id.clone(),
-                                            claude_session_id: sid.to_string(),
-                                        }).await;
-                                    }
+                                if let Some(sid) = agent.extract_resume_id(&v) {
+                                    resume_id_for_snapshot = Some(sid.clone());
+                                    let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
+                                        id: session_id.clone(),
+                                        resume_session_id: sid,
+                                    }).await;
                                 }
                             }
                         }
@@ -591,31 +852,30 @@ pub async fn stream_and_capture(
                         // Emit text/thinking deltas immediately for real-time streaming
                         let mut has_immediate = false;
                         let mut is_turn_end = false;
-                        for item in items {
-                            match &item {
+                        for item in &items {
+                            match item {
                                 OutputItem::Text { .. } | OutputItem::Thinking { .. } => {
-                                    // Flush any buffered items first, then emit this one directly
                                     if !buffer.is_empty() {
                                         flush_buffer(&app, &session_id, &mut buffer);
                                     }
-                                    emit_item(&app, &session_id, item);
+                                    emit_item(&app, &session_id, item.clone());
                                     has_immediate = true;
                                 }
                                 OutputItem::TurnEnd { cost, .. } => {
                                     is_turn_end = true;
                                     if let Some(c) = cost {
-                                        total_cost += c;
+                                        total_cost += *c;
                                     }
-                                    buffer.push(item);
+                                    buffer.push(item.clone());
                                 }
                                 _ => {
-                                    buffer.push(item);
+                                    buffer.push(item.clone());
                                 }
                             }
                         }
 
-                        // Persist raw line to DB
-                        persist_line(&db_tx, &session_id, &line, &mut total_persisted);
+                        // Persist pre-parsed items (agent-format-agnostic)
+                        persist_items(&db_tx, &session_id, &items, &mut total_persisted);
 
                         // Close stdin after turn completes so the CLI process can exit
                         if is_turn_end {
@@ -639,10 +899,10 @@ pub async fn stream_and_capture(
                         // row keyed to the latest assistant message uuid in the on-disk JSONL.
                         // Used by the "fork from this message" feature. We deliberately do
                         // NOT await this so the stream loop is never blocked on git I/O.
-                        if is_turn_end {
+                        if is_turn_end && agent.uses_claude_jsonl() {
                             let sid = session_id.clone();
                             let wt = worktree_path.clone();
-                            let csid = claude_session_id_for_snapshot.clone();
+                            let csid = resume_id_for_snapshot.clone();
                             let dbtx = db_tx.clone();
                             let app2 = app.clone();
                             tokio::spawn(async move {
@@ -671,7 +931,7 @@ pub async fn stream_and_capture(
     }
 
     flush_buffer(&app, &session_id, &mut buffer);
-    StreamResult { lines: captured, total_cost }
+    StreamResult { total_cost }
 }
 
 /// Check if a line is a `control_request` for tool approval.
@@ -890,6 +1150,24 @@ fn persist_line(
     });
 }
 
+fn persist_items(
+    db_tx: &DbWriteTx,
+    session_id: &str,
+    items: &[OutputItem],
+    total_persisted: &mut usize,
+) {
+    if items.is_empty() || *total_persisted >= MAX_PERSISTED_LINES {
+        return;
+    }
+    *total_persisted += items.len();
+    let line = serde_json::json!({ "type": "verun_items", "items": items }).to_string();
+    let now = epoch_ms();
+    let _ = db_tx.try_send(DbWrite::InsertOutputLines {
+        session_id: session_id.to_string(),
+        lines: vec![(line, now)],
+    });
+}
+
 pub fn map_exit_status(code: Option<i32>) -> &'static str {
     match code {
         Some(0) => "done",
@@ -969,7 +1247,7 @@ mod tests {
         let items = parse_sdk_event(line);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::TurnEnd { status, cost, input_tokens, output_tokens } => {
+            OutputItem::TurnEnd { status, cost, input_tokens, output_tokens, .. } => {
                 assert_eq!(status, "completed");
                 assert_eq!(*cost, Some(0.042));
                 assert_eq!(*input_tokens, Some(100));

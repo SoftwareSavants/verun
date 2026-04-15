@@ -36,6 +36,16 @@ function formatTokens(n: number): string {
   return `${n}`
 }
 
+function formatTokensWithCache(t: { input: number; output: number; cacheRead: number; cacheWrite: number }): string {
+  const inPart = t.input ? `${formatTokens(t.input)} in` : ''
+  const outPart = t.output ? `${formatTokens(t.output)} out` : ''
+  const cacheParts: string[] = []
+  if (t.cacheRead) cacheParts.push(`${formatTokens(t.cacheRead)} read`)
+  if (t.cacheWrite) cacheParts.push(`${formatTokens(t.cacheWrite)} write`)
+  const cacheStr = cacheParts.length ? ` (${cacheParts.join(', ')} cached)` : ''
+  return [inPart, outPart].filter(Boolean).join(' / ') + cacheStr
+}
+
 function renderMarkdownForTask(text: string, taskId?: string): string {
   return renderMarkdown(text, getWorktreePath(taskId))
 }
@@ -61,7 +71,7 @@ interface AssistantBlock {
   text: string
   durationMs?: number
   turnCost?: number
-  turnTokens?: { input: number; output: number }
+  turnTokens?: { input: number; output: number; cacheRead: number; cacheWrite: number }
   isLastInTurn?: boolean
   isStreaming?: boolean
   /** On-disk message uuid attached at turn end via verun_turn_snapshot. Used as the fork point. */
@@ -166,7 +176,7 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         const durationMs = (turnStartTs && item.timestamp) ? item.timestamp - turnStartTs : undefined
         const turnCost = item.cost
         const turnTokens = (item.inputTokens || item.outputTokens)
-          ? { input: item.inputTokens || 0, output: item.outputTokens || 0 }
+          ? { input: item.inputTokens || 0, output: item.outputTokens || 0, cacheRead: item.cacheReadTokens || 0, cacheWrite: item.cacheWriteTokens || 0 }
           : undefined
         // Mark the last assistant block in this turn
         for (let i = blocks.length - 1; i >= 0; i--) {
@@ -912,7 +922,7 @@ export const ChatView: Component<Props> = (props) => {
                               }
                               const parts = [
                                 b.turnCost ? formatCost(b.turnCost) : '',
-                                b.turnTokens ? `${formatTokens(b.turnTokens.input)} in / ${formatTokens(b.turnTokens.output)} out` : '',
+                                b.turnTokens ? formatTokensWithCache(b.turnTokens) : '',
                               ].filter(Boolean).join(' · ')
                               return (
                                 <span class="relative group/dur">
@@ -970,7 +980,7 @@ export const ChatView: Component<Props> = (props) => {
             <div class="text-center max-w-sm">
               <p class="text-sm text-text-secondary mb-1">New session</p>
               <p class="text-xs text-text-dim leading-relaxed">
-                Describe what you want Claude to build, fix, or explore in this worktree.
+                Describe what you want to build, fix, or explore in this worktree.
               </p>
             </div>
           </div>

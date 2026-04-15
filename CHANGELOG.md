@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Gemini CLI agent: `gemini --output-format stream-json --yolo`, plan mode, model selection, resume, attachments; stream parser handles `message`, `tool_use`, `tool_result`, and `result` event types
+- New session menu agent order matches new task dropdown (default agent first, then alphabetical); accepts `defaultAgent` prop from TaskPanel
+
+- Model search bar in ModelSelector and NewSessionMenu submenus for agents with >10 models - filters by label/id, auto-focuses, clears on close
+
+- Per-session model selection: model is now stored on the session (not the task), `updateSessionModel` IPC command added, `/model` command and model selector both update the session's model
+- Model selector layout: description rendered below model name, scrollable dropdown with max-height, wider overlay
+- Claude model list updated to full IDs matching Claude Code: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`
+- Codex model list updated to match Codex CLI: `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2-codex`, `gpt-5.2`
+- Cursor static fallback model list corrected: added `auto`, removed fabricated model IDs
+- OpenCode model list no longer shows provider name as description hint
+
 - Fix setup script opening a terminal in the wrong task when the user navigates away before the hook starts - terminal panel now only auto-shows if the task is still selected
 - Fix clicking a notification not selecting the source task - visibility change was clearing the nav map before the click handler could consume it
 - Fix step edit highlight persisting when switching tasks - clear editing state on session change
@@ -20,6 +32,28 @@
 - Demo mode: set `VITE_DEMO_MODE=true` to populate the app with dummy projects, tasks, sessions, and a realistic chat conversation for screenshots
 - Fix message role corruption when switching between tasks - clear stale output data before reloading and use reactive Switch/Match for block type rendering so reconcile merges can't produce wrong role display
 - Fix "delete branch with merge" failing because `gh pr merge --delete-branch` tries to checkout main, which conflicts with the main worktree - now deletes the remote branch separately after merge
+- New session "+" button opens a cascading menu: pick an agent, then optionally pick a model from its submenu — session stores `agent_type` and `model` (migration 15), overriding the task's default when set; `send_message` prefers session-level agent type over task-level
+- Dynamic per-agent model lists: Cursor uses `agent --list-models`, OpenCode uses `opencode models`, fetched at agent detection time and cached; model selector shows the session's agent models when the session has a per-session agent override
+- Multi-agent foundation: new `AgentKind` enum (Claude, Codex, Cursor) with CLI abstraction, `agent_type` column on tasks (migration 13), agent-aware session spawning, `check_agent` and `list_available_agents` IPC commands, per-agent icons and display names in the UI, and capability flags (streaming, resume, plan mode, model selection, effort, skills, attachments, fork) so the frontend can adapt to each agent's feature set
+- OpenCode agent backend: `opencode run --format json` with plan mode (`--agent plan`), model selection (`--model provider/model`), and session resume (`--session <id>`)
+- Agent picker dropdown in New Task dialog: shows all detected agents with install hints for non-installed ones, sorted by project default first; persists per-project default agent in DB (migration 14)
+- Agent type moved from tasks to sessions - each session owns its agent, tasks are agent-agnostic (migration 16 backfills existing sessions from their task's agent type, defaulting to Claude)
+- Pre-parsed output items (`verun_items`) persisted in Rust so frontend reload skips agent-specific re-parsing
+- Fix forked sessions missing `agent_type` and `model` columns in DB insert
+- Cursor word-by-word streaming via `--stream-partial-output` flag
+- Cursor tool calls (`tool_call` events) and thinking deltas now displayed in chat
+- Token usage extraction for all providers: Cursor (camelCase `usage` in `result`), OpenCode (`part.tokens` + `part.cost` in `step_finish`), Codex (`usage` in `turn.completed`)
+- OpenCode event parsing: `text`, `tool_use`, `step_start`/`step_finish` events with session ID capture for resume
+- Removed all agent-specific NDJSON parsing from frontend - Rust `verun_items` is the single source of truth
+- Cache token tracking (read/write) for all providers that report it: Claude, Cursor, Codex, OpenCode - shown inline in turn tooltips and session usage popover
+- OpenCode now shows `tokens.total` (cumulative context) instead of the fixed-overhead `input` field
+- Decoupled agent abstractions: `extract_resume_id` on Agent trait replaces hardcoded 3-way branch in stream.rs, snapshot/fork JSONL ops gated on `uses_claude_jsonl()`, fork preserves parent session's agent type instead of hardcoding Claude
+- Renamed `claude_session_id` to `resume_session_id` across DB (migration 17), Rust, and TypeScript
+- Renamed `ClaudeSkill`/`list_claude_skills` to `AgentSkill`/`list_agent_skills`, removed dead `check_claude` command
+- Centralized agent icons into `src/lib/agents.ts`, removing duplicate icon maps from 4 components
+- "Question from Claude" label now shows the session's actual agent name
+- Plan/Think/Fast toggles hidden when the session's agent doesn't support those capabilities
+- `checkCli` on startup checks all agents, not just Claude
 
 ## 0.6.0 — 2026-04-14
 

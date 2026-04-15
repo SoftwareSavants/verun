@@ -17,18 +17,21 @@ import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/files'
-import { Square, Plus, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy, GitCompare } from 'lucide-solid'
+import { Square, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy, GitCompare } from 'lucide-solid'
 import { GitActions, hasGitActionsContent } from './GitActions'
+import { NewSessionMenu } from './NewSessionMenu'
 import { ContextMenu } from './ContextMenu'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
+import SvgIcon from './SvgIcon'
 import { fileHasErrors, fileHasWarnings } from '../store/problems'
 import { getLspClient } from '../lib/lsp'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
+import { AGENT_DISPLAY_NAMES } from '../types'
 import vscodeIcon from '../assets/icons/vscode.svg?raw'
-import claudeIcon from '../assets/icons/claude.svg?raw'
 import cursorIcon from '../assets/icons/cursor.svg?raw'
+import { agentIcon } from '../lib/agents'
 import zedIcon from '../assets/icons/zed.svg?raw'
 import finderIcon from '../assets/icons/finder.svg?raw'
 import { fileManagerName } from '../lib/platform'
@@ -61,11 +64,6 @@ function SessionTime(props: { session: Session }) {
   return <span class="text-text-dim">{elapsed()}</span>
 }
 
-function SvgIcon(props: { svg: string; size?: number }) {
-  const s = props.size ?? 12
-  const sized = props.svg.replace('<svg ', `<svg width="${s}" height="${s}" `)
-  return <span class="inline-flex items-center justify-center shrink-0" innerHTML={sized} />
-}
 
 const EDITORS = [
   { label: 'VS Code', app: 'Visual Studio Code', svg: vscodeIcon },
@@ -207,17 +205,11 @@ export const TaskPanel: Component = () => {
   const [tabMenu, setTabMenu] = createSignal<{ x: number; y: number; path: string; taskId: string } | null>(null)
   const closeTabMenu = () => setTabMenu(null)
 
-  const [creatingSession, setCreatingSession] = createSignal(false)
-  const handleNewSession = async () => {
+  const handleNewSession = async (agentType: string, model?: string) => {
     const tid = selectedTaskId()
-    if (!tid || creatingSession()) return
-    setCreatingSession(true)
-    try {
-      const session = await createSession(tid)
-      setSelectedSessionId(session.id)
-    } finally {
-      setCreatingSession(false)
-    }
+    if (!tid) return
+    const session = await createSession(tid, agentType, model)
+    setSelectedSessionId(session.id)
   }
 
   const currentSession = () => {
@@ -482,14 +474,10 @@ export const TaskPanel: Component = () => {
                   {/* Unified tab bar — sessions + open files */}
                   <div ref={tabBarRef} class="relative z-10 flex items-stretch overflow-x-auto scrollbar-hide tab-bar-bg">
                     {/* New session button */}
-                    <button
-                      class="h-8 w-8 shrink-0 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-white/3 transition-colors disabled:opacity-40"
-                      onClick={handleNewSession}
-                      disabled={creatingSession()}
-                      title="New Session"
-                    >
-                      <Plus size={13} class={creatingSession() ? 'animate-spin' : ''} />
-                    </button>
+                    <NewSessionMenu
+                      defaultAgent={projectById(t().projectId)?.defaultAgentType}
+                      onCreate={(agentType, model) => handleNewSession(agentType, model)}
+                    />
                     {/* Session tabs */}
                     <For each={taskSessions()}>
                       {(session) => {
@@ -507,8 +495,8 @@ export const TaskPanel: Component = () => {
                             )}
                             onClick={() => { setSelectedSessionId(session.id); setMainView(t().id, 'session') }}
                           >
-                            <SvgIcon svg={claudeIcon} size={10} />
-                            <span>{session.name || 'Claude Code'}</span>
+                            <SvgIcon svg={agentIcon(session.agentType)} size={10} />
+                            <span>{session.name || AGENT_DISPLAY_NAMES[session.agentType]}</span>
                             <SessionTime session={session} />
                             <Show when={sessionCosts[session.id] > 0}>
                               <span class="text-text-dim">${sessionCosts[session.id] < 1 ? sessionCosts[session.id].toFixed(3) : sessionCosts[session.id].toFixed(2)}</span>
