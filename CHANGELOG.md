@@ -7,6 +7,8 @@
 
 - Gemini CLI agent: `gemini --output-format stream-json --yolo`, plan mode, model selection, resume, attachments; stream parser handles `message`, `tool_use`, `tool_result`, and `result` event types
 - New session menu agent order matches new task dropdown (default agent first, then alphabetical); accepts `defaultAgent` prop from TaskPanel
+- Provider error messages shown inline in chat with Retry / Retry in new session buttons; retries preserve model, plan/thinking/fast modes
+- Worktree path shown after task name in header - click to copy to clipboard with info toast
 
 - Model search bar in ModelSelector and NewSessionMenu submenus for agents with >10 models - filters by label/id, auto-focuses, clears on close
 
@@ -22,6 +24,7 @@
 - Fix step edit highlight persisting when switching tasks - clear editing state on session change
 - Fix clicking arrow button while editing a step adding a duplicate instead of saving the edit - edit controls now render regardless of session running state
 - Fix primary git action icon not updating when switching tasks - use Dynamic component for reactive icon rendering
+- Show provider errors inline in chat with the actual error message and Retry / Retry in new session buttons - error message is extracted from the Claude CLI result event and propagated through SessionStatusEvent
 - Fix single-line text selection invisible in code editor - active line highlight now suppresses when text is selected so drawSelection's selection layer is visible
 - Rewrote bash policy engine to use AST-based shell parsing (yash-syntax) instead of substring matching - handles compound commands, subshells, combined flags, and wrapper programs (env, sudo, bash -c)
 - Normal mode now blocks destructive git ops: branch delete, worktree remove/prune, stash drop/clear, tag delete, remote remove, reflog expire, gc --prune, filter-branch, update-ref -d, push --force-with-lease
