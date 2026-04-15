@@ -91,6 +91,21 @@ pub fn evaluate(
         };
     }
 
+    // Hard blocks — always require approval regardless of trust level.
+    // Verun manages worktree lifecycle; Claude must never touch it.
+    if tool_name == "Bash" {
+        let command = tool_input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if let Some(pattern) = matches_hard_block(command) {
+            return PolicyResult {
+                decision: PolicyDecision::RequireApproval,
+                reason: format!("hard-blocked: {pattern}"),
+            };
+        }
+    }
+
     // Trust level overrides
     match trust_level {
         TrustLevel::FullAuto => {
@@ -238,66 +253,368 @@ fn is_path_within(path: &str, boundary: &str) -> bool {
     canonical_path.starts_with(&canonical_boundary)
 }
 
-/// Static deny patterns for bash commands.
-/// Returns the pattern name if the command matches, None if safe.
+/// AST-based deny-pattern analysis for bash commands.
+/// Parses the command into a shell AST, walks every sub-command (including
+/// compounds, subshells, and chained commands), and checks each against
+/// deny rules. Returns the pattern name if any sub-command matches.
 fn matches_deny_pattern(command: &str) -> Option<&'static str> {
-    // Normalize for matching: lowercase, collapse whitespace
-    let cmd = command.to_lowercase();
-    let cmd = cmd.trim();
+    let list: yash_syntax::syntax::List = match command.parse() {
+        Ok(l) => l,
+        Err(_) => return Some("unparseable command"),
+    };
+    walk_list(&list)
+}
 
-    static DENY_PATTERNS: &[(&str, &str)] = &[
-        // Git destructive operations
-        ("git push --force", "git push --force"),
-        ("git push -f", "git push --force"),
-        ("git push --delete", "git push --delete"),
-        ("git reset --hard", "git reset --hard"),
-        ("git clean -f", "git clean"),
-        ("git checkout -- .", "git checkout (discard all)"),
-        // Privilege escalation
-        ("sudo ", "sudo"),
-        // Remote access
-        ("ssh ", "ssh"),
-        ("scp ", "scp"),
-        ("rsync ", "rsync"),
-        // Process killing
-        ("kill ", "kill"),
-        ("pkill ", "pkill"),
-        ("killall ", "killall"),
-        // Dangerous file ops
-        ("chmod ", "chmod"),
-        ("chown ", "chown"),
-        // Infrastructure
-        ("docker ", "docker"),
-        ("kubectl ", "kubectl"),
-    ];
+/// Hard blocks that require approval regardless of trust level.
+/// These protect Verun's own infrastructure (worktrees, .verun dirs).
+fn matches_hard_block(command: &str) -> Option<&'static str> {
+    let list: yash_syntax::syntax::List = match command.parse() {
+        Ok(l) => l,
+        Err(_) => return Some("unparseable command"),
+    };
+    walk_list_with(&list, check_hard_block_args)
+}
 
-    for &(pattern, name) in DENY_PATTERNS {
-        if cmd.starts_with(pattern) || cmd.contains(&format!(" && {pattern}"))
-            || cmd.contains(&format!("; {pattern}"))
-            || cmd.contains(&format!("| {pattern}"))
-        {
-            return Some(name);
+fn check_hard_block_args(args: &[String]) -> Option<&'static str> {
+    let (program, rest) = skip_wrappers(args);
+    match program {
+        "git" => check_git_hard_block(rest),
+        "bash" | "sh" | "zsh" => {
+            for (i, arg) in rest.iter().enumerate() {
+                if arg == "-c" {
+                    if let Some(cmd_str) = rest.get(i + 1) {
+                        let unquoted = strip_outer_quotes(cmd_str);
+                        return matches_hard_block(&unquoted);
+                    }
+                }
+            }
+            None
+        }
+        "rm" => check_rm_verun(rest),
+        "sudo" => check_hard_block_args(skip_sudo_flags(rest)),
+        _ => None,
+    }
+}
+
+fn skip_sudo_flags(args: &[String]) -> &[String] {
+    let mut i = 0;
+    while i < args.len() && args[i].starts_with('-') {
+        if matches!(
+            args[i].as_str(),
+            "-u" | "-g" | "-C" | "-D" | "-r" | "-t" | "-p"
+        ) {
+            i += 2;
+        } else {
+            i += 1;
         }
     }
+    &args[i..]
+}
 
-    // Curl/wget piped to shell
-    if (cmd.contains("curl ") || cmd.contains("wget "))
-        && (cmd.contains("| sh") || cmd.contains("| bash") || cmd.contains("| zsh"))
-    {
-        return Some("curl/wget piped to shell");
+fn check_git_hard_block(args: &[String]) -> Option<&'static str> {
+    let filtered = strip_git_c_flag(args);
+    let strs: Vec<&str> = filtered.iter().map(|s| s.as_str()).collect();
+    let subcmd = strs.iter().find(|a| !a.starts_with('-'))?;
+    if *subcmd == "worktree" {
+        let pos: Vec<&&str> = strs.iter().filter(|a| !a.starts_with('-')).collect();
+        match pos.get(1).map(|s| **s) {
+            Some("remove") => return Some("git worktree remove (verun-managed)"),
+            Some("prune") => return Some("git worktree prune (verun-managed)"),
+            _ => {}
+        }
     }
-
-    // rm -rf with root or home directory
-    if cmd.contains("rm ")
-        && cmd.contains("-rf")
-        && (cmd.contains(" /") && !cmd.contains(" ./"))
-    {
-        // Check if it's targeting a path outside the working directory
-        // rm -rf ./node_modules is fine, rm -rf /tmp is not
-        return Some("rm -rf with absolute path");
-    }
-
     None
+}
+
+/// Strip `git -C <path>` pairs so the subcommand is visible.
+fn strip_git_c_flag(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "-C" {
+            i += 2; // skip -C and its path argument
+        } else {
+            out.push(args[i].clone());
+            i += 1;
+        }
+    }
+    out
+}
+
+fn check_rm_verun(args: &[String]) -> Option<&'static str> {
+    for arg in args {
+        if !arg.starts_with('-') && arg.contains(".verun") {
+            return Some("rm targeting .verun directory");
+        }
+    }
+    None
+}
+
+type CheckFn = fn(&[String]) -> Option<&'static str>;
+
+fn walk_list(list: &yash_syntax::syntax::List) -> Option<&'static str> {
+    walk_list_with(list, check_args)
+}
+
+fn walk_list_with(
+    list: &yash_syntax::syntax::List,
+    check: CheckFn,
+) -> Option<&'static str> {
+    for item in &list.0 {
+        let aol = &*item.and_or;
+        for pipeline in std::iter::once(&aol.first).chain(aol.rest.iter().map(|(_, p)| p)) {
+            if let Some(r) = walk_pipeline_with(pipeline, check) {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
+fn walk_pipeline_with(
+    pipeline: &yash_syntax::syntax::Pipeline,
+    check: CheckFn,
+) -> Option<&'static str> {
+    use yash_syntax::syntax::Command;
+    // curl/wget piped to shell (only for the full deny check, not hard blocks)
+    if pipeline.commands.len() >= 2 {
+        let first = pipeline.commands.first().unwrap();
+        let last = pipeline.commands.last().unwrap();
+        if let (Command::Simple(f), Command::Simple(l)) = (first.as_ref(), last.as_ref()) {
+            let fp = f.words.first().map(|(w, _)| w.to_string());
+            let lp = l.words.first().map(|(w, _)| w.to_string());
+            if matches!(fp.as_deref(), Some("curl" | "wget"))
+                && matches!(lp.as_deref(), Some("sh" | "bash" | "zsh"))
+            {
+                return Some("curl/wget piped to shell");
+            }
+        }
+    }
+    for cmd in &pipeline.commands {
+        if let Some(r) = walk_command_with(cmd, check) {
+            return Some(r);
+        }
+    }
+    None
+}
+
+fn walk_command_with(
+    cmd: &yash_syntax::syntax::Command,
+    check: CheckFn,
+) -> Option<&'static str> {
+    use yash_syntax::syntax::{Command, CompoundCommand};
+    match cmd {
+        Command::Simple(sc) => {
+            let args: Vec<String> = sc.words.iter().map(|(w, _)| w.to_string()).collect();
+            if args.is_empty() {
+                return None;
+            }
+            check(&args)
+        }
+        Command::Compound(fcc) => match &fcc.command {
+            CompoundCommand::Subshell { body, .. } => walk_list_with(body, check),
+            CompoundCommand::Grouping(body) => walk_list_with(body, check),
+            _ => None,
+        },
+        Command::Function(_) => None,
+    }
+}
+
+// ---- Argument-level deny checks ----
+
+fn check_args(args: &[String]) -> Option<&'static str> {
+    let (program, rest) = skip_wrappers(args);
+    match program {
+        "git" => check_git(rest),
+        "gh" | "hub" => check_gh(rest),
+        "bash" | "sh" | "zsh" => check_shell_exec(rest),
+        "ssh" | "scp" => Some("ssh/scp"),
+        "rsync" => Some("rsync"),
+        "sudo" => Some("sudo"),
+        "kill" | "pkill" | "killall" => Some("kill"),
+        "chmod" | "chown" => Some("chmod/chown"),
+        "docker" | "kubectl" => Some("docker/kubectl"),
+        "rm" => check_rm(rest),
+        _ => None,
+    }
+}
+
+fn skip_wrappers(args: &[String]) -> (&str, &[String]) {
+    let mut i = 0;
+    loop {
+        if i >= args.len() {
+            return ("", &[]);
+        }
+        match args[i].as_str() {
+            "env" | "command" => {
+                i += 1;
+                while i < args.len() && (args[i].starts_with('-') || args[i].contains('=')) {
+                    i += 1;
+                }
+            }
+            _ => break,
+        }
+    }
+    if i >= args.len() {
+        return ("", &[]);
+    }
+    (&args[i], &args[i + 1..])
+}
+
+fn check_git(args: &[String]) -> Option<&'static str> {
+    let filtered = strip_git_c_flag(args);
+    let strs: Vec<&str> = filtered.iter().map(|s| s.as_str()).collect();
+    let subcmd = strs.iter().find(|a| !a.starts_with('-'))?;
+    match *subcmd {
+        "push" => {
+            if has_long_flag(&strs, &["--force", "--force-with-lease", "--force-if-includes", "--delete"])
+                || has_short_flag(&strs, 'f')
+            {
+                Some("git push --force/--delete")
+            } else {
+                None
+            }
+        }
+        "reset" => {
+            if has_long_flag(&strs, &["--hard"]) {
+                Some("git reset --hard")
+            } else {
+                None
+            }
+        }
+        "clean" => {
+            if has_short_flag(&strs, 'f') || has_long_flag(&strs, &["--force"]) {
+                Some("git clean")
+            } else {
+                None
+            }
+        }
+        "checkout" => {
+            if strs.contains(&"--") && strs.contains(&".") {
+                Some("git checkout (discard all)")
+            } else {
+                None
+            }
+        }
+        "branch" => {
+            if has_short_flag(&strs, 'D') {
+                Some("git branch force-delete")
+            } else if has_short_flag(&strs, 'd') || has_long_flag(&strs, &["--delete"]) {
+                Some("git branch delete")
+            } else {
+                None
+            }
+        }
+        "worktree" => {
+            let pos: Vec<&&str> = strs.iter().filter(|a| !a.starts_with('-')).collect();
+            match pos.get(1).map(|s| **s) {
+                Some("remove") => Some("git worktree remove"),
+                Some("prune") => Some("git worktree prune"),
+                _ => None,
+            }
+        }
+        "stash" => {
+            let pos: Vec<&&str> = strs.iter().filter(|a| !a.starts_with('-')).collect();
+            match pos.get(1).map(|s| **s) {
+                Some("drop") | Some("clear") => Some("git stash drop/clear"),
+                _ => None,
+            }
+        }
+        "tag" => {
+            if has_short_flag(&strs, 'd') || has_long_flag(&strs, &["--delete"]) {
+                Some("git tag delete")
+            } else {
+                None
+            }
+        }
+        "remote" => {
+            let pos: Vec<&&str> = strs.iter().filter(|a| !a.starts_with('-')).collect();
+            match pos.get(1).map(|s| **s) {
+                Some("remove") | Some("rm") => Some("git remote remove"),
+                _ => None,
+            }
+        }
+        "reflog" => {
+            let pos: Vec<&&str> = strs.iter().filter(|a| !a.starts_with('-')).collect();
+            match pos.get(1).map(|s| **s) {
+                Some("expire") | Some("delete") => Some("git reflog expire/delete"),
+                _ => None,
+            }
+        }
+        "gc" => {
+            if has_long_flag(&strs, &["--prune"]) || strs.iter().any(|s| s.starts_with("--prune="))
+            {
+                Some("git gc --prune")
+            } else {
+                None
+            }
+        }
+        "filter-branch" => Some("git filter-branch"),
+        "update-ref" => {
+            if has_short_flag(&strs, 'd') || has_long_flag(&strs, &["--delete"]) {
+                Some("git update-ref delete")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn check_gh(args: &[String]) -> Option<&'static str> {
+    let strs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    match (strs.first(), strs.get(1)) {
+        (Some(&"repo"), Some(&"delete")) => Some("gh repo delete"),
+        (Some(&"release"), Some(&"delete")) => Some("gh release delete"),
+        _ => None,
+    }
+}
+
+fn check_rm(args: &[String]) -> Option<&'static str> {
+    let strs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let has_recursive =
+        has_short_flag(&strs, 'r') || has_short_flag(&strs, 'R') || has_long_flag(&strs, &["--recursive"]);
+    let has_force = has_short_flag(&strs, 'f') || has_long_flag(&strs, &["--force"]);
+    if has_recursive && has_force {
+        let has_abs_path = strs.iter().any(|a| !a.starts_with('-') && a.starts_with('/'));
+        if has_abs_path {
+            return Some("rm -rf with absolute path");
+        }
+    }
+    None
+}
+
+fn check_shell_exec(args: &[String]) -> Option<&'static str> {
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "-c" {
+            if let Some(cmd_str) = args.get(i + 1) {
+                let unquoted = strip_outer_quotes(cmd_str);
+                return matches_deny_pattern(&unquoted);
+            }
+        }
+    }
+    None
+}
+
+// ---- Flag helpers ----
+
+fn has_long_flag(args: &[&str], flags: &[&str]) -> bool {
+    args.iter().any(|a| flags.contains(a))
+}
+
+fn has_short_flag(args: &[&str], ch: char) -> bool {
+    args.iter().any(|a| a.starts_with('-') && !a.starts_with("--") && a[1..].contains(ch))
+}
+
+fn strip_outer_quotes(s: &str) -> String {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"'))
+            || (s.starts_with('\'') && s.ends_with('\'')))
+    {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 /// Summarize tool input for audit logging (truncated to 500 chars).
@@ -577,10 +894,10 @@ mod tests {
         assert!(summary.len() < 600);
     }
 
-    // -- Deny pattern helpers --
+    // -- Deny pattern: safe commands --
 
     #[test]
-    fn deny_pattern_not_matched_for_safe_commands() {
+    fn deny_safe_commands() {
         assert!(matches_deny_pattern("cargo build").is_none());
         assert!(matches_deny_pattern("npm test").is_none());
         assert!(matches_deny_pattern("ls -la").is_none());
@@ -591,16 +908,537 @@ mod tests {
         assert!(matches_deny_pattern("git commit -m 'fix'").is_none());
         assert!(matches_deny_pattern("git push").is_none());
         assert!(matches_deny_pattern("git push origin main").is_none());
+        assert!(matches_deny_pattern("git branch -a").is_none());
+        assert!(matches_deny_pattern("git stash").is_none());
+        assert!(matches_deny_pattern("git stash pop").is_none());
+        assert!(matches_deny_pattern("git stash list").is_none());
+        assert!(matches_deny_pattern("git tag v1.0").is_none());
+        assert!(matches_deny_pattern("git remote -v").is_none());
+        assert!(matches_deny_pattern("git gc").is_none());
+        assert!(matches_deny_pattern("git worktree list").is_none());
+        assert!(matches_deny_pattern("git worktree add /tmp/wt branch").is_none());
+    }
+
+    // -- Deny pattern: git push variants --
+
+    #[test]
+    fn deny_git_push_force() {
+        assert_eq!(matches_deny_pattern("git push --force"), Some("git push --force/--delete"));
+        assert_eq!(matches_deny_pattern("git push -f origin main"), Some("git push --force/--delete"));
+        assert_eq!(matches_deny_pattern("git push --force-with-lease"), Some("git push --force/--delete"));
+        assert_eq!(matches_deny_pattern("git push --force-if-includes"), Some("git push --force/--delete"));
+        assert_eq!(matches_deny_pattern("git push --delete origin branch"), Some("git push --force/--delete"));
+    }
+
+    // -- Deny pattern: git branch --
+
+    #[test]
+    fn deny_git_branch_delete() {
+        assert_eq!(matches_deny_pattern("git branch -d my-feature"), Some("git branch delete"));
+        assert_eq!(matches_deny_pattern("git branch --delete my-feature"), Some("git branch delete"));
     }
 
     #[test]
-    fn deny_pattern_matched_for_dangerous_commands() {
-        assert!(matches_deny_pattern("git push --force").is_some());
-        assert!(matches_deny_pattern("git push -f origin main").is_some());
-        assert!(matches_deny_pattern("git push --delete origin branch").is_some());
-        assert!(matches_deny_pattern("sudo rm -rf /").is_some());
-        assert!(matches_deny_pattern("ssh user@host").is_some());
-        assert!(matches_deny_pattern("docker run ubuntu").is_some());
-        assert!(matches_deny_pattern("kubectl delete pod").is_some());
+    fn deny_git_branch_force_delete() {
+        assert_eq!(matches_deny_pattern("git branch -D my-feature"), Some("git branch force-delete"));
+    }
+
+    #[test]
+    fn deny_git_branch_combined_flags() {
+        assert_eq!(matches_deny_pattern("git branch -Dr origin/old"), Some("git branch force-delete"));
+    }
+
+    // -- Deny pattern: git worktree --
+
+    #[test]
+    fn deny_git_worktree_remove() {
+        assert_eq!(matches_deny_pattern("git worktree remove /tmp/wt"), Some("git worktree remove"));
+        assert_eq!(matches_deny_pattern("git worktree remove --force /tmp/wt"), Some("git worktree remove"));
+    }
+
+    #[test]
+    fn deny_git_worktree_prune() {
+        assert_eq!(matches_deny_pattern("git worktree prune"), Some("git worktree prune"));
+    }
+
+    // -- Deny pattern: git reset/clean/checkout --
+
+    #[test]
+    fn deny_git_reset_hard() {
+        assert_eq!(matches_deny_pattern("git reset --hard HEAD~1"), Some("git reset --hard"));
+    }
+
+    #[test]
+    fn deny_git_clean() {
+        assert_eq!(matches_deny_pattern("git clean -f"), Some("git clean"));
+        assert_eq!(matches_deny_pattern("git clean -fd"), Some("git clean"));
+        assert_eq!(matches_deny_pattern("git clean -fdx"), Some("git clean"));
+        assert_eq!(matches_deny_pattern("git clean --force"), Some("git clean"));
+    }
+
+    #[test]
+    fn deny_git_checkout_discard_all() {
+        assert_eq!(matches_deny_pattern("git checkout -- ."), Some("git checkout (discard all)"));
+    }
+
+    // -- Deny pattern: new git operations --
+
+    #[test]
+    fn deny_git_stash_destructive() {
+        assert_eq!(matches_deny_pattern("git stash drop"), Some("git stash drop/clear"));
+        assert_eq!(matches_deny_pattern("git stash clear"), Some("git stash drop/clear"));
+        assert_eq!(matches_deny_pattern("git stash drop stash@{0}"), Some("git stash drop/clear"));
+    }
+
+    #[test]
+    fn deny_git_tag_delete() {
+        assert_eq!(matches_deny_pattern("git tag -d v1.0"), Some("git tag delete"));
+        assert_eq!(matches_deny_pattern("git tag --delete v1.0"), Some("git tag delete"));
+    }
+
+    #[test]
+    fn deny_git_remote_remove() {
+        assert_eq!(matches_deny_pattern("git remote remove origin"), Some("git remote remove"));
+        assert_eq!(matches_deny_pattern("git remote rm origin"), Some("git remote remove"));
+    }
+
+    #[test]
+    fn deny_git_reflog_expire() {
+        assert_eq!(matches_deny_pattern("git reflog expire --expire=all --all"), Some("git reflog expire/delete"));
+        assert_eq!(matches_deny_pattern("git reflog delete HEAD@{0}"), Some("git reflog expire/delete"));
+    }
+
+    #[test]
+    fn deny_git_gc_prune() {
+        assert_eq!(matches_deny_pattern("git gc --prune=now"), Some("git gc --prune"));
+        assert_eq!(matches_deny_pattern("git gc --prune"), Some("git gc --prune"));
+    }
+
+    #[test]
+    fn deny_git_filter_branch() {
+        assert_eq!(matches_deny_pattern("git filter-branch --force HEAD"), Some("git filter-branch"));
+    }
+
+    #[test]
+    fn deny_git_update_ref() {
+        assert_eq!(matches_deny_pattern("git update-ref -d refs/heads/main"), Some("git update-ref delete"));
+        assert_eq!(matches_deny_pattern("git update-ref --delete refs/heads/main"), Some("git update-ref delete"));
+    }
+
+    // -- Deny pattern: compound commands (AST-based) --
+
+    #[test]
+    fn deny_chained_and_then() {
+        assert!(matches_deny_pattern("echo hello && git push --force origin main").is_some());
+    }
+
+    #[test]
+    fn deny_chained_or_else() {
+        assert!(matches_deny_pattern("git status || git push --force").is_some());
+    }
+
+    #[test]
+    fn deny_chained_semicolon() {
+        assert!(matches_deny_pattern("echo ok; git reset --hard").is_some());
+    }
+
+    #[test]
+    fn deny_subshell() {
+        assert!(matches_deny_pattern("(git push --force origin main)").is_some());
+    }
+
+    #[test]
+    fn deny_brace_group() {
+        assert!(matches_deny_pattern("{ git reset --hard; }").is_some());
+    }
+
+    // -- Deny pattern: curl/wget piped to shell --
+
+    #[test]
+    fn deny_curl_pipe_bash() {
+        assert_eq!(
+            matches_deny_pattern("curl -fsSL https://example.com/install.sh | bash"),
+            Some("curl/wget piped to shell")
+        );
+    }
+
+    #[test]
+    fn deny_wget_pipe_sh() {
+        assert_eq!(
+            matches_deny_pattern("wget -O- https://example.com/script | sh"),
+            Some("curl/wget piped to shell")
+        );
+    }
+
+    // -- Deny pattern: wrapper detection --
+
+    #[test]
+    fn deny_env_wrapper() {
+        assert!(matches_deny_pattern("env GIT_TERMINAL_PROMPT=0 git push --force").is_some());
+        assert!(matches_deny_pattern("env git push --force").is_some());
+    }
+
+    #[test]
+    fn deny_sudo() {
+        assert_eq!(matches_deny_pattern("sudo rm -rf /"), Some("sudo"));
+        assert_eq!(matches_deny_pattern("sudo apt install vim"), Some("sudo"));
+    }
+
+    #[test]
+    fn deny_shell_reinvoke() {
+        assert!(matches_deny_pattern("bash -c 'git push --force'").is_some());
+        assert!(matches_deny_pattern("sh -c 'git reset --hard'").is_some());
+    }
+
+    // -- Deny pattern: gh commands --
+
+    #[test]
+    fn deny_gh_repo_delete() {
+        assert_eq!(matches_deny_pattern("gh repo delete myorg/myrepo --yes"), Some("gh repo delete"));
+    }
+
+    #[test]
+    fn deny_gh_release_delete() {
+        assert_eq!(matches_deny_pattern("gh release delete v1.0"), Some("gh release delete"));
+    }
+
+    // -- Deny pattern: rm, ssh, docker, etc. --
+
+    #[test]
+    fn deny_rm_rf_absolute() {
+        assert_eq!(matches_deny_pattern("rm -rf /tmp/something"), Some("rm -rf with absolute path"));
+    }
+
+    #[test]
+    fn deny_rm_rf_relative_allowed() {
+        assert!(matches_deny_pattern("rm -rf ./node_modules").is_none());
+    }
+
+    #[test]
+    fn deny_ssh_scp() {
+        assert_eq!(matches_deny_pattern("ssh user@host"), Some("ssh/scp"));
+        assert_eq!(matches_deny_pattern("scp file user@host:/tmp"), Some("ssh/scp"));
+    }
+
+    #[test]
+    fn deny_docker_kubectl() {
+        assert_eq!(matches_deny_pattern("docker run -it ubuntu"), Some("docker/kubectl"));
+        assert_eq!(matches_deny_pattern("kubectl delete pod"), Some("docker/kubectl"));
+    }
+
+    #[test]
+    fn deny_kill() {
+        assert_eq!(matches_deny_pattern("kill -9 1234"), Some("kill"));
+        assert_eq!(matches_deny_pattern("pkill -f node"), Some("kill"));
+        assert_eq!(matches_deny_pattern("killall node"), Some("kill"));
+    }
+
+    #[test]
+    fn deny_chmod_chown() {
+        assert_eq!(matches_deny_pattern("chmod 777 /tmp/file"), Some("chmod/chown"));
+        assert_eq!(matches_deny_pattern("chown root:root /tmp/file"), Some("chmod/chown"));
+    }
+
+    // -- Integration: evaluate() with Bash tool --
+
+    #[test]
+    fn bash_git_branch_delete_requires_approval() {
+        let result = evaluate("Bash", &json!({"command": "git branch -d my-feature"}), WORKTREE, REPO, TrustLevel::Normal);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        assert!(result.reason.contains("git branch delete"));
+    }
+
+    #[test]
+    fn bash_git_branch_force_delete_requires_approval() {
+        let result = evaluate("Bash", &json!({"command": "git branch -D my-feature"}), WORKTREE, REPO, TrustLevel::Normal);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        assert!(result.reason.contains("git branch force-delete"));
+    }
+
+    #[test]
+    fn bash_git_worktree_remove_requires_approval() {
+        let result = evaluate("Bash", &json!({"command": "git worktree remove /tmp/some-worktree"}), WORKTREE, REPO, TrustLevel::Normal);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        assert!(result.reason.contains("git worktree remove"));
+    }
+
+    #[test]
+    fn bash_git_worktree_prune_requires_approval() {
+        let result = evaluate("Bash", &json!({"command": "git worktree prune"}), WORKTREE, REPO, TrustLevel::Normal);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        assert!(result.reason.contains("git worktree prune"));
+    }
+
+    #[test]
+    fn bash_git_branch_list_auto_allowed() {
+        let result = evaluate("Bash", &json!({"command": "git branch -a"}), WORKTREE, REPO, TrustLevel::Normal);
+        assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
+    }
+
+    // -- Flag helpers --
+
+    #[test]
+    fn has_short_flag_combined() {
+        assert!(has_short_flag(&["-Df"], 'D'));
+        assert!(has_short_flag(&["-Df"], 'f'));
+        assert!(!has_short_flag(&["-Df"], 'x'));
+        assert!(!has_short_flag(&["--delete"], 'd'));
+    }
+
+    #[test]
+    fn has_long_flag_exact() {
+        assert!(has_long_flag(&["--force", "origin"], &["--force"]));
+        assert!(!has_long_flag(&["-f", "origin"], &["--force"]));
+    }
+
+    // =====================================================================
+    // Hard blocks — worktree ops & .verun deletion (all trust levels)
+    // =====================================================================
+
+    // -- Core: worktree prune/remove blocked at every trust level --
+
+    #[test]
+    fn hard_block_worktree_prune_full_auto() {
+        let r = evaluate("Bash", &json!({"command": "git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+        assert!(r.reason.contains("hard-blocked"));
+        assert!(r.reason.contains("verun-managed"));
+    }
+
+    #[test]
+    fn hard_block_worktree_prune_normal() {
+        let r = evaluate("Bash", &json!({"command": "git worktree prune"}), WORKTREE, REPO, TrustLevel::Normal);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+        assert!(r.reason.contains("hard-blocked"));
+    }
+
+    #[test]
+    fn hard_block_worktree_prune_supervised() {
+        let r = evaluate("Bash", &json!({"command": "git worktree prune"}), WORKTREE, REPO, TrustLevel::Supervised);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_worktree_remove_full_auto() {
+        let r = evaluate("Bash", &json!({"command": "git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+        assert!(r.reason.contains("hard-blocked"));
+    }
+
+    #[test]
+    fn hard_block_worktree_remove_normal() {
+        let r = evaluate("Bash", &json!({"command": "git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::Normal);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+        assert!(r.reason.contains("hard-blocked"));
+    }
+
+    #[test]
+    fn hard_block_worktree_remove_force_flag() {
+        let r = evaluate("Bash", &json!({"command": "git worktree remove --force /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- git -C cross-repo attacks --
+
+    #[test]
+    fn hard_block_git_c_worktree_prune() {
+        let r = evaluate("Bash", &json!({"command": "git -C /other/project worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_git_c_worktree_remove() {
+        let r = evaluate("Bash", &json!({"command": "git -C /other/repo worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_git_multiple_c_flags() {
+        let r = evaluate("Bash", &json!({"command": "git -C /a -C /b worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn deny_git_c_push_force() {
+        assert!(matches_deny_pattern("git -C /other/repo push --force").is_some());
+    }
+
+    // -- .verun directory deletion --
+
+    #[test]
+    fn hard_block_rm_verun_relative() {
+        let r = evaluate("Bash", &json!({"command": "rm -rf .verun/worktrees/some-task"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+        assert!(r.reason.contains(".verun"));
+    }
+
+    #[test]
+    fn hard_block_rm_verun_absolute() {
+        let r = evaluate("Bash", &json!({"command": "rm -rf /projects/repo/.verun/worktrees"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_rm_verun_without_rf() {
+        let r = evaluate("Bash", &json!({"command": "rm .verun/worktrees/task/.git"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_rm_verun_parent() {
+        let r = evaluate("Bash", &json!({"command": "rm -rf .verun"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_rm_verun_sibling_worktree() {
+        let r = evaluate("Bash", &json!({"command": "rm -rf ../other-task/.verun"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- Compound command evasions --
+
+    #[test]
+    fn hard_block_worktree_in_subshell() {
+        let r = evaluate("Bash", &json!({"command": "(git worktree prune)"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_worktree_in_brace_group() {
+        let r = evaluate("Bash", &json!({"command": "{ git worktree remove /tmp/wt; }"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_worktree_chained_and() {
+        let r = evaluate("Bash", &json!({"command": "echo ok && git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_worktree_chained_or() {
+        let r = evaluate("Bash", &json!({"command": "false || git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_worktree_chained_semicolon() {
+        let r = evaluate("Bash", &json!({"command": "echo ok; git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_rm_verun_chained() {
+        let r = evaluate("Bash", &json!({"command": "echo ok && rm -rf .verun/worktrees/task"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- Wrapper evasions --
+
+    #[test]
+    fn hard_block_env_worktree_prune() {
+        let r = evaluate("Bash", &json!({"command": "env git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_env_with_vars_worktree() {
+        let r = evaluate("Bash", &json!({"command": "env GIT_TERMINAL_PROMPT=0 git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_command_worktree() {
+        let r = evaluate("Bash", &json!({"command": "command git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_sudo_worktree_prune() {
+        let r = evaluate("Bash", &json!({"command": "sudo git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_sudo_u_worktree_prune() {
+        let r = evaluate("Bash", &json!({"command": "sudo -u root git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_sudo_rm_verun() {
+        let r = evaluate("Bash", &json!({"command": "sudo rm -rf .verun/worktrees"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- Shell re-invocation --
+
+    #[test]
+    fn hard_block_bash_c_worktree() {
+        let r = evaluate("Bash", &json!({"command": "bash -c 'git worktree prune'"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_sh_c_worktree() {
+        let r = evaluate("Bash", &json!({"command": "sh -c 'git worktree remove /tmp/wt'"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_bash_c_rm_verun() {
+        let r = evaluate("Bash", &json!({"command": "bash -c 'rm -rf .verun'"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- Safe ops that must NOT be hard-blocked --
+
+    #[test]
+    fn full_auto_allows_non_worktree_destructive() {
+        let r = evaluate("Bash", &json!({"command": "git push --force"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_worktree_list() {
+        let r = evaluate("Bash", &json!({"command": "git worktree list"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_worktree_add() {
+        let r = evaluate("Bash", &json!({"command": "git worktree add /tmp/new-wt feature-branch"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_rm_without_verun() {
+        let r = evaluate("Bash", &json!({"command": "rm -rf ./node_modules"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_git_status() {
+        let r = evaluate("Bash", &json!({"command": "git status"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_git_c_safe_op() {
+        let r = evaluate("Bash", &json!({"command": "git -C /other/repo status"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn hard_block_does_not_affect_non_bash_tools() {
+        let r = evaluate("Read", &json!({"file_path": "/tmp/project/src/main.rs"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn hard_block_does_not_affect_write_tool() {
+        let r = evaluate("Write", &json!({"file_path": "/tmp/.verun/foo"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
 }

@@ -33,6 +33,7 @@ portable-pty = "0.8"
 ignore = "0.4"
 notify = "7"
 notify-debouncer-mini = "0.5"
+yash-syntax = "0.19"
 
 [dev-dependencies]
 rstest = "0.18"
