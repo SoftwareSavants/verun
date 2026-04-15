@@ -296,8 +296,10 @@ export const MessageInput: Component<Props> = (props) => {
 
   const autoResizeInput = () => {
     if (!inputRef) return
+    const prev = inputRef.scrollTop
     inputRef.style.height = 'auto'
     inputRef.style.height = Math.min(inputRef.scrollHeight, 200) + 'px'
+    inputRef.scrollTop = prev
   }
   // Drafts are keyed by sessionId so each session inside a task has its own
   // composer text + attachments. Task-scoped settings (plan mode, model,
@@ -1317,11 +1319,27 @@ export const MessageInput: Component<Props> = (props) => {
       await addFiles(files)
       return
     }
-    // Plain text paste — strip HTML formatting from contenteditable
     const text = e.clipboardData?.getData('text/plain')
     if (text) {
       e.preventDefault()
-      document.execCommand('insertText', false, text)
+      if (text.length > 10_000) {
+        // Large paste — bypass undo manager via Range API for speed
+        const sel = window.getSelection()
+        if (sel && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0)
+          range.deleteContents()
+          const textNode = document.createTextNode(text)
+          range.insertNode(textNode)
+          range.setStartAfter(textNode)
+          range.collapse(true)
+          sel.removeAllRanges()
+          sel.addRange(range)
+        }
+        handleInput()
+      } else {
+        document.execCommand('insertText', false, text)
+      }
+      if (inputRef) inputRef.scrollTop = inputRef.scrollHeight
     }
   }
 
@@ -2023,6 +2041,9 @@ export const MessageInput: Component<Props> = (props) => {
             class="w-full bg-transparent text-sm text-text-primary outline-none leading-normal px-3.5 pt-3 pb-2 whitespace-pre-wrap break-words"
             style={{ 'min-height': '4.5em', 'max-height': '200px', 'overflow-y': 'auto', outline: 'none' }}
             contentEditable={!!props.sessionId}
+            spellcheck={false}
+            autocorrect="off"
+            autocapitalize="off"
             onInput={handleInput}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
