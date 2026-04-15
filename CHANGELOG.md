@@ -5,6 +5,7 @@
 - Fix setup script opening a terminal in the wrong task when the user navigates away before the hook starts - terminal panel now only auto-shows if the task is still selected
 - Fix clicking a notification not selecting the source task - visibility change was clearing the nav map before the click handler could consume it
 - Fix step edit highlight persisting when switching tasks - clear editing state on session change
+- Fix clicking arrow button while editing a step adding a duplicate instead of saving the edit - edit controls now render regardless of session running state
 - Fix single-line text selection invisible in code editor - active line highlight now suppresses when text is selected so drawSelection's selection layer is visible
 - Rewrote bash policy engine to use AST-based shell parsing (yash-syntax) instead of substring matching - handles compound commands, subshells, combined flags, and wrapper programs (env, sudo, bash -c)
 - Normal mode now blocks destructive git ops: branch delete, worktree remove/prune, stash drop/clear, tag delete, remote remove, reflog expire, gc --prune, filter-branch, update-ref -d, push --force-with-lease

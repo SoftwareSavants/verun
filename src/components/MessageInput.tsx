@@ -2234,7 +2234,7 @@ export const MessageInput: Component<Props> = (props) => {
               </button>
             </Show>
             <Show
-              when={props.isRunning}
+              when={props.isRunning && editingStepId() === null && editingMessageIdx() === null}
               fallback={
                 <>
                   <Show
