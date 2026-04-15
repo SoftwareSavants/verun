@@ -1,12 +1,14 @@
-import { Component, For, Show, createSignal, createEffect, onCleanup } from 'solid-js'
+import { Component, For, Show, createSignal, createEffect, createMemo, onCleanup } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import type { AgentType } from '../types'
 import { agents } from '../store/agents'
 import { clsx } from 'clsx'
-import { Plus, ChevronRight, Loader2 } from 'lucide-solid'
+import { Plus, ChevronRight, Loader2, Search } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
 import { agentIcon } from '../lib/agents'
 import SvgIcon from './SvgIcon'
+
+const MODEL_SEARCH_THRESHOLD = 10
 
 interface Props {
   disabled?: boolean
@@ -44,10 +46,10 @@ export const NewSessionMenu: Component<Props> = (props) => {
   })
 
   const handleAgentHover = (agentId: string, rowEl: HTMLButtonElement | null) => {
+    if (hoveredAgent() !== agentId) setModelQuery('')
     setHoveredAgent(agentId)
     if (rowEl) {
       const r = rowEl.getBoundingClientRect()
-      // Mirror fork menu: overlap main menu by 4px horizontally, -4px vertically
       setSubmenuRect({ left: r.right - 4, top: r.top - 4 })
     }
   }
@@ -62,10 +64,24 @@ export const NewSessionMenu: Component<Props> = (props) => {
     }
   }
 
+  const [modelQuery, setModelQuery] = createSignal('')
+
   const hoveredAgentInfo = () => {
     const id = hoveredAgent()
     return id ? agents.find(a => a.id === id) : null
   }
+
+  const hoveredModels = () => hoveredAgentInfo()?.models ?? []
+  const showModelSearch = () => hoveredModels().length > MODEL_SEARCH_THRESHOLD
+
+  const filteredHoveredModels = createMemo(() => {
+    const q = modelQuery().toLowerCase()
+    const models = hoveredModels()
+    if (!q) return models
+    return models.filter(m =>
+      m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
+    )
+  })
 
   return (
     <>
@@ -144,7 +160,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
           {/* model submenu */}
           <Show when={hoveredAgentInfo() && hoveredAgentInfo()!.models.length > 0}>
             <div
-              class="fixed z-[102] bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl py-1 w-44 max-h-80 overflow-y-auto"
+              class="fixed z-[102] bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl py-1 w-44 max-h-80 flex flex-col"
               style={{
                 left: `${submenuRect()?.left ?? 0}px`,
                 top: `${submenuRect()?.top ?? 0}px`,
@@ -154,16 +170,36 @@ export const NewSessionMenu: Component<Props> = (props) => {
                 // keep hovered state while mouse is in submenu
               }}
             >
-              <For each={hoveredAgentInfo()!.models}>
-                {(model) => (
-                  <button
-                    class="w-full text-left px-3 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors truncate"
-                    onClick={() => handleSelect(hoveredAgentInfo()!.id as AgentType, model.id)}
-                  >
-                    {model.label}
-                  </button>
-                )}
-              </For>
+              <Show when={showModelSearch()}>
+                <div class="px-2 py-1 shrink-0">
+                  <div class="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-1 ring-1 ring-white/6">
+                    <Search size={10} class="text-text-dim shrink-0" />
+                    <input
+                      type="text"
+                      class="bg-transparent text-[11px] text-text-secondary outline-none w-full placeholder:text-text-dim"
+                      placeholder="Search models..."
+                      value={modelQuery()}
+                      onInput={(e) => setModelQuery(e.currentTarget.value)}
+                      ref={(el) => setTimeout(() => el.focus(), 0)}
+                    />
+                  </div>
+                </div>
+              </Show>
+              <div class="overflow-y-auto">
+                <For each={filteredHoveredModels()}>
+                  {(model) => (
+                    <button
+                      class="w-full text-left px-3 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors truncate"
+                      onClick={() => handleSelect(hoveredAgentInfo()!.id as AgentType, model.id)}
+                    >
+                      {model.label}
+                    </button>
+                  )}
+                </For>
+                <Show when={modelQuery() && filteredHoveredModels().length === 0}>
+                  <div class="px-3 py-2 text-[11px] text-text-dim">No matches</div>
+                </Show>
+              </div>
             </div>
           </Show>
         </Portal>

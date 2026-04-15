@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Model search bar in ModelSelector and NewSessionMenu submenus for agents with >10 models - filters by label/id, auto-focuses, clears on close
+
 - Per-session model selection: model is now stored on the session (not the task), `updateSessionModel` IPC command added, `/model` command and model selector both update the session's model
 - Model selector layout: description rendered below model name, scrollable dropdown with max-height, wider overlay
 - Claude model list updated to full IDs matching Claude Code: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`

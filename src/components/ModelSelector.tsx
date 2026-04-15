@@ -2,11 +2,13 @@ import { Component, For, Show, createSignal, createEffect, createMemo } from 'so
 import { AGENT_DISPLAY_NAMES } from '../types'
 import type { ModelId, AgentType } from '../types'
 import { agents } from '../store/agents'
-import { ChevronDown } from 'lucide-solid'
+import { ChevronDown, Search } from 'lucide-solid'
 import { clsx } from 'clsx'
 import { Popover } from './Popover'
 import { agentIcon } from '../lib/agents'
 import SvgIcon from './SvgIcon'
+
+const MODEL_SEARCH_THRESHOLD = 10
 
 interface Props {
   model: ModelId | null | undefined
@@ -17,10 +19,20 @@ interface Props {
 
 export const ModelSelector: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
+  const [query, setQuery] = createSignal('')
 
   const agentInfo = () => agents.find(a => a.id === props.agentType)
   const agentModels = () => agentInfo()?.models ?? []
   const agentSvg = () => agentIcon(props.agentType)
+  const showSearch = () => agentModels().length > MODEL_SEARCH_THRESHOLD
+
+  const filteredModels = createMemo(() => {
+    const q = query().toLowerCase()
+    if (!q) return agentModels()
+    return agentModels().filter(m =>
+      m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
+    )
+  })
 
   // Resolved model: stored value if valid for this agent, else first in list
   const resolvedModel = createMemo(() => {
@@ -36,6 +48,11 @@ export const ModelSelector: Component<Props> = (props) => {
     if (resolved && resolved !== props.model) {
       props.onChange(resolved)
     }
+  })
+
+  // Clear search when popover closes
+  createEffect(() => {
+    if (!open()) setQuery('')
   })
 
   const currentOpt = () => {
@@ -63,8 +80,23 @@ export const ModelSelector: Component<Props> = (props) => {
           <SvgIcon svg={agentSvg()} size={10} />
           {AGENT_DISPLAY_NAMES[props.agentType]}
         </div>
+        <Show when={showSearch()}>
+          <div class="px-2 pt-1 pb-1">
+            <div class="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-1 ring-1 ring-white/6">
+              <Search size={10} class="text-text-dim shrink-0" />
+              <input
+                type="text"
+                class="bg-transparent text-[11px] text-text-secondary outline-none w-full placeholder:text-text-dim"
+                placeholder="Search models..."
+                value={query()}
+                onInput={(e) => setQuery(e.currentTarget.value)}
+                ref={(el) => setTimeout(() => el.focus(), 0)}
+              />
+            </div>
+          </div>
+        </Show>
         <div class="max-h-52 overflow-y-auto">
-        <For each={agentModels()}>
+        <For each={filteredModels()}>
           {(opt) => {
             const selected = () => resolvedModel() === opt.id
             return (
@@ -88,6 +120,9 @@ export const ModelSelector: Component<Props> = (props) => {
             )
           }}
         </For>
+        <Show when={query() && filteredModels().length === 0}>
+          <div class="px-3 py-2 text-[11px] text-text-dim">No matches</div>
+        </Show>
         </div>
       </Popover>
     </div>
