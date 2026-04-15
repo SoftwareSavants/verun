@@ -91,6 +91,21 @@ pub fn evaluate(
         };
     }
 
+    // Hard blocks — always require approval regardless of trust level.
+    // Verun manages worktree lifecycle; Claude must never touch it.
+    if tool_name == "Bash" {
+        let command = tool_input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if let Some(pattern) = matches_hard_block(command) {
+            return PolicyResult {
+                decision: PolicyDecision::RequireApproval,
+                reason: format!("hard-blocked: {pattern}"),
+            };
+        }
+    }
+
     // Trust level overrides
     match trust_level {
         TrustLevel::FullAuto => {
@@ -250,11 +265,89 @@ fn matches_deny_pattern(command: &str) -> Option<&'static str> {
     walk_list(&list)
 }
 
+/// Hard blocks that require approval regardless of trust level.
+/// These protect Verun's own infrastructure (worktrees, .verun dirs).
+fn matches_hard_block(command: &str) -> Option<&'static str> {
+    let list: yash_syntax::syntax::List = match command.parse() {
+        Ok(l) => l,
+        Err(_) => return Some("unparseable command"),
+    };
+    walk_list_with(&list, check_hard_block_args)
+}
+
+fn check_hard_block_args(args: &[String]) -> Option<&'static str> {
+    let (program, rest) = skip_wrappers(args);
+    match program {
+        "git" => check_git_hard_block(rest),
+        "bash" | "sh" | "zsh" => {
+            for (i, arg) in rest.iter().enumerate() {
+                if arg == "-c" {
+                    if let Some(cmd_str) = rest.get(i + 1) {
+                        let unquoted = strip_outer_quotes(cmd_str);
+                        return matches_hard_block(&unquoted);
+                    }
+                }
+            }
+            None
+        }
+        "rm" => check_rm_verun(rest),
+        _ => None,
+    }
+}
+
+fn check_git_hard_block(args: &[String]) -> Option<&'static str> {
+    let filtered = strip_git_c_flag(args);
+    let strs: Vec<&str> = filtered.iter().map(|s| s.as_str()).collect();
+    let subcmd = strs.iter().find(|a| !a.starts_with('-'))?;
+    if *subcmd == "worktree" {
+        let pos: Vec<&&str> = strs.iter().filter(|a| !a.starts_with('-')).collect();
+        match pos.get(1).map(|s| **s) {
+            Some("remove") => return Some("git worktree remove (verun-managed)"),
+            Some("prune") => return Some("git worktree prune (verun-managed)"),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Strip `git -C <path>` pairs so the subcommand is visible.
+fn strip_git_c_flag(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "-C" {
+            i += 2; // skip -C and its path argument
+        } else {
+            out.push(args[i].clone());
+            i += 1;
+        }
+    }
+    out
+}
+
+fn check_rm_verun(args: &[String]) -> Option<&'static str> {
+    for arg in args {
+        if !arg.starts_with('-') && arg.contains(".verun") {
+            return Some("rm targeting .verun directory");
+        }
+    }
+    None
+}
+
+type CheckFn = fn(&[String]) -> Option<&'static str>;
+
 fn walk_list(list: &yash_syntax::syntax::List) -> Option<&'static str> {
+    walk_list_with(list, check_args)
+}
+
+fn walk_list_with(
+    list: &yash_syntax::syntax::List,
+    check: CheckFn,
+) -> Option<&'static str> {
     for item in &list.0 {
         let aol = &*item.and_or;
         for pipeline in std::iter::once(&aol.first).chain(aol.rest.iter().map(|(_, p)| p)) {
-            if let Some(r) = walk_pipeline(pipeline) {
+            if let Some(r) = walk_pipeline_with(pipeline, check) {
                 return Some(r);
             }
         }
@@ -262,8 +355,12 @@ fn walk_list(list: &yash_syntax::syntax::List) -> Option<&'static str> {
     None
 }
 
-fn walk_pipeline(pipeline: &yash_syntax::syntax::Pipeline) -> Option<&'static str> {
+fn walk_pipeline_with(
+    pipeline: &yash_syntax::syntax::Pipeline,
+    check: CheckFn,
+) -> Option<&'static str> {
     use yash_syntax::syntax::Command;
+    // curl/wget piped to shell (only for the full deny check, not hard blocks)
     if pipeline.commands.len() >= 2 {
         let first = pipeline.commands.first().unwrap();
         let last = pipeline.commands.last().unwrap();
@@ -278,14 +375,17 @@ fn walk_pipeline(pipeline: &yash_syntax::syntax::Pipeline) -> Option<&'static st
         }
     }
     for cmd in &pipeline.commands {
-        if let Some(r) = walk_command(cmd) {
+        if let Some(r) = walk_command_with(cmd, check) {
             return Some(r);
         }
     }
     None
 }
 
-fn walk_command(cmd: &yash_syntax::syntax::Command) -> Option<&'static str> {
+fn walk_command_with(
+    cmd: &yash_syntax::syntax::Command,
+    check: CheckFn,
+) -> Option<&'static str> {
     use yash_syntax::syntax::{Command, CompoundCommand};
     match cmd {
         Command::Simple(sc) => {
@@ -293,11 +393,11 @@ fn walk_command(cmd: &yash_syntax::syntax::Command) -> Option<&'static str> {
             if args.is_empty() {
                 return None;
             }
-            check_args(&args)
+            check(&args)
         }
         Command::Compound(fcc) => match &fcc.command {
-            CompoundCommand::Subshell { body, .. } => walk_list(body),
-            CompoundCommand::Grouping(body) => walk_list(body),
+            CompoundCommand::Subshell { body, .. } => walk_list_with(body, check),
+            CompoundCommand::Grouping(body) => walk_list_with(body, check),
             _ => None,
         },
         Command::Function(_) => None,
@@ -346,7 +446,8 @@ fn skip_wrappers(args: &[String]) -> (&str, &[String]) {
 }
 
 fn check_git(args: &[String]) -> Option<&'static str> {
-    let strs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let filtered = strip_git_c_flag(args);
+    let strs: Vec<&str> = filtered.iter().map(|s| s.as_str()).collect();
     let subcmd = strs.iter().find(|a| !a.starts_with('-'))?;
     match *subcmd {
         "push" => {
@@ -1072,5 +1173,76 @@ mod tests {
     fn has_long_flag_exact() {
         assert!(has_long_flag(&["--force", "origin"], &["--force"]));
         assert!(!has_long_flag(&["-f", "origin"], &["--force"]));
+    }
+
+    // -- Hard blocks (bypass trust level) --
+
+    #[test]
+    fn hard_block_worktree_prune_in_full_auto() {
+        let result = evaluate("Bash", &json!({"command": "git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        assert!(result.reason.contains("hard-blocked"));
+    }
+
+    #[test]
+    fn hard_block_worktree_remove_in_full_auto() {
+        let result = evaluate("Bash", &json!({"command": "git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        assert!(result.reason.contains("hard-blocked"));
+    }
+
+    #[test]
+    fn hard_block_git_c_worktree_prune() {
+        let result = evaluate("Bash", &json!({"command": "git -C /other/project worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_rm_verun_dir() {
+        let result = evaluate("Bash", &json!({"command": "rm -rf .verun/worktrees/some-task"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        assert!(result.reason.contains(".verun"));
+    }
+
+    #[test]
+    fn hard_block_rm_verun_absolute() {
+        let result = evaluate("Bash", &json!({"command": "rm -rf /projects/repo/.verun/worktrees"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_worktree_in_subshell() {
+        let result = evaluate("Bash", &json!({"command": "(git worktree prune)"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_worktree_chained() {
+        let result = evaluate("Bash", &json!({"command": "echo ok && git worktree remove /tmp/wt"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn hard_block_bash_c_worktree() {
+        let result = evaluate("Bash", &json!({"command": "bash -c 'git worktree prune'"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn full_auto_allows_safe_commands() {
+        let result = evaluate("Bash", &json!({"command": "git push --force"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_git_worktree_list() {
+        let result = evaluate("Bash", &json!({"command": "git worktree list"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn hard_block_env_wrapped_worktree() {
+        let result = evaluate("Bash", &json!({"command": "env git worktree prune"}), WORKTREE, REPO, TrustLevel::FullAuto);
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
 }
