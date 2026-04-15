@@ -168,3 +168,292 @@ pub trait Agent: Send + Sync {
     /// `thread.started`, OpenCode's `step_start`).
     fn extract_resume_id(&self, _v: &serde_json::Value) -> Option<String> { None }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn default_args() -> SessionArgs<'static> {
+        SessionArgs {
+            resume_session_id: None,
+            model: None,
+            plan_mode: false,
+            thinking_mode: false,
+            fast_mode: false,
+            message: "",
+        }
+    }
+
+    // ── AgentKind round-trip ────────────────────────────────────────────
+
+    #[test]
+    fn kind_parse_roundtrip() {
+        for &kind in AgentKind::all() {
+            assert_eq!(AgentKind::parse(kind.as_str()), kind);
+        }
+    }
+
+    #[test]
+    fn kind_parse_unknown_defaults_to_claude() {
+        assert_eq!(AgentKind::parse("unknown"), AgentKind::Claude);
+    }
+
+    // ── Claude ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn claude_build_args_basic() {
+        let agent = Claude;
+        let args = agent.build_session_args(&default_args());
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"stream-json".to_string()));
+    }
+
+    #[test]
+    fn claude_build_args_plan_mode() {
+        let agent = Claude;
+        let args = agent.build_session_args(&SessionArgs { plan_mode: true, ..default_args() });
+        assert!(args.contains(&"plan".to_string()));
+    }
+
+    #[test]
+    fn claude_build_args_resume() {
+        let agent = Claude;
+        let args = agent.build_session_args(&SessionArgs { resume_session_id: Some("sess-1"), ..default_args() });
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"sess-1".to_string()));
+    }
+
+    #[test]
+    fn claude_build_args_model() {
+        let agent = Claude;
+        let args = agent.build_session_args(&SessionArgs { model: Some("opus"), ..default_args() });
+        assert!(args.contains(&"--model".to_string()));
+        assert!(args.contains(&"opus".to_string()));
+    }
+
+    #[test]
+    fn claude_build_args_thinking() {
+        let agent = Claude;
+        let args = agent.build_session_args(&SessionArgs { thinking_mode: true, ..default_args() });
+        assert!(args.contains(&"--effort".to_string()));
+        assert!(args.contains(&"max".to_string()));
+    }
+
+    #[test]
+    fn claude_build_args_fast() {
+        let agent = Claude;
+        let args = agent.build_session_args(&SessionArgs { fast_mode: true, ..default_args() });
+        assert!(args.contains(&"--effort".to_string()));
+        assert!(args.contains(&"low".to_string()));
+    }
+
+    #[test]
+    fn claude_extract_resume_from_init() {
+        let agent = Claude;
+        let v = json!({"type":"system","subtype":"init","session_id":"s-1"});
+        assert_eq!(agent.extract_resume_id(&v), Some("s-1".into()));
+    }
+
+    #[test]
+    fn claude_extract_resume_from_result() {
+        let agent = Claude;
+        let v = json!({"type":"result","session_id":"s-2","cost":0.01});
+        assert_eq!(agent.extract_resume_id(&v), Some("s-2".into()));
+    }
+
+    #[test]
+    fn claude_extract_resume_ignores_other() {
+        let agent = Claude;
+        let v = json!({"type":"assistant","content":"hello"});
+        assert_eq!(agent.extract_resume_id(&v), None);
+    }
+
+    #[test]
+    fn claude_capabilities() {
+        let agent = Claude;
+        assert!(agent.supports_plan_mode());
+        assert!(agent.supports_effort());
+        assert!(agent.supports_skills());
+        assert!(agent.supports_attachments());
+        assert!(agent.supports_fork());
+        assert!(agent.uses_claude_jsonl());
+    }
+
+    // ── Codex ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn codex_build_args_basic() {
+        let agent = Codex;
+        let args = agent.build_session_args(&SessionArgs { message: "fix the bug", ..default_args() });
+        assert!(args.contains(&"exec".to_string()));
+        assert!(args.contains(&"--json".to_string()));
+        assert!(args.contains(&"--full-auto".to_string()));
+        assert!(args.contains(&"fix the bug".to_string()));
+    }
+
+    #[test]
+    fn codex_build_args_resume() {
+        let agent = Codex;
+        let args = agent.build_session_args(&SessionArgs { resume_session_id: Some("t-1"), ..default_args() });
+        assert!(args.contains(&"resume".to_string()));
+        assert!(args.contains(&"t-1".to_string()));
+    }
+
+    #[test]
+    fn codex_extract_resume_from_thread_started() {
+        let agent = Codex;
+        let v = json!({"type":"thread.started","thread_id":"t-99"});
+        assert_eq!(agent.extract_resume_id(&v), Some("t-99".into()));
+    }
+
+    #[test]
+    fn codex_extract_resume_ignores_other() {
+        let agent = Codex;
+        let v = json!({"type":"message","content":"hi"});
+        assert_eq!(agent.extract_resume_id(&v), None);
+    }
+
+    #[test]
+    fn codex_capabilities() {
+        let agent = Codex;
+        assert!(!agent.supports_plan_mode());
+        assert!(!agent.supports_effort());
+        assert!(!agent.supports_skills());
+        assert!(agent.supports_attachments());
+        assert!(!agent.supports_fork());
+        assert!(!agent.uses_claude_jsonl());
+    }
+
+    // ── Cursor ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn cursor_build_args_basic() {
+        let agent = Cursor;
+        let args = agent.build_session_args(&SessionArgs { message: "hello", ..default_args() });
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"stream-json".to_string()));
+        assert!(args.contains(&"--force".to_string()));
+        assert!(args.contains(&"hello".to_string()));
+    }
+
+    #[test]
+    fn cursor_build_args_plan_mode() {
+        let agent = Cursor;
+        let args = agent.build_session_args(&SessionArgs { plan_mode: true, ..default_args() });
+        assert!(args.contains(&"--mode".to_string()));
+        assert!(args.contains(&"plan".to_string()));
+    }
+
+    #[test]
+    fn cursor_extract_resume_from_init() {
+        let agent = Cursor;
+        let v = json!({"type":"system","subtype":"init","session_id":"c-1"});
+        assert_eq!(agent.extract_resume_id(&v), Some("c-1".into()));
+    }
+
+    #[test]
+    fn cursor_extract_resume_from_result() {
+        let agent = Cursor;
+        let v = json!({"type":"result","session_id":"c-2"});
+        assert_eq!(agent.extract_resume_id(&v), Some("c-2".into()));
+    }
+
+    #[test]
+    fn cursor_capabilities() {
+        let agent = Cursor;
+        assert!(agent.supports_plan_mode());
+        assert!(!agent.supports_effort());
+        assert!(!agent.supports_skills());
+        assert!(!agent.supports_attachments());
+        assert!(!agent.supports_fork());
+        assert!(!agent.uses_claude_jsonl());
+    }
+
+    #[test]
+    fn cursor_parse_model_list() {
+        let agent = Cursor;
+        let output = "Available models:\n  composer-2-fast - Composer 2 Fast  (default)\n  gpt-5.4-medium - GPT-5.4\n\nTip: use --model <id>\n";
+        let models = agent.parse_model_list(output);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "composer-2-fast");
+        assert_eq!(models[0].label, "Composer 2 Fast");
+        assert_eq!(models[1].id, "gpt-5.4-medium");
+    }
+
+    // ── OpenCode ────────────────────────────────────────────────────────
+
+    #[test]
+    fn opencode_build_args_basic() {
+        let agent = OpenCode;
+        let args = agent.build_session_args(&SessionArgs { message: "do it", ..default_args() });
+        assert!(args.contains(&"run".to_string()));
+        assert!(args.contains(&"--format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"do it".to_string()));
+    }
+
+    #[test]
+    fn opencode_build_args_plan_mode() {
+        let agent = OpenCode;
+        let args = agent.build_session_args(&SessionArgs { plan_mode: true, ..default_args() });
+        assert!(args.contains(&"--agent".to_string()));
+        assert!(args.contains(&"plan".to_string()));
+    }
+
+    #[test]
+    fn opencode_build_args_resume() {
+        let agent = OpenCode;
+        let args = agent.build_session_args(&SessionArgs { resume_session_id: Some("oc-1"), ..default_args() });
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"oc-1".to_string()));
+    }
+
+    #[test]
+    fn opencode_extract_resume_id() {
+        let agent = OpenCode;
+        let v = json!({"sessionID":"oc-42","type":"step_start"});
+        assert_eq!(agent.extract_resume_id(&v), Some("oc-42".into()));
+    }
+
+    #[test]
+    fn opencode_extract_resume_id_missing() {
+        let agent = OpenCode;
+        let v = json!({"type":"step_start"});
+        assert_eq!(agent.extract_resume_id(&v), None);
+    }
+
+    #[test]
+    fn opencode_capabilities() {
+        let agent = OpenCode;
+        assert!(agent.supports_plan_mode());
+        assert!(!agent.supports_effort());
+        assert!(!agent.supports_skills());
+        assert!(agent.supports_attachments());
+        assert!(!agent.supports_fork());
+        assert!(!agent.uses_claude_jsonl());
+    }
+
+    #[test]
+    fn opencode_parse_model_list() {
+        let agent = OpenCode;
+        let output = "anthropic/claude-sonnet-4-5\nopenai/gpt-5.3\nsome migration message with spaces\n";
+        let models = agent.parse_model_list(output);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "anthropic/claude-sonnet-4-5");
+        assert_eq!(models[0].label, "claude-sonnet-4-5");
+        assert_eq!(models[1].id, "openai/gpt-5.3");
+    }
+
+    // ── All agents have non-empty basics ────────────────────────────────
+
+    #[test]
+    fn all_agents_have_display_name_and_binary() {
+        for &kind in AgentKind::all() {
+            let agent = kind.implementation();
+            assert!(!agent.display_name().is_empty(), "{kind:?} has empty display_name");
+            assert!(!agent.cli_binary().is_empty(), "{kind:?} has empty cli_binary");
+            assert!(!agent.install_hint().is_empty(), "{kind:?} has empty install_hint");
+        }
+    }
+}

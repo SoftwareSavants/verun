@@ -23,6 +23,7 @@ import { NewSessionMenu } from './NewSessionMenu'
 import { ContextMenu } from './ContextMenu'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
+import SvgIcon from './SvgIcon'
 import { fileHasErrors, fileHasWarnings } from '../store/problems'
 import { getLspClient } from '../lib/lsp'
 import * as ipc from '../lib/ipc'
@@ -63,11 +64,6 @@ function SessionTime(props: { session: Session }) {
   return <span class="text-text-dim">{elapsed()}</span>
 }
 
-function SvgIcon(props: { svg: string; size?: number }) {
-  const s = props.size ?? 12
-  const sized = props.svg.replace('<svg ', `<svg width="${s}" height="${s}" `)
-  return <span class="inline-flex items-center justify-center shrink-0" innerHTML={sized} />
-}
 
 const EDITORS = [
   { label: 'VS Code', app: 'Visual Studio Code', svg: vscodeIcon },

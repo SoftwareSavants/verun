@@ -601,9 +601,7 @@ fn extract_cursor_tool_result(tc: &serde_json::Map<String, serde_json::Value>) -
 // Main streaming loop
 // ---------------------------------------------------------------------------
 
-/// Result of streaming a session — captured lines + accumulated cost
 pub struct StreamResult {
-    pub lines: Vec<String>,
     pub total_cost: f64,
 }
 
@@ -754,7 +752,6 @@ pub async fn stream_and_capture(
 ) -> StreamResult {
     let mut reader = BufReader::new(stdout).lines();
     let mut buffer: Vec<OutputItem> = Vec::new();
-    let mut captured: Vec<String> = Vec::new();
     let mut last_flush = Instant::now();
     let mut total_persisted: usize = 0;
     let mut total_cost: f64 = 0.0;
@@ -771,8 +768,6 @@ pub async fn stream_and_capture(
                     Ok(Some(line)) => {
                         let preview = if line.len() > 200 { &line[..200] } else { &line };
                         eprintln!("[verun][stream][{session_id}] {preview}");
-                        captured.push(line.clone());
-
                         // Intercept control_request for tool approval
                         if let Some(cr) = handle_control_request(
                             &app, &session_id, &task_id, &line, &stdin,
@@ -906,7 +901,7 @@ pub async fn stream_and_capture(
     }
 
     flush_buffer(&app, &session_id, &mut buffer);
-    StreamResult { lines: captured, total_cost }
+    StreamResult { total_cost }
 }
 
 /// Check if a line is a `control_request` for tool approval.
@@ -1134,7 +1129,7 @@ fn persist_items(
     if items.is_empty() || *total_persisted >= MAX_PERSISTED_LINES {
         return;
     }
-    *total_persisted += 1;
+    *total_persisted += items.len();
     let line = serde_json::json!({ "type": "verun_items", "items": items }).to_string();
     let now = epoch_ms();
     let _ = db_tx.try_send(DbWrite::InsertOutputLines {

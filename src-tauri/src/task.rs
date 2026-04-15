@@ -851,16 +851,6 @@ pub async fn send_message(
             return;
         };
 
-        // Try to extract claude session_id from captured output
-        if let Some(csid) = extract_resume_session_id(&stream_result.lines) {
-            let _ = monitor_db_tx
-                .send(db::DbWrite::SetResumeSessionId {
-                    id: monitor_sid.clone(),
-                    resume_session_id: csid,
-                })
-                .await;
-        }
-
         // Check for .verun.json config written by Claude auto-detect
         let config_path = format!("{wt_for_hooks}/.verun.json");
         if let Some((setup, destroy, start)) = parse_verun_config_file(&config_path) {
@@ -1021,32 +1011,6 @@ pub fn parse_verun_config_file(path: &str) -> Option<(String, String, String)> {
     }
 
     Some((setup, destroy, start))
-}
-
-fn extract_resume_session_id(lines: &[String]) -> Option<String> {
-    for line in lines.iter().rev() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            // Claude: result.session_id or system.init.session_id
-            if t == "result" {
-                if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
-                    return Some(sid.to_string());
-                }
-            }
-            if t == "system" && v.get("subtype").and_then(|t| t.as_str()) == Some("init") {
-                if let Some(sid) = v.get("session_id").and_then(|s| s.as_str()) {
-                    return Some(sid.to_string());
-                }
-            }
-            // Codex: thread.started.thread_id (used as resume session_id)
-            if t == "thread.started" {
-                if let Some(tid) = v.get("thread_id").and_then(|s| s.as_str()) {
-                    return Some(tid.to_string());
-                }
-            }
-        }
-    }
-    None
 }
 
 pub fn epoch_ms() -> i64 {
@@ -1297,7 +1261,7 @@ pub async fn fork_session_to_new_task(
     let parent_csid = parent_session
         .resume_session_id
         .clone()
-        .ok_or_else(|| "Parent session has no claude session id (never started?)".to_string())?;
+        .ok_or_else(|| "Parent session has no resume session id (never started?)".to_string())?;
     let parent_task = db::get_task(pool, &parent_session.task_id)
         .await?
         .ok_or_else(|| format!("Task {} not found", parent_session.task_id))?;
@@ -1555,28 +1519,4 @@ mod tests {
         assert!(ANIMALS.len() >= 20);
     }
 
-    #[test]
-    fn extract_session_id_from_result() {
-        let lines = vec![
-            r#"{"type":"assistant","content":"hello"}"#.into(),
-            r#"{"type":"result","session_id":"abc-123","cost":0.01}"#.into(),
-        ];
-        assert_eq!(extract_resume_session_id(&lines), Some("abc-123".to_string()));
-    }
-
-    #[test]
-    fn extract_session_id_from_init() {
-        let lines = vec![
-            r#"{"type":"system","subtype":"init","session_id":"init-456","tools":[]}"#.into(),
-        ];
-        assert_eq!(extract_resume_session_id(&lines), Some("init-456".to_string()));
-    }
-
-    #[test]
-    fn extract_session_id_missing() {
-        let lines = vec![
-            r#"{"type":"assistant","content":"hello"}"#.into(),
-        ];
-        assert_eq!(extract_resume_session_id(&lines), None);
-    }
 }

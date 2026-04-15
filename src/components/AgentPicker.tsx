@@ -6,21 +6,13 @@ import { clsx } from 'clsx'
 import { ChevronDown, Check } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
 import { agentIcon } from '../lib/agents'
+import SvgIcon from './SvgIcon'
 
 interface Props {
   value: AgentType
   onChange: (agent: AgentType) => void
   projectId?: string | null
   defaultAgent?: AgentType
-}
-
-function SvgIcon(props: { svg: string; size?: number }) {
-  return (
-    <span
-      class="inline-flex items-center justify-center shrink-0"
-      innerHTML={props.svg.replace('<svg ', `<svg width="${props.size ?? 14}" height="${props.size ?? 14}" `)}
-    />
-  )
 }
 
 export const AgentPicker: Component<Props> = (props) => {

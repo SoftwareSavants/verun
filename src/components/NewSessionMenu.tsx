@@ -6,15 +6,7 @@ import { clsx } from 'clsx'
 import { Plus, ChevronRight, Loader2 } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
 import { agentIcon } from '../lib/agents'
-
-function SvgIcon(props: { svg: string; size?: number }) {
-  return (
-    <span
-      class="inline-flex items-center justify-center shrink-0"
-      innerHTML={props.svg.replace('<svg ', `<svg width="${props.size ?? 13}" height="${props.size ?? 13}" `)}
-    />
-  )
-}
+import SvgIcon from './SvgIcon'
 
 interface Props {
   disabled?: boolean

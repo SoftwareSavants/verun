@@ -1549,8 +1549,12 @@ pub async fn reload_env_path() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn check_agent(agent_type: String) -> Result<String, String> {
-    let agent = crate::agent::AgentKind::parse(&agent_type).implementation();
-    check_agent_impl(&*agent)
+    tokio::task::spawn_blocking(move || {
+        let agent = crate::agent::AgentKind::parse(&agent_type).implementation();
+        check_agent_impl(&*agent)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {e}"))?
 }
 
 fn check_agent_impl(agent: &dyn crate::agent::Agent) -> Result<String, String> {
