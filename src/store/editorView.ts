@@ -134,6 +134,23 @@ export function activeTabPath(taskId: string | null): string | null {
   return activeTabForTask(taskId)
 }
 
+type ActiveEditorChangeListener = (taskId: string, relativePath: string) => void
+const activeEditorChangeListeners: ActiveEditorChangeListener[] = []
+
+function notifyBeforeActiveEditorChange(taskId: string, nextPath: string) {
+  const current = mainViewForTask(taskId)
+  if (!current || current === 'session' || current === nextPath) return
+  for (const fn of activeEditorChangeListeners) fn(taskId, current)
+}
+
+export function onBeforeActiveEditorChange(listener: ActiveEditorChangeListener): () => void {
+  activeEditorChangeListeners.push(listener)
+  return () => {
+    const idx = activeEditorChangeListeners.indexOf(listener)
+    if (idx >= 0) activeEditorChangeListeners.splice(idx, 1)
+  }
+}
+
 export function recentlyClosed(taskId: string | null): EditorTab[] {
   if (!taskId) return []
   return recentlyClosedForTask(taskId)
@@ -144,6 +161,7 @@ export function openFile(taskId: string, relativePath: string, name: string) {
   const already = tabs.some(t => t.relativePath === relativePath)
 
   if (already) {
+    notifyBeforeActiveEditorChange(taskId, relativePath)
     setActiveTabForTaskContext(taskId, relativePath)
     setMainView(taskId, relativePath)
     pushMru(taskId, relativePath)
@@ -151,6 +169,7 @@ export function openFile(taskId: string, relativePath: string, name: string) {
     return
   }
 
+  notifyBeforeActiveEditorChange(taskId, relativePath)
   const withoutPreview = tabs.filter(t => !t.preview)
   setOpenTabsForTask(taskId, [...withoutPreview, { relativePath, name, dirty: false, preview: true }])
   setActiveTabForTaskContext(taskId, relativePath)
@@ -168,6 +187,7 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
       setOpenTabsForTask(taskId, tabs.map(t => t.relativePath === relativePath ? { ...t, preview: false } : t))
     }
     if (activeTabPath(taskId) !== relativePath) {
+      notifyBeforeActiveEditorChange(taskId, relativePath)
       setActiveTabForTaskContext(taskId, relativePath)
     }
     setMainView(taskId, relativePath)
@@ -176,6 +196,7 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
     return
   }
 
+  notifyBeforeActiveEditorChange(taskId, relativePath)
   const withoutPreview = tabs.filter(t => !t.preview)
   setOpenTabsForTask(taskId, [...withoutPreview, { relativePath, name, dirty: false, preview: false }])
   setActiveTabForTaskContext(taskId, relativePath)
@@ -198,6 +219,7 @@ export function openDiffTab(taskId: string, relativePath: string, source: DiffSo
       setOpenTabsForTask(taskId, tabs.map(t => t.relativePath === key ? { ...t, preview: false } : t))
     }
     if (!alreadyActive) {
+      notifyBeforeActiveEditorChange(taskId, key)
       setActiveTabForTaskContext(taskId, key)
       setMainView(taskId, key)
       pushMru(taskId, key)
@@ -206,6 +228,7 @@ export function openDiffTab(taskId: string, relativePath: string, source: DiffSo
     return
   }
 
+  notifyBeforeActiveEditorChange(taskId, key)
   const withoutPreview = tabs.filter(t => !t.preview)
   const newTab: EditorTab = {
     relativePath: key,
@@ -286,6 +309,7 @@ export function setTabDirty(taskId: string, relativePath: string, dirty: boolean
 }
 
 export function setActiveTab(taskId: string, relativePath: string) {
+  notifyBeforeActiveEditorChange(taskId, relativePath)
   setActiveTabForTaskContext(taskId, relativePath)
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
@@ -350,6 +374,7 @@ export function nextTab(taskId: string) {
   const active = activeTabPath(taskId)
   const next = mru.find(p => p !== active && tabs.some(t => t.relativePath === p))
   if (next) {
+    notifyBeforeActiveEditorChange(taskId, next)
     setActiveTabForTaskContext(taskId, next)
     setMainView(taskId, next)
     pushMru(taskId, next)
@@ -366,6 +391,7 @@ export function prevTab(taskId: string) {
   const candidates = mru.filter(p => p !== active && tabs.some(t => t.relativePath === p))
   const prev = candidates.length > 0 ? candidates[candidates.length - 1] : null
   if (prev) {
+    notifyBeforeActiveEditorChange(taskId, prev)
     setActiveTabForTaskContext(taskId, prev)
     setMainView(taskId, prev)
     pushMru(taskId, prev)
