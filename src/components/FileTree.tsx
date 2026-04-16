@@ -5,9 +5,9 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { fileHasErrors, fileHasWarnings, pathHasErrors, pathHasWarnings } from '../store/problems'
 import { getFileIcon } from '../lib/fileIcons'
 import {
-  getDirContents, loadDirectory, isExpanded, toggleExpanded, expandDir, collapseDir,
-  invalidateDirectory, openFile, openFilePinned, revealRequest, mainView
+  getDirContents, loadDirectory, invalidateDirectory
 } from '../store/files'
+import { isExpanded, toggleExpanded, expandDir, collapseDir, openFile, openFilePinned, revealRequest, mainView } from '../store/editorView'
 import { taskById } from '../store/tasks'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'

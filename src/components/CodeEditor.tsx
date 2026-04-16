@@ -3,7 +3,7 @@ import { EditorView, keymap, lineNumbers, ViewPlugin, GutterMarker, gutterLineCl
 import { linter, forEachDiagnostic, type Diagnostic } from '@codemirror/lint'
 import { EditorState, StateField, StateEffect, RangeSet, Facet, type Extension } from '@codemirror/state'
 import { setChatPrefillRequest } from '../store/ui'
-import { setMainView } from '../store/files'
+import { setMainView } from '../store/editorView'
 import { ContextMenu } from './ContextMenu'
 import { defaultKeymap, history, historyField, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit } from '@codemirror/language'
@@ -29,7 +29,8 @@ import { xml } from '@codemirror/lang-xml'
 import { yaml } from '@codemirror/lang-yaml'
 import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
-import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal, pendingGoToLine, consumeGoToLine, onTabClose, onTaskCleanup } from '../store/files'
+import { getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal } from '../store/files'
+import { setTabDirty, pendingGoToLine, consumeGoToLine, onTabClose, onTaskCleanup } from '../store/editorView'
 import { reloadNonce, checkBeforeSave } from '../store/fileSync'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 
@@ -918,10 +919,10 @@ export const CodeEditor: Component<Props> = (props) => {
 
   // Drains the pendingGoToLine signal if it targets this file.
   const drainPendingGoToLine = () => {
-    const req = pendingGoToLine()
-    if (!req || req.taskId !== props.taskId || req.relativePath !== props.relativePath) return
+    const req = pendingGoToLine(props.taskId)
+    if (!req || req.relativePath !== props.relativePath) return
     if (!editorView) return
-    consumeGoToLine()
+    consumeGoToLine(props.taskId)
     goToLine(req.line, req.column)
   }
 
@@ -1081,7 +1082,7 @@ export const CodeEditor: Component<Props> = (props) => {
 
   // React to go-to-line requests for the file already shown (no editor recreation)
   createEffect(() => {
-    const req = pendingGoToLine()
+    const req = pendingGoToLine(props.taskId)
     void props.relativePath // track so effect re-fires on file switch
     if (!req || !editorView) return
     drainPendingGoToLine()

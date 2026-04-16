@@ -7,7 +7,7 @@ import { getFileIcon } from '../lib/fileIcons'
 import { highlightCode, langFromPath } from '../lib/highlighter'
 import { getPreviewType, isMediaType } from '../lib/fileTypes'
 import { readWorktreeFile, resolveWorktreeFilePath } from '../lib/ipc'
-import { openFile } from '../store/files'
+import { openFile } from '../store/editorView'
 import { X, ExternalLink } from 'lucide-solid'
 
 interface Props {

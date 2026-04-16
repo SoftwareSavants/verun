@@ -1,7 +1,7 @@
 import { Component, For, Show, createSignal, createMemo } from 'solid-js'
 import { ChevronRight, ChevronDown, CircleCheck, Loader2, XCircle, AlertTriangle, Info, ClipboardCopy } from 'lucide-solid'
 import { problemsByFileForTask, problemCountForTask, isProblemsLoading } from '../store/problems'
-import { openFilePinned, setMainView, setPendingGoToLine, revealFileInTree, mainView } from '../store/files'
+import { openFilePinned, revealFileInTree, setMainView, setPendingGoToLine, mainView } from '../store/editorView'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
 import { ContextMenu } from './ContextMenu'

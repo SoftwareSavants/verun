@@ -1,5 +1,6 @@
 import { createSignal } from 'solid-js'
 import { registerWindowedTaskChecker } from '../lib/windowContext'
+import { pendingSessionNavForTask, selectedSessionForTask, setPendingSessionNavForTask, setSelectedSessionForTask, setTerminalOpenForTask, terminalOpenForTask } from './taskContext'
 
 export const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
 
@@ -21,20 +22,29 @@ export function setLastSessionForTask(taskId: string, sessionId: string | null) 
   else localStorage.removeItem(`verun:lastSession:${taskId}`)
 }
 
-const [_selectedSessionId, _setSelectedSessionId] = createSignal<string | null>(null)
-export const selectedSessionId = _selectedSessionId
-export function setSelectedSessionId(id: string | null) {
-  _setSelectedSessionId(id)
+export function selectedSessionId(): string | null {
   const taskId = selectedTaskId()
-  if (taskId) setLastSessionForTask(taskId, id)
+  return taskId ? selectedSessionForTask(taskId) : null
+}
+
+export function setSelectedSessionId(id: string | null) {
+  const taskId = selectedTaskId()
+  if (!taskId) return
+  setSelectedSessionForTask(taskId, id)
+  setLastSessionForTask(taskId, id)
 }
 
 // When set, the next task-selection effect should navigate to this session
 // instead of defaulting to the first one. Consumed (cleared) after use.
-export const [pendingSessionNav, setPendingSessionNav] = createSignal<string | null>(null)
-export function consumePendingSessionNav(): string | null {
-  const id = pendingSessionNav()
-  if (id) setPendingSessionNav(null)
+export function setPendingSessionNav(id: string | null, taskId: string | null = selectedTaskId()) {
+  if (!taskId) return
+  setPendingSessionNavForTask(taskId, id)
+}
+
+export function consumePendingSessionNav(taskId: string | null = selectedTaskId()): string | null {
+  if (!taskId) return null
+  const id = pendingSessionNavForTask(taskId)
+  if (id) setPendingSessionNavForTask(taskId, null)
   return id
 }
 
@@ -101,23 +111,31 @@ export const [sidebarWidth, setSidebarWidth] = createSignal(280)
 const savedRightPanelWidth = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:rightPanelWidth') : null
 export const [rightPanelWidth, setRightPanelWidth] = createSignal(savedRightPanelWidth ? parseInt(savedRightPanelWidth, 10) : 280)
 
+const savedRightTab = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:rightPanelTab') : null
+const [_rightPanelTab, _setRightPanelTab] = createSignal<'changes' | 'files'>(
+  (savedRightTab as 'changes' | 'files') || 'changes'
+)
+export const rightPanelTab = _rightPanelTab
+export function setRightPanelTab(tab: 'changes' | 'files') {
+  _setRightPanelTab(tab)
+  localStorage.setItem('verun:rightPanelTab', tab)
+}
+
 export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
 
 export const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null)
 export const [showSettings, setShowSettings] = createSignal(false)
 export const [showArchived, setShowArchived] = createSignal(false)
-
-// Terminal panel — per-task visibility
-const [taskTerminalOpen, setTaskTerminalOpen] = createSignal<Record<string, boolean>>({})
+export const [showQuickOpen, setShowQuickOpen] = createSignal(false)
 
 export function showTerminal(): boolean {
   const tid = selectedTaskId()
-  return tid ? (taskTerminalOpen()[tid] ?? false) : false
+  return tid ? terminalOpenForTask(tid) : false
 }
 
 export function setShowTerminal(v: boolean) {
   const tid = selectedTaskId()
-  if (tid) setTaskTerminalOpen(prev => ({ ...prev, [tid]: v }))
+  if (tid) setTerminalOpenForTask(tid, v)
 }
 
 export function toggleTerminal() {

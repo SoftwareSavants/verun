@@ -1,7 +1,7 @@
 import { marked } from 'marked'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { openFile } from '../store/files'
+import { openFile } from '../store/editorView'
 import { tasks } from '../store/tasks'
 import { resolveWorktreeFilePath } from './ipc'
 

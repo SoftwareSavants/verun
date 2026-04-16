@@ -16,7 +16,7 @@ import { FileViewer } from './FileViewer'
 import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
-import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/files'
+import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/editorView'
 import { Square, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy, GitCompare } from 'lucide-solid'
 import { GitActions, hasGitActionsContent } from './GitActions'
 import { NewSessionMenu } from './NewSessionMenu'
@@ -29,6 +29,7 @@ import { getLspClient } from '../lib/lsp'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
 import { AGENT_DISPLAY_NAMES } from '../types'
+import { initTaskContext } from '../store/taskContext'
 import vscodeIcon from '../assets/icons/vscode.svg?raw'
 import cursorIcon from '../assets/icons/cursor.svg?raw'
 import { agentIcon } from '../lib/agents'
@@ -142,9 +143,10 @@ function OpenInButton(props: { path: string }) {
 export const TaskPanel: Component = () => {
   createEffect(on(selectedTaskId, async (taskId) => {
     if (taskId) {
+      initTaskContext(taskId)
       restoreTabState(taskId)
       await loadSessions(taskId)
-      const pending = consumePendingSessionNav()
+      const pending = consumePendingSessionNav(taskId)
       const taskSessions = sessionsForTask(taskId)
       if (pending && taskSessions.some(s => s.id === pending)) {
         setSelectedSessionId(pending)
@@ -664,16 +666,16 @@ export const TaskPanel: Component = () => {
 
                   {/* Unsaved changes confirm */}
                   <ConfirmDialog
-                    open={!!pendingClose()}
+                    open={!!pendingClose(t().id)}
                     title="Unsaved changes"
-                    message={`"${pendingClose()?.split('/').pop()}" has unsaved changes. Close without saving?`}
+                    message={`"${pendingClose(t().id)?.split('/').pop()}" has unsaved changes. Close without saving?`}
                     confirmLabel="Close without saving"
                     danger
                     onConfirm={() => {
-                      const path = pendingClose()
+                      const path = pendingClose(t().id)
                       if (path) forceCloseTab(t().id, path)
                     }}
-                    onCancel={cancelCloseTab}
+                    onCancel={() => cancelCloseTab(t().id)}
                   />
 
                   {/* File tab context menu */}

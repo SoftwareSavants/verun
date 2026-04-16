@@ -1,13 +1,12 @@
 import { createSignal } from 'solid-js'
 import * as ipc from '../lib/ipc'
 import {
-  allOpenTabs,
   getCachedContent,
   getCachedOriginal,
   setCachedContent,
   setCachedOriginal,
-  setTabDirty,
 } from './files'
+import { allOpenTabs, setTabDirty } from './editorView'
 import { addToast, dismissToast } from './ui'
 
 export interface FileConflict {

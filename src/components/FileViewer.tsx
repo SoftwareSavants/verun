@@ -7,7 +7,8 @@ import { DiffEditor } from './DiffEditor'
 import { BreadcrumbBar } from './BreadcrumbBar'
 import { getPreviewType } from '../lib/fileTypes'
 import * as ipc from '../lib/ipc'
-import { getCachedContent, setCachedContent, setCachedOriginal, isDiffKey, pathFromDiffKey, openTabs } from '../store/files'
+import { getCachedContent, setCachedContent, setCachedOriginal, isDiffKey, pathFromDiffKey } from '../store/files'
+import { openTabs } from '../store/editorView'
 
 interface Props {
   taskId: string

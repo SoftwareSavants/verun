@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, Loader2, AlertCircle } from 'lucide-solid'
 import { CodeChanges } from './CodeChanges'
 import { FilesPanel } from './FilesPanel'
 import { ProblemsPanel } from './ProblemsPanel'
-import { rightPanelTab, setRightPanelTab } from '../store/files'
+import { rightPanelTab, setRightPanelTab } from '../store/ui'
 import { problemCountForTask, isProblemsLoading } from '../store/problems'
 import { problemsHeight, setProblemsHeightAndPersist } from '../store/ui'
 
