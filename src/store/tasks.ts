@@ -182,6 +182,7 @@ export async function archiveTask(id: string, skipDestroyHook = false) {
     clearTaskGitState(id)
     clearProblemsForTask(id)
     clearPlanState(id)
+    fireTaskCleanup(id)
     clearTaskContext(id)
     cleanupTaskStorage(id)
     await ipc.archiveTask(id, skipDestroyHook)

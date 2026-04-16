@@ -60,8 +60,7 @@ export function pendingGoToLine(taskId: string | null): PendingGoToLineRequest |
   return pendingGoToLineForTask(taskId)
 }
 
-export function setPendingGoToLine(request: PendingGoToLineRequest | null) {
-  if (!request) return
+export function setPendingGoToLine(request: PendingGoToLineRequest) {
   setPendingGoToLineForTask(request.taskId, request)
 }
 
