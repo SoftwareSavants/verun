@@ -3,7 +3,7 @@ import { EditorView, keymap, lineNumbers, ViewPlugin, GutterMarker, gutterLineCl
 import { linter, forEachDiagnostic, type Diagnostic } from '@codemirror/lint'
 import { EditorState, StateField, StateEffect, RangeSet, Facet, type Extension } from '@codemirror/state'
 import { setChatPrefillRequest } from '../store/ui'
-import { setMainView } from '../store/files'
+import { mainView, setMainView } from '../store/editorView'
 import { ContextMenu } from './ContextMenu'
 import { defaultKeymap, history, historyField, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit } from '@codemirror/language'
@@ -29,7 +29,8 @@ import { xml } from '@codemirror/lang-xml'
 import { yaml } from '@codemirror/lang-yaml'
 import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
-import { setTabDirty, getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal, pendingGoToLine, consumeGoToLine, onTabClose, onTaskCleanup } from '../store/files'
+import { getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal } from '../store/files'
+import { setTabDirty, pendingGoToLine, consumeGoToLine, onBeforeActiveEditorChange, onTabClose, onTaskCleanup } from '../store/editorView'
 import { reloadNonce, checkBeforeSave } from '../store/fileSync'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 
@@ -844,6 +845,17 @@ function cacheKey(taskId: string, relativePath: string) {
   return `${taskId}:${relativePath}`
 }
 
+function snapshotEditorState(key: string, view: EditorView) {
+  editorStateCache.set(key, {
+    doc: view.state.doc.toString(),
+    state: view.state.toJSON({ history: historyField }),
+  })
+  scrollPositionCache.set(key, {
+    top: view.scrollDOM.scrollTop,
+    left: view.scrollDOM.scrollLeft,
+  })
+}
+
 export function clearEditorStateCache(taskId: string, relativePath: string) {
   const key = cacheKey(taskId, relativePath)
   editorStateCache.delete(key)
@@ -880,10 +892,21 @@ export const CodeEditor: Component<Props> = (props) => {
   // Current cache key for saving/restoring editor state
   let currentFileKey = ''
 
+  const snapshotCurrentEditor = () => {
+    if (!editorView || !currentFileKey) return
+    snapshotEditorState(currentFileKey, editorView)
+  }
+
   // Clear editor state cache when a tab is closed or task is deleted
   const unsubTabClose = onTabClose(clearEditorStateCache)
   const unsubTaskCleanup = onTaskCleanup(clearAllEditorStateForTask)
-  onCleanup(() => { unsubTabClose(); unsubTaskCleanup() })
+  const unsubBeforeActiveEditorChange = onBeforeActiveEditorChange((taskId, relativePath) => {
+    if (taskId !== props.taskId) return
+    if (relativePath !== props.relativePath) return
+    if (mainView(props.taskId) !== props.relativePath) return
+    snapshotCurrentEditor()
+  })
+  onCleanup(() => { unsubTabClose(); unsubTaskCleanup(); unsubBeforeActiveEditorChange() })
 
   const save = async () => {
     try {
@@ -918,10 +941,10 @@ export const CodeEditor: Component<Props> = (props) => {
 
   // Drains the pendingGoToLine signal if it targets this file.
   const drainPendingGoToLine = () => {
-    const req = pendingGoToLine()
-    if (!req || req.taskId !== props.taskId || req.relativePath !== props.relativePath) return
+    const req = pendingGoToLine(props.taskId)
+    if (!req || req.relativePath !== props.relativePath) return
     if (!editorView) return
-    consumeGoToLine()
+    consumeGoToLine(props.taskId)
     goToLine(req.line, req.column)
   }
 
@@ -930,16 +953,7 @@ export const CodeEditor: Component<Props> = (props) => {
     // Save outgoing editor snapshot (selection + history) as JSON so we can
     // rebuild with fresh extensions on restore — caching EditorState directly
     // pins stale plugin references (notably the LSP plugin's LSPClient).
-    if (editorView && currentFileKey) {
-      editorStateCache.set(currentFileKey, {
-        doc: editorView.state.doc.toString(),
-        state: editorView.state.toJSON({ history: historyField }),
-      })
-      scrollPositionCache.set(currentFileKey, {
-        top: editorView.scrollDOM.scrollTop,
-        left: editorView.scrollDOM.scrollLeft,
-      })
-    }
+    snapshotCurrentEditor()
 
     // Destroy previous instance
     if (editorView) {
@@ -1062,16 +1076,7 @@ export const CodeEditor: Component<Props> = (props) => {
 
   // Cleanup — save state before destroying so it survives component remount
   onCleanup(() => {
-    if (editorView && currentFileKey) {
-      editorStateCache.set(currentFileKey, {
-        doc: editorView.state.doc.toString(),
-        state: editorView.state.toJSON({ history: historyField }),
-      })
-      scrollPositionCache.set(currentFileKey, {
-        top: editorView.scrollDOM.scrollTop,
-        left: editorView.scrollDOM.scrollLeft,
-      })
-    }
+    snapshotCurrentEditor()
     if (currentFileUri) unregisterEditorView(currentFileUri)
     if (editorView) {
       editorView.destroy()
@@ -1081,7 +1086,7 @@ export const CodeEditor: Component<Props> = (props) => {
 
   // React to go-to-line requests for the file already shown (no editor recreation)
   createEffect(() => {
-    const req = pendingGoToLine()
+    const req = pendingGoToLine(props.taskId)
     void props.relativePath // track so effect re-fires on file switch
     if (!req || !editorView) return
     drainPendingGoToLine()

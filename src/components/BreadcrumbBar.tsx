@@ -1,7 +1,8 @@
 import { Component, Show, For, createEffect, createSignal, onCleanup } from 'solid-js'
 import { ChevronRight, ChevronDown, Folder, FolderOpen } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
-import { getDirContents, loadDirectory, openFilePinned } from '../store/files'
+import { getDirContents, loadDirectory } from '../store/files'
+import { openFilePinned } from '../store/editorView'
 import type { FileEntry } from '../types'
 
 // ── Helpers ──────────────────────────────────────────────────────────

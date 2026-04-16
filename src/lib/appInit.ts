@@ -56,7 +56,7 @@ export async function initListeners() {
     if (nav) {
       const task = taskById(nav.taskId)
       if (task) {
-        setPendingSessionNav(nav.sessionId)
+        setPendingSessionNav(nav.sessionId, nav.taskId)
         setSelectedProjectId(task.projectId)
         setSelectedTaskId(nav.taskId)
       }
@@ -68,7 +68,7 @@ export async function initListeners() {
     const { task_id: taskId, session_id: sessionId } = event.payload
     const task = taskById(taskId)
     if (task) {
-      setPendingSessionNav(sessionId)
+      setPendingSessionNav(sessionId, taskId)
       setSelectedProjectId(task.projectId)
       setSelectedTaskId(taskId)
     }

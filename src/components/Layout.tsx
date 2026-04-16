@@ -13,7 +13,8 @@ import { activeTasksForProject, taskById } from '../store/tasks'
 import { projects, projectById } from '../store/projects'
 import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
-import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView, rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/files'
+import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView } from '../store/editorView'
+import { rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/ui'
 import { GlobalCommandPalette, setShowGlobalPalette } from './GlobalCommandPalette'
 
 async function pickAndAddProject() {

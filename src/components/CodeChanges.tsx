@@ -1,6 +1,7 @@
 import { Component, createSignal, createEffect, on, Show, For } from 'solid-js'
 import { ChevronDown, ChevronRight, RefreshCw, X, GitCommit, Circle, GitCompare, FileText, ClipboardCopy, FolderOpen, ExternalLink, Tag } from 'lucide-solid'
-import { openDiffTab, openFilePinned, diffTabKey, mainView, revealFileInTree, type DiffSource } from '../store/files'
+import { diffTabKey } from '../store/files'
+import { openDiffTab, openFilePinned, revealFileInTree, mainView, type DiffSource } from '../store/editorView'
 import { selectedTaskId } from '../store/ui'
 import { taskById } from '../store/tasks'
 import { clsx } from 'clsx'

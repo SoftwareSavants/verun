@@ -6,13 +6,13 @@ import type { TerminalInstance, PtyOutputEvent, PtyExitedEvent } from '../types'
 import type { Terminal as XTerm } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import type { SearchAddon } from '@xterm/addon-search'
+import { activeTerminalForTask, setActiveTerminalForTaskContext } from './taskContext'
 
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
 const [terminals, setTerminals] = createStore<TerminalInstance[]>([])
-const [activeTerminalIds, setActiveTerminalIds] = createSignal<Record<string, string>>({})
 
 // Tasks being deleted — suppress auto-spawn for these
 const deletingTasks = new Set<string>()
@@ -58,11 +58,11 @@ export function terminalsForTask(taskId: string): TerminalInstance[] {
 }
 
 export function activeTerminalId(taskId: string): string | null {
-  return activeTerminalIds()[taskId] ?? null
+  return activeTerminalForTask(taskId)
 }
 
 export function setActiveTerminalForTask(taskId: string, terminalId: string | null) {
-  setActiveTerminalIds(prev => ({ ...prev, [taskId]: terminalId! }))
+  setActiveTerminalForTaskContext(taskId, terminalId)
 }
 
 // ---------------------------------------------------------------------------
