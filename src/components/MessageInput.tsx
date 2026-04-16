@@ -217,6 +217,7 @@ export const MessageInput: Component<Props> = (props) => {
   const serializeInput = (): string => {
     if (!inputRef) return ''
     let text = ''
+    const BLOCK_TAGS = new Set(['DIV', 'P', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
     const walk = (node: Node) => {
       if (node.nodeType === Node.TEXT_NODE) {
         text += (node.textContent ?? '').replace(/\u200B/g, '')
@@ -226,6 +227,10 @@ export const MessageInput: Component<Props> = (props) => {
         } else if (node.tagName === 'BR') {
           text += '\n'
         } else {
+          // Block elements (div, p) represent line breaks in contenteditable
+          if (BLOCK_TAGS.has(node.tagName) && text.length > 0 && !text.endsWith('\n')) {
+            text += '\n'
+          }
           for (const child of node.childNodes) walk(child)
         }
       }
