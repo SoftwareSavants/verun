@@ -99,4 +99,8 @@ impl Agent for Codex {
             None
         }
     }
+
+    fn defers_resume_id_until_turn_end(&self) -> bool {
+        true
+    }
 }
