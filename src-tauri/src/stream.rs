@@ -187,9 +187,7 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // -- System messages --
         "system" => {
             if v.get("subtype").and_then(|s| s.as_str()) == Some("init") {
-                vec![OutputItem::System {
-                    text: "Initializing session...".into(),
-                }]
+                vec![]
             } else {
                 vec![]
             }
