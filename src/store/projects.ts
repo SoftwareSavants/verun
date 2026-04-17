@@ -4,6 +4,7 @@ import type { Project } from '../types'
 import * as ipc from '../lib/ipc'
 import { selectedTaskId, selectedProjectId, setSelectedProjectId, setSelectedTaskId, setSelectedSessionId } from './ui'
 import { taskById } from './tasks'
+import { clearRecentFilesForProject } from './recentFiles'
 
 export const [projects, setProjects] = createStore<Project[]>([])
 
@@ -21,6 +22,7 @@ export async function addProject(repoPath: string): Promise<Project> {
 export async function deleteProject(id: string) {
   await ipc.deleteProject(id)
   setProjects(prev => prev.filter(p => p.id !== id))
+  clearRecentFilesForProject(id)
 
   // Clear selection if the selected task belongs to the deleted project
   const tid = selectedTaskId()

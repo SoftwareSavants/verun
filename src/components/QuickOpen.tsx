@@ -1,10 +1,12 @@
 import { Component, Show, For, createSignal, createEffect, on } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
-import { Search } from 'lucide-solid'
+import { Search, X } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
 import { openFilePinned, revealFileInTree } from '../store/editorView'
 import { showQuickOpen, setShowQuickOpen } from '../store/ui'
 import { selectedTaskId } from '../store/ui'
+import { removeRecentFile, recentFilesForTask } from '../store/recentFiles'
+import { taskById } from '../store/tasks'
 import * as ipc from '../lib/ipc'
 
 // ── Fuzzy match scoring ────────────────────────────────────────────────
@@ -76,6 +78,7 @@ function fuzzyMatch(query: string, path: string): number | null {
 export const QuickOpen: Component = () => {
   const [query, setQuery] = createSignal('')
   const [files, setFiles] = createSignal<string[]>([])
+  const [recentVersion, setRecentVersion] = createSignal(0)
   const [selectedIndex, setSelectedIndex] = createSignal(0)
 
   let inputRef: HTMLInputElement | undefined
@@ -99,16 +102,52 @@ export const QuickOpen: Component = () => {
   }))
 
   // Filtered results
+  type QuickOpenResult = {
+    path: string
+    isRecent: boolean
+  }
+
   const filtered = () => {
     const q = query()
-    if (!q) return files().slice(0, 500) // Show all (capped) when no query
-    const scored: Array<{ path: string; score: number }> = []
-    for (const path of files()) {
+    recentVersion()
+
+    const recent = recentFilesForTask(selectedTaskId())
+    const recentSet = new Set(recent)
+
+    if (!q) {
+      const results: QuickOpenResult[] = recent.map(path => ({
+        path,
+        isRecent: true,
+      }))
+
+      for (const path of files()) {
+        if (recentSet.has(path)) continue
+        results.push({ path, isRecent: false })
+      }
+
+      return results.slice(0, 500)
+    }
+
+    const scored: Array<QuickOpenResult & { score: number }> = []
+    for (const path of recent) {
       const score = fuzzyMatch(q, path)
-      if (score !== null) scored.push({ path, score })
+      if (score !== null) {
+        scored.push({
+          path,
+          isRecent: true,
+          score: score + 1000 - scored.length,
+        })
+      }
+    }
+    for (const path of files()) {
+      if (recentSet.has(path)) continue
+      const score = fuzzyMatch(q, path)
+      if (score !== null) {
+        scored.push({ path, isRecent: false, score })
+      }
     }
     scored.sort((a, b) => b.score - a.score)
-    return scored.slice(0, 200).map(s => s.path)
+    return scored.slice(0, 200).map(({ score: _score, ...result }) => result)
   }
 
   // Reset selection when query changes
@@ -118,7 +157,7 @@ export const QuickOpen: Component = () => {
 
   const openSelected = () => {
     const results = filtered()
-    const path = results[selectedIndex()]
+    const path = results[selectedIndex()]?.path
     if (!path) return
     const name = path.split('/').pop() || path
     const taskId = selectedTaskId()
@@ -150,6 +189,16 @@ export const QuickOpen: Component = () => {
     if ((e.target as HTMLElement).classList.contains('quick-open-backdrop')) {
       close()
     }
+  }
+
+  const handleRemoveRecent = (path: string, e: MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const task = taskById(selectedTaskId() ?? '')
+    if (!task) return
+    removeRecentFile(task.projectId, path)
+    setRecentVersion(v => v + 1)
+    setSelectedIndex(i => Math.max(0, Math.min(i, filtered().length - 1)))
   }
 
   // Virtualizer for results
@@ -211,8 +260,9 @@ export const QuickOpen: Component = () => {
               >
                 <For each={virtualizer.getVirtualItems()}>
                   {(virtualRow) => {
-                    const path = () => filtered()[virtualRow.index]
-                    const name = () => path()?.split('/').pop() || ''
+                    const result = () => filtered()[virtualRow.index]
+                    const path = () => result()?.path || ''
+                    const name = () => path().split('/').pop() || ''
                     const dir = () => {
                       const p = path()
                       if (!p) return ''
@@ -231,26 +281,40 @@ export const QuickOpen: Component = () => {
                           transform: `translateY(${virtualRow.start}px)`,
                         }}
                       >
-                        <button
-                          class={`w-full flex items-center gap-2 px-3 py-1 text-left transition-colors ${
+                        <div
+                          class={`w-full flex items-center gap-2 px-3 py-1 transition-colors ${
                             isSelected()
                               ? 'bg-[#2c313a] text-[#abb2bf]'
                               : 'text-[#7f848e] hover:bg-[#2c313a]/50'
                           }`}
-                          onClick={() => {
-                            setSelectedIndex(virtualRow.index)
-                            openSelected()
-                          }}
                           onMouseEnter={() => setSelectedIndex(virtualRow.index)}
                         >
-                          {(() => { const I = getFileIcon(name()); return <I size={14} class="shrink-0" /> })()}
-                          <span class="text-[12px] truncate">
-                            <span class={isSelected() ? 'text-[#abb2bf]' : 'text-[#abb2bf]/80'}>{name()}</span>
-                            <Show when={dir()}>
-                              <span class="text-[#5c6370] ml-2">{dir()}</span>
-                            </Show>
-                          </span>
-                        </button>
+                          <button
+                            class="min-w-0 flex-1 flex items-center gap-2 text-left"
+                            onClick={() => {
+                              setSelectedIndex(virtualRow.index)
+                              openSelected()
+                            }}
+                          >
+                            {(() => { const I = getFileIcon(name()); return <I size={14} class="shrink-0" /> })()}
+                            <span class="text-[12px] truncate">
+                              <span class={isSelected() ? 'text-[#abb2bf]' : 'text-[#abb2bf]/80'}>{name()}</span>
+                              <Show when={dir()}>
+                                <span class="text-[#5c6370] ml-2">{dir()}</span>
+                              </Show>
+                            </span>
+                          </button>
+                          <Show when={result()?.isRecent}>
+                            <button
+                              class="shrink-0 p-1 rounded text-[#5c6370] hover:text-[#abb2bf] hover:bg-[#3a404b]"
+                              onClick={(e) => handleRemoveRecent(path(), e)}
+                              aria-label={`Remove ${path()} from recent files`}
+                              title="Remove from recent files"
+                            >
+                              <X size={12} />
+                            </button>
+                          </Show>
+                        </div>
                       </div>
                     )
                   }}

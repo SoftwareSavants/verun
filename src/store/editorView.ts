@@ -21,6 +21,7 @@ import {
 import { clearTaskEditorState, loadTaskEditorState, persistTaskEditorState } from './taskContextStorage'
 import type { DiffSource, EditorTab, PendingGoToLineRequest } from './editorTypes'
 import { clearCachedContent, diffTabKey, getDirContents, isDiffKey, loadDirectory } from './files'
+import { recordRecentFileOpen } from './recentFiles'
 import { setRightPanelTab } from './ui'
 
 export type { DiffSource, EditorTab } from './editorTypes'
@@ -165,6 +166,7 @@ export function openFile(taskId: string, relativePath: string, name: string) {
     setActiveTabForTaskContext(taskId, relativePath)
     setMainView(taskId, relativePath)
     pushMru(taskId, relativePath)
+    recordRecentFileOpen(taskId, relativePath)
     persistTabState(taskId)
     return
   }
@@ -175,6 +177,7 @@ export function openFile(taskId: string, relativePath: string, name: string) {
   setActiveTabForTaskContext(taskId, relativePath)
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
+  recordRecentFileOpen(taskId, relativePath)
   persistTabState(taskId)
 }
 
@@ -192,6 +195,7 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
     }
     setMainView(taskId, relativePath)
     pushMru(taskId, relativePath)
+    recordRecentFileOpen(taskId, relativePath)
     persistTabState(taskId)
     return
   }
@@ -202,6 +206,7 @@ export function openFilePinned(taskId: string, relativePath: string, name: strin
   setActiveTabForTaskContext(taskId, relativePath)
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
+  recordRecentFileOpen(taskId, relativePath)
   persistTabState(taskId)
 }
 
@@ -313,6 +318,7 @@ export function setActiveTab(taskId: string, relativePath: string) {
   setActiveTabForTaskContext(taskId, relativePath)
   setMainView(taskId, relativePath)
   pushMru(taskId, relativePath)
+  recordRecentFileOpen(taskId, relativePath)
   persistTabState(taskId)
 }
 
