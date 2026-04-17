@@ -878,6 +878,7 @@ pub async fn merge_branch(
 #[tauri::command]
 pub async fn get_branch_status(
     pool: State<'_, SqlitePool>,
+    db_tx: State<'_, db::DbWriteTx>,
     task_id: String,
 ) -> Result<(u32, u32, u32), String> {
     let t = db::get_task(pool.inner(), &task_id)
@@ -885,9 +886,15 @@ pub async fn get_branch_status(
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
     let last_pushed = t.last_pushed_sha.clone();
-    flatten_join(
+    let status = flatten_join(
         tokio::task::spawn_blocking(move || worktree::get_branch_status(&t.worktree_path, last_pushed.as_deref())).await,
-    )
+    )?;
+
+    if let Some(sha) = status.tracking_sha {
+        let _ = db_tx.try_send(db::DbWrite::SetLastPushedSha { id: task_id, sha });
+    }
+
+    Ok((status.ahead, status.behind, status.unpushed))
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -311,23 +311,41 @@ pub fn merge_branch(
 /// - ahead_of_base = commits on this branch not in origin/main — for PR indicators
 /// - behind_base = commits on origin/main not in this branch — needs rebase
 /// - unpushed = commits on this branch not pushed to origin/<branch> — for push button
-pub fn get_branch_status(worktree_path: &str, last_pushed_sha: Option<&str>) -> Result<(u32, u32, u32), String> {
+pub struct BranchStatus {
+    pub ahead: u32,
+    pub behind: u32,
+    pub unpushed: u32,
+    /// SHA of origin/<branch> when it exists, so callers can cache it.
+    pub tracking_sha: Option<String>,
+}
+
+pub fn get_branch_status(worktree_path: &str, last_pushed_sha: Option<&str>) -> Result<BranchStatus, String> {
     let current = get_current_branch(worktree_path)?;
     let base_ref = find_compare_ref(worktree_path, &current)?;
     let (behind, ahead) = rev_list_left_right(worktree_path, &base_ref, &current);
 
     let tracking = format!("origin/{current}");
-    let unpushed = if ref_exists(worktree_path, &tracking) {
+    let (unpushed, tracking_sha) = if ref_exists(worktree_path, &tracking) {
         let (_, u) = rev_list_left_right(worktree_path, &tracking, &current);
-        u
+        let sha = resolve_ref(worktree_path, &tracking);
+        (u, sha)
     } else if let Some(sha) = last_pushed_sha {
         let (_, u) = rev_list_left_right(worktree_path, sha, &current);
-        u
+        (u, None)
     } else {
-        ahead
+        (ahead, None)
     };
 
-    Ok((ahead, behind, unpushed))
+    Ok(BranchStatus { ahead, behind, unpushed, tracking_sha })
+}
+
+fn resolve_ref(worktree_path: &str, refname: &str) -> Option<String> {
+    git(worktree_path)
+        .args(["rev-parse", refname])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
 pub fn get_head_sha(worktree_path: &str) -> Result<String, String> {
@@ -587,7 +605,8 @@ mod tests {
         let (_dir, repo_path) = init_test_repo();
         let wt_path = create_worktree(&repo_path, "status-test", "main").unwrap();
 
-        let (ahead, behind, _unpushed) = get_branch_status(&wt_path, None).unwrap();
+        let s = get_branch_status(&wt_path, None).unwrap();
+        let (ahead, behind) = (s.ahead, s.behind);
         assert_eq!(ahead, 0);
         assert_eq!(behind, 0);
     }
@@ -604,7 +623,8 @@ mod tests {
             .output()
             .unwrap();
 
-        let (ahead, behind, _unpushed) = get_branch_status(&wt_path, None).unwrap();
+        let s = get_branch_status(&wt_path, None).unwrap();
+        let (ahead, behind) = (s.ahead, s.behind);
         assert_eq!(ahead, 1);
         assert_eq!(behind, 0);
     }
@@ -623,7 +643,8 @@ mod tests {
             .output()
             .unwrap();
 
-        let (ahead, behind, _unpushed) = get_branch_status(&wt_path, None).unwrap();
+        let s = get_branch_status(&wt_path, None).unwrap();
+        let (ahead, behind) = (s.ahead, s.behind);
         assert_eq!(behind, 1, "should be 1 behind main");
         assert_eq!(ahead, 0);
     }
@@ -718,7 +739,8 @@ mod tests {
         // Fetch in original clone so it sees the new origin/main
         git(&clone_path).args(["fetch"]).output().unwrap();
 
-        let (ahead, behind, _unpushed) = get_branch_status(&clone_path, None).unwrap();
+        let s = get_branch_status(&clone_path, None).unwrap();
+        let (ahead, behind) = (s.ahead, s.behind);
         assert_eq!(ahead, 1, "should be 1 ahead of origin/main");
         assert_eq!(behind, 1, "should be 1 behind origin/main");
     }
@@ -739,7 +761,8 @@ mod tests {
             .output()
             .unwrap();
 
-        let (ahead, behind, _unpushed) = get_branch_status(&clone_path, None).unwrap();
+        let s = get_branch_status(&clone_path, None).unwrap();
+        let (ahead, behind) = (s.ahead, s.behind);
         assert_eq!(ahead, 1, "should be 1 ahead of origin/main");
         assert_eq!(behind, 0, "should not be behind when main hasn't changed");
     }
