@@ -188,7 +188,7 @@ export const GitActions: Component<Props> = (props) => {
   // Smart default action based on state
   // Flow: Pull (if behind) → Push (updates existing PR) → Create PR → Ready for Review (if draft) → Resolve conflicts → Merge
   const primaryAction = (): GitAction => {
-    if (prMerged() && fileCount() === 0) return archiveAction()
+    if (prMerged() && localClean()) return archiveAction()
     if (prMerged()) return pushAction()
     if (failedChecks().length > 0) return { icon: Wrench, label: 'Fix CI', message: `fix the failing CI checks: ${failedChecks().map(c => c.name).join(', ')}` }
     if (isBehind() && !prDone()) return pullAction()

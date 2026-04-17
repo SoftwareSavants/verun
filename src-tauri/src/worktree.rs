@@ -321,6 +321,10 @@ pub fn get_branch_status(worktree_path: &str) -> Result<(u32, u32, u32), String>
     let unpushed = if ref_exists(worktree_path, &tracking) {
         let (_, u) = rev_list_left_right(worktree_path, &tracking, &current);
         u
+    } else if branch_has_remote_config(worktree_path, &current) {
+        // Remote branch was deleted (e.g., after PR merge with delete branch).
+        // Use patch-equivalence to find commits not yet on the base branch.
+        count_cherry_commits(worktree_path, &base_ref)
     } else {
         // No remote tracking branch yet — everything is unpushed
         ahead
@@ -340,6 +344,30 @@ fn get_current_branch(worktree_path: &str) -> Result<String, String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn branch_has_remote_config(worktree_path: &str, branch: &str) -> bool {
+    git(worktree_path)
+        .args(["config", &format!("branch.{branch}.remote")])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn count_cherry_commits(worktree_path: &str, base_ref: &str) -> u32 {
+    let output = git(worktree_path)
+        .args(["cherry", base_ref])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|line| line.starts_with('+'))
+                .count() as u32
+        }
+        _ => 0,
+    }
 }
 
 fn ref_exists(worktree_path: &str, refname: &str) -> bool {
