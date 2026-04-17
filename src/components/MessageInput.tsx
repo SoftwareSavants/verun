@@ -614,6 +614,25 @@ export const MessageInput: Component<Props> = (props) => {
     return session?.model ?? undefined
   }
 
+  const cycleModel = (direction: 1 | -1) => {
+    const sid = props.sessionId
+    const agent = sessionAgent()
+    if (!sid || !agent || props.isRunning || !agent.supportsModelSelection) return false
+
+    const models = agent.models
+    if (models.length < 2) return false
+
+    const current = currentModel()
+    const currentIdx = models.findIndex(model => model.id === current)
+    const startIdx = currentIdx >= 0 ? currentIdx : 0
+    const nextIdx = (startIdx + direction + models.length) % models.length
+    const nextModel = models[nextIdx]
+    if (!nextModel || nextModel.id === current) return false
+
+    updateSessionModel(sid, nextModel.id)
+    return true
+  }
+
   const currentApproval = () => {
     const sid = props.sessionId
     if (!sid) return null
@@ -1075,6 +1094,11 @@ export const MessageInput: Component<Props> = (props) => {
         handler?.(e)
         return
       }
+    }
+
+    if (e.key === 'Tab' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (cycleModel(-1)) e.preventDefault()
+      return
     }
 
     // Arrow keys — skip over ZWS nodes and badges.
