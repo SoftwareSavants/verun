@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Creating a new session now focuses it even when a file tab is open
+
 ## 0.7.2 — 2026-04-17
 
 ### Changes

@@ -7,7 +7,7 @@ import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
-import { openFile } from '../store/editorView'
+import { openFile, setMainView } from '../store/editorView'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { Command } from '../store/commands'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
@@ -924,6 +924,7 @@ export const MessageInput: Component<Props> = (props) => {
           const currentAgent = sessionById(props.sessionId ?? '')?.agentType ?? 'claude' as AgentType
           const session = await createSession(tid, currentAgent)
           setSelectedSessionId(session.id)
+          setMainView(tid, 'session')
         }
         break
       }
