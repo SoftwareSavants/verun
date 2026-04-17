@@ -173,8 +173,8 @@ export const GitActions: Component<Props> = (props) => {
     fileCount() > 0
       ? { icon: ArrowUpFromLine, label: 'Commit & Push', message: 'commit all changes and push to remote' }
       : { icon: ArrowUpFromLine, label: 'Push', action: doPush }
-  const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: `create a pull request targeting ${baseBranch()} with an appropriate title and description` })
-  const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: `create a draft pull request targeting ${baseBranch()} with an appropriate title and description` })
+  const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: `if there are any uncommitted changes, commit them first. then create a pull request targeting ${baseBranch()} with an appropriate title and description` })
+  const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: `if there are any uncommitted changes, commit them first. then create a draft pull request targeting ${baseBranch()} with an appropriate title and description` })
   const pullAction = (): GitAction => ({ icon: Download, label: 'Update Branch', message: `this branch is behind ${baseBranch()}. rebase onto ${baseBranch()} to bring it up to date. Use git rebase, not merge.` })
   const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: `rebase this branch onto ${baseBranch()} and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue` })
   const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: async () => openMergePanel() })
