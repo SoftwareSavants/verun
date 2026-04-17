@@ -5,7 +5,7 @@ use crate::lsp::LspMap;
 use crate::pty::{self, ActivePtyMap};
 use crate::task::{
     self, ActiveMap, ApprovalResponse, HookPtyMap, PendingApprovalEntry, PendingApprovalMeta,
-    PendingApprovals, SetupInProgress,
+    PendingApprovals, PendingControlResponses, SetupInProgress,
 };
 use crate::tsgo_check::TsgoCheckMap;
 use crate::watcher::FileWatcherMap;
@@ -620,6 +620,7 @@ pub async fn send_message(
     active: State<'_, ActiveMap>,
     pending: State<'_, PendingApprovals>,
     pending_meta: State<'_, PendingApprovalMeta>,
+    pending_ctrl: State<'_, PendingControlResponses>,
     session_id: String,
     message: String,
     attachments: Option<Vec<task::Attachment>>,
@@ -650,6 +651,7 @@ pub async fn send_message(
         active.inner().clone(),
         pending.inner().clone(),
         pending_meta.inner().clone(),
+        pending_ctrl.inner().clone(),
         task::SendMessageParams {
             session_id,
             task_id: session.task_id.clone(),
@@ -726,6 +728,28 @@ pub async fn abort_message(
     session_id: String,
 ) -> Result<(), String> {
     task::abort_message(&app, db_tx.inner(), active.inner(), &session_id).await
+}
+
+/// Send a `control_request` `interrupt` to a running claude CLI. Cancels the
+/// current turn without killing the process, so the session can keep going on
+/// the next message.
+#[tauri::command]
+pub async fn interrupt_session(
+    active: State<'_, ActiveMap>,
+    session_id: String,
+) -> Result<(), String> {
+    task::interrupt_session(active.inner(), &session_id).await
+}
+
+/// Ask the running claude CLI for its current context-window usage and wait
+/// for the matching `control_response`.
+#[tauri::command]
+pub async fn get_session_context_usage(
+    active: State<'_, ActiveMap>,
+    pending_ctrl: State<'_, PendingControlResponses>,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    task::get_session_context_usage(active.inner(), pending_ctrl.inner(), &session_id).await
 }
 
 /// Return session IDs that currently have an active process

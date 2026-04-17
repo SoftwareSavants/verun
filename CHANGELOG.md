@@ -19,6 +19,12 @@
 - Sidebar task tiles show unread/attention state as a pulsing left-edge strip (amber for attention, blue for unread) instead of a trailing dot
 - Cmd+1…9 now focuses the existing window when the target task is already open in a separate window (matching sidebar click behavior); sidebar tiles display the shortcut, which swaps to the archive button on hover (#142)
 - Fix newly created task occasionally disappearing from sidebar after setup - the `task-created` event now carries the source window label so the originating window skips its own reload, avoiding a race with the async DB write queue (#135)
+- Graceful shutdown for aborted claude sessions: close stdin, wait 5s, SIGTERM, wait 5s, then SIGKILL - prevents losing the last assistant message on `--resume` when the CLI is mid-write of its session JSONL
+- Strip `CLAUDECODE` from the spawned CLI's env and set `CLAUDE_CODE_ENTRYPOINT=verun` so nested-detection and telemetry are correct
+- Stream parser skips non-JSON stdout lines (e.g. `[SandboxDebug]`) instead of surfacing them as raw output
+- Stream loop now parses each NDJSON line once instead of up to three times
+- New `interrupt_session` IPC: cancel the current turn over stdin without killing the process
+- New `get_session_context_usage` IPC: ask the running CLI for current context-window usage
 
 ## 0.7.3 — 2026-04-17
 
