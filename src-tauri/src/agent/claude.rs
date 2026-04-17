@@ -18,6 +18,10 @@ impl Agent for Claude {
         "npm i -g @anthropic-ai/claude-code"
     }
 
+    fn update_hint(&self) -> &'static str {
+        "claude update"
+    }
+
     fn docs_url(&self) -> &'static str {
         "https://docs.anthropic.com/en/docs/claude-code/quickstart"
     }
@@ -25,6 +29,8 @@ impl Agent for Claude {
     fn available_models(&self) -> Vec<crate::agent::ModelOption> {
         use crate::agent::ModelOption;
         vec![
+            ModelOption::new("claude-opus-4-7", "Claude Opus 4.7", "Latest and most capable")
+                .with_min_version("2.1.111"),
             ModelOption::new("claude-opus-4-6", "Claude Opus 4.6", "Most capable for complex tasks"),
             ModelOption::new("claude-sonnet-4-6", "Claude Sonnet 4.6", "Best for everyday tasks"),
             ModelOption::new("claude-haiku-4-5", "Claude Haiku 4.5", "Fastest for quick answers"),

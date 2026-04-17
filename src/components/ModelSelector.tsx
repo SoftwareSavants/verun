@@ -1,12 +1,14 @@
 import { Component, For, Show, createSignal, createEffect, createMemo } from 'solid-js'
 import { AGENT_DISPLAY_NAMES } from '../types'
-import type { ModelId, AgentType } from '../types'
+import type { ModelId, AgentType, ModelOption } from '../types'
 import { agents } from '../store/agents'
 import { ChevronDown, Search } from 'lucide-solid'
 import { clsx } from 'clsx'
 import { Popover } from './Popover'
-import { agentIcon } from '../lib/agents'
+import { agentIcon, meetsVersionReq } from '../lib/agents'
 import SvgIcon from './SvgIcon'
+import { ModelRow } from './ModelRow'
+import { UpdateRequiredDialog } from './UpdateRequiredDialog'
 
 const MODEL_SEARCH_THRESHOLD = 10
 
@@ -20,8 +22,10 @@ interface Props {
 export const ModelSelector: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [query, setQuery] = createSignal('')
+  const [updateModel, setUpdateModel] = createSignal<ModelOption | null>(null)
 
   const agentInfo = () => agents.find(a => a.id === props.agentType)
+  const cliVersion = () => agentInfo()?.cliVersion
   const agentModels = () => agentInfo()?.models ?? []
   const agentSvg = () => agentIcon(props.agentType)
   const showSearch = () => agentModels().length > MODEL_SEARCH_THRESHOLD
@@ -34,7 +38,6 @@ export const ModelSelector: Component<Props> = (props) => {
     )
   })
 
-  // Resolved model: stored value if valid for this agent, else first in list
   const resolvedModel = createMemo(() => {
     const models = agentModels()
     if (models.length === 0) return props.model ?? undefined
@@ -42,7 +45,6 @@ export const ModelSelector: Component<Props> = (props) => {
     return match ? props.model! : models[0].id
   })
 
-  // Auto-correct stored model when agent changes and stored model isn't in list
   createEffect(() => {
     const resolved = resolvedModel()
     if (resolved && resolved !== props.model) {
@@ -50,7 +52,6 @@ export const ModelSelector: Component<Props> = (props) => {
     }
   })
 
-  // Clear search when popover closes
   createEffect(() => {
     if (!open()) setQuery('')
   })
@@ -58,6 +59,16 @@ export const ModelSelector: Component<Props> = (props) => {
   const currentOpt = () => {
     const models = agentModels()
     return models.find(m => m.id === resolvedModel()) ?? models[0]
+  }
+
+  const handleModelSelect = (opt: ModelOption) => {
+    if (opt.minVersion && !meetsVersionReq(cliVersion(), opt.minVersion)) {
+      setUpdateModel(opt)
+      setOpen(false)
+      return
+    }
+    props.onChange(opt.id)
+    setOpen(false)
   }
 
   return (
@@ -97,34 +108,28 @@ export const ModelSelector: Component<Props> = (props) => {
         </Show>
         <div class="max-h-52 overflow-y-auto">
         <For each={filteredModels()}>
-          {(opt) => {
-            const selected = () => resolvedModel() === opt.id
-            return (
-              <button
-                class={clsx(
-                  'w-full text-left px-3 py-1.5 text-xs transition-colors',
-                  selected()
-                    ? 'text-accent bg-accent-muted'
-                    : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
-                )}
-                onClick={() => {
-                  props.onChange(opt.id)
-                  setOpen(false)
-                }}
-              >
-                <span class="font-medium">{opt.label}</span>
-                <Show when={opt.description}>
-                  <span class="block text-[10px] text-text-dim mt-0.5">{opt.description}</span>
-                </Show>
-              </button>
-            )
-          }}
+          {(opt) => (
+            <ModelRow
+              model={opt}
+              selected={resolvedModel() === opt.id}
+              locked={!meetsVersionReq(cliVersion(), opt.minVersion)}
+              onClick={() => handleModelSelect(opt)}
+            />
+          )}
         </For>
         <Show when={query() && filteredModels().length === 0}>
           <div class="px-3 py-2 text-[11px] text-text-dim">No matches</div>
         </Show>
         </div>
       </Popover>
+
+      <UpdateRequiredDialog
+        open={!!updateModel()}
+        modelName={updateModel()?.label ?? ''}
+        minVersion={updateModel()?.minVersion ?? ''}
+        updateHint={agentInfo()?.updateHint ?? agentInfo()?.installHint ?? ''}
+        onClose={() => setUpdateModel(null)}
+      />
     </div>
   )
 }

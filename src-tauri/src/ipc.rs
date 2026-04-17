@@ -1593,10 +1593,9 @@ pub fn detect_all_agents() -> Vec<AgentInfo> {
         .iter()
         .map(|&kind| {
             let agent = kind.implementation();
-            let installed = check_agent_impl(&*agent).is_ok();
+            let cli_version = check_agent_impl(&*agent).ok();
+            let installed = cli_version.is_some();
 
-            // For installed agents, try to fetch the live model list.
-            // Fall back to the static list if the command fails or returns nothing.
             let models = if installed {
                 agent.model_list_args()
                     .and_then(|args| {
@@ -1616,9 +1615,11 @@ pub fn detect_all_agents() -> Vec<AgentInfo> {
                 id: kind.as_str().to_string(),
                 name: agent.display_name().to_string(),
                 install_hint: agent.install_hint().to_string(),
+                update_hint: agent.update_hint().to_string(),
                 docs_url: agent.docs_url().to_string(),
                 models,
                 installed,
+                cli_version,
                 supports_streaming: agent.supports_streaming(),
                 supports_resume: agent.supports_resume(),
                 supports_plan_mode: agent.supports_plan_mode(),
@@ -1656,9 +1657,11 @@ pub struct AgentInfo {
     pub id: String,
     pub name: String,
     pub install_hint: String,
+    pub update_hint: String,
     pub docs_url: String,
     pub models: Vec<crate::agent::ModelOption>,
     pub installed: bool,
+    pub cli_version: Option<String>,
     pub supports_streaming: bool,
     pub supports_resume: bool,
     pub supports_plan_mode: bool,
