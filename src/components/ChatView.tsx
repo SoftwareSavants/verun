@@ -749,6 +749,26 @@ export const ChatView: Component<Props> = (props) => {
     matches().forEach(m => { if (m !== el) m.classList.remove('chat-search-current') })
   }
 
+  const refreshHighlights = () => {
+    if (contentRef) clearHighlights(contentRef)
+    const query = searchQuery()
+    if (!query) {
+      setMatches([])
+      setCurrentMatchIdx(-1)
+      return
+    }
+    const found = highlightMatches(contentRef, query)
+    setMatches(found)
+    if (found.length === 0) {
+      setCurrentMatchIdx(-1)
+      return
+    }
+    const prev = currentMatchIdx()
+    const idx = prev >= 0 && prev < found.length ? prev : found.length - 1
+    setCurrentMatchIdx(idx)
+    found[idx].classList.add('chat-search-current')
+  }
+
   const goToMatch = (delta: number) => {
     const m = matches()
     if (m.length === 0) return
@@ -833,9 +853,9 @@ export const ChatView: Component<Props> = (props) => {
         const newBlocks = rebuildBlocks(props.output)
         setBlocks(reconcile(newBlocks, { merge: !sessionChanged }))
         lastItemCount = len
-        // Re-apply search highlights after block rebuild
+        // Re-apply search highlights after block rebuild (preserve position)
         if (showSearch() && searchQuery()) {
-          requestAnimationFrame(() => runSearch(searchQuery()))
+          requestAnimationFrame(() => refreshHighlights())
         }
         if (sessionChanged) {
           scheduleAutoScroll()
