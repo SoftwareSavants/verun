@@ -1,4 +1,28 @@
 use super::{Agent, AgentKind, InputMode, SessionArgs};
+use crate::policy::TrustLevel;
+
+fn resolve_codex_extra_writable_dirs(args: &SessionArgs<'_>) -> Vec<String> {
+    let mut dirs = Vec::new();
+
+    let repo_git_dir = std::path::Path::new(args.repo_path).join(".git");
+    if repo_git_dir.exists() {
+        dirs.push(repo_git_dir.to_string_lossy().to_string());
+    }
+
+    let git_pointer_path = std::path::Path::new(args.worktree_path).join(".git");
+    if let Ok(contents) = std::fs::read_to_string(&git_pointer_path) {
+        if let Some(raw) = contents.trim().strip_prefix("gitdir:") {
+            let gitdir = raw.trim();
+            if !gitdir.is_empty() {
+                dirs.push(gitdir.to_string());
+            }
+        }
+    }
+
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
 
 /// OpenAI Codex CLI - open-source coding agent.
 ///
@@ -66,14 +90,29 @@ impl Agent for Codex {
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {
-        let mut v: Vec<String> = vec!["exec".into(), "--json".into()];
+        let (approval_policy, sandbox) = match args.trust_level {
+            TrustLevel::FullAuto => ("never", "danger-full-access"),
+            TrustLevel::Normal | TrustLevel::Supervised => ("on-request", "workspace-write"),
+        };
+
+        let mut v: Vec<String> = vec![
+            "-a".into(),
+            approval_policy.into(),
+            "exec".into(),
+            "--json".into(),
+            "-s".into(),
+            sandbox.into(),
+        ];
+
+        if args.trust_level != TrustLevel::FullAuto {
+            for dir in resolve_codex_extra_writable_dirs(args) {
+                v.extend(["--add-dir".into(), dir]);
+            }
+        }
 
         if let Some(m) = args.model {
             v.extend(["-m".into(), m.to_string()]);
         }
-
-        // Default to full-auto so Verun can drive it non-interactively.
-        v.push("--full-auto".into());
 
         // Resume is a subcommand: `codex exec resume <session_id>`
         if let Some(rid) = args.resume_session_id {

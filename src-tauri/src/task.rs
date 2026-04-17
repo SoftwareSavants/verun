@@ -760,6 +760,9 @@ pub async fn send_message(
         plan_mode,
         thinking_mode,
         fast_mode,
+        trust_level,
+        worktree_path: &worktree_path,
+        repo_path: &repo_path,
         message: &message,
     };
 
