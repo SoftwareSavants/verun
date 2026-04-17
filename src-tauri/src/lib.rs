@@ -129,20 +129,24 @@ pub fn run() {
                 std::io::Error::other(format!("Failed to create app data dir: {e}"))
             })?;
 
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match db::connect(&app_data_dir).await {
-                    Ok(pool) => {
-                        let db_tx = db::spawn_write_queue(pool.clone());
-                        let _ = db_tx.send(db::DbWrite::ResetRunningSessions).await;
-                        handle.manage(pool);
-                        handle.manage(db_tx);
-                    }
-                    Err(e) => {
-                        eprintln!("[verun] failed to connect to database: {e}");
-                    }
-                }
+            let (db_ready_tx, db_ready_rx) = std::sync::mpsc::sync_channel(1);
+            std::thread::spawn(move || {
+                let result = tauri::async_runtime::block_on(db::connect(&app_data_dir))
+                    .map_err(|e| format!("DB connect: {e}"));
+                let _ = db_ready_tx.send(result);
             });
+
+            let pool = db_ready_rx
+                .recv()
+                .map_err(|e| std::io::Error::other(format!("DB init thread failed: {e}")))?
+                .map_err(std::io::Error::other)?;
+            let db_tx = db::spawn_write_queue(pool.clone());
+            let reset_tx = db_tx.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = reset_tx.send(db::DbWrite::ResetRunningSessions).await;
+            });
+            app.manage(pool);
+            app.manage(db_tx);
 
             // Auto-check for updates after a short delay
             let update_handle = app.handle().clone();
