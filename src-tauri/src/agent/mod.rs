@@ -226,6 +226,14 @@ pub trait Agent: Send + Sync {
     fn extract_resume_id(&self, _v: &serde_json::Value) -> Option<String> {
         None
     }
+
+    /// If true, the captured resume id is only safe to persist after at least
+    /// one turn completes. Codex emits `thread.started` with a thread_id at
+    /// startup, but the rollout file is only written to disk once a turn
+    /// completes — resuming before that fails with "no rollout found".
+    fn defers_resume_id_until_turn_end(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +411,15 @@ mod tests {
         assert!(agent.supports_attachments());
         assert!(!agent.supports_fork());
         assert!(!agent.uses_claude_jsonl());
+        assert!(agent.defers_resume_id_until_turn_end());
+    }
+
+    #[test]
+    fn other_agents_do_not_defer_resume_id() {
+        assert!(!Claude.defers_resume_id_until_turn_end());
+        assert!(!Cursor.defers_resume_id_until_turn_end());
+        assert!(!Gemini.defers_resume_id_until_turn_end());
+        assert!(!OpenCode.defers_resume_id_until_turn_end());
     }
 
     // ── Cursor ──────────────────────────────────────────────────────────

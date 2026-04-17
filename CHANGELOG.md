@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Creating a new session now focuses it even when a file tab is open
+- Codex: don't persist `thread_id` until the first turn completes, so cancelling a fresh session before it replies doesn't break the next message with "no rollout found"
 
 ## 0.7.2 — 2026-04-17
 

@@ -989,6 +989,10 @@ pub async fn stream_and_capture(
     let mut last_error: Option<String> = None;
     // Captured from `system.init` events for the per-turn snapshot hook.
     let mut resume_id_for_snapshot: Option<String> = None;
+    // For agents that defer (Codex): hold the captured id until the first
+    // turn completes, because the rollout file isn't persisted until then.
+    let mut pending_resume_id: Option<String> = None;
+    let defers_resume = agent.defers_resume_id_until_turn_end();
 
     loop {
         let deadline = tokio::time::sleep(FLUSH_INTERVAL);
@@ -1022,10 +1026,14 @@ pub async fn stream_and_capture(
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
                                 if let Some(sid) = agent.extract_resume_id(&v) {
                                     resume_id_for_snapshot = Some(sid.clone());
-                                    let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
-                                        id: session_id.clone(),
-                                        resume_session_id: sid,
-                                    }).await;
+                                    if defers_resume {
+                                        pending_resume_id = Some(sid);
+                                    } else {
+                                        let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
+                                            id: session_id.clone(),
+                                            resume_session_id: sid,
+                                        }).await;
+                                    }
                                 }
                             }
                         }
@@ -1081,6 +1089,18 @@ pub async fn stream_and_capture(
 
                         // Persist pre-parsed items (agent-format-agnostic)
                         persist_items(&db_tx, &session_id, &items, &mut total_persisted);
+
+                        // Commit the deferred resume id once a turn has completed —
+                        // by this point the agent (e.g. Codex) has written its
+                        // rollout file, so the id is safe to use for future resumes.
+                        if is_turn_end {
+                            if let Some(sid) = pending_resume_id.take() {
+                                let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
+                                    id: session_id.clone(),
+                                    resume_session_id: sid,
+                                }).await;
+                            }
+                        }
 
                         // Close stdin after turn completes so the CLI process can exit
                         if is_turn_end {
