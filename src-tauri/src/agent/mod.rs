@@ -128,6 +128,9 @@ pub struct SessionArgs<'a> {
     pub plan_mode: bool,
     pub thinking_mode: bool,
     pub fast_mode: bool,
+    pub trust_level: crate::policy::TrustLevel,
+    pub worktree_path: &'a str,
+    pub repo_path: &'a str,
     /// For `PositionalOrStdin` agents: the user message appended as the final positional arg.
     pub message: &'a str,
 }
@@ -240,6 +243,9 @@ mod tests {
             plan_mode: false,
             thinking_mode: false,
             fast_mode: false,
+            trust_level: crate::policy::TrustLevel::Normal,
+            worktree_path: "",
+            repo_path: "",
             message: "",
         }
     }
@@ -365,8 +371,24 @@ mod tests {
         });
         assert!(args.contains(&"exec".to_string()));
         assert!(args.contains(&"--json".to_string()));
-        assert!(args.contains(&"--full-auto".to_string()));
+        assert!(args.contains(&"-a".to_string()));
+        assert!(args.contains(&"on-request".to_string()));
+        assert!(args.contains(&"-s".to_string()));
+        assert!(args.contains(&"workspace-write".to_string()));
         assert!(args.contains(&"fix the bug".to_string()));
+    }
+
+    #[test]
+    fn codex_build_args_full_auto_uses_danger_mode() {
+        let agent = Codex;
+        let args = agent.build_session_args(&SessionArgs {
+            trust_level: crate::policy::TrustLevel::FullAuto,
+            ..default_args()
+        });
+        assert!(args.contains(&"-a".to_string()));
+        assert!(args.contains(&"never".to_string()));
+        assert!(args.contains(&"-s".to_string()));
+        assert!(args.contains(&"danger-full-access".to_string()));
     }
 
     #[test]
