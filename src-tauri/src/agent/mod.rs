@@ -75,15 +75,23 @@ impl std::fmt::Display for AgentKind {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelOption {
     pub id: String,
     pub label: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<String>,
 }
 
 impl ModelOption {
     pub fn new(id: &str, label: &str, description: &str) -> Self {
-        Self { id: id.into(), label: label.into(), description: description.into() }
+        Self { id: id.into(), label: label.into(), description: description.into(), min_version: None }
+    }
+
+    pub fn with_min_version(mut self, version: &str) -> Self {
+        self.min_version = Some(version.into());
+        self
     }
 }
 
@@ -136,6 +144,10 @@ pub trait Agent: Send + Sync {
 
     /// Human-readable install instructions.
     fn install_hint(&self) -> &'static str;
+
+    /// Command to update the CLI to the latest version.
+    /// Defaults to `install_hint` if not overridden.
+    fn update_hint(&self) -> &'static str { self.install_hint() }
 
     /// Static fallback model list (first = default). Used when dynamic listing
     /// is unavailable or fails.

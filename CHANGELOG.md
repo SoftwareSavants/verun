@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Claude Opus 4.7 model option with minimum CLI version gate (v2.1.111+); shows update dialog on older versions
+- Agent detection now exposes CLI version to frontend via `cliVersion` field
+
 ## 0.7.0 - 2026-04-15
 
 ### Changes

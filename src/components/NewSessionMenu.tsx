@@ -1,12 +1,14 @@
 import { Component, For, Show, createSignal, createEffect, createMemo, onCleanup } from 'solid-js'
 import { Portal } from 'solid-js/web'
-import type { AgentType } from '../types'
+import type { AgentType, ModelOption } from '../types'
 import { agents } from '../store/agents'
 import { clsx } from 'clsx'
 import { Plus, ChevronRight, Loader2, Search } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
-import { agentIcon } from '../lib/agents'
+import { agentIcon, meetsVersionReq } from '../lib/agents'
 import SvgIcon from './SvgIcon'
+import { ModelRow } from './ModelRow'
+import { UpdateRequiredDialog } from './UpdateRequiredDialog'
 
 const MODEL_SEARCH_THRESHOLD = 10
 
@@ -74,6 +76,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
   }
 
   const [modelQuery, setModelQuery] = createSignal('')
+  const [updateModel, setUpdateModel] = createSignal<ModelOption | null>(null)
 
   const hoveredAgentInfo = () => {
     const id = hoveredAgent()
@@ -92,6 +95,16 @@ export const NewSessionMenu: Component<Props> = (props) => {
     )
   })
 
+  const handleModelClick = (model: ModelOption) => {
+    const info = hoveredAgentInfo()!
+    if (model.minVersion && !meetsVersionReq(info.cliVersion, model.minVersion)) {
+      closeMenu()
+      setUpdateModel(model)
+      return
+    }
+    handleSelect(info.id as AgentType, model.id)
+  }
+
   return (
     <>
       <button
@@ -108,7 +121,6 @@ export const NewSessionMenu: Component<Props> = (props) => {
 
       <Show when={open()}>
         <Portal>
-          {/* backdrop */}
           <div
             class="fixed inset-0 z-[100]"
             onMouseDown={(e) => e.preventDefault()}
@@ -116,7 +128,6 @@ export const NewSessionMenu: Component<Props> = (props) => {
             onContextMenu={(e) => { e.preventDefault(); closeMenu() }}
           />
 
-          {/* main menu */}
           <div
             class="fixed z-[101] bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl py-1 w-44"
             style={{
@@ -166,7 +177,6 @@ export const NewSessionMenu: Component<Props> = (props) => {
             </Show>
           </div>
 
-          {/* model submenu */}
           <Show when={hoveredAgentInfo() && hoveredAgentInfo()!.models.length > 0}>
             <div
               class="fixed z-[102] bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl py-1 w-44 max-h-80 flex flex-col"
@@ -175,9 +185,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
                 top: `${submenuRect()?.top ?? 0}px`,
               }}
               onMouseDown={(e) => e.preventDefault()}
-              onMouseEnter={() => {
-                // keep hovered state while mouse is in submenu
-              }}
+              onMouseEnter={() => {}}
             >
               <Show when={showModelSearch()}>
                 <div class="px-2 py-1 shrink-0">
@@ -197,12 +205,11 @@ export const NewSessionMenu: Component<Props> = (props) => {
               <div class="overflow-y-auto">
                 <For each={filteredHoveredModels()}>
                   {(model) => (
-                    <button
-                      class="w-full text-left px-3 py-2 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-3 transition-colors truncate"
-                      onClick={() => handleSelect(hoveredAgentInfo()!.id as AgentType, model.id)}
-                    >
-                      {model.label}
-                    </button>
+                    <ModelRow
+                      model={model}
+                      locked={!meetsVersionReq(hoveredAgentInfo()?.cliVersion, model.minVersion)}
+                      onClick={() => handleModelClick(model)}
+                    />
                   )}
                 </For>
                 <Show when={modelQuery() && filteredHoveredModels().length === 0}>
@@ -213,6 +220,14 @@ export const NewSessionMenu: Component<Props> = (props) => {
           </Show>
         </Portal>
       </Show>
+
+      <UpdateRequiredDialog
+        open={!!updateModel()}
+        modelName={updateModel()?.label ?? ''}
+        minVersion={updateModel()?.minVersion ?? ''}
+        updateHint={hoveredAgentInfo()?.updateHint ?? hoveredAgentInfo()?.installHint ?? ''}
+        onClose={() => setUpdateModel(null)}
+      />
     </>
   )
 }

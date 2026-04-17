@@ -93,6 +93,7 @@ export interface ModelOption {
   id: string
   label: string
   description: string
+  minVersion?: string
 }
 
 export interface AgentSkill {
@@ -104,9 +105,11 @@ export interface AgentInfo {
   id: AgentType
   name: string
   installHint: string
+  updateHint: string
   docsUrl: string
   models: ModelOption[]
   installed: boolean
+  cliVersion?: string
   supportsStreaming: boolean
   supportsResume: boolean
   supportsPlanMode: boolean
