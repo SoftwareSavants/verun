@@ -18,9 +18,19 @@ export function agentIcon(agentType: string): string {
   return AGENT_ICONS[agentType] || GENERIC_ICON
 }
 
+function parseVersionParts(version: string): number[] {
+  const match = version.match(/\d+(?:\.\d+)+/)
+  if (!match) return []
+  return match[0]
+    .split('.')
+    .map(part => Number.parseInt(part, 10))
+    .filter(part => Number.isFinite(part))
+}
+
 export function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map(Number)
-  const pb = b.split('.').map(Number)
+  const pa = parseVersionParts(a)
+  const pb = parseVersionParts(b)
+  if (pa.length === 0 || pb.length === 0) return Number.NaN
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
     const na = pa[i] ?? 0
     const nb = pb[i] ?? 0
