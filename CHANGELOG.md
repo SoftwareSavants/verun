@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Chat search position no longer jumps to last match when new agent messages arrive
+
 ## 0.7.1 — 2026-04-17
 
 - Claude Opus 4.7 model option with minimum CLI version gate (v2.1.111+); shows update dialog on older versions
