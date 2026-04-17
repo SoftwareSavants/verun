@@ -181,8 +181,13 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         "user" => parse_user_message(&v),
 
         // -- System messages --
-        // System messages (init, status) are internal — don't surface in chat
-        "system" => vec![],
+        "system" => {
+            if v.get("subtype").and_then(|s| s.as_str()) == Some("init") {
+                vec![OutputItem::System { text: "Initializing session...".into() }]
+            } else {
+                vec![]
+            }
+        }
 
         // -- Result (turn completed) --
         // Text is already delivered via stream_event deltas; skip result.result to avoid duplication.

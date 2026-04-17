@@ -4,6 +4,7 @@
 
 - Claude Opus 4.7 model option with minimum CLI version gate (v2.1.111+); shows update dialog on older versions
 - Agent detection now exposes CLI version to frontend via `cliVersion` field
+- Reduce session startup delay: parallelize pre-spawn DB queries, fix DB pool race condition at app launch, defer title generation so the main session gets a 3s head start, show "Initializing session..." during Claude CLI init, move PATH capture to a background thread
 
 ## 0.7.0 - 2026-04-15
 

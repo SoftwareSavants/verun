@@ -56,8 +56,10 @@ pub fn run() {
             // children (agents, lsp, git, gh, ...) inherit nvm/homebrew/etc.
             // Then start the background watcher that re-captures whenever
             // the integrated terminal looks idle after a user command.
-            env_path::reload_now();
-            env_path::start_idle_watcher();
+            std::thread::spawn(|| {
+                env_path::reload_now();
+                env_path::start_idle_watcher();
+            });
 
             // Detect installed agents in the background so list_available_agents
             // returns instantly once the cache is warm.
@@ -127,20 +129,15 @@ pub fn run() {
                 std::io::Error::other(format!("Failed to create app data dir: {e}"))
             })?;
 
-            let handle = app.handle().clone();
+            let pool = tauri::async_runtime::block_on(db::connect(&app_data_dir))
+                .map_err(|e| std::io::Error::other(format!("DB connect: {e}")))?;
+            let db_tx = db::spawn_write_queue(pool.clone());
+            let reset_tx = db_tx.clone();
             tauri::async_runtime::spawn(async move {
-                match db::connect(&app_data_dir).await {
-                    Ok(pool) => {
-                        let db_tx = db::spawn_write_queue(pool.clone());
-                        let _ = db_tx.send(db::DbWrite::ResetRunningSessions).await;
-                        handle.manage(pool);
-                        handle.manage(db_tx);
-                    }
-                    Err(e) => {
-                        eprintln!("[verun] failed to connect to database: {e}");
-                    }
-                }
+                let _ = reset_tx.send(db::DbWrite::ResetRunningSessions).await;
             });
+            app.manage(pool);
+            app.manage(db_tx);
 
             // Auto-check for updates after a short delay
             let update_handle = app.handle().clone();
