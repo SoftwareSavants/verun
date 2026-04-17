@@ -13,10 +13,18 @@ use super::{Agent, AgentKind, InputMode, SessionArgs};
 pub struct OpenCode;
 
 impl Agent for OpenCode {
-    fn kind(&self) -> AgentKind { AgentKind::OpenCode }
-    fn display_name(&self) -> &'static str { "OpenCode" }
-    fn cli_binary(&self) -> &'static str { "opencode" }
-    fn input_mode(&self) -> InputMode { InputMode::PositionalOrStdin }
+    fn kind(&self) -> AgentKind {
+        AgentKind::OpenCode
+    }
+    fn display_name(&self) -> &'static str {
+        "OpenCode"
+    }
+    fn cli_binary(&self) -> &'static str {
+        "opencode"
+    }
+    fn input_mode(&self) -> InputMode {
+        InputMode::PositionalOrStdin
+    }
 
     fn install_hint(&self) -> &'static str {
         "curl -fsSL https://opencode.ai/install | bash"
@@ -39,11 +47,14 @@ impl Agent for OpenCode {
     fn parse_model_list(&self, output: &str) -> Vec<crate::agent::ModelOption> {
         // Output format (one per line): provider/model-id
         // Ignore migration messages and any line that isn't provider/model format.
-        output.lines()
+        output
+            .lines()
             .filter_map(|line| {
                 let line = line.trim();
                 // Must contain exactly one '/' and no whitespace
-                if !line.contains('/') || line.contains(' ') { return None; }
+                if !line.contains('/') || line.contains(' ') {
+                    return None;
+                }
                 let label = line.split('/').next_back().unwrap_or(line).to_string();
                 Some(crate::agent::ModelOption::new(line, &label, ""))
             })
@@ -71,8 +82,12 @@ impl Agent for OpenCode {
         v
     }
 
-    fn supports_plan_mode(&self) -> bool { true }
-    fn supports_attachments(&self) -> bool { true }
+    fn supports_plan_mode(&self) -> bool {
+        true
+    }
+    fn supports_attachments(&self) -> bool {
+        true
+    }
 
     fn extract_resume_id(&self, v: &serde_json::Value) -> Option<String> {
         v.get("sessionID")?.as_str().map(str::to_string)

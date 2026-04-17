@@ -329,8 +329,7 @@ pub fn get_file_context(
     } else {
         // Read from worktree (current version)
         let full_path = std::path::Path::new(worktree_path).join(file_path);
-        std::fs::read_to_string(&full_path)
-            .map_err(|e| format!("Failed to read file: {e}"))?
+        std::fs::read_to_string(&full_path).map_err(|e| format!("Failed to read file: {e}"))?
     };
 
     let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
@@ -347,8 +346,7 @@ fn generate_untracked_diff(worktree_path: &str, file_path: &str) -> Result<Strin
         return Ok(String::new());
     }
 
-    let content = std::fs::read_to_string(&full_path)
-        .map_err(|_| "Binary file".to_string())?;
+    let content = std::fs::read_to_string(&full_path).map_err(|_| "Binary file".to_string())?;
 
     let line_count = content.lines().count();
     let mut diff = format!("--- /dev/null\n+++ b/{file_path}\n@@ -0,0 +1,{line_count} @@\n");
@@ -465,10 +463,7 @@ fn parse_hunk_header(line: &str) -> Option<DiffHunk> {
 
 fn parse_range(s: &str) -> (u32, u32) {
     if let Some((start, count)) = s.split_once(',') {
-        (
-            start.parse().unwrap_or(1),
-            count.parse().unwrap_or(1),
-        )
+        (start.parse().unwrap_or(1), count.parse().unwrap_or(1))
     } else {
         (s.parse().unwrap_or(1), 1)
     }
@@ -502,7 +497,11 @@ pub fn find_merge_base(worktree_path: &str, base_branch: &str) -> Option<String>
         .ok()?;
 
     if remote_out.status.success() {
-        return Some(String::from_utf8_lossy(&remote_out.stdout).trim().to_string());
+        return Some(
+            String::from_utf8_lossy(&remote_out.stdout)
+                .trim()
+                .to_string(),
+        );
     }
 
     let local = git(worktree_path)
@@ -554,7 +553,13 @@ pub fn get_branch_commits(
 pub fn get_commit_files(worktree_path: &str, commit_hash: &str) -> Result<GitStatus, String> {
     // Get file list with status
     let output = git(worktree_path)
-        .args(["diff-tree", "--no-commit-id", "-r", "--name-status", commit_hash])
+        .args([
+            "diff-tree",
+            "--no-commit-id",
+            "-r",
+            "--name-status",
+            commit_hash,
+        ])
         .output()
         .map_err(|e| format!("Failed to get commit files: {e}"))?;
 
@@ -563,7 +568,9 @@ pub fn get_commit_files(worktree_path: &str, commit_hash: &str) -> Result<GitSta
 
     for line in stdout.lines() {
         let parts: Vec<&str> = line.splitn(2, '\t').collect();
-        if parts.len() != 2 { continue; }
+        if parts.len() != 2 {
+            continue;
+        }
         let status_char = parts[0].chars().next().unwrap_or('M');
         let status = match status_char {
             'A' => "A",
@@ -581,7 +588,13 @@ pub fn get_commit_files(worktree_path: &str, commit_hash: &str) -> Result<GitSta
 
     // Get stats
     let stat_output = git(worktree_path)
-        .args(["diff-tree", "--no-commit-id", "-r", "--numstat", commit_hash])
+        .args([
+            "diff-tree",
+            "--no-commit-id",
+            "-r",
+            "--numstat",
+            commit_hash,
+        ])
         .output()
         .map_err(|e| format!("Failed to get commit stats: {e}"))?;
 
@@ -592,7 +605,9 @@ pub fn get_commit_files(worktree_path: &str, commit_hash: &str) -> Result<GitSta
 
     for line in stat_stdout.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() != 3 { continue; }
+        if parts.len() != 3 {
+            continue;
+        }
         let ins = parts[0].parse::<u32>().unwrap_or(0);
         let del = parts[1].parse::<u32>().unwrap_or(0);
         total_ins += ins;
@@ -849,15 +864,21 @@ fn parse_log_output(text: &str) -> Result<Vec<BranchCommit>, String> {
                 for part in stat.split(',') {
                     let part = part.trim();
                     if part.contains("changed") {
-                        files_changed = part.split_whitespace().next()
+                        files_changed = part
+                            .split_whitespace()
+                            .next()
                             .and_then(|n| n.parse().ok())
                             .unwrap_or(0);
                     } else if part.contains("insertion") {
-                        insertions = part.split_whitespace().next()
+                        insertions = part
+                            .split_whitespace()
+                            .next()
                             .and_then(|n| n.parse().ok())
                             .unwrap_or(0);
                     } else if part.contains("deletion") {
-                        deletions = part.split_whitespace().next()
+                        deletions = part
+                            .split_whitespace()
+                            .next()
                             .and_then(|n| n.parse().ok())
                             .unwrap_or(0);
                     }
@@ -892,7 +913,9 @@ pub fn stage_files(worktree_path: &str, paths: &[String]) -> Result<(), String> 
         cmd.arg(p);
     }
 
-    let output = cmd.output().map_err(|e| format!("Failed to stage files: {e}"))?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to stage files: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("git add failed: {stderr}"));
@@ -922,7 +945,9 @@ pub fn unstage_files(worktree_path: &str, paths: &[String]) -> Result<(), String
         cmd.arg(p);
     }
 
-    let output = cmd.output().map_err(|e| format!("Failed to unstage files: {e}"))?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to unstage files: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("git restore --staged failed: {stderr}"));
@@ -948,7 +973,9 @@ pub fn commit(worktree_path: &str, message: &str) -> Result<String, String> {
         .output()
         .map_err(|e| format!("Failed to get commit hash: {e}"))?;
 
-    Ok(String::from_utf8_lossy(&hash_output.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&hash_output.stdout)
+        .trim()
+        .to_string())
 }
 
 /// Push branch to remote. Uses -u to set upstream on first push.
@@ -1004,8 +1031,14 @@ mod tests {
 
         let rp = repo_path.to_str().unwrap();
         git(rp).args(["init"]).output().unwrap();
-        git(rp).args(["config", "user.email", "test@test.com"]).output().unwrap();
-        git(rp).args(["config", "user.name", "Test"]).output().unwrap();
+        git(rp)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        git(rp)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
 
         fs::write(repo_path.join("README.md"), "# test\n").unwrap();
         git(rp).args(["add", "."]).output().unwrap();
@@ -1045,7 +1078,11 @@ mod tests {
         git(&rp).args(["add", "staged.txt"]).output().unwrap();
 
         let status = get_git_status(&rp).unwrap();
-        let staged = status.files.iter().find(|f| f.path == "staged.txt").unwrap();
+        let staged = status
+            .files
+            .iter()
+            .find(|f| f.path == "staged.txt")
+            .unwrap();
         assert_eq!(staged.staging, "staged");
         assert_eq!(staged.status, "A");
     }

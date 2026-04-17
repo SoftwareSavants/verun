@@ -154,11 +154,7 @@ fn walk(base: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
 /// Spawn one `tsgo --noEmit --pretty false -p <tsconfig>` invocation and
 /// parse its stdout. Failures produce an empty vec — a single project's
 /// failure shouldn't tank the whole aggregated check.
-async fn run_single(
-    binary: &Path,
-    worktree: &Path,
-    tsconfig_rel: &Path,
-) -> Vec<TsgoProblem> {
+async fn run_single(binary: &Path, worktree: &Path, tsconfig_rel: &Path) -> Vec<TsgoProblem> {
     let mut child = match Command::new(binary)
         .arg("--noEmit")
         .arg("--pretty")
@@ -325,13 +321,19 @@ mod tests {
 
     #[test]
     fn parses_simple_error() {
-        let p = parse_tsc_line("src/foo.ts(10,5): error TS2322: Type 'string' is not assignable to type 'number'.").unwrap();
+        let p = parse_tsc_line(
+            "src/foo.ts(10,5): error TS2322: Type 'string' is not assignable to type 'number'.",
+        )
+        .unwrap();
         assert_eq!(p.file, "src/foo.ts");
         assert_eq!(p.line, 10);
         assert_eq!(p.column, 5);
         assert_eq!(p.severity, "error");
         assert_eq!(p.code, "TS2322");
-        assert_eq!(p.message, "Type 'string' is not assignable to type 'number'.");
+        assert_eq!(
+            p.message,
+            "Type 'string' is not assignable to type 'number'."
+        );
     }
 
     #[test]

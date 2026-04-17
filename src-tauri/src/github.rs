@@ -81,9 +81,7 @@ fn parse_github_url(url: &str) -> Result<Option<GitHubRepo>, String> {
 
     // HTTPS: https://github.com/owner/repo.git
     if url.contains("github.com") {
-        let cleaned = url
-            .trim_end_matches(".git")
-            .trim_end_matches('/');
+        let cleaned = url.trim_end_matches(".git").trim_end_matches('/');
 
         // Extract path after github.com
         if let Some(idx) = cleaned.find("github.com/") {
@@ -108,7 +106,12 @@ fn parse_github_url(url: &str) -> Result<Option<GitHubRepo>, String> {
 /// Get the PR for the current branch (if one exists).
 pub fn get_pr_for_branch(worktree_path: &str) -> Result<Option<PrInfo>, String> {
     let output = gh(worktree_path)
-        .args(["pr", "view", "--json", "number,url,state,title,mergeable,isDraft"])
+        .args([
+            "pr",
+            "view",
+            "--json",
+            "number,url,state,title,mergeable,isDraft",
+        ])
         .output()
         .map_err(|e| format!("Failed to check PR: {e}"))?;
 
@@ -145,14 +148,7 @@ pub fn create_pr(
 
     let output = gh(worktree_path)
         .args([
-            "pr",
-            "create",
-            "--title",
-            title,
-            "--body",
-            body,
-            "--base",
-            base,
+            "pr", "create", "--title", title, "--body", body, "--base", base,
         ])
         .output()
         .map_err(|e| format!("Failed to create PR: {e}"))?;
@@ -317,8 +313,7 @@ pub fn get_ci_checks(worktree_path: &str) -> Result<Vec<CiCheck>, String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let checks: Vec<serde_json::Value> =
-        serde_json::from_str(&stdout).unwrap_or_default();
+    let checks: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap_or_default();
 
     Ok(checks
         .iter()
@@ -373,7 +368,8 @@ pub fn has_conflicts(worktree_path: &str) -> Result<bool, String> {
     Ok(stdout.lines().any(|line| {
         let bytes = line.as_bytes();
         bytes.len() >= 2
-            && (bytes[0] == b'U' || bytes[1] == b'U'
+            && (bytes[0] == b'U'
+                || bytes[1] == b'U'
                 || (bytes[0] == b'A' && bytes[1] == b'A')
                 || (bytes[0] == b'D' && bytes[1] == b'D'))
     }))
@@ -435,6 +431,9 @@ mod tests {
 
     #[test]
     fn merge_error_passthrough() {
-        assert_eq!(parse_merge_error("some unknown error"), "some unknown error");
+        assert_eq!(
+            parse_merge_error("some unknown error"),
+            "some unknown error"
+        );
     }
 }

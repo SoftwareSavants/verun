@@ -12,10 +12,18 @@ use super::{Agent, AgentKind, InputMode, SessionArgs};
 pub struct Codex;
 
 impl Agent for Codex {
-    fn kind(&self) -> AgentKind { AgentKind::Codex }
-    fn display_name(&self) -> &'static str { "Codex" }
-    fn cli_binary(&self) -> &'static str { "codex" }
-    fn input_mode(&self) -> InputMode { InputMode::PositionalOrStdin }
+    fn kind(&self) -> AgentKind {
+        AgentKind::Codex
+    }
+    fn display_name(&self) -> &'static str {
+        "Codex"
+    }
+    fn cli_binary(&self) -> &'static str {
+        "codex"
+    }
+    fn input_mode(&self) -> InputMode {
+        InputMode::PositionalOrStdin
+    }
 
     fn install_hint(&self) -> &'static str {
         "npm i -g @openai/codex"
@@ -29,11 +37,31 @@ impl Agent for Codex {
         use crate::agent::ModelOption;
         vec![
             ModelOption::new("gpt-5.4", "GPT-5.4", "Latest frontier agentic coding model"),
-            ModelOption::new("gpt-5.4-mini", "GPT-5.4 Mini", "Smaller frontier agentic coding model"),
-            ModelOption::new("gpt-5.3-codex", "GPT-5.3 Codex", "Codex-optimized agentic coding model"),
-            ModelOption::new("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark", "Lightweight Codex model"),
-            ModelOption::new("gpt-5.2-codex", "GPT-5.2 Codex", "Codex-optimized agentic coding model"),
-            ModelOption::new("gpt-5.2", "GPT-5.2", "Optimized for professional work and long-running tasks"),
+            ModelOption::new(
+                "gpt-5.4-mini",
+                "GPT-5.4 Mini",
+                "Smaller frontier agentic coding model",
+            ),
+            ModelOption::new(
+                "gpt-5.3-codex",
+                "GPT-5.3 Codex",
+                "Codex-optimized agentic coding model",
+            ),
+            ModelOption::new(
+                "gpt-5.3-codex-spark",
+                "GPT-5.3 Codex Spark",
+                "Lightweight Codex model",
+            ),
+            ModelOption::new(
+                "gpt-5.2-codex",
+                "GPT-5.2 Codex",
+                "Codex-optimized agentic coding model",
+            ),
+            ModelOption::new(
+                "gpt-5.2",
+                "GPT-5.2",
+                "Optimized for professional work and long-running tasks",
+            ),
         ]
     }
 
@@ -60,7 +88,9 @@ impl Agent for Codex {
         v
     }
 
-    fn supports_attachments(&self) -> bool { true }
+    fn supports_attachments(&self) -> bool {
+        true
+    }
 
     fn extract_resume_id(&self, v: &serde_json::Value) -> Option<String> {
         if v.get("type")?.as_str()? == "thread.started" {

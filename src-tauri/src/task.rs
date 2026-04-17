@@ -17,16 +17,36 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 
 const ADJECTIVES: &[&str] = &[
-    "sleepy", "bouncy", "fuzzy", "sneaky", "grumpy", "silly", "wobbly", "zappy",
-    "cranky", "spooky", "fluffy", "dizzy", "rusty", "jazzy", "lucky", "witty",
-    "peppy", "quirky", "zippy", "snappy", "wacky", "goofy", "funky", "jumpy",
+    "sleepy", "bouncy", "fuzzy", "sneaky", "grumpy", "silly", "wobbly", "zappy", "cranky",
+    "spooky", "fluffy", "dizzy", "rusty", "jazzy", "lucky", "witty", "peppy", "quirky", "zippy",
+    "snappy", "wacky", "goofy", "funky", "jumpy",
 ];
 
 const ANIMALS: &[&str] = &[
-    "penguin", "capybara", "otter", "raccoon", "platypus", "axolotl", "quokka",
-    "narwhal", "armadillo", "chinchilla", "flamingo", "lemur", "pangolin", "wombat",
-    "gecko", "puffin", "sloth", "toucan", "hedgehog", "chameleon", "koala", "walrus",
-    "dingo", "ferret",
+    "penguin",
+    "capybara",
+    "otter",
+    "raccoon",
+    "platypus",
+    "axolotl",
+    "quokka",
+    "narwhal",
+    "armadillo",
+    "chinchilla",
+    "flamingo",
+    "lemur",
+    "pangolin",
+    "wombat",
+    "gecko",
+    "puffin",
+    "sloth",
+    "toucan",
+    "hedgehog",
+    "chameleon",
+    "koala",
+    "walrus",
+    "dingo",
+    "ferret",
 ];
 
 pub fn funny_branch_name() -> String {
@@ -208,7 +228,10 @@ pub fn spawn_hook_pty(
         let (status, error) = match exit_code {
             Some(0) => ("completed".to_string(), None),
             Some(code) => {
-                eprintln!("[verun] {} hook failed with exit code {code}", bg_hook_type.as_str());
+                eprintln!(
+                    "[verun] {} hook failed with exit code {code}",
+                    bg_hook_type.as_str()
+                );
                 ("failed".to_string(), Some(format!("Exit code: {code}")))
             }
             None => {
@@ -341,7 +364,15 @@ pub async fn create_task(
     setup_in_progress: &SetupInProgress,
     params: CreateTaskParams,
 ) -> Result<(Task, Session), String> {
-    let CreateTaskParams { project_id, repo_path, base_branch, setup_hook, port_offset, from_task_window, agent_type } = params;
+    let CreateTaskParams {
+        project_id,
+        repo_path,
+        base_branch,
+        setup_hook,
+        port_offset,
+        from_task_window,
+        agent_type,
+    } = params;
     let id = Uuid::new_v4().to_string();
     let branch = funny_branch_name();
     let now = epoch_ms();
@@ -351,9 +382,7 @@ pub async fn create_task(
         let rp = repo_path.clone();
         let br = branch.clone();
         let bb = base_branch;
-        tokio::task::spawn_blocking(move || {
-            worktree::create_worktree(&rp, &br, &bb)
-        })
+        tokio::task::spawn_blocking(move || worktree::create_worktree(&rp, &br, &bb))
             .await
             .map_err(|e| format!("Join error: {e}"))?
     }?;
@@ -398,7 +427,17 @@ pub async fn create_task(
     }
 
     // Phase 2: Run setup hook in background (if non-empty)
-    spawn_setup_hook(app, pty_map, hook_pty_map, setup_in_progress, &task.id, &worktree_path, &setup_hook, port_offset, &repo_path);
+    spawn_setup_hook(
+        app,
+        pty_map,
+        hook_pty_map,
+        setup_in_progress,
+        &task.id,
+        &worktree_path,
+        &setup_hook,
+        port_offset,
+        &repo_path,
+    );
 
     Ok((task, session))
 }
@@ -437,7 +476,11 @@ pub async fn delete_task(
 
     let rp = repo_path.to_string();
     let wtp = task.worktree_path.clone();
-    let hook = if skip_destroy_hook { String::new() } else { destroy_hook.to_string() };
+    let hook = if skip_destroy_hook {
+        String::new()
+    } else {
+        destroy_hook.to_string()
+    };
     let branch = task.branch.clone();
     let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
     let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -453,10 +496,13 @@ pub async fn delete_task(
             }
         }
         Ok(())
-    }).await;
+    })
+    .await;
 
     db_tx
-        .send(db::DbWrite::DeleteTask { id: task.id.clone() })
+        .send(db::DbWrite::DeleteTask {
+            id: task.id.clone(),
+        })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
 
@@ -501,7 +547,11 @@ pub async fn archive_task(
     // Run destroy hook (unless skipped) and capture last commit message
     let rp = repo_path.to_string();
     let branch = task.branch.clone();
-    let hook = if skip_destroy_hook { String::new() } else { destroy_hook.to_string() };
+    let hook = if skip_destroy_hook {
+        String::new()
+    } else {
+        destroy_hook.to_string()
+    };
     let wtp = task.worktree_path.clone();
     let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
     let last_commit_message = tokio::task::spawn_blocking(move || {
@@ -542,7 +592,12 @@ pub async fn archive_task(
 // ---------------------------------------------------------------------------
 
 /// Create a new session record (no process spawned yet — that happens on send_message)
-pub async fn create_session(db_tx: &DbWriteTx, task_id: String, agent_type: String, model: Option<String>) -> Result<Session, String> {
+pub async fn create_session(
+    db_tx: &DbWriteTx,
+    task_id: String,
+    agent_type: String,
+    model: Option<String>,
+) -> Result<Session, String> {
     let session = Session {
         id: Uuid::new_v4().to_string(),
         task_id,
@@ -605,7 +660,24 @@ pub async fn send_message(
     pending_approval_meta: PendingApprovalMeta,
     params: SendMessageParams,
 ) -> Result<(), String> {
-    let SendMessageParams { session_id, task_id, project_id, worktree_path, repo_path, port_offset, trust_level, message, resume_session_id, attachments, model, plan_mode, thinking_mode, fast_mode, task_name, agent_type } = params;
+    let SendMessageParams {
+        session_id,
+        task_id,
+        project_id,
+        worktree_path,
+        repo_path,
+        port_offset,
+        trust_level,
+        message,
+        resume_session_id,
+        attachments,
+        model,
+        plan_mode,
+        thinking_mode,
+        fast_mode,
+        task_name,
+        agent_type,
+    } = params;
     let agent = AgentKind::parse(&agent_type).implementation();
     // Don't allow concurrent messages on the same session
     if active.contains_key(&session_id) {
@@ -671,7 +743,8 @@ pub async fn send_message(
         "plan_mode": plan_mode,
         "thinking_mode": thinking_mode,
         "fast_mode": fast_mode,
-    }).to_string();
+    })
+    .to_string();
     let _ = db_tx
         .send(db::DbWrite::InsertOutputLines {
             session_id: session_id.clone(),
@@ -690,9 +763,18 @@ pub async fn send_message(
     };
 
     let args_list = agent.build_session_args(&session_args);
-    eprintln!("[verun][{}] spawn: {} {}", agent.display_name(), agent.cli_binary(), args_list.join(" "));
+    eprintln!(
+        "[verun][{}] spawn: {} {}",
+        agent.display_name(),
+        agent.cli_binary(),
+        args_list.join(" ")
+    );
     eprintln!("[verun][{}] cwd: {}", agent.display_name(), worktree_path);
-    eprintln!("[verun][{}] input_mode: {:?}", agent.display_name(), agent.input_mode());
+    eprintln!(
+        "[verun][{}] input_mode: {:?}",
+        agent.display_name(),
+        agent.input_mode()
+    );
 
     let mut cmd = tokio::process::Command::new(agent.cli_binary());
     cmd.args(&args_list);
@@ -708,12 +790,18 @@ pub async fn send_message(
         .spawn()
         .map_err(|e| format!("Failed to spawn {}: {e}", agent.display_name()))?;
 
-    eprintln!("[verun][{}] spawned pid={:?}", agent.display_name(), child.id());
+    eprintln!(
+        "[verun][{}] spawned pid={:?}",
+        agent.display_name(),
+        child.id()
+    );
 
     let stdin = match agent.input_mode() {
         crate::agent::InputMode::StreamJsonStdin => {
             // Claude: send the message as a stream-json payload on stdin, keep open for control_response
-            let mut stdin_handle = child.stdin.take()
+            let mut stdin_handle = child
+                .stdin
+                .take()
                 .ok_or_else(|| "Failed to capture stdin".to_string())?;
 
             let mut content_blocks = Vec::new();
@@ -742,9 +830,13 @@ pub async fn send_message(
                 .map_err(|e| format!("Failed to serialize message: {e}"))?;
             payload.push('\n');
 
-            stdin_handle.write_all(payload.as_bytes()).await
+            stdin_handle
+                .write_all(payload.as_bytes())
+                .await
                 .map_err(|e| format!("Failed to write to stdin: {e}"))?;
-            stdin_handle.flush().await
+            stdin_handle
+                .flush()
+                .await
                 .map_err(|e| format!("Failed to flush stdin: {e}"))?;
 
             // Keep stdin open — needed for control_response messages
@@ -799,7 +891,13 @@ pub async fn send_message(
     );
 
     // Track the active process
-    active.insert(session_id.clone(), ActiveProcess { child, stdin: stdin.clone() });
+    active.insert(
+        session_id.clone(),
+        ActiveProcess {
+            child,
+            stdin: stdin.clone(),
+        },
+    );
 
     // Spawn monitor: stream output, detect exit, update DB
     let monitor_app = app.clone();
@@ -858,7 +956,8 @@ pub async fn send_message(
         let config_path = format!("{wt_for_hooks}/.verun.json");
         if let Some((setup, destroy, start)) = parse_verun_config_file(&config_path) {
             // Look up existing auto_start so auto-detect doesn't reset it
-            let auto_start = if let Some(pool) = monitor_app.try_state::<sqlx::sqlite::SqlitePool>() {
+            let auto_start = if let Some(pool) = monitor_app.try_state::<sqlx::sqlite::SqlitePool>()
+            {
                 db::get_project(pool.inner(), &monitor_pid)
                     .await
                     .ok()
@@ -877,12 +976,15 @@ pub async fn send_message(
                     auto_start,
                 })
                 .await;
-            let _ = monitor_app.emit("project-hooks-updated", serde_json::json!({
-                "projectId": monitor_pid,
-                "setupHook": setup,
-                "destroyHook": destroy,
-                "startCommand": start,
-            }));
+            let _ = monitor_app.emit(
+                "project-hooks-updated",
+                serde_json::json!({
+                    "projectId": monitor_pid,
+                    "setupHook": setup,
+                    "destroyHook": destroy,
+                    "startCommand": start,
+                }),
+            );
         }
 
         // Update session status
@@ -903,7 +1005,9 @@ pub async fn send_message(
         }
 
         let error_msg = if final_status == "error" {
-            stream_result.error.or_else(|| Some("Session exited unexpectedly".to_string()))
+            stream_result
+                .error
+                .or_else(|| Some("Session exited unexpectedly".to_string()))
         } else {
             None
         };
@@ -967,10 +1071,13 @@ async fn generate_session_title(first_message: &str, worktree_path: &str) -> Opt
     );
     let output = tokio::process::Command::new(AgentKind::Claude.implementation().cli_binary())
         .args([
-            "-p", &prompt,
-            "--output-format", "text",
+            "-p",
+            &prompt,
+            "--output-format",
+            "text",
             "--no-session-persistence",
-            "--model", "haiku",
+            "--model",
+            "haiku",
         ])
         .current_dir(worktree_path)
         .output()
@@ -1345,11 +1452,8 @@ pub async fn fork_session_to_new_task(
                     Ok(Some(temp_sha)) => {
                         let new_pb = std::path::PathBuf::from(&new_path);
                         let tree_ref = format!("{temp_sha}^{{tree}}");
-                        run_git_ignoring_env(
-                            &new_pb,
-                            &["read-tree", "--reset", "-u", &tree_ref],
-                        )
-                        .map_err(|e| format!("git read-tree on new worktree: {e}"))?;
+                        run_git_ignoring_env(&new_pb, &["read-tree", "--reset", "-u", &tree_ref])
+                            .map_err(|e| format!("git read-tree on new worktree: {e}"))?;
                     }
                     Ok(None) => {
                         // Parent worktree has no HEAD — nothing to overlay.
@@ -1498,8 +1602,15 @@ mod tests {
     fn funny_branch_name_format() {
         let name = funny_branch_name();
         let parts: Vec<&str> = name.split('-').collect();
-        assert_eq!(parts.len(), 3, "Expected adjective-animal-number, got: {name}");
-        assert!(parts[2].parse::<u64>().is_ok(), "Third part should be a number");
+        assert_eq!(
+            parts.len(),
+            3,
+            "Expected adjective-animal-number, got: {name}"
+        );
+        assert!(
+            parts[2].parse::<u64>().is_ok(),
+            "Third part should be a number"
+        );
     }
 
     #[test]
@@ -1528,5 +1639,4 @@ mod tests {
         assert!(ADJECTIVES.len() >= 20);
         assert!(ANIMALS.len() >= 20);
     }
-
 }

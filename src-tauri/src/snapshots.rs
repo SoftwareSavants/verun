@@ -266,8 +266,7 @@ mod tests {
         let sha = snapshot_turn(dir.path(), "sess", "msg1").unwrap().unwrap();
 
         // Snapshot tree should contain BOTH README.md (modified) and new.txt.
-        let tree_listing =
-            run_git(dir.path(), &["ls-tree", "-r", &sha]).unwrap();
+        let tree_listing = run_git(dir.path(), &["ls-tree", "-r", &sha]).unwrap();
         assert!(tree_listing.contains("README.md"));
         assert!(tree_listing.contains("new.txt"));
 
@@ -283,10 +282,16 @@ mod tests {
         );
         // Read status without our run_git trim() so we see the leading space
         // that distinguishes ` M` (unstaged) from `M ` (staged).
-        let raw = git(dir.path()).args(["status", "--porcelain"]).output().unwrap();
+        let raw = git(dir.path())
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
         let real_status = String::from_utf8_lossy(&raw.stdout).into_owned();
         let lines: Vec<&str> = real_status.lines().collect();
-        let readme = lines.iter().find(|l| l.contains("README.md")).expect("README.md status missing");
+        let readme = lines
+            .iter()
+            .find(|l| l.contains("README.md"))
+            .expect("README.md status missing");
         assert!(
             readme.starts_with(" M"),
             "expected unstaged modification, got: {readme:?}"
@@ -315,7 +320,13 @@ mod tests {
         let new_path = new_dir.path().join("restored");
         restore_into_new_worktree(dir.path(), &new_path, &sha).unwrap();
 
-        assert_eq!(fs::read_to_string(new_path.join("README.md")).unwrap(), "hello\nv2\n");
-        assert_eq!(fs::read_to_string(new_path.join("untracked.txt")).unwrap(), "extra\n");
+        assert_eq!(
+            fs::read_to_string(new_path.join("README.md")).unwrap(),
+            "hello\nv2\n"
+        );
+        assert_eq!(
+            fs::read_to_string(new_path.join("untracked.txt")).unwrap(),
+            "extra\n"
+        );
     }
 }

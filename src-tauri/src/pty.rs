@@ -212,10 +212,19 @@ pub fn spawn_pty(
         } else {
             None
         };
-        let _ = app.emit("pty-exited", PtyExitedEvent { terminal_id: tid, exit_code });
+        let _ = app.emit(
+            "pty-exited",
+            PtyExitedEvent {
+                terminal_id: tid,
+                exit_code,
+            },
+        );
     });
 
-    Ok(SpawnResult { terminal_id, shell_name })
+    Ok(SpawnResult {
+        terminal_id,
+        shell_name,
+    })
 }
 
 /// Write user input to the PTY.
@@ -243,7 +252,12 @@ pub fn write_pty(map: &ActivePtyMap, terminal_id: &str, data: &[u8]) -> Result<(
 }
 
 /// Resize the PTY.
-pub fn resize_pty(map: &ActivePtyMap, terminal_id: &str, rows: u16, cols: u16) -> Result<(), String> {
+pub fn resize_pty(
+    map: &ActivePtyMap,
+    terminal_id: &str,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
     let handle = map
         .get(terminal_id)
         .ok_or_else(|| format!("Terminal {terminal_id} not found"))?;
