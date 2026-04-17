@@ -202,9 +202,29 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
                 .and_then(|s| s.as_str())
                 .or_else(|| v.get("status").and_then(|s| s.as_str()))
                 .unwrap_or("unknown");
-            let status = match status_str {
-                "success" => "completed",
-                _ => "error",
+            let is_error = v
+                .get("is_error")
+                .and_then(|e| e.as_bool())
+                .unwrap_or(false);
+            let error = v
+                .get("error")
+                .and_then(|e| e.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    if is_error {
+                        v.get("result")
+                            .and_then(|r| r.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                });
+            let status = if is_error || status_str != "success" {
+                "error"
+            } else {
+                "completed"
             };
             let cost = v.get("total_cost_usd").and_then(|c| c.as_f64());
             // Claude/Cursor: `usage`, Gemini: `stats`
@@ -229,13 +249,6 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
                         .or_else(|| u.get("cacheWriteTokens"))
                 })
                 .and_then(|t| t.as_u64());
-            let error = if status == "error" {
-                v.get("error")
-                    .and_then(|e| e.as_str())
-                    .map(|s| s.to_string())
-            } else {
-                None
-            };
             vec![OutputItem::TurnEnd {
                 status: status.to_string(),
                 cost,
@@ -1534,6 +1547,20 @@ mod tests {
             OutputItem::TurnEnd { status, error, .. } => {
                 assert_eq!(status, "error");
                 assert_eq!(error.as_deref(), Some("API Error: 529 overloaded"));
+            }
+            _ => panic!("Expected TurnEnd item"),
+        }
+    }
+
+    #[test]
+    fn parse_result_success_with_is_error_uses_result_text() {
+        let line = r#"{"type":"result","subtype":"success","is_error":true,"result":"Prompt is too long","api_error_status":400,"session_id":"abc"}"#;
+        let items = parse_sdk_event(line);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::TurnEnd { status, error, .. } => {
+                assert_eq!(status, "error");
+                assert_eq!(error.as_deref(), Some("Prompt is too long"));
             }
             _ => panic!("Expected TurnEnd item"),
         }

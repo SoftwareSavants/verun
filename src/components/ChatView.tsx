@@ -193,7 +193,7 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
           }
           if (blocks[i].type === 'user') break
         }
-        if (item.status !== 'completed') {
+        if (item.status !== 'completed' && !item.error) {
           blocks.push({ type: 'system', text: `Turn ended: ${item.status}` })
         }
         turnStartTs = undefined
@@ -653,7 +653,7 @@ const ErrorBanner: Component<{
   }
 
   return (
-    <div class="mx-5 flex flex-col gap-2 px-3 py-2.5 rounded-lg bg-status-error/8 ring-1 ring-status-error/15">
+    <div class="mx-5 mt-1 flex flex-col gap-2 px-3 py-2.5 rounded-lg bg-status-error/8 ring-1 ring-status-error/15">
       <div class="flex items-start gap-2">
         <AlertTriangle size={14} class="text-status-error shrink-0 mt-0.5" />
         <span class="text-xs text-status-error">
