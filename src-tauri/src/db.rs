@@ -324,39 +324,103 @@ pub struct Step {
 pub enum DbWrite {
     // Projects
     InsertProject(Project),
-    UpdateProjectBaseBranch { id: String, base_branch: String },
-    UpdateProjectHooks { id: String, setup_hook: String, destroy_hook: String, start_command: String, auto_start: bool },
-    UpdateProjectDefaultAgent { id: String, default_agent_type: String },
-    DeleteProject { id: String },
+    UpdateProjectBaseBranch {
+        id: String,
+        base_branch: String,
+    },
+    UpdateProjectHooks {
+        id: String,
+        setup_hook: String,
+        destroy_hook: String,
+        start_command: String,
+        auto_start: bool,
+    },
+    UpdateProjectDefaultAgent {
+        id: String,
+        default_agent_type: String,
+    },
+    DeleteProject {
+        id: String,
+    },
 
     // Tasks
     InsertTask(Task),
-    UpdateTaskName { id: String, name: String },
-    SetMergeBaseSha { id: String, sha: String },
-    DeleteTask { id: String },
-    ArchiveTask { id: String, archived_at: i64, last_commit_message: Option<String> },
-    RestoreTask { id: String },
+    UpdateTaskName {
+        id: String,
+        name: String,
+    },
+    SetMergeBaseSha {
+        id: String,
+        sha: String,
+    },
+    DeleteTask {
+        id: String,
+    },
+    ArchiveTask {
+        id: String,
+        archived_at: i64,
+        last_commit_message: Option<String>,
+    },
+    RestoreTask {
+        id: String,
+    },
 
     // Sessions
     CreateSession(Session),
-    UpdateSessionName { id: String, name: String },
-    UpdateSessionStatus { id: String, status: String },
-    UpdateSessionModel { id: String, model: Option<String> },
-    SetResumeSessionId { id: String, resume_session_id: String },
-    EndSession { id: String, ended_at: i64 },
-    AccumulateSessionCost { id: String, cost: f64 },
-    CloseSession { id: String },
+    UpdateSessionName {
+        id: String,
+        name: String,
+    },
+    UpdateSessionStatus {
+        id: String,
+        status: String,
+    },
+    UpdateSessionModel {
+        id: String,
+        model: Option<String>,
+    },
+    SetResumeSessionId {
+        id: String,
+        resume_session_id: String,
+    },
+    EndSession {
+        id: String,
+        ended_at: i64,
+    },
+    AccumulateSessionCost {
+        id: String,
+        cost: f64,
+    },
+    CloseSession {
+        id: String,
+    },
 
     // Output
-    InsertOutputLines { session_id: String, lines: Vec<(String, i64)> },
-    DeleteOutputLines { session_id: String },
+    InsertOutputLines {
+        session_id: String,
+        lines: Vec<(String, i64)>,
+    },
+    DeleteOutputLines {
+        session_id: String,
+    },
 
     // Turn snapshots (per-turn worktree state for forking)
-    InsertTurnSnapshot { session_id: String, message_uuid: String, stash_sha: String, created_at: i64 },
-    DeleteTurnSnapshotsForSession { session_id: String },
+    InsertTurnSnapshot {
+        session_id: String,
+        message_uuid: String,
+        stash_sha: String,
+        created_at: i64,
+    },
+    DeleteTurnSnapshotsForSession {
+        session_id: String,
+    },
 
     // Policy
-    SetTrustLevel { task_id: String, trust_level: String, updated_at: i64 },
+    SetTrustLevel {
+        task_id: String,
+        trust_level: String,
+        updated_at: i64,
+    },
     InsertAuditEntry {
         session_id: String,
         task_id: String,
@@ -369,10 +433,26 @@ pub enum DbWrite {
 
     // Steps
     InsertStep(Step),
-    UpdateStep { id: String, message: String, armed: bool, model: Option<String>, plan_mode: Option<bool>, thinking_mode: Option<bool>, fast_mode: Option<bool>, attachments_json: Option<String> },
-    DeleteStep { id: String },
-    ReorderSteps { session_id: String, ids: Vec<String> },
-    DisarmAllSteps { session_id: String },
+    UpdateStep {
+        id: String,
+        message: String,
+        armed: bool,
+        model: Option<String>,
+        plan_mode: Option<bool>,
+        thinking_mode: Option<bool>,
+        fast_mode: Option<bool>,
+        attachments_json: Option<String>,
+    },
+    DeleteStep {
+        id: String,
+    },
+    ReorderSteps {
+        session_id: String,
+        ids: Vec<String>,
+    },
+    DisarmAllSteps {
+        session_id: String,
+    },
 
     // Startup recovery
     ResetRunningSessions,
@@ -420,7 +500,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .execute(pool)
                 .await?;
         }
-        DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command, auto_start } => {
+        DbWrite::UpdateProjectHooks {
+            id,
+            setup_hook,
+            destroy_hook,
+            start_command,
+            auto_start,
+        } => {
             sqlx::query("UPDATE projects SET setup_hook = ?, destroy_hook = ?, start_command = ?, auto_start = ? WHERE id = ?")
                 .bind(&setup_hook)
                 .bind(&destroy_hook)
@@ -430,7 +516,10 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .execute(pool)
                 .await?;
         }
-        DbWrite::UpdateProjectDefaultAgent { id, default_agent_type } => {
+        DbWrite::UpdateProjectDefaultAgent {
+            id,
+            default_agent_type,
+        } => {
             sqlx::query("UPDATE projects SET default_agent_type = ? WHERE id = ?")
                 .bind(&default_agent_type)
                 .bind(&id)
@@ -443,12 +532,16 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 "DELETE FROM policy_audit_log WHERE task_id IN \
                  (SELECT id FROM tasks WHERE project_id = ?)",
             )
-            .bind(&id).execute(pool).await?;
+            .bind(&id)
+            .execute(pool)
+            .await?;
             sqlx::query(
                 "DELETE FROM task_trust_levels WHERE task_id IN \
                  (SELECT id FROM tasks WHERE project_id = ?)",
             )
-            .bind(&id).execute(pool).await?;
+            .bind(&id)
+            .execute(pool)
+            .await?;
             sqlx::query(
                 "DELETE FROM steps WHERE session_id IN \
                  (SELECT s.id FROM sessions s JOIN tasks t ON s.task_id = t.id WHERE t.project_id = ?)",
@@ -468,11 +561,17 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 "DELETE FROM sessions WHERE task_id IN \
                  (SELECT id FROM tasks WHERE project_id = ?)",
             )
-            .bind(&id).execute(pool).await?;
+            .bind(&id)
+            .execute(pool)
+            .await?;
             sqlx::query("DELETE FROM tasks WHERE project_id = ?")
-                .bind(&id).execute(pool).await?;
+                .bind(&id)
+                .execute(pool)
+                .await?;
             sqlx::query("DELETE FROM projects WHERE id = ?")
-                .bind(&id).execute(pool).await?;
+                .bind(&id)
+                .execute(pool)
+                .await?;
         }
 
         // -- Tasks --
@@ -509,38 +608,58 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         }
         DbWrite::DeleteTask { id } => {
             sqlx::query("DELETE FROM policy_audit_log WHERE task_id = ?")
-                .bind(&id).execute(pool).await?;
+                .bind(&id)
+                .execute(pool)
+                .await?;
             sqlx::query("DELETE FROM task_trust_levels WHERE task_id = ?")
-                .bind(&id).execute(pool).await?;
+                .bind(&id)
+                .execute(pool)
+                .await?;
             sqlx::query(
                 "DELETE FROM steps WHERE session_id IN \
                  (SELECT id FROM sessions WHERE task_id = ?)",
             )
-            .bind(&id).execute(pool).await?;
+            .bind(&id)
+            .execute(pool)
+            .await?;
             sqlx::query(
                 "DELETE FROM output_lines WHERE session_id IN \
                  (SELECT id FROM sessions WHERE task_id = ?)",
             )
-            .bind(&id).execute(pool).await?;
+            .bind(&id)
+            .execute(pool)
+            .await?;
             sqlx::query(
                 "DELETE FROM turn_snapshots WHERE session_id IN \
                  (SELECT id FROM sessions WHERE task_id = ?)",
             )
-            .bind(&id).execute(pool).await?;
+            .bind(&id)
+            .execute(pool)
+            .await?;
             sqlx::query("DELETE FROM sessions WHERE task_id = ?")
-                .bind(&id).execute(pool).await?;
+                .bind(&id)
+                .execute(pool)
+                .await?;
             sqlx::query("DELETE FROM tasks WHERE id = ?")
-                .bind(&id).execute(pool).await?;
+                .bind(&id)
+                .execute(pool)
+                .await?;
         }
 
-        DbWrite::ArchiveTask { id, archived_at, last_commit_message } => {
+        DbWrite::ArchiveTask {
+            id,
+            archived_at,
+            last_commit_message,
+        } => {
             sqlx::query("UPDATE tasks SET archived = 1, archived_at = ?, last_commit_message = ? WHERE id = ?")
                 .bind(archived_at).bind(&last_commit_message).bind(&id).execute(pool).await?;
         }
 
         DbWrite::RestoreTask { id } => {
             sqlx::query("UPDATE tasks SET archived = 0, archived_at = NULL WHERE id = ?")
-                .bind(&id).execute(pool).await?;
+                .bind(&id)
+                .execute(pool)
+                .await?;
         }
 
         // -- Sessions --
@@ -585,7 +704,10 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .execute(pool)
                 .await?;
         }
-        DbWrite::SetResumeSessionId { id, resume_session_id } => {
+        DbWrite::SetResumeSessionId {
+            id,
+            resume_session_id,
+        } => {
             sqlx::query("UPDATE sessions SET resume_session_id = ? WHERE id = ?")
                 .bind(&resume_session_id)
                 .bind(&id)
@@ -637,7 +759,12 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .await?;
         }
 
-        DbWrite::InsertTurnSnapshot { session_id, message_uuid, stash_sha, created_at } => {
+        DbWrite::InsertTurnSnapshot {
+            session_id,
+            message_uuid,
+            stash_sha,
+            created_at,
+        } => {
             sqlx::query(
                 "INSERT OR REPLACE INTO turn_snapshots (session_id, message_uuid, stash_sha, created_at) \
                  VALUES (?, ?, ?, ?)",
@@ -657,7 +784,11 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         }
 
         // -- Policy --
-        DbWrite::SetTrustLevel { task_id, trust_level, updated_at } => {
+        DbWrite::SetTrustLevel {
+            task_id,
+            trust_level,
+            updated_at,
+        } => {
             sqlx::query(
                 "INSERT INTO task_trust_levels (task_id, trust_level, updated_at) \
                  VALUES (?, ?, ?) \
@@ -669,7 +800,15 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .execute(pool)
             .await?;
         }
-        DbWrite::InsertAuditEntry { session_id, task_id, tool_name, tool_input_summary, decision, reason, created_at } => {
+        DbWrite::InsertAuditEntry {
+            session_id,
+            task_id,
+            tool_name,
+            tool_input_summary,
+            decision,
+            reason,
+            created_at,
+        } => {
             sqlx::query(
                 "INSERT INTO policy_audit_log (session_id, task_id, tool_name, tool_input_summary, decision, reason, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -705,7 +844,16 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .execute(pool)
             .await?;
         }
-        DbWrite::UpdateStep { id, message, armed, model, plan_mode, thinking_mode, fast_mode, attachments_json } => {
+        DbWrite::UpdateStep {
+            id,
+            message,
+            armed,
+            model,
+            plan_mode,
+            thinking_mode,
+            fast_mode,
+            attachments_json,
+        } => {
             sqlx::query("UPDATE steps SET message = ?, armed = ?, model = ?, plan_mode = ?, thinking_mode = ?, fast_mode = ?, attachments_json = ? WHERE id = ?")
                 .bind(&message)
                 .bind(armed)
@@ -796,13 +944,12 @@ pub async fn list_tasks_for_project(
 }
 
 pub async fn next_port_offset(pool: &SqlitePool, project_id: &str) -> Result<i64, String> {
-    let row: Option<(i64,)> = sqlx::query_as(
-        "SELECT COALESCE(MAX(port_offset), -1) FROM tasks WHERE project_id = ?",
-    )
-    .bind(project_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT COALESCE(MAX(port_offset), -1) FROM tasks WHERE project_id = ?")
+            .bind(project_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
 
     Ok(row.map(|(max,)| max + 1).unwrap_or(0))
 }
@@ -865,25 +1012,22 @@ pub async fn get_turn_snapshot(
 // Steps
 
 pub async fn list_steps(pool: &SqlitePool, session_id: &str) -> Result<Vec<Step>, String> {
-    sqlx::query_as::<_, Step>(
-        "SELECT * FROM steps WHERE session_id = ? ORDER BY sort_order ASC",
-    )
-    .bind(session_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())
+    sqlx::query_as::<_, Step>("SELECT * FROM steps WHERE session_id = ? ORDER BY sort_order ASC")
+        .bind(session_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // Policy
 
 pub async fn get_trust_level(pool: &SqlitePool, task_id: &str) -> Result<String, String> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT trust_level FROM task_trust_levels WHERE task_id = ?",
-    )
-    .bind(task_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT trust_level FROM task_trust_levels WHERE task_id = ?")
+            .bind(task_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
 
     Ok(row.map(|(tl,)| tl).unwrap_or_else(|| "normal".into()))
 }
@@ -1059,8 +1203,12 @@ mod tests {
         p2.created_at = 2000;
         p2.repo_path = "/tmp/b".into();
 
-        process_write(&pool, DbWrite::InsertProject(p1)).await.unwrap();
-        process_write(&pool, DbWrite::InsertProject(p2)).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(p1))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertProject(p2))
+            .await
+            .unwrap();
 
         let projects = list_projects(&pool).await.unwrap();
         assert_eq!(projects.len(), 2);
@@ -1070,9 +1218,15 @@ mod tests {
     #[tokio::test]
     async fn delete_project_cascades() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
         process_write(
             &pool,
             DbWrite::InsertOutputLines {
@@ -1098,8 +1252,12 @@ mod tests {
     #[tokio::test]
     async fn insert_and_get_task() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
 
         let t = get_task(&pool, "t-001").await.unwrap().unwrap();
         assert_eq!(t.project_id, "p-001");
@@ -1110,8 +1268,12 @@ mod tests {
     #[tokio::test]
     async fn update_task_name() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
 
         process_write(
             &pool,
@@ -1134,8 +1296,12 @@ mod tests {
         p2.id = "p-002".into();
         p2.repo_path = "/tmp/other".into();
 
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertProject(p2)).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertProject(p2))
+            .await
+            .unwrap();
 
         let mut t1 = make_task("p-001");
         t1.id = "t-001".into();
@@ -1153,9 +1319,15 @@ mod tests {
     #[tokio::test]
     async fn delete_task_cascades() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
         process_write(
             &pool,
             DbWrite::InsertOutputLines {
@@ -1180,9 +1352,15 @@ mod tests {
     #[tokio::test]
     async fn archive_task_sets_flag_and_preserves_data() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
         process_write(
             &pool,
             DbWrite::InsertOutputLines {
@@ -1193,9 +1371,16 @@ mod tests {
         .await
         .unwrap();
 
-        process_write(&pool, DbWrite::ArchiveTask { id: "t-001".into(), archived_at: 9999, last_commit_message: Some("test commit".into()) })
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::ArchiveTask {
+                id: "t-001".into(),
+                archived_at: 9999,
+                last_commit_message: Some("test commit".into()),
+            },
+        )
+        .await
+        .unwrap();
 
         // Task still exists and is archived
         let task = get_task(&pool, "t-001").await.unwrap().unwrap();
@@ -1209,14 +1394,29 @@ mod tests {
     #[tokio::test]
     async fn restore_task_clears_archived_flag() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
 
-        process_write(&pool, DbWrite::ArchiveTask { id: "t-001".into(), archived_at: 9999, last_commit_message: Some("test commit".into()) }).await.unwrap();
+        process_write(
+            &pool,
+            DbWrite::ArchiveTask {
+                id: "t-001".into(),
+                archived_at: 9999,
+                last_commit_message: Some("test commit".into()),
+            },
+        )
+        .await
+        .unwrap();
         let task = get_task(&pool, "t-001").await.unwrap().unwrap();
         assert!(task.archived);
 
-        process_write(&pool, DbWrite::RestoreTask { id: "t-001".into() }).await.unwrap();
+        process_write(&pool, DbWrite::RestoreTask { id: "t-001".into() })
+            .await
+            .unwrap();
         let task = get_task(&pool, "t-001").await.unwrap().unwrap();
         assert!(!task.archived);
     }
@@ -1224,7 +1424,9 @@ mod tests {
     #[tokio::test]
     async fn archived_tasks_sort_after_active() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
 
         let mut t1 = make_task("p-001");
         t1.id = "t-old".into();
@@ -1239,9 +1441,16 @@ mod tests {
         process_write(&pool, DbWrite::InsertTask(t1)).await.unwrap();
         process_write(&pool, DbWrite::InsertTask(t2)).await.unwrap();
         process_write(&pool, DbWrite::InsertTask(t3)).await.unwrap();
-        process_write(&pool, DbWrite::ArchiveTask { id: "t-archived".into(), archived_at: 9999, last_commit_message: None })
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::ArchiveTask {
+                id: "t-archived".into(),
+                archived_at: 9999,
+                last_commit_message: None,
+            },
+        )
+        .await
+        .unwrap();
 
         let tasks = list_tasks_for_project(&pool, "p-001").await.unwrap();
         assert_eq!(tasks.len(), 3);
@@ -1258,9 +1467,15 @@ mod tests {
     #[tokio::test]
     async fn session_lifecycle() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
 
         let s = get_session(&pool, "s-001").await.unwrap().unwrap();
         assert_eq!(s.status, "running");
@@ -1300,8 +1515,12 @@ mod tests {
     #[tokio::test]
     async fn multiple_sessions_per_task() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
 
         let mut s1 = make_session("t-001");
         s1.id = "s-001".into();
@@ -1310,8 +1529,12 @@ mod tests {
         s2.id = "s-002".into();
         s2.started_at = 2000;
 
-        process_write(&pool, DbWrite::CreateSession(s1)).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(s2)).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(s1))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(s2))
+            .await
+            .unwrap();
 
         let sessions = list_sessions_for_task(&pool, "t-001").await.unwrap();
         assert_eq!(sessions.len(), 2);
@@ -1323,9 +1546,15 @@ mod tests {
     #[tokio::test]
     async fn insert_and_get_output_lines() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
 
         process_write(
             &pool,
@@ -1352,8 +1581,12 @@ mod tests {
     #[tokio::test]
     async fn reset_running_sessions() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
 
         let mut s1 = make_session("t-001");
         s1.id = "s-run".into();
@@ -1362,10 +1595,16 @@ mod tests {
         s2.id = "s-done".into();
         s2.status = "done".into();
 
-        process_write(&pool, DbWrite::CreateSession(s1)).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(s2)).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(s1))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(s2))
+            .await
+            .unwrap();
 
-        process_write(&pool, DbWrite::ResetRunningSessions).await.unwrap();
+        process_write(&pool, DbWrite::ResetRunningSessions)
+            .await
+            .unwrap();
 
         let s = get_session(&pool, "s-run").await.unwrap().unwrap();
         assert_eq!(s.status, "idle");
@@ -1432,12 +1671,22 @@ mod tests {
     #[tokio::test]
     async fn insert_and_list_steps() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
 
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0)))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1)))
+            .await
+            .unwrap();
 
         let steps = list_steps(&pool, "s-001").await.unwrap();
         assert_eq!(steps.len(), 2);
@@ -1449,29 +1698,69 @@ mod tests {
     #[tokio::test]
     async fn list_steps_returns_sorted_by_sort_order() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
 
         // Insert in reverse order
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 2))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 2)))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0)))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1)))
+            .await
+            .unwrap();
 
         let steps = list_steps(&pool, "s-001").await.unwrap();
-        assert_eq!(steps.iter().map(|s| s.sort_order).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(
+            steps.iter().map(|s| s.sort_order).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
     }
 
     #[tokio::test]
     async fn list_steps_scoped_by_session() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(Session { id: "s-002".into(), ..make_session("t-001") })).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::CreateSession(Session {
+                id: "s-002".into(),
+                ..make_session("t-001")
+            }),
+        )
+        .await
+        .unwrap();
 
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(Step { id: "step-other".into(), session_id: "s-002".into(), ..make_step("s-002", 0) })).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0)))
+            .await
+            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertStep(Step {
+                id: "step-other".into(),
+                session_id: "s-002".into(),
+                ..make_step("s-002", 0)
+            }),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(list_steps(&pool, "s-001").await.unwrap().len(), 1);
         assert_eq!(list_steps(&pool, "s-002").await.unwrap().len(), 1);
@@ -1480,21 +1769,34 @@ mod tests {
     #[tokio::test]
     async fn update_step_changes_message_and_armed() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0)))
+            .await
+            .unwrap();
 
-        process_write(&pool, DbWrite::UpdateStep {
-            id: "step-0".into(),
-            message: "Updated message".into(),
-            armed: true,
-            model: Some("opus".into()),
-            plan_mode: Some(true),
-            thinking_mode: Some(false),
-            fast_mode: Some(true),
-            attachments_json: Some("[{\"name\":\"img.png\"}]".into()),
-        }).await.unwrap();
+        process_write(
+            &pool,
+            DbWrite::UpdateStep {
+                id: "step-0".into(),
+                message: "Updated message".into(),
+                armed: true,
+                model: Some("opus".into()),
+                plan_mode: Some(true),
+                thinking_mode: Some(false),
+                fast_mode: Some(true),
+                attachments_json: Some("[{\"name\":\"img.png\"}]".into()),
+            },
+        )
+        .await
+        .unwrap();
 
         let steps = list_steps(&pool, "s-001").await.unwrap();
         assert_eq!(steps[0].message, "Updated message");
@@ -1508,13 +1810,30 @@ mod tests {
     #[tokio::test]
     async fn delete_step_removes_it() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0)))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1)))
+            .await
+            .unwrap();
 
-        process_write(&pool, DbWrite::DeleteStep { id: "step-0".into() }).await.unwrap();
+        process_write(
+            &pool,
+            DbWrite::DeleteStep {
+                id: "step-0".into(),
+            },
+        )
+        .await
+        .unwrap();
 
         let steps = list_steps(&pool, "s-001").await.unwrap();
         assert_eq!(steps.len(), 1);
@@ -1524,38 +1843,75 @@ mod tests {
     #[tokio::test]
     async fn reorder_steps_updates_sort_order() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 2))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0)))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 1)))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 2)))
+            .await
+            .unwrap();
 
         // Reverse the order
-        process_write(&pool, DbWrite::ReorderSteps {
-            session_id: "s-001".into(),
-            ids: vec!["step-2".into(), "step-1".into(), "step-0".into()],
-        }).await.unwrap();
+        process_write(
+            &pool,
+            DbWrite::ReorderSteps {
+                session_id: "s-001".into(),
+                ids: vec!["step-2".into(), "step-1".into(), "step-0".into()],
+            },
+        )
+        .await
+        .unwrap();
 
         let steps = list_steps(&pool, "s-001").await.unwrap();
-        assert_eq!(steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["step-2", "step-1", "step-0"]);
+        assert_eq!(
+            steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["step-2", "step-1", "step-0"]
+        );
     }
 
     #[tokio::test]
     async fn disarm_all_steps_sets_armed_false() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
 
         let mut armed_step = make_step("s-001", 0);
         armed_step.armed = true;
-        process_write(&pool, DbWrite::InsertStep(armed_step)).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(armed_step))
+            .await
+            .unwrap();
         let mut armed_step2 = make_step("s-001", 1);
         armed_step2.armed = true;
-        process_write(&pool, DbWrite::InsertStep(armed_step2)).await.unwrap();
+        process_write(&pool, DbWrite::InsertStep(armed_step2))
+            .await
+            .unwrap();
 
-        process_write(&pool, DbWrite::DisarmAllSteps { session_id: "s-001".into() }).await.unwrap();
+        process_write(
+            &pool,
+            DbWrite::DisarmAllSteps {
+                session_id: "s-001".into(),
+            },
+        )
+        .await
+        .unwrap();
 
         let steps = list_steps(&pool, "s-001").await.unwrap();
         assert!(steps.iter().all(|s| !s.armed));
@@ -1564,12 +1920,22 @@ mod tests {
     #[tokio::test]
     async fn delete_task_cascades_to_steps() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0)))
+            .await
+            .unwrap();
 
-        process_write(&pool, DbWrite::DeleteTask { id: "t-001".into() }).await.unwrap();
+        process_write(&pool, DbWrite::DeleteTask { id: "t-001".into() })
+            .await
+            .unwrap();
 
         let steps = list_steps(&pool, "s-001").await.unwrap();
         assert_eq!(steps.len(), 0);
@@ -1578,12 +1944,22 @@ mod tests {
     #[tokio::test]
     async fn delete_project_cascades_to_steps() {
         let pool = test_pool().await;
-        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
-        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
-        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
-        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0))).await.unwrap();
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertStep(make_step("s-001", 0)))
+            .await
+            .unwrap();
 
-        process_write(&pool, DbWrite::DeleteProject { id: "p-001".into() }).await.unwrap();
+        process_write(&pool, DbWrite::DeleteProject { id: "p-001".into() })
+            .await
+            .unwrap();
 
         let steps = list_steps(&pool, "s-001").await.unwrap();
         assert_eq!(steps.len(), 0);

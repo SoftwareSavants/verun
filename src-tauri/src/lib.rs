@@ -15,9 +15,9 @@ mod tsgo_check;
 mod watcher;
 mod worktree;
 
+use dashmap::DashMap;
 #[cfg(target_os = "macos")]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
-use dashmap::DashMap;
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_sql::Builder as SqlBuilder;
 use tauri_plugin_updater::UpdaterExt;
@@ -82,8 +82,8 @@ pub fn run() {
                 let quick_open_item = MenuItemBuilder::with_id("quick-open", "Go to File…")
                     .accelerator("CmdOrCtrl+P")
                     .build(app)?;
-                let update_item = MenuItemBuilder::with_id("check-updates", "Check for Updates…")
-                    .build(app)?;
+                let update_item =
+                    MenuItemBuilder::with_id("check-updates", "Check for Updates…").build(app)?;
                 let app_menu = SubmenuBuilder::new(app, "Verun")
                     .item(&PredefinedMenuItem::about(app, Some("About Verun"), None)?)
                     .item(&update_item)
@@ -121,9 +121,10 @@ pub fn run() {
                 app.set_menu(menu)?;
             }
 
-            let app_data_dir = app.path().app_data_dir().map_err(|e| {
-                std::io::Error::other(format!("Failed to get app data dir: {e}"))
-            })?;
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| std::io::Error::other(format!("Failed to get app data dir: {e}")))?;
 
             std::fs::create_dir_all(&app_data_dir).map_err(|e| {
                 std::io::Error::other(format!("Failed to create app data dir: {e}"))

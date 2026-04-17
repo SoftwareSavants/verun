@@ -98,7 +98,13 @@ const TSGO_PLATFORM_DIR: &str = "native-preview-darwin-x64";
 const TSGO_PLATFORM_DIR: &str = "native-preview-unsupported";
 
 fn tsgo_rel_path() -> [&'static str; 5] {
-    ["node_modules", "@typescript", TSGO_PLATFORM_DIR, "lib", "tsgo"]
+    [
+        "node_modules",
+        "@typescript",
+        TSGO_PLATFORM_DIR,
+        "lib",
+        "tsgo",
+    ]
 }
 
 pub fn resolve_lsp_binary(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -153,14 +159,8 @@ pub async fn start_server(
         .spawn()
         .map_err(|e| format!("Failed to spawn tsgo: {e}"))?;
 
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or("Failed to capture LSP stdin")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("Failed to capture LSP stdout")?;
+    let stdin = child.stdin.take().ok_or("Failed to capture LSP stdin")?;
+    let stdout = child.stdout.take().ok_or("Failed to capture LSP stdout")?;
 
     let stdin = Arc::new(TokioMutex::new(stdin));
     let child = Arc::new(TokioMutex::new(child));
@@ -198,11 +198,7 @@ pub async fn start_server(
     Ok(())
 }
 
-pub async fn send_message(
-    lsp_map: &LspMap,
-    task_id: &str,
-    message: &str,
-) -> Result<(), String> {
+pub async fn send_message(lsp_map: &LspMap, task_id: &str, message: &str) -> Result<(), String> {
     let handle = lsp_map
         .get(task_id)
         .ok_or_else(|| format!("No LSP server for task {task_id}"))?;

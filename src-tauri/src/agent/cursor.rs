@@ -12,10 +12,18 @@ use super::{Agent, AgentKind, InputMode, SessionArgs};
 pub struct Cursor;
 
 impl Agent for Cursor {
-    fn kind(&self) -> AgentKind { AgentKind::Cursor }
-    fn display_name(&self) -> &'static str { "Cursor Agent" }
-    fn cli_binary(&self) -> &'static str { "agent" }
-    fn input_mode(&self) -> InputMode { InputMode::PositionalOrStdin }
+    fn kind(&self) -> AgentKind {
+        AgentKind::Cursor
+    }
+    fn display_name(&self) -> &'static str {
+        "Cursor Agent"
+    }
+    fn cli_binary(&self) -> &'static str {
+        "agent"
+    }
+    fn input_mode(&self) -> InputMode {
+        InputMode::PositionalOrStdin
+    }
 
     fn install_hint(&self) -> &'static str {
         "curl https://cursor.com/install -fsSL | bash"
@@ -45,19 +53,24 @@ impl Agent for Cursor {
         // Output format (one per line):
         //   <id> - <Name>  (default)
         // Skip "Available models" header and "Tip:" footer.
-        output.lines()
+        output
+            .lines()
             .filter_map(|line| {
                 let line = line.trim();
                 let sep = line.find(" - ")?;
                 let id = line[..sep].trim();
-                if id.is_empty() { return None; }
+                if id.is_empty() {
+                    return None;
+                }
                 // Strip trailing "(default)" from the display name
                 let name = line[sep + 3..]
                     .trim()
                     .trim_end_matches("(default)")
                     .trim()
                     .to_string();
-                if name.is_empty() { return None; }
+                if name.is_empty() {
+                    return None;
+                }
                 Some(crate::agent::ModelOption::new(id, &name, ""))
             })
             .collect()
@@ -66,7 +79,8 @@ impl Agent for Cursor {
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {
         let mut v = vec![
             "-p".into(),
-            "--output-format".into(), "stream-json".into(),
+            "--output-format".into(),
+            "stream-json".into(),
             "--stream-partial-output".into(),
             "--force".into(),
             "--trust".into(),
@@ -90,7 +104,9 @@ impl Agent for Cursor {
         v
     }
 
-    fn supports_plan_mode(&self) -> bool { true }
+    fn supports_plan_mode(&self) -> bool {
+        true
+    }
 
     fn extract_resume_id(&self, v: &serde_json::Value) -> Option<String> {
         let t = v.get("type")?.as_str()?;

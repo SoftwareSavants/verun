@@ -1,11 +1,12 @@
-use crate::db::{
-    self, DbWriteTx, OutputLine, Project, Session, Step, Task,
-};
+use crate::db::{self, DbWriteTx, OutputLine, Project, Session, Step, Task};
 use crate::git_ops;
 use crate::github;
-use crate::pty::{self, ActivePtyMap};
-use crate::task::{self, ActiveMap, ApprovalResponse, HookPtyMap, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals, SetupInProgress};
 use crate::lsp::LspMap;
+use crate::pty::{self, ActivePtyMap};
+use crate::task::{
+    self, ActiveMap, ApprovalResponse, HookPtyMap, PendingApprovalEntry, PendingApprovalMeta,
+    PendingApprovals, SetupInProgress,
+};
 use crate::tsgo_check::TsgoCheckMap;
 use crate::watcher::FileWatcherMap;
 use crate::worktree;
@@ -110,7 +111,17 @@ pub async fn delete_project(
 
     let tasks = db::list_tasks_for_project(pool.inner(), &id).await?;
     for t in &tasks {
-        task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, t, &project.destroy_hook, true, false).await?;
+        task::delete_task(
+            &app,
+            db_tx.inner(),
+            active.inner(),
+            &project.repo_path,
+            t,
+            &project.destroy_hook,
+            true,
+            false,
+        )
+        .await?;
     }
 
     db_tx
@@ -143,7 +154,13 @@ pub async fn update_project_hooks(
     auto_start: bool,
 ) -> Result<(), String> {
     db_tx
-        .send(db::DbWrite::UpdateProjectHooks { id, setup_hook, destroy_hook, start_command, auto_start })
+        .send(db::DbWrite::UpdateProjectHooks {
+            id,
+            setup_hook,
+            destroy_hook,
+            start_command,
+            auto_start,
+        })
         .await
         .map_err(|e| format!("DB write failed: {e}"))
 }
@@ -155,7 +172,10 @@ pub async fn update_project_default_agent(
     default_agent_type: String,
 ) -> Result<(), String> {
     db_tx
-        .send(db::DbWrite::UpdateProjectDefaultAgent { id, default_agent_type })
+        .send(db::DbWrite::UpdateProjectDefaultAgent {
+            id,
+            default_agent_type,
+        })
         .await
         .map_err(|e| format!("DB write failed: {e}"))
 }
@@ -213,7 +233,11 @@ pub async fn import_project_config(
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
 
-    Ok(ImportedHooks { setup_hook: setup, destroy_hook: destroy, start_command: start })
+    Ok(ImportedHooks {
+        setup_hook: setup,
+        destroy_hook: destroy,
+        start_command: start,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -263,9 +287,11 @@ pub async fn create_task(
             setup_hook: project.setup_hook,
             port_offset,
             from_task_window,
-            agent_type: agent_type.unwrap_or_else(|| crate::agent::AgentKind::Claude.as_str().to_string()),
+            agent_type: agent_type
+                .unwrap_or_else(|| crate::agent::AgentKind::Claude.as_str().to_string()),
         },
-    ).await?;
+    )
+    .await?;
 
     // For task windows: store label → taskId so the close handler works
     if from_task_window {
@@ -374,7 +400,17 @@ pub async fn delete_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
-    task::delete_task(&app, db_tx.inner(), active.inner(), &project.repo_path, &t, &project.destroy_hook, delete_branch, skip_destroy_hook.unwrap_or(false)).await
+    task::delete_task(
+        &app,
+        db_tx.inner(),
+        active.inner(),
+        &project.repo_path,
+        &t,
+        &project.destroy_hook,
+        delete_branch,
+        skip_destroy_hook.unwrap_or(false),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -394,7 +430,16 @@ pub async fn archive_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
-    task::archive_task(&app, db_tx.inner(), active.inner(), &t, &project.destroy_hook, &project.repo_path, skip_destroy_hook.unwrap_or(false)).await
+    task::archive_task(
+        &app,
+        db_tx.inner(),
+        active.inner(),
+        &t,
+        &project.destroy_hook,
+        &project.repo_path,
+        skip_destroy_hook.unwrap_or(false),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -413,11 +458,9 @@ pub async fn check_task_worktree(
     let wtp = t.worktree_path.clone();
     let rp = project.repo_path.clone();
     let branch = t.branch.clone();
-    tokio::task::spawn_blocking(move || {
-        worktree::check_worktree_exists(&rp, &wtp, &branch)
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))
+    tokio::task::spawn_blocking(move || worktree::check_worktree_exists(&rp, &wtp, &branch))
+        .await
+        .map_err(|e| format!("Join error: {e}"))
 }
 
 #[tauri::command]
@@ -474,13 +517,7 @@ pub async fn rename_task(
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
-    let _ = app.emit(
-        "task-name",
-        crate::stream::TaskNameEvent {
-            task_id,
-            name,
-        },
-    );
+    let _ = app.emit("task-name", crate::stream::TaskNameEvent { task_id, name });
     Ok(())
 }
 
@@ -631,17 +668,17 @@ pub async fn update_session_model(
     model: Option<String>,
 ) -> Result<(), String> {
     db_tx
-        .send(db::DbWrite::UpdateSessionModel { id: session_id, model })
+        .send(db::DbWrite::UpdateSessionModel {
+            id: session_id,
+            model,
+        })
         .await
         .map_err(|e| format!("DB write failed: {e}"))
 }
 
 /// Close a session (hides from UI, persists in DB as 'closed')
 #[tauri::command]
-pub async fn close_session(
-    db_tx: State<'_, DbWriteTx>,
-    session_id: String,
-) -> Result<(), String> {
+pub async fn close_session(db_tx: State<'_, DbWriteTx>, session_id: String) -> Result<(), String> {
     db_tx
         .send(db::DbWrite::CloseSession { id: session_id })
         .await
@@ -650,10 +687,7 @@ pub async fn close_session(
 
 /// Clear a session's Claude context (reset session_id + delete output lines)
 #[tauri::command]
-pub async fn clear_session(
-    db_tx: State<'_, DbWriteTx>,
-    session_id: String,
-) -> Result<(), String> {
+pub async fn clear_session(db_tx: State<'_, DbWriteTx>, session_id: String) -> Result<(), String> {
     // Clear the resume_session_id so next message starts fresh
     db_tx
         .send(db::DbWrite::SetResumeSessionId {
@@ -665,9 +699,7 @@ pub async fn clear_session(
 
     // Clear persisted output lines
     db_tx
-        .send(db::DbWrite::DeleteOutputLines {
-            session_id,
-        })
+        .send(db::DbWrite::DeleteOutputLines { session_id })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
 
@@ -687,9 +719,7 @@ pub async fn abort_message(
 
 /// Return session IDs that currently have an active process
 #[tauri::command]
-pub async fn get_active_sessions(
-    active: State<'_, ActiveMap>,
-) -> Result<Vec<String>, String> {
+pub async fn get_active_sessions(active: State<'_, ActiveMap>) -> Result<Vec<String>, String> {
     Ok(task::get_active_session_ids(active.inner()))
 }
 
@@ -703,7 +733,10 @@ pub async fn respond_to_approval(
     updated_input: Option<serde_json::Value>,
 ) -> Result<(), String> {
     if let Some((_, tx)) = pending.remove(&request_id) {
-        let _ = tx.send(ApprovalResponse { behavior, updated_input });
+        let _ = tx.send(ApprovalResponse {
+            behavior,
+            updated_input,
+        });
         Ok(())
     } else {
         Err(format!("No pending approval with id {request_id}"))
@@ -715,7 +748,10 @@ pub async fn respond_to_approval(
 pub async fn get_pending_approvals(
     pending_meta: State<'_, PendingApprovalMeta>,
 ) -> Result<Vec<PendingApprovalEntry>, String> {
-    Ok(pending_meta.iter().map(|entry| entry.value().clone()).collect())
+    Ok(pending_meta
+        .iter()
+        .map(|entry| entry.value().clone())
+        .collect())
 }
 
 #[tauri::command]
@@ -755,7 +791,11 @@ pub async fn set_trust_level(
     // Validate
     match trust_level.as_str() {
         "normal" | "full_auto" | "supervised" => {}
-        _ => return Err(format!("Invalid trust level: {trust_level}. Must be normal, full_auto, or supervised")),
+        _ => {
+            return Err(format!(
+                "Invalid trust level: {trust_level}. Must be normal, full_auto, or supervised"
+            ))
+        }
     }
 
     db_tx
@@ -792,17 +832,12 @@ pub async fn get_audit_log(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn get_diff(
-    pool: State<'_, SqlitePool>,
-    task_id: String,
-) -> Result<String, String> {
+pub async fn get_diff(pool: State<'_, SqlitePool>, task_id: String) -> Result<String, String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
-    flatten_join(
-        tokio::task::spawn_blocking(move || worktree::get_diff(&t.worktree_path)).await,
-    )
+    flatten_join(tokio::task::spawn_blocking(move || worktree::get_diff(&t.worktree_path)).await)
 }
 
 #[tauri::command]
@@ -868,9 +903,13 @@ pub async fn get_repo_info(path: String) -> Result<RepoInfo, String> {
 
             // Add remote branches first (strip origin/ prefix, skip HEAD pointer and arrows)
             for line in String::from_utf8_lossy(&remote_output.stdout).lines() {
-                if line.contains("->") || line == "origin" { continue; }
+                if line.contains("->") || line == "origin" {
+                    continue;
+                }
                 let name = line.strip_prefix("origin/").unwrap_or(line);
-                if name == "HEAD" || name.is_empty() { continue; }
+                if name == "HEAD" || name.is_empty() {
+                    continue;
+                }
                 if seen.insert(name.to_string()) {
                     branches.push(name.to_string());
                 }
@@ -938,8 +977,15 @@ pub async fn get_file_diff(
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
     flatten_join(
-        tokio::task::spawn_blocking(move || git_ops::get_file_diff(&t.worktree_path, &file_path, context_lines, ignore_whitespace))
-            .await,
+        tokio::task::spawn_blocking(move || {
+            git_ops::get_file_diff(
+                &t.worktree_path,
+                &file_path,
+                context_lines,
+                ignore_whitespace,
+            )
+        })
+        .await,
     )
 }
 
@@ -997,8 +1043,7 @@ pub async fn git_unstage(
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
     flatten_join(
-        tokio::task::spawn_blocking(move || git_ops::unstage_files(&t.worktree_path, &paths))
-            .await,
+        tokio::task::spawn_blocking(move || git_ops::unstage_files(&t.worktree_path, &paths)).await,
     )
 }
 
@@ -1018,31 +1063,21 @@ pub async fn git_commit(
 }
 
 #[tauri::command]
-pub async fn git_push(
-    pool: State<'_, SqlitePool>,
-    task_id: String,
-) -> Result<(), String> {
+pub async fn git_push(pool: State<'_, SqlitePool>, task_id: String) -> Result<(), String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
-    flatten_join(
-        tokio::task::spawn_blocking(move || git_ops::push_branch(&t.worktree_path)).await,
-    )
+    flatten_join(tokio::task::spawn_blocking(move || git_ops::push_branch(&t.worktree_path)).await)
 }
 
 #[tauri::command]
-pub async fn git_pull(
-    pool: State<'_, SqlitePool>,
-    task_id: String,
-) -> Result<String, String> {
+pub async fn git_pull(pool: State<'_, SqlitePool>, task_id: String) -> Result<String, String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
-    flatten_join(
-        tokio::task::spawn_blocking(move || git_ops::pull_branch(&t.worktree_path)).await,
-    )
+    flatten_join(tokio::task::spawn_blocking(move || git_ops::pull_branch(&t.worktree_path)).await)
 }
 
 #[tauri::command]
@@ -1099,8 +1134,7 @@ pub async fn get_branch_commits(
             let merge_base = match cached {
                 Some(ref sha) => sha.clone(),
                 None => {
-                    let sha = git_ops::find_merge_base(&wt, &base)
-                        .unwrap_or_default();
+                    let sha = git_ops::find_merge_base(&wt, &base).unwrap_or_default();
                     if !sha.is_empty() {
                         let _ = tx.try_send(db::DbWrite::SetMergeBaseSha {
                             id: tid,
@@ -1111,7 +1145,11 @@ pub async fn get_branch_commits(
                 }
             };
 
-            let cached_ref = if merge_base.is_empty() { None } else { Some(merge_base.as_str()) };
+            let cached_ref = if merge_base.is_empty() {
+                None
+            } else {
+                Some(merge_base.as_str())
+            };
             git_ops::get_branch_commits(&wt, &base, cached_ref)
         })
         .await,
@@ -1129,8 +1167,10 @@ pub async fn get_commit_files(
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
     flatten_join(
-        tokio::task::spawn_blocking(move || git_ops::get_commit_files(&t.worktree_path, &commit_hash))
-            .await,
+        tokio::task::spawn_blocking(move || {
+            git_ops::get_commit_files(&t.worktree_path, &commit_hash)
+        })
+        .await,
     )
 }
 
@@ -1149,9 +1189,15 @@ pub async fn get_commit_file_diff(
 
     flatten_join(
         tokio::task::spawn_blocking(move || {
-            git_ops::get_commit_file_diff(&t.worktree_path, &commit_hash, &file_path, context_lines, ignore_whitespace)
+            git_ops::get_commit_file_diff(
+                &t.worktree_path,
+                &commit_hash,
+                &file_path,
+                context_lines,
+                ignore_whitespace,
+            )
         })
-            .await,
+        .await,
     )
 }
 
@@ -1231,17 +1277,12 @@ pub async fn create_pull_request(
 }
 
 #[tauri::command]
-pub async fn mark_pr_ready(
-    pool: State<'_, SqlitePool>,
-    task_id: String,
-) -> Result<(), String> {
+pub async fn mark_pr_ready(pool: State<'_, SqlitePool>, task_id: String) -> Result<(), String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
-    flatten_join(
-        tokio::task::spawn_blocking(move || github::mark_pr_ready(&t.worktree_path)).await,
-    )
+    flatten_join(tokio::task::spawn_blocking(move || github::mark_pr_ready(&t.worktree_path)).await)
 }
 
 #[tauri::command]
@@ -1258,7 +1299,10 @@ pub async fn merge_pull_request(
     let force = force.unwrap_or(false);
     let delete_branch = delete_branch.unwrap_or(false);
     flatten_join(
-        tokio::task::spawn_blocking(move || github::merge_pr(&t.worktree_path, force, delete_branch)).await,
+        tokio::task::spawn_blocking(move || {
+            github::merge_pr(&t.worktree_path, force, delete_branch)
+        })
+        .await,
     )
 }
 
@@ -1313,9 +1357,7 @@ pub async fn get_ci_checks(
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
-    flatten_join(
-        tokio::task::spawn_blocking(move || github::get_ci_checks(&t.worktree_path)).await,
-    )
+    flatten_join(tokio::task::spawn_blocking(move || github::get_ci_checks(&t.worktree_path)).await)
 }
 
 #[tauri::command]
@@ -1333,17 +1375,12 @@ pub async fn get_branch_url(
 }
 
 #[tauri::command]
-pub async fn has_conflicts(
-    pool: State<'_, SqlitePool>,
-    task_id: String,
-) -> Result<bool, String> {
+pub async fn has_conflicts(pool: State<'_, SqlitePool>, task_id: String) -> Result<bool, String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
-    flatten_join(
-        tokio::task::spawn_blocking(move || github::has_conflicts(&t.worktree_path)).await,
-    )
+    flatten_join(tokio::task::spawn_blocking(move || github::has_conflicts(&t.worktree_path)).await)
 }
 
 // ---------------------------------------------------------------------------
@@ -1372,7 +1409,17 @@ pub async fn pty_spawn(
     let direct = direct_command.unwrap_or(false);
     flatten_join(
         tokio::task::spawn_blocking(move || {
-            pty::spawn_pty(app, map, task_id, t.worktree_path, rows, cols, initial_command, env_vars, direct)
+            pty::spawn_pty(
+                app,
+                map,
+                task_id,
+                t.worktree_path,
+                rows,
+                cols,
+                initial_command,
+                env_vars,
+                direct,
+            )
         })
         .await,
     )
@@ -1400,8 +1447,7 @@ pub async fn pty_resize(
 ) -> Result<(), String> {
     let map = pty_map.inner().clone();
     flatten_join(
-        tokio::task::spawn_blocking(move || pty::resize_pty(&map, &terminal_id, rows, cols))
-            .await,
+        tokio::task::spawn_blocking(move || pty::resize_pty(&map, &terminal_id, rows, cols)).await,
     )
 }
 
@@ -1411,9 +1457,7 @@ pub async fn pty_close(
     terminal_id: String,
 ) -> Result<(), String> {
     let map = pty_map.inner().clone();
-    flatten_join(
-        tokio::task::spawn_blocking(move || pty::close_pty(&map, &terminal_id)).await,
-    )
+    flatten_join(tokio::task::spawn_blocking(move || pty::close_pty(&map, &terminal_id)).await)
 }
 
 // ---------------------------------------------------------------------------
@@ -1425,9 +1469,13 @@ pub async fn read_clipboard() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     let output = std::process::Command::new("pbpaste").output();
     #[cfg(target_os = "linux")]
-    let output = std::process::Command::new("xclip").args(["-selection", "clipboard", "-o"]).output();
+    let output = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard", "-o"])
+        .output();
     #[cfg(target_os = "windows")]
-    let output = std::process::Command::new("powershell").args(["-command", "Get-Clipboard"]).output();
+    let output = std::process::Command::new("powershell")
+        .args(["-command", "Get-Clipboard"])
+        .output();
 
     let output = output.map_err(|e| format!("Failed to read clipboard: {e}"))?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -1536,7 +1584,10 @@ pub async fn list_agent_skills() -> Result<Vec<AgentSkill>, String> {
 
     for line in text.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("- `/").or_else(|| trimmed.strip_prefix("- `/")) {
+        if let Some(rest) = trimmed
+            .strip_prefix("- `/")
+            .or_else(|| trimmed.strip_prefix("- `/"))
+        {
             if let Some(idx) = rest.find('`') {
                 let name = rest[..idx].to_string();
                 let desc = rest[idx + 1..]
@@ -1545,7 +1596,10 @@ pub async fn list_agent_skills() -> Result<Vec<AgentSkill>, String> {
                     .trim()
                     .to_string();
                 if !name.is_empty() {
-                    skills.push(AgentSkill { name, description: desc });
+                    skills.push(AgentSkill {
+                        name,
+                        description: desc,
+                    });
                 }
             }
         }
@@ -1577,7 +1631,13 @@ fn check_agent_impl(agent: &dyn crate::agent::Agent) -> Result<String, String> {
     let output = std::process::Command::new(agent.cli_binary())
         .args(agent.version_args())
         .output()
-        .map_err(|_| format!("{} CLI not found. {}", agent.display_name(), agent.install_hint()))?;
+        .map_err(|_| {
+            format!(
+                "{} CLI not found. {}",
+                agent.display_name(),
+                agent.install_hint()
+            )
+        })?;
     if !output.status.success() {
         return Err(format!("{} CLI returned an error", agent.display_name()));
     }
@@ -1601,7 +1661,8 @@ pub fn detect_all_agents() -> Vec<AgentInfo> {
             let installed = cli_version.is_some();
 
             let models = if installed {
-                agent.model_list_args()
+                agent
+                    .model_list_args()
                     .and_then(|args| {
                         std::process::Command::new(agent.cli_binary())
                             .args(&args)
@@ -1645,10 +1706,15 @@ pub async fn list_available_agents(cache: State<'_, AgentCache>) -> Result<Vec<A
 /// Kick off a background re-detection and return immediately.
 /// Results arrive via the `agents-updated` event.
 #[tauri::command]
-pub async fn refresh_agents(cache: State<'_, AgentCache>, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn refresh_agents(
+    cache: State<'_, AgentCache>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     let cache = std::sync::Arc::clone(&*cache);
     tauri::async_runtime::spawn(async move {
-        let agents = tokio::task::spawn_blocking(detect_all_agents).await.unwrap_or_default();
+        let agents = tokio::task::spawn_blocking(detect_all_agents)
+            .await
+            .unwrap_or_default();
         *cache.write().unwrap() = agents.clone();
         let _ = app.emit("agents-updated", agents);
     });
@@ -1734,8 +1800,9 @@ pub async fn check_gitignored(
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null());
 
-            let mut child =
-                cmd.spawn().map_err(|e| format!("Failed to run git check-ignore: {e}"))?;
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("Failed to run git check-ignore: {e}"))?;
             {
                 use std::io::Write;
                 let stdin = child.stdin.as_mut().unwrap();
@@ -1781,7 +1848,11 @@ pub async fn open_in_finder(path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn open_in_app(path: String, app: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg("-a").arg(&app).arg(&path).spawn();
+    let result = std::process::Command::new("open")
+        .arg("-a")
+        .arg(&app)
+        .arg(&path)
+        .spawn();
     #[cfg(not(target_os = "macos"))]
     let result = std::process::Command::new(&app).arg(&path).spawn();
 
@@ -1836,7 +1907,9 @@ pub async fn list_directory(
                 if entry.path() == base {
                     continue;
                 }
-                let meta = entry.metadata().map_err(|e| format!("Metadata error: {e}"))?;
+                let meta = entry
+                    .metadata()
+                    .map_err(|e| format!("Metadata error: {e}"))?;
                 let name = entry.file_name().to_string_lossy().to_string();
                 let rel = entry
                     .path()
@@ -1850,15 +1923,19 @@ pub async fn list_directory(
                     relative_path: rel,
                     is_dir: meta.is_dir(),
                     is_symlink: meta.is_symlink(),
-                    size: if meta.is_file() { Some(meta.len()) } else { None },
+                    size: if meta.is_file() {
+                        Some(meta.len())
+                    } else {
+                        None
+                    },
                 });
             }
 
             // Sort: directories first, then alphabetical (case-insensitive)
             entries.sort_by(|a, b| {
-                b.is_dir.cmp(&a.is_dir).then_with(|| {
-                    a.name.to_lowercase().cmp(&b.name.to_lowercase())
-                })
+                b.is_dir
+                    .cmp(&a.is_dir)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             });
 
             Ok(entries)
@@ -1895,7 +1972,11 @@ pub async fn read_worktree_file(
         .map_err(|e| format!("Failed to read {relative_path}: {e}"))?;
 
     let truncated = bytes.len() > limit;
-    let slice = if truncated { &bytes[..limit] } else { &bytes[..] };
+    let slice = if truncated {
+        &bytes[..limit]
+    } else {
+        &bytes[..]
+    };
 
     let text = String::from_utf8(slice.to_vec())
         .map_err(|_| "Binary file — preview not available".to_string())?;
@@ -1921,8 +2002,8 @@ pub async fn resolve_worktree_file_path(
 
     let canonical_base = std::fs::canonicalize(&t.worktree_path)
         .map_err(|e| format!("Cannot resolve worktree: {e}"))?;
-    let canonical_file = std::fs::canonicalize(&full_path)
-        .map_err(|e| format!("Cannot resolve file: {e}"))?;
+    let canonical_file =
+        std::fs::canonicalize(&full_path).map_err(|e| format!("Cannot resolve file: {e}"))?;
 
     if !canonical_file.starts_with(&canonical_base) {
         return Err("Path escapes worktree boundary".into());
@@ -2005,10 +2086,7 @@ pub async fn lsp_send(
 }
 
 #[tauri::command]
-pub async fn lsp_stop(
-    lsp_map: State<'_, LspMap>,
-    task_id: String,
-) -> Result<(), String> {
+pub async fn lsp_stop(lsp_map: State<'_, LspMap>, task_id: String) -> Result<(), String> {
     crate::lsp::stop_server(&lsp_map, &task_id).await;
     Ok(())
 }
@@ -2051,13 +2129,22 @@ pub async fn debug_navigate_to_task(
     session_id: String,
 ) -> Result<(), String> {
     #[derive(Clone, Serialize)]
-    struct Payload { task_id: String, session_id: String }
+    struct Payload {
+        task_id: String,
+        session_id: String,
+    }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.set_focus();
     }
-    app.emit("navigate-to-task", Payload { task_id, session_id })
-        .map_err(|e| e.to_string())
+    app.emit(
+        "navigate-to-task",
+        Payload {
+            task_id,
+            session_id,
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 // ── Steps ──────────────────────────────────────────────────────────────
@@ -2117,16 +2204,22 @@ pub async fn update_step(
     attachments_json: Option<String>,
 ) -> Result<(), String> {
     db_tx
-        .send(db::DbWrite::UpdateStep { id, message, armed, model, plan_mode, thinking_mode, fast_mode, attachments_json })
+        .send(db::DbWrite::UpdateStep {
+            id,
+            message,
+            armed,
+            model,
+            plan_mode,
+            thinking_mode,
+            fast_mode,
+            attachments_json,
+        })
         .await
         .map_err(|e| format!("DB write failed: {e}"))
 }
 
 #[tauri::command]
-pub async fn delete_step(
-    db_tx: State<'_, DbWriteTx>,
-    id: String,
-) -> Result<(), String> {
+pub async fn delete_step(db_tx: State<'_, DbWriteTx>, id: String) -> Result<(), String> {
     db_tx
         .send(db::DbWrite::DeleteStep { id })
         .await
@@ -2169,18 +2262,20 @@ pub async fn open_task_window(
     let label = format!("task-{task_id}");
 
     if let Some(win) = app.get_webview_window(&label) {
-        win.set_focus().map_err(|e| format!("Failed to focus window: {e}"))?;
+        win.set_focus()
+            .map_err(|e| format!("Failed to focus window: {e}"))?;
         return Ok(());
     }
 
     let title = task_name.unwrap_or_else(|| "Task".into());
     let url = format!("index.html?windowType=task&taskId={task_id}&windowLabel={label}");
 
-    let builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
-        .title(&title)
-        .inner_size(1200.0, 800.0)
-        .min_inner_size(800.0, 600.0)
-        .visible(false);
+    let builder =
+        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+            .title(&title)
+            .inner_size(1200.0, 800.0)
+            .min_inner_size(800.0, 600.0)
+            .visible(false);
     #[cfg(target_os = "macos")]
     let builder = builder
         .hidden_title(true)
@@ -2203,21 +2298,17 @@ pub async fn open_task_window(
 }
 
 #[tauri::command]
-pub async fn open_new_task_window(
-    app: AppHandle,
-    project_id: String,
-) -> Result<(), String> {
+pub async fn open_new_task_window(app: AppHandle, project_id: String) -> Result<(), String> {
     let id = Uuid::new_v4().to_string();
     let label = format!("task-new-{id}");
-    let url = format!(
-        "index.html?windowType=task&projectId={project_id}&windowLabel={label}"
-    );
+    let url = format!("index.html?windowType=task&projectId={project_id}&windowLabel={label}");
 
-    let builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
-        .title("New Task")
-        .inner_size(1200.0, 800.0)
-        .min_inner_size(800.0, 600.0)
-        .visible(false);
+    let builder =
+        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+            .title("New Task")
+            .inner_size(1200.0, 800.0)
+            .min_inner_size(800.0, 600.0)
+            .visible(false);
     #[cfg(target_os = "macos")]
     let builder = builder
         .hidden_title(true)
@@ -2244,7 +2335,9 @@ pub async fn force_close_task_window(
             );
         }
     }
-    window.destroy().map_err(|e| format!("Failed to destroy window: {e}"))
+    window
+        .destroy()
+        .map_err(|e| format!("Failed to destroy window: {e}"))
 }
 
 #[cfg(test)]

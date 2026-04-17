@@ -126,11 +126,10 @@ pub fn truncate_after_message(
             .map(|u| u == last_kept_uuid)
             .unwrap_or(false);
 
-        let serialized =
-            serde_json::to_string(&value).map_err(|e| JsonlError::MalformedLine {
-                line_no,
-                reason: e.to_string(),
-            })?;
+        let serialized = serde_json::to_string(&value).map_err(|e| JsonlError::MalformedLine {
+            line_no,
+            reason: e.to_string(),
+        })?;
         writeln!(out, "{serialized}").map_err(|e| JsonlError::Io(e.to_string()))?;
 
         if uuid_match {

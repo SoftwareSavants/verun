@@ -1,5 +1,13 @@
 #!/bin/bash
 set -e
 
+echo "Running Rust formatter..."
+cargo fmt --manifest-path src-tauri/Cargo.toml
+
+if ! git diff --quiet -- src-tauri; then
+  echo "Restaging Rust files changed by formatter..."
+  git add src-tauri
+fi
+
 echo "Running pre-commit checks..."
 bash scripts/check.sh

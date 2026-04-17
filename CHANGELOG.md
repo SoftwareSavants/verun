@@ -7,6 +7,7 @@
 - Move db init into async spawn to prevent startup crash on macOS
 - Chat search position no longer jumps to last match when new agent messages arrive
 - File browser now shows .env and other gitignored files
+- Quick open now boosts project-scoped recent files, including ignored files like `.env` when recently opened, without indexing build output or `node_modules`
 
 ## 0.7.1 — 2026-04-17
 

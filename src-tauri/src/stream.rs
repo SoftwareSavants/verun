@@ -155,7 +155,11 @@ pub struct PolicyAutoApprovedEvent {
 fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
     let v: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
-        Err(_) => return vec![OutputItem::Raw { text: line.to_string() }],
+        Err(_) => {
+            return vec![OutputItem::Raw {
+                text: line.to_string(),
+            }]
+        }
     };
 
     let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -183,7 +187,9 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // -- System messages --
         "system" => {
             if v.get("subtype").and_then(|s| s.as_str()) == Some("init") {
-                vec![OutputItem::System { text: "Initializing session...".into() }]
+                vec![OutputItem::System {
+                    text: "Initializing session...".into(),
+                }]
             } else {
                 vec![]
             }
@@ -193,7 +199,9 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // Text is already delivered via stream_event deltas; skip result.result to avoid duplication.
         "result" => {
             // Claude/Cursor use `subtype`, Gemini uses `status` at top level
-            let status_str = v.get("subtype").and_then(|s| s.as_str())
+            let status_str = v
+                .get("subtype")
+                .and_then(|s| s.as_str())
                 .or_else(|| v.get("status").and_then(|s| s.as_str()))
                 .unwrap_or("unknown");
             let status = match status_str {
@@ -204,18 +212,25 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
             // Claude/Cursor: `usage`, Gemini: `stats`
             let usage = v.get("usage").or_else(|| v.get("stats"));
             // Claude: snake_case, Cursor: camelCase
-            let input_tokens = usage.and_then(|u|
-                u.get("input_tokens").or_else(|| u.get("inputTokens"))
-            ).and_then(|t| t.as_u64());
-            let output_tokens = usage.and_then(|u|
-                u.get("output_tokens").or_else(|| u.get("outputTokens"))
-            ).and_then(|t| t.as_u64());
-            let cache_read_tokens = usage.and_then(|u|
-                u.get("cache_read_input_tokens").or_else(|| u.get("cacheReadTokens")).or_else(|| u.get("cached"))
-            ).and_then(|t| t.as_u64());
-            let cache_write_tokens = usage.and_then(|u|
-                u.get("cache_creation_input_tokens").or_else(|| u.get("cacheWriteTokens"))
-            ).and_then(|t| t.as_u64());
+            let input_tokens = usage
+                .and_then(|u| u.get("input_tokens").or_else(|| u.get("inputTokens")))
+                .and_then(|t| t.as_u64());
+            let output_tokens = usage
+                .and_then(|u| u.get("output_tokens").or_else(|| u.get("outputTokens")))
+                .and_then(|t| t.as_u64());
+            let cache_read_tokens = usage
+                .and_then(|u| {
+                    u.get("cache_read_input_tokens")
+                        .or_else(|| u.get("cacheReadTokens"))
+                        .or_else(|| u.get("cached"))
+                })
+                .and_then(|t| t.as_u64());
+            let cache_write_tokens = usage
+                .and_then(|u| {
+                    u.get("cache_creation_input_tokens")
+                        .or_else(|| u.get("cacheWriteTokens"))
+                })
+                .and_then(|t| t.as_u64());
             let error = if status == "error" {
                 v.get("error")
                     .and_then(|e| e.as_str())
@@ -223,13 +238,27 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
             } else {
                 None
             };
-            vec![OutputItem::TurnEnd { status: status.to_string(), cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, error }]
+            vec![OutputItem::TurnEnd {
+                status: status.to_string(),
+                cost,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                error,
+            }]
         }
 
         // -- Telemetry events we can surface --
         "tool_progress" => {
-            let tool = v.get("tool_name").and_then(|t| t.as_str()).unwrap_or("tool");
-            let elapsed = v.get("elapsed_time_seconds").and_then(|e| e.as_f64()).unwrap_or(0.0);
+            let tool = v
+                .get("tool_name")
+                .and_then(|t| t.as_str())
+                .unwrap_or("tool");
+            let elapsed = v
+                .get("elapsed_time_seconds")
+                .and_then(|e| e.as_f64())
+                .unwrap_or(0.0);
             vec![OutputItem::System {
                 text: format!("{tool} running ({elapsed:.0}s)"),
             }]
@@ -253,13 +282,20 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
                     if let Some(tc) = tc {
                         let (tool, input) = parse_cursor_tool_call(tc);
                         vec![OutputItem::ToolStart { tool, input }]
-                    } else { vec![] }
+                    } else {
+                        vec![]
+                    }
                 }
                 "completed" => {
                     if let Some(tc) = tc {
                         let output = extract_cursor_tool_result(tc);
-                        vec![OutputItem::ToolResult { text: output, is_error: false }]
-                    } else { vec![] }
+                        vec![OutputItem::ToolResult {
+                            text: output,
+                            is_error: false,
+                        }]
+                    } else {
+                        vec![]
+                    }
                 }
                 _ => vec![],
             }
@@ -270,7 +306,9 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
             if subtype == "delta" {
                 if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
                     if !text.is_empty() {
-                        return vec![OutputItem::Thinking { text: text.to_string() }];
+                        return vec![OutputItem::Thinking {
+                            text: text.to_string(),
+                        }];
                     }
                 }
             }
@@ -283,7 +321,9 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
             let delta = v.get("delta");
             if delta.and_then(|d| d.get("type")).and_then(|t| t.as_str()) == Some("text_delta") {
                 if let Some(text) = delta.and_then(|d| d.get("text")).and_then(|t| t.as_str()) {
-                    return vec![OutputItem::Text { text: text.to_string() }];
+                    return vec![OutputItem::Text {
+                        text: text.to_string(),
+                    }];
                 }
             }
             vec![]
@@ -291,11 +331,21 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
 
         // Tool started: show the command/tool being invoked
         "item.started" => {
-            let item = match v.get("item") { Some(i) => i, None => return vec![] };
+            let item = match v.get("item") {
+                Some(i) => i,
+                None => return vec![],
+            };
             match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                 "command_execution" => {
-                    let cmd = item.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string();
-                    vec![OutputItem::ToolStart { tool: "shell".to_string(), input: cmd }]
+                    let cmd = item
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    vec![OutputItem::ToolStart {
+                        tool: "shell".to_string(),
+                        input: cmd,
+                    }]
                 }
                 _ => vec![],
             }
@@ -303,29 +353,61 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
 
         // Completed item: agent message, command result, tool call, or tool result
         "item.completed" => {
-            let item = match v.get("item") { Some(i) => i, None => return vec![] };
+            let item = match v.get("item") {
+                Some(i) => i,
+                None => return vec![],
+            };
             match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                "agent_message" => {
-                    item.get("text").and_then(|t| t.as_str())
-                        .map(|text| vec![OutputItem::Text { text: text.to_string() }])
-                        .unwrap_or_default()
-                }
+                "agent_message" => item
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|text| {
+                        vec![OutputItem::Text {
+                            text: text.to_string(),
+                        }]
+                    })
+                    .unwrap_or_default(),
                 "command_execution" => {
-                    let output = item.get("aggregated_output").and_then(|o| o.as_str()).unwrap_or("").to_string();
-                    let is_error = item.get("exit_code").and_then(|c| c.as_i64()).map(|c| c != 0).unwrap_or(false);
-                    vec![OutputItem::ToolResult { text: output, is_error }]
+                    let output = item
+                        .get("aggregated_output")
+                        .and_then(|o| o.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let is_error = item
+                        .get("exit_code")
+                        .and_then(|c| c.as_i64())
+                        .map(|c| c != 0)
+                        .unwrap_or(false);
+                    vec![OutputItem::ToolResult {
+                        text: output,
+                        is_error,
+                    }]
                 }
                 "tool_call" => {
                     let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                    let args = item.get("arguments")
+                    let args = item
+                        .get("arguments")
                         .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
                         .unwrap_or_default();
-                    vec![OutputItem::ToolStart { tool: name.to_string(), input: args }]
+                    vec![OutputItem::ToolStart {
+                        tool: name.to_string(),
+                        input: args,
+                    }]
                 }
                 "tool_result" => {
-                    let output = item.get("output").and_then(|o| o.as_str()).unwrap_or("").to_string();
-                    let is_error = item.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
-                    vec![OutputItem::ToolResult { text: output, is_error }]
+                    let output = item
+                        .get("output")
+                        .and_then(|o| o.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let is_error = item
+                        .get("is_error")
+                        .and_then(|e| e.as_bool())
+                        .unwrap_or(false);
+                    vec![OutputItem::ToolResult {
+                        text: output,
+                        is_error,
+                    }]
                 }
                 _ => vec![],
             }
@@ -334,10 +416,24 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // Turn completed: emit TurnEnd with token usage
         "turn.completed" => {
             let usage = v.get("usage");
-            let input_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(|t| t.as_u64());
-            let output_tokens = usage.and_then(|u| u.get("output_tokens")).and_then(|t| t.as_u64());
-            let cache_read_tokens = usage.and_then(|u| u.get("cached_input_tokens")).and_then(|t| t.as_u64());
-            vec![OutputItem::TurnEnd { status: "completed".to_string(), cost: None, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens: None, error: None }]
+            let input_tokens = usage
+                .and_then(|u| u.get("input_tokens"))
+                .and_then(|t| t.as_u64());
+            let output_tokens = usage
+                .and_then(|u| u.get("output_tokens"))
+                .and_then(|t| t.as_u64());
+            let cache_read_tokens = usage
+                .and_then(|u| u.get("cached_input_tokens"))
+                .and_then(|t| t.as_u64());
+            vec![OutputItem::TurnEnd {
+                status: "completed".to_string(),
+                cost: None,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens: None,
+                error: None,
+            }]
         }
 
         // Ignored Codex lifecycle events
@@ -345,14 +441,24 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
 
         // ── OpenCode event format ────────────────────────────────────────
         "text" => {
-            let part = match v.get("part") { Some(p) => p, None => return vec![] };
+            let part = match v.get("part") {
+                Some(p) => p,
+                None => return vec![],
+            };
             // OpenCode nests the assistant text inside part — try known field names
-            let content = part.get("content").and_then(|c| c.as_str())
+            let content = part
+                .get("content")
+                .and_then(|c| c.as_str())
                 .or_else(|| part.get("text").and_then(|t| t.as_str()));
             match content {
-                Some(text) if !text.is_empty() => vec![OutputItem::Text { text: text.to_string() }],
+                Some(text) if !text.is_empty() => vec![OutputItem::Text {
+                    text: text.to_string(),
+                }],
                 _ => {
-                    eprintln!("[verun][opencode] unhandled text part: {}", serde_json::to_string(part).unwrap_or_default());
+                    eprintln!(
+                        "[verun][opencode] unhandled text part: {}",
+                        serde_json::to_string(part).unwrap_or_default()
+                    );
                     vec![]
                 }
             }
@@ -361,28 +467,49 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         "tool_use" => {
             if let Some(part) = v.get("part") {
                 // OpenCode format: { type: "tool_use", part: { tool, state: { status, input, output } } }
-                let tool = part.get("tool").and_then(|t| t.as_str()).unwrap_or("tool").to_string();
+                let tool = part
+                    .get("tool")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("tool")
+                    .to_string();
                 let state = part.get("state");
-                let status = state.and_then(|s| s.get("status")).and_then(|s| s.as_str()).unwrap_or("");
+                let status = state
+                    .and_then(|s| s.get("status"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("");
                 if status == "completed" {
-                    let input = state.and_then(|s| s.get("input"))
+                    let input = state
+                        .and_then(|s| s.get("input"))
                         .map(|i| serde_json::to_string_pretty(i).unwrap_or_default())
                         .unwrap_or_default();
-                    let output = state.and_then(|s| s.get("output")).and_then(|o| o.as_str()).unwrap_or("").to_string();
+                    let output = state
+                        .and_then(|s| s.get("output"))
+                        .and_then(|o| o.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     vec![
                         OutputItem::ToolStart { tool, input },
-                        OutputItem::ToolResult { text: output, is_error: false },
+                        OutputItem::ToolResult {
+                            text: output,
+                            is_error: false,
+                        },
                     ]
                 } else {
-                    let input = state.and_then(|s| s.get("input"))
+                    let input = state
+                        .and_then(|s| s.get("input"))
                         .map(|i| serde_json::to_string_pretty(i).unwrap_or_default())
                         .unwrap_or_default();
                     vec![OutputItem::ToolStart { tool, input }]
                 }
             } else {
                 // Gemini format: { type: "tool_use", tool_name, tool_id, parameters }
-                let tool = v.get("tool_name").and_then(|t| t.as_str()).unwrap_or("tool").to_string();
-                let input = v.get("parameters")
+                let tool = v
+                    .get("tool_name")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("tool")
+                    .to_string();
+                let input = v
+                    .get("parameters")
                     .map(|p| serde_json::to_string_pretty(p).unwrap_or_default())
                     .unwrap_or_default();
                 vec![OutputItem::ToolStart { tool, input }]
@@ -400,13 +527,27 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
                 // OpenCode's `input` is a fixed overhead (not user message tokens)
                 // and `total` is the cumulative context window. Only `output` is
                 // meaningful per-turn, so we skip input to avoid misleading numbers.
-                let output_tokens = tokens.and_then(|t| t.get("output")).and_then(|t| t.as_u64());
+                let output_tokens = tokens
+                    .and_then(|t| t.get("output"))
+                    .and_then(|t| t.as_u64());
                 let input_tokens = tokens.and_then(|t| t.get("total")).and_then(|t| t.as_u64());
                 let cache = tokens.and_then(|t| t.get("cache"));
                 let cache_read_tokens = cache.and_then(|c| c.get("read")).and_then(|t| t.as_u64());
-                let cache_write_tokens = cache.and_then(|c| c.get("write")).and_then(|t| t.as_u64());
-                let cost = part.and_then(|p| p.get("cost")).and_then(|c| c.as_f64()).filter(|c| *c > 0.0);
-                vec![OutputItem::TurnEnd { status: "completed".to_string(), cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, error: None }]
+                let cache_write_tokens =
+                    cache.and_then(|c| c.get("write")).and_then(|t| t.as_u64());
+                let cost = part
+                    .and_then(|p| p.get("cost"))
+                    .and_then(|c| c.as_f64())
+                    .filter(|c| *c > 0.0);
+                vec![OutputItem::TurnEnd {
+                    status: "completed".to_string(),
+                    cost,
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    error: None,
+                }]
             } else {
                 vec![]
             }
@@ -417,18 +558,29 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         // ── Gemini CLI event format ──────────────────────────────────────
         "message" => {
             let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("");
-            if role != "assistant" { return vec![] }
+            if role != "assistant" {
+                return vec![];
+            }
             match v.get("content").and_then(|c| c.as_str()) {
-                Some(text) if !text.is_empty() => vec![OutputItem::Text { text: text.to_string() }],
+                Some(text) if !text.is_empty() => vec![OutputItem::Text {
+                    text: text.to_string(),
+                }],
                 _ => vec![],
             }
         }
 
         "tool_result" if v.get("tool_id").is_some() => {
             // Gemini format: { type: "tool_result", tool_id, status, output }
-            let output = v.get("output").and_then(|o| o.as_str()).unwrap_or("").to_string();
+            let output = v
+                .get("output")
+                .and_then(|o| o.as_str())
+                .unwrap_or("")
+                .to_string();
             let is_error = v.get("status").and_then(|s| s.as_str()) == Some("error");
-            vec![OutputItem::ToolResult { text: output, is_error }]
+            vec![OutputItem::ToolResult {
+                text: output,
+                is_error,
+            }]
         }
 
         _ => vec![],
@@ -457,7 +609,9 @@ fn parse_stream_event(v: &serde_json::Value) -> Vec<OutputItem> {
                     if text.is_empty() {
                         vec![]
                     } else {
-                        vec![OutputItem::Text { text: text.to_string() }]
+                        vec![OutputItem::Text {
+                            text: text.to_string(),
+                        }]
                     }
                 }
                 "thinking_delta" => {
@@ -465,7 +619,9 @@ fn parse_stream_event(v: &serde_json::Value) -> Vec<OutputItem> {
                     if text.is_empty() {
                         vec![]
                     } else {
-                        vec![OutputItem::Thinking { text: text.to_string() }]
+                        vec![OutputItem::Thinking {
+                            text: text.to_string(),
+                        }]
                     }
                 }
                 "input_json_delta" => {
@@ -484,8 +640,13 @@ fn parse_stream_event(v: &serde_json::Value) -> Vec<OutputItem> {
             match block_type {
                 "tool_use" | "server_tool_use" | "mcp_tool_use" => {
                     let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                    let input = block.get("input").cloned().unwrap_or(serde_json::Value::Object(Default::default()));
-                    let input_str = if input.is_object() && input.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                    let input = block
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Object(Default::default()));
+                    let input_str = if input.is_object()
+                        && input.as_object().map(|o| o.is_empty()).unwrap_or(true)
+                    {
                         String::new()
                     } else {
                         serde_json::to_string_pretty(&input).unwrap_or_default()
@@ -512,7 +673,11 @@ fn parse_stream_event(v: &serde_json::Value) -> Vec<OutputItem> {
 /// in real-time, so the snapshot is redundant for those. We skip it to avoid duplication.
 /// However, we DO extract tool_use blocks since content_block_start may not always arrive.
 fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
-    let content = match v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+    let content = match v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    {
         Some(c) => c,
         None => return vec![],
     };
@@ -523,8 +688,13 @@ fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
         match block_type {
             "tool_use" | "server_tool_use" | "mcp_tool_use" => {
                 let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                let input = block.get("input").cloned().unwrap_or(serde_json::Value::Object(Default::default()));
-                let input_str = if input.is_object() && input.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                let input = block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                let input_str = if input.is_object()
+                    && input.as_object().map(|o| o.is_empty()).unwrap_or(true)
+                {
                     String::new()
                 } else {
                     serde_json::to_string_pretty(&input).unwrap_or_default()
@@ -542,7 +712,11 @@ fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
 
 /// Extract text from a Cursor streaming assistant delta (has `timestamp_ms`).
 fn parse_assistant_text_only(v: &serde_json::Value) -> Vec<OutputItem> {
-    let content = match v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+    let content = match v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    {
         Some(c) => c,
         None => return vec![],
     };
@@ -552,14 +726,18 @@ fn parse_assistant_text_only(v: &serde_json::Value) -> Vec<OutputItem> {
             "text" => {
                 if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                     if !text.is_empty() {
-                        items.push(OutputItem::Text { text: text.to_string() });
+                        items.push(OutputItem::Text {
+                            text: text.to_string(),
+                        });
                     }
                 }
             }
             "thinking" => {
                 if let Some(text) = block.get("thinking").and_then(|t| t.as_str()) {
                     if !text.is_empty() {
-                        items.push(OutputItem::Thinking { text: text.to_string() });
+                        items.push(OutputItem::Thinking {
+                            text: text.to_string(),
+                        });
                     }
                 }
             }
@@ -571,7 +749,11 @@ fn parse_assistant_text_only(v: &serde_json::Value) -> Vec<OutputItem> {
 
 /// Parse user messages (typically tool results)
 fn parse_user_message(v: &serde_json::Value) -> Vec<OutputItem> {
-    let content = match v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+    let content = match v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    {
         Some(c) => c,
         None => return vec![],
     };
@@ -580,7 +762,10 @@ fn parse_user_message(v: &serde_json::Value) -> Vec<OutputItem> {
     for block in content {
         let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if block_type == "tool_result" {
-            let is_error = block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+            let is_error = block
+                .get("is_error")
+                .and_then(|e| e.as_bool())
+                .unwrap_or(false);
             let text = extract_text_content(block.get("content"));
             if !text.is_empty() {
                 items.push(OutputItem::ToolResult { text, is_error });
@@ -589,7 +774,6 @@ fn parse_user_message(v: &serde_json::Value) -> Vec<OutputItem> {
     }
     items
 }
-
 
 /// Extract text from various content formats
 fn extract_text_content(content: Option<&serde_json::Value>) -> String {
@@ -618,7 +802,10 @@ fn extract_text_content(content: Option<&serde_json::Value>) -> String {
 fn parse_cursor_tool_call(tc: &serde_json::Map<String, serde_json::Value>) -> (String, String) {
     // The object has a single key like "readToolCall", "editToolCall", "bashToolCall", etc.
     if let Some((key, val)) = tc.iter().next() {
-        let tool = key.trim_end_matches("ToolCall").trim_end_matches("Tool_call").to_string();
+        let tool = key
+            .trim_end_matches("ToolCall")
+            .trim_end_matches("Tool_call")
+            .to_string();
         let args = val.get("args");
         let input = args
             .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
@@ -632,7 +819,8 @@ fn parse_cursor_tool_call(tc: &serde_json::Map<String, serde_json::Value>) -> (S
 /// Extract result text from a Cursor completed tool_call object.
 fn extract_cursor_tool_result(tc: &serde_json::Map<String, serde_json::Value>) -> String {
     if let Some((_key, val)) = tc.iter().next() {
-        val.get("result").and_then(|r| r.as_str())
+        val.get("result")
+            .and_then(|r| r.as_str())
             .or_else(|| val.get("output").and_then(|o| o.as_str()))
             .unwrap_or("")
             .to_string()
@@ -950,7 +1138,10 @@ pub async fn stream_and_capture(
     }
 
     flush_buffer(&app, &session_id, &mut buffer);
-    StreamResult { total_cost, error: last_error }
+    StreamResult {
+        total_cost,
+        error: last_error,
+    }
 }
 
 /// Check if a line is a `control_request` for tool approval.
@@ -981,20 +1172,39 @@ async fn handle_control_request(
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
 
     if v.get("type").and_then(|t| t.as_str()) != Some("control_request") {
-        return Some(ControlRequestResult { handled: false, tool_start: None });
+        return Some(ControlRequestResult {
+            handled: false,
+            tool_start: None,
+        });
     }
 
     let request = v.get("request")?;
     if request.get("subtype").and_then(|s| s.as_str()) != Some("can_use_tool") {
-        return Some(ControlRequestResult { handled: false, tool_start: None });
+        return Some(ControlRequestResult {
+            handled: false,
+            tool_start: None,
+        });
     }
 
-    let cli_request_id = v.get("request_id").and_then(|r| r.as_str()).unwrap_or("").to_string();
-    let tool_name = request.get("tool_name").and_then(|t| t.as_str()).unwrap_or("unknown").to_string();
-    let tool_input = request.get("input").cloned().unwrap_or(serde_json::Value::Null);
+    let cli_request_id = v
+        .get("request_id")
+        .and_then(|r| r.as_str())
+        .unwrap_or("")
+        .to_string();
+    let tool_name = request
+        .get("tool_name")
+        .and_then(|t| t.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let tool_input = request
+        .get("input")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
 
     // Build a ToolStart item so the frontend knows which tool is running
-    let input_str = if tool_input.is_null() || (tool_input.is_object() && tool_input.as_object().map(|o| o.is_empty()).unwrap_or(true)) {
+    let input_str = if tool_input.is_null()
+        || (tool_input.is_object() && tool_input.as_object().map(|o| o.is_empty()).unwrap_or(true))
+    {
         String::new()
     } else {
         serde_json::to_string_pretty(&tool_input).unwrap_or_default()
@@ -1005,19 +1215,27 @@ async fn handle_control_request(
     };
 
     // Evaluate policy
-    let result = policy::evaluate(&tool_name, &tool_input, worktree_path, repo_path, trust_level);
+    let result = policy::evaluate(
+        &tool_name,
+        &tool_input,
+        worktree_path,
+        repo_path,
+        trust_level,
+    );
     let input_summary = policy::summarize_input(&tool_name, &tool_input);
 
     // Fire-and-forget audit log entry
-    let _ = db_tx.send(DbWrite::InsertAuditEntry {
-        session_id: session_id.to_string(),
-        task_id: task_id.to_string(),
-        tool_name: tool_name.clone(),
-        tool_input_summary: input_summary.clone(),
-        decision: result.decision.as_str().to_string(),
-        reason: result.reason.clone(),
-        created_at: crate::task::epoch_ms(),
-    }).await;
+    let _ = db_tx
+        .send(DbWrite::InsertAuditEntry {
+            session_id: session_id.to_string(),
+            task_id: task_id.to_string(),
+            tool_name: tool_name.clone(),
+            tool_input_summary: input_summary.clone(),
+            decision: result.decision.as_str().to_string(),
+            reason: result.reason.clone(),
+            created_at: crate::task::epoch_ms(),
+        })
+        .await;
 
     match result.decision {
         PolicyDecision::AutoAllow | PolicyDecision::AutoAllowLogged => {
@@ -1044,35 +1262,47 @@ async fn handle_control_request(
             }
 
             // Notify frontend (lightweight event for UI indicator)
-            let _ = app.emit("policy-auto-approved", PolicyAutoApprovedEvent {
-                session_id: session_id.to_string(),
-                tool_name,
-                tool_input_summary: input_summary,
-                decision: result.decision,
-                reason: result.reason,
-            });
+            let _ = app.emit(
+                "policy-auto-approved",
+                PolicyAutoApprovedEvent {
+                    session_id: session_id.to_string(),
+                    tool_name,
+                    tool_input_summary: input_summary,
+                    decision: result.decision,
+                    reason: result.reason,
+                },
+            );
 
-            Some(ControlRequestResult { handled: true, tool_start: Some(tool_start) })
+            Some(ControlRequestResult {
+                handled: true,
+                tool_start: Some(tool_start),
+            })
         }
         PolicyDecision::RequireApproval => {
             // Original behavior: emit to frontend, wait for user response
             let request_id = uuid::Uuid::new_v4().to_string();
 
-            let _ = app.emit("tool-approval-request", ToolApprovalEvent {
-                request_id: request_id.clone(),
-                session_id: session_id.to_string(),
-                tool_name: tool_name.clone(),
-                tool_input: tool_input.clone(),
-            });
+            let _ = app.emit(
+                "tool-approval-request",
+                ToolApprovalEvent {
+                    request_id: request_id.clone(),
+                    session_id: session_id.to_string(),
+                    tool_name: tool_name.clone(),
+                    tool_input: tool_input.clone(),
+                },
+            );
 
             let (tx, rx) = tokio::sync::oneshot::channel::<ApprovalResponse>();
             pending_approvals.insert(request_id.clone(), tx);
-            pending_meta.insert(request_id.clone(), PendingApprovalEntry {
-                request_id: request_id.clone(),
-                session_id: session_id.to_string(),
-                tool_name,
-                tool_input: tool_input.clone(),
-            });
+            pending_meta.insert(
+                request_id.clone(),
+                PendingApprovalEntry {
+                    request_id: request_id.clone(),
+                    session_id: session_id.to_string(),
+                    tool_name,
+                    tool_input: tool_input.clone(),
+                },
+            );
 
             let (behavior, updated_input) = match rx.await {
                 Ok(resp) => (resp.behavior, resp.updated_input),
@@ -1114,16 +1344,15 @@ async fn handle_control_request(
                 let _ = writer.flush().await;
             }
 
-            Some(ControlRequestResult { handled: true, tool_start: Some(tool_start) })
+            Some(ControlRequestResult {
+                handled: true,
+                tool_start: Some(tool_start),
+            })
         }
     }
 }
 
-fn emit_item(
-    app: &AppHandle,
-    session_id: &str,
-    item: OutputItem,
-) {
+fn emit_item(app: &AppHandle, session_id: &str, item: OutputItem) {
     let _ = app.emit(
         "session-output",
         SessionOutputEvent {
@@ -1133,11 +1362,7 @@ fn emit_item(
     );
 }
 
-fn flush_buffer(
-    app: &AppHandle,
-    session_id: &str,
-    buffer: &mut Vec<OutputItem>,
-) {
+fn flush_buffer(app: &AppHandle, session_id: &str, buffer: &mut Vec<OutputItem>) {
     if buffer.is_empty() {
         return;
     }
@@ -1152,12 +1377,7 @@ fn flush_buffer(
     );
 }
 
-fn persist_line(
-    db_tx: &DbWriteTx,
-    session_id: &str,
-    line: &str,
-    total_persisted: &mut usize,
-) {
+fn persist_line(db_tx: &DbWriteTx, session_id: &str, line: &str, total_persisted: &mut usize) {
     if *total_persisted >= MAX_PERSISTED_LINES {
         return;
     }
@@ -1257,7 +1477,10 @@ mod tests {
     fn parse_system_init_is_silent() {
         let line = r#"{"type":"system","subtype":"init","session_id":"abc","model":"claude-sonnet-4-6","tools":[]}"#;
         let items = parse_sdk_event(line);
-        assert!(items.is_empty(), "System messages should be silently consumed");
+        assert!(
+            items.is_empty(),
+            "System messages should be silently consumed"
+        );
     }
 
     #[test]
@@ -1266,7 +1489,14 @@ mod tests {
         let items = parse_sdk_event(line);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::TurnEnd { status, cost, input_tokens, output_tokens, error, .. } => {
+            OutputItem::TurnEnd {
+                status,
+                cost,
+                input_tokens,
+                output_tokens,
+                error,
+                ..
+            } => {
                 assert_eq!(status, "completed");
                 assert_eq!(*cost, Some(0.042));
                 assert_eq!(*input_tokens, Some(100));
@@ -1283,7 +1513,12 @@ mod tests {
         let items = parse_sdk_event(line);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::TurnEnd { cost, input_tokens, output_tokens, .. } => {
+            OutputItem::TurnEnd {
+                cost,
+                input_tokens,
+                output_tokens,
+                ..
+            } => {
                 assert_eq!(*cost, None);
                 assert_eq!(*input_tokens, None);
                 assert_eq!(*output_tokens, None);
@@ -1348,7 +1583,9 @@ mod tests {
 
     #[test]
     fn output_item_text_serializes() {
-        let item = OutputItem::Text { text: "hello".into() };
+        let item = OutputItem::Text {
+            text: "hello".into(),
+        };
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(json["kind"], "text");
         assert_eq!(json["text"], "hello");
@@ -1364,7 +1601,10 @@ mod tests {
 
     #[test]
     fn output_item_tool_start_serializes() {
-        let item = OutputItem::ToolStart { tool: "Bash".into(), input: "ls".into() };
+        let item = OutputItem::ToolStart {
+            tool: "Bash".into(),
+            input: "ls".into(),
+        };
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(json["kind"], "toolStart");
         assert_eq!(json["tool"], "Bash");

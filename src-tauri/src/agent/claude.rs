@@ -9,10 +9,18 @@ use super::{Agent, AgentKind, InputMode, SessionArgs};
 pub struct Claude;
 
 impl Agent for Claude {
-    fn kind(&self) -> AgentKind { AgentKind::Claude }
-    fn display_name(&self) -> &'static str { "Claude Code" }
-    fn cli_binary(&self) -> &'static str { "claude" }
-    fn input_mode(&self) -> InputMode { InputMode::StreamJsonStdin }
+    fn kind(&self) -> AgentKind {
+        AgentKind::Claude
+    }
+    fn display_name(&self) -> &'static str {
+        "Claude Code"
+    }
+    fn cli_binary(&self) -> &'static str {
+        "claude"
+    }
+    fn input_mode(&self) -> InputMode {
+        InputMode::StreamJsonStdin
+    }
 
     fn install_hint(&self) -> &'static str {
         "npm i -g @anthropic-ai/claude-code"
@@ -29,22 +37,41 @@ impl Agent for Claude {
     fn available_models(&self) -> Vec<crate::agent::ModelOption> {
         use crate::agent::ModelOption;
         vec![
-            ModelOption::new("claude-opus-4-7", "Claude Opus 4.7", "Latest and most capable")
-                .with_min_version("2.1.111"),
-            ModelOption::new("claude-opus-4-6", "Claude Opus 4.6", "Most capable for complex tasks"),
-            ModelOption::new("claude-sonnet-4-6", "Claude Sonnet 4.6", "Best for everyday tasks"),
-            ModelOption::new("claude-haiku-4-5", "Claude Haiku 4.5", "Fastest for quick answers"),
+            ModelOption::new(
+                "claude-opus-4-7",
+                "Claude Opus 4.7",
+                "Latest and most capable",
+            )
+            .with_min_version("2.1.111"),
+            ModelOption::new(
+                "claude-opus-4-6",
+                "Claude Opus 4.6",
+                "Most capable for complex tasks",
+            ),
+            ModelOption::new(
+                "claude-sonnet-4-6",
+                "Claude Sonnet 4.6",
+                "Best for everyday tasks",
+            ),
+            ModelOption::new(
+                "claude-haiku-4-5",
+                "Claude Haiku 4.5",
+                "Fastest for quick answers",
+            ),
         ]
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {
         let mut v = vec![
             "-p".into(),
-            "--output-format".into(), "stream-json".into(),
-            "--input-format".into(), "stream-json".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--input-format".into(),
+            "stream-json".into(),
             "--verbose".into(),
             "--include-partial-messages".into(),
-            "--permission-prompt-tool".into(), "stdio".into(),
+            "--permission-prompt-tool".into(),
+            "stdio".into(),
         ];
 
         if args.plan_mode {
@@ -65,12 +92,24 @@ impl Agent for Claude {
         v
     }
 
-    fn supports_plan_mode(&self) -> bool { true }
-    fn supports_effort(&self) -> bool { true }
-    fn supports_skills(&self) -> bool { true }
-    fn supports_attachments(&self) -> bool { true }
-    fn supports_fork(&self) -> bool { true }
-    fn uses_claude_jsonl(&self) -> bool { true }
+    fn supports_plan_mode(&self) -> bool {
+        true
+    }
+    fn supports_effort(&self) -> bool {
+        true
+    }
+    fn supports_skills(&self) -> bool {
+        true
+    }
+    fn supports_attachments(&self) -> bool {
+        true
+    }
+    fn supports_fork(&self) -> bool {
+        true
+    }
+    fn uses_claude_jsonl(&self) -> bool {
+        true
+    }
 
     fn extract_resume_id(&self, v: &serde_json::Value) -> Option<String> {
         let t = v.get("type")?.as_str()?;

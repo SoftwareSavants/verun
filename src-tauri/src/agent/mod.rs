@@ -49,7 +49,13 @@ impl AgentKind {
     }
 
     pub fn all() -> &'static [AgentKind] {
-        &[Self::Claude, Self::Codex, Self::Gemini, Self::OpenCode, Self::Cursor]
+        &[
+            Self::Claude,
+            Self::Codex,
+            Self::Gemini,
+            Self::OpenCode,
+            Self::Cursor,
+        ]
     }
 
     /// Return a boxed trait object for this agent kind.
@@ -86,7 +92,12 @@ pub struct ModelOption {
 
 impl ModelOption {
     pub fn new(id: &str, label: &str, description: &str) -> Self {
-        Self { id: id.into(), label: label.into(), description: description.into(), min_version: None }
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: description.into(),
+            min_version: None,
+        }
     }
 
     pub fn with_min_version(mut self, version: &str) -> Self {
@@ -140,14 +151,18 @@ pub trait Agent: Send + Sync {
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String>;
 
     /// Arguments to check the CLI version (e.g. `["--version"]`).
-    fn version_args(&self) -> &[&str] { &["--version"] }
+    fn version_args(&self) -> &[&str] {
+        &["--version"]
+    }
 
     /// Human-readable install instructions.
     fn install_hint(&self) -> &'static str;
 
     /// Command to update the CLI to the latest version.
     /// Defaults to `install_hint` if not overridden.
-    fn update_hint(&self) -> &'static str { self.install_hint() }
+    fn update_hint(&self) -> &'static str {
+        self.install_hint()
+    }
 
     /// Static fallback model list (first = default). Used when dynamic listing
     /// is unavailable or fails.
@@ -155,36 +170,62 @@ pub trait Agent: Send + Sync {
 
     /// CLI args to dynamically list models (e.g. `["--list-models"]`).
     /// Returns `None` if the agent has no such command.
-    fn model_list_args(&self) -> Option<Vec<String>> { None }
+    fn model_list_args(&self) -> Option<Vec<String>> {
+        None
+    }
 
     /// Parse the stdout of the model-listing command into `ModelOption`s.
-    fn parse_model_list(&self, _output: &str) -> Vec<ModelOption> { vec![] }
+    fn parse_model_list(&self, _output: &str) -> Vec<ModelOption> {
+        vec![]
+    }
 
     /// URL to the agent's official documentation / install page.
-    fn docs_url(&self) -> &'static str { "" }
+    fn docs_url(&self) -> &'static str {
+        ""
+    }
 
     // ── Capability flags ─────────────────────────────────────────────────
     // Override only the ones that differ from the defaults.
 
-    fn supports_streaming(&self) -> bool { true }
-    fn supports_resume(&self) -> bool { true }
-    fn supports_plan_mode(&self) -> bool { false }
-    fn supports_model_selection(&self) -> bool { true }
-    fn supports_effort(&self) -> bool { false }
-    fn supports_skills(&self) -> bool { false }
-    fn supports_attachments(&self) -> bool { false }
-    fn supports_fork(&self) -> bool { false }
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+    fn supports_resume(&self) -> bool {
+        true
+    }
+    fn supports_plan_mode(&self) -> bool {
+        false
+    }
+    fn supports_model_selection(&self) -> bool {
+        true
+    }
+    fn supports_effort(&self) -> bool {
+        false
+    }
+    fn supports_skills(&self) -> bool {
+        false
+    }
+    fn supports_attachments(&self) -> bool {
+        false
+    }
+    fn supports_fork(&self) -> bool {
+        false
+    }
 
     /// Whether this agent uses Claude Code's on-disk JSONL transcript
     /// format at ~/.claude/projects/. Gates transcript manipulation
     /// in fork operations.
-    fn uses_claude_jsonl(&self) -> bool { false }
+    fn uses_claude_jsonl(&self) -> bool {
+        false
+    }
 
     /// Extract the agent's native resume/session ID from a parsed NDJSON event.
     /// Called on each line during streaming; returns `Some(id)` on the first
     /// event that carries one (e.g. Claude's `system.init`, Codex's
     /// `thread.started`, OpenCode's `step_start`).
-    fn extract_resume_id(&self, _v: &serde_json::Value) -> Option<String> { None }
+    fn extract_resume_id(&self, _v: &serde_json::Value) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -230,14 +271,20 @@ mod tests {
     #[test]
     fn claude_build_args_plan_mode() {
         let agent = Claude;
-        let args = agent.build_session_args(&SessionArgs { plan_mode: true, ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            plan_mode: true,
+            ..default_args()
+        });
         assert!(args.contains(&"plan".to_string()));
     }
 
     #[test]
     fn claude_build_args_resume() {
         let agent = Claude;
-        let args = agent.build_session_args(&SessionArgs { resume_session_id: Some("sess-1"), ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            resume_session_id: Some("sess-1"),
+            ..default_args()
+        });
         assert!(args.contains(&"--resume".to_string()));
         assert!(args.contains(&"sess-1".to_string()));
     }
@@ -245,7 +292,10 @@ mod tests {
     #[test]
     fn claude_build_args_model() {
         let agent = Claude;
-        let args = agent.build_session_args(&SessionArgs { model: Some("opus"), ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            model: Some("opus"),
+            ..default_args()
+        });
         assert!(args.contains(&"--model".to_string()));
         assert!(args.contains(&"opus".to_string()));
     }
@@ -253,7 +303,10 @@ mod tests {
     #[test]
     fn claude_build_args_thinking() {
         let agent = Claude;
-        let args = agent.build_session_args(&SessionArgs { thinking_mode: true, ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            thinking_mode: true,
+            ..default_args()
+        });
         assert!(args.contains(&"--effort".to_string()));
         assert!(args.contains(&"max".to_string()));
     }
@@ -261,7 +314,10 @@ mod tests {
     #[test]
     fn claude_build_args_fast() {
         let agent = Claude;
-        let args = agent.build_session_args(&SessionArgs { fast_mode: true, ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            fast_mode: true,
+            ..default_args()
+        });
         assert!(args.contains(&"--effort".to_string()));
         assert!(args.contains(&"low".to_string()));
     }
@@ -303,7 +359,10 @@ mod tests {
     #[test]
     fn codex_build_args_basic() {
         let agent = Codex;
-        let args = agent.build_session_args(&SessionArgs { message: "fix the bug", ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            message: "fix the bug",
+            ..default_args()
+        });
         assert!(args.contains(&"exec".to_string()));
         assert!(args.contains(&"--json".to_string()));
         assert!(args.contains(&"--full-auto".to_string()));
@@ -313,7 +372,10 @@ mod tests {
     #[test]
     fn codex_build_args_resume() {
         let agent = Codex;
-        let args = agent.build_session_args(&SessionArgs { resume_session_id: Some("t-1"), ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            resume_session_id: Some("t-1"),
+            ..default_args()
+        });
         assert!(args.contains(&"resume".to_string()));
         assert!(args.contains(&"t-1".to_string()));
     }
@@ -348,7 +410,10 @@ mod tests {
     #[test]
     fn cursor_build_args_basic() {
         let agent = Cursor;
-        let args = agent.build_session_args(&SessionArgs { message: "hello", ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            message: "hello",
+            ..default_args()
+        });
         assert!(args.contains(&"-p".to_string()));
         assert!(args.contains(&"stream-json".to_string()));
         assert!(args.contains(&"--force".to_string()));
@@ -358,7 +423,10 @@ mod tests {
     #[test]
     fn cursor_build_args_plan_mode() {
         let agent = Cursor;
-        let args = agent.build_session_args(&SessionArgs { plan_mode: true, ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            plan_mode: true,
+            ..default_args()
+        });
         assert!(args.contains(&"--mode".to_string()));
         assert!(args.contains(&"plan".to_string()));
     }
@@ -404,7 +472,10 @@ mod tests {
     #[test]
     fn opencode_build_args_basic() {
         let agent = OpenCode;
-        let args = agent.build_session_args(&SessionArgs { message: "do it", ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            message: "do it",
+            ..default_args()
+        });
         assert!(args.contains(&"run".to_string()));
         assert!(args.contains(&"--format".to_string()));
         assert!(args.contains(&"json".to_string()));
@@ -414,7 +485,10 @@ mod tests {
     #[test]
     fn opencode_build_args_plan_mode() {
         let agent = OpenCode;
-        let args = agent.build_session_args(&SessionArgs { plan_mode: true, ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            plan_mode: true,
+            ..default_args()
+        });
         assert!(args.contains(&"--agent".to_string()));
         assert!(args.contains(&"plan".to_string()));
     }
@@ -422,7 +496,10 @@ mod tests {
     #[test]
     fn opencode_build_args_resume() {
         let agent = OpenCode;
-        let args = agent.build_session_args(&SessionArgs { resume_session_id: Some("oc-1"), ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            resume_session_id: Some("oc-1"),
+            ..default_args()
+        });
         assert!(args.contains(&"--session".to_string()));
         assert!(args.contains(&"oc-1".to_string()));
     }
@@ -455,7 +532,8 @@ mod tests {
     #[test]
     fn opencode_parse_model_list() {
         let agent = OpenCode;
-        let output = "anthropic/claude-sonnet-4-5\nopenai/gpt-5.3\nsome migration message with spaces\n";
+        let output =
+            "anthropic/claude-sonnet-4-5\nopenai/gpt-5.3\nsome migration message with spaces\n";
         let models = agent.parse_model_list(output);
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "anthropic/claude-sonnet-4-5");
@@ -468,7 +546,10 @@ mod tests {
     #[test]
     fn gemini_build_args_basic() {
         let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs { message: "hello", ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            message: "hello",
+            ..default_args()
+        });
         assert!(args.contains(&"stream-json".to_string()));
         assert!(args.contains(&"--yolo".to_string()));
         assert!(args.contains(&"-p".to_string()));
@@ -478,7 +559,10 @@ mod tests {
     #[test]
     fn gemini_build_args_plan_mode() {
         let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs { plan_mode: true, ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            plan_mode: true,
+            ..default_args()
+        });
         assert!(args.contains(&"--approval-mode".to_string()));
         assert!(args.contains(&"plan".to_string()));
     }
@@ -486,7 +570,10 @@ mod tests {
     #[test]
     fn gemini_build_args_resume() {
         let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs { resume_session_id: Some("g-1"), ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            resume_session_id: Some("g-1"),
+            ..default_args()
+        });
         assert!(args.contains(&"--resume".to_string()));
         assert!(args.contains(&"g-1".to_string()));
     }
@@ -494,7 +581,10 @@ mod tests {
     #[test]
     fn gemini_build_args_model() {
         let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs { model: Some("pro"), ..default_args() });
+        let args = agent.build_session_args(&SessionArgs {
+            model: Some("pro"),
+            ..default_args()
+        });
         assert!(args.contains(&"-m".to_string()));
         assert!(args.contains(&"pro".to_string()));
     }
@@ -537,9 +627,18 @@ mod tests {
     fn all_agents_have_display_name_and_binary() {
         for &kind in AgentKind::all() {
             let agent = kind.implementation();
-            assert!(!agent.display_name().is_empty(), "{kind:?} has empty display_name");
-            assert!(!agent.cli_binary().is_empty(), "{kind:?} has empty cli_binary");
-            assert!(!agent.install_hint().is_empty(), "{kind:?} has empty install_hint");
+            assert!(
+                !agent.display_name().is_empty(),
+                "{kind:?} has empty display_name"
+            );
+            assert!(
+                !agent.cli_binary().is_empty(),
+                "{kind:?} has empty cli_binary"
+            );
+            assert!(
+                !agent.install_hint().is_empty(),
+                "{kind:?} has empty install_hint"
+            );
         }
     }
 }

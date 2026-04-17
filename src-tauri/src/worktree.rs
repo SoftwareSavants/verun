@@ -70,7 +70,10 @@ pub fn detect_base_branch(repo_path: &str) -> String {
     }
 
     // Fallback: current HEAD branch name
-    if let Ok(output) = git(repo_path).args(["rev-parse", "--abbrev-ref", "HEAD"]).output() {
+    if let Ok(output) = git(repo_path)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+    {
         if output.status.success() {
             let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !branch.is_empty() && branch != "HEAD" {
@@ -95,7 +98,9 @@ pub fn create_worktree(repo_path: &str, branch: &str, base_branch: &str) -> Resu
     let worktree_path = format!("{}/.verun/worktrees/{}", repo_path, branch);
 
     // Best-effort fetch from origin
-    let _ = git(repo_path).args(["fetch", "origin", base_branch]).output();
+    let _ = git(repo_path)
+        .args(["fetch", "origin", base_branch])
+        .output();
 
     // Create the branch from the base branch.
     // Try origin/{base_branch} first, then local {base_branch}, then fall back to HEAD.
@@ -160,7 +165,8 @@ pub fn run_hook(cwd: &str, command: &str, env_vars: &[(String, String)]) -> Resu
         cmd.env(k, v);
     }
 
-    let output = cmd.output()
+    let output = cmd
+        .output()
         .map_err(|e| format!("Failed to run hook: {e}"))?;
 
     if !output.status.success() {
@@ -256,7 +262,11 @@ pub fn get_diff(worktree_path: &str) -> Result<String, String> {
 }
 
 /// Merge a worktree branch into target, then clean up the worktree.
-pub fn merge_branch(repo_path: &str, source_branch: &str, target_branch: &str) -> Result<(), String> {
+pub fn merge_branch(
+    repo_path: &str,
+    source_branch: &str,
+    target_branch: &str,
+) -> Result<(), String> {
     let output = git(repo_path)
         .args(["checkout", target_branch])
         .output()
@@ -343,7 +353,12 @@ fn ref_exists(worktree_path: &str, refname: &str) -> bool {
 /// Returns (left_count, right_count) from `git rev-list --left-right --count left...right`
 fn rev_list_left_right(worktree_path: &str, left: &str, right: &str) -> (u32, u32) {
     let output = git(worktree_path)
-        .args(["rev-list", "--left-right", "--count", &format!("{left}...{right}")])
+        .args([
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("{left}...{right}"),
+        ])
         .output();
 
     let output = match output {
@@ -357,10 +372,7 @@ fn rev_list_left_right(worktree_path: &str, left: &str, right: &str) -> (u32, u3
         return (0, 0);
     }
 
-    (
-        parts[0].parse().unwrap_or(0),
-        parts[1].parse().unwrap_or(0),
-    )
+    (parts[0].parse().unwrap_or(0), parts[1].parse().unwrap_or(0))
 }
 
 /// Find the base branch (main/master) to compare ahead count against.
@@ -385,13 +397,28 @@ mod tests {
         let repo_path = dir.path().join("repo");
         fs::create_dir(&repo_path).unwrap();
 
-        git(repo_path.to_str().unwrap()).args(["init"]).output().unwrap();
-        git(repo_path.to_str().unwrap()).args(["config", "user.email", "test@test.com"]).output().unwrap();
-        git(repo_path.to_str().unwrap()).args(["config", "user.name", "Test"]).output().unwrap();
+        git(repo_path.to_str().unwrap())
+            .args(["init"])
+            .output()
+            .unwrap();
+        git(repo_path.to_str().unwrap())
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        git(repo_path.to_str().unwrap())
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
 
         fs::write(repo_path.join("README.md"), "# test").unwrap();
-        git(repo_path.to_str().unwrap()).args(["add", "."]).output().unwrap();
-        git(repo_path.to_str().unwrap()).args(["commit", "-m", "init"]).output().unwrap();
+        git(repo_path.to_str().unwrap())
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        git(repo_path.to_str().unwrap())
+            .args(["commit", "-m", "init"])
+            .output()
+            .unwrap();
 
         let path_str = repo_path.to_str().unwrap().to_string();
         (dir, path_str)
@@ -443,7 +470,9 @@ mod tests {
 
         let worktrees = list_worktrees(&repo_path).unwrap();
         assert!(worktrees.len() >= 2);
-        assert!(worktrees.iter().any(|p| p.contains("test-branch") || p == &wt_path));
+        assert!(worktrees
+            .iter()
+            .any(|p| p.contains("test-branch") || p == &wt_path));
     }
 
     #[test]
@@ -515,13 +544,19 @@ mod tests {
     fn merge_branch_cleans_up_worktree() {
         let (_dir, repo_path) = init_test_repo();
 
-        let output = git(&repo_path).args(["branch", "--show-current"]).output().unwrap();
+        let output = git(&repo_path)
+            .args(["branch", "--show-current"])
+            .output()
+            .unwrap();
         let main_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         let wt_path = create_worktree(&repo_path, "merge-cleanup", "main").unwrap();
         fs::write(format!("{wt_path}/feature.txt"), "feature").unwrap();
         git(&wt_path).args(["add", "."]).output().unwrap();
-        git(&wt_path).args(["commit", "-m", "add feature"]).output().unwrap();
+        git(&wt_path)
+            .args(["commit", "-m", "add feature"])
+            .output()
+            .unwrap();
 
         let result = merge_branch(&repo_path, "merge-cleanup", &main_branch);
         assert!(result.is_ok(), "merge failed: {:?}", result.err());
@@ -552,7 +587,10 @@ mod tests {
 
         fs::write(format!("{wt_path}/new.txt"), "new").unwrap();
         git(&wt_path).args(["add", "."]).output().unwrap();
-        git(&wt_path).args(["commit", "-m", "ahead"]).output().unwrap();
+        git(&wt_path)
+            .args(["commit", "-m", "ahead"])
+            .output()
+            .unwrap();
 
         let (ahead, behind, _unpushed) = get_branch_status(&wt_path).unwrap();
         assert_eq!(ahead, 1);
@@ -568,7 +606,10 @@ mod tests {
         // Make a commit on main
         fs::write(format!("{repo_path}/main-change.txt"), "main").unwrap();
         git(&repo_path).args(["add", "."]).output().unwrap();
-        git(&repo_path).args(["commit", "-m", "main change"]).output().unwrap();
+        git(&repo_path)
+            .args(["commit", "-m", "main change"])
+            .output()
+            .unwrap();
 
         let (ahead, behind, _unpushed) = get_branch_status(&wt_path).unwrap();
         assert_eq!(behind, 1, "should be 1 behind main");
@@ -582,25 +623,41 @@ mod tests {
         // Create bare remote
         let bare_path = dir.path().join("remote.git");
         fs::create_dir(&bare_path).unwrap();
-        git(bare_path.to_str().unwrap()).args(["init", "--bare"]).output().unwrap();
+        git(bare_path.to_str().unwrap())
+            .args(["init", "--bare"])
+            .output()
+            .unwrap();
 
         // Clone it
         let clone_path = dir.path().join("clone");
         std::process::Command::new("git")
             .current_dir(dir.path())
-            .args(["clone", bare_path.to_str().unwrap(), clone_path.to_str().unwrap()])
+            .args([
+                "clone",
+                bare_path.to_str().unwrap(),
+                clone_path.to_str().unwrap(),
+            ])
             .output()
             .unwrap();
 
         let cp = clone_path.to_str().unwrap();
-        git(cp).args(["config", "user.email", "test@test.com"]).output().unwrap();
-        git(cp).args(["config", "user.name", "Test"]).output().unwrap();
+        git(cp)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        git(cp)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
 
         // Initial commit + push
         fs::write(clone_path.join("README.md"), "# test").unwrap();
         git(cp).args(["add", "."]).output().unwrap();
         git(cp).args(["commit", "-m", "init"]).output().unwrap();
-        git(cp).args(["push", "-u", "origin", "main"]).output().unwrap();
+        git(cp)
+            .args(["push", "-u", "origin", "main"])
+            .output()
+            .unwrap();
 
         let bp = bare_path.to_str().unwrap().to_string();
         (dir, cp.to_string(), bp)
@@ -611,10 +668,16 @@ mod tests {
         let (_dir, clone_path, bare_path) = init_test_repo_with_remote();
 
         // Create a feature branch
-        git(&clone_path).args(["checkout", "-b", "feature"]).output().unwrap();
+        git(&clone_path)
+            .args(["checkout", "-b", "feature"])
+            .output()
+            .unwrap();
         fs::write(format!("{clone_path}/feature.txt"), "feat").unwrap();
         git(&clone_path).args(["add", "."]).output().unwrap();
-        git(&clone_path).args(["commit", "-m", "feature commit"]).output().unwrap();
+        git(&clone_path)
+            .args(["commit", "-m", "feature commit"])
+            .output()
+            .unwrap();
 
         // Simulate someone else pushing to origin/main
         let other_clone = _dir.path().join("other");
@@ -624,11 +687,20 @@ mod tests {
             .output()
             .unwrap();
         let oc = other_clone.to_str().unwrap();
-        git(oc).args(["config", "user.email", "other@test.com"]).output().unwrap();
-        git(oc).args(["config", "user.name", "Other"]).output().unwrap();
+        git(oc)
+            .args(["config", "user.email", "other@test.com"])
+            .output()
+            .unwrap();
+        git(oc)
+            .args(["config", "user.name", "Other"])
+            .output()
+            .unwrap();
         fs::write(format!("{oc}/other.txt"), "other").unwrap();
         git(oc).args(["add", "."]).output().unwrap();
-        git(oc).args(["commit", "-m", "main advance"]).output().unwrap();
+        git(oc)
+            .args(["commit", "-m", "main advance"])
+            .output()
+            .unwrap();
         git(oc).args(["push"]).output().unwrap();
 
         // Fetch in original clone so it sees the new origin/main
@@ -644,10 +716,16 @@ mod tests {
         let (_dir, clone_path, _bare_path) = init_test_repo_with_remote();
 
         // Create a branch — main hasn't changed so behind should be 0
-        git(&clone_path).args(["checkout", "-b", "up-to-date"]).output().unwrap();
+        git(&clone_path)
+            .args(["checkout", "-b", "up-to-date"])
+            .output()
+            .unwrap();
         fs::write(format!("{clone_path}/file.txt"), "content").unwrap();
         git(&clone_path).args(["add", "."]).output().unwrap();
-        git(&clone_path).args(["commit", "-m", "commit"]).output().unwrap();
+        git(&clone_path)
+            .args(["commit", "-m", "commit"])
+            .output()
+            .unwrap();
 
         let (ahead, behind, _unpushed) = get_branch_status(&clone_path).unwrap();
         assert_eq!(ahead, 1, "should be 1 ahead of origin/main");
@@ -693,7 +771,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_str().unwrap();
         let vars = verun_env_vars(0, "/tmp/repo");
-        run_hook(cwd, "echo $VERUN_PORT_0 $VERUN_REPO_PATH > env-test.txt", &vars).unwrap();
+        run_hook(
+            cwd,
+            "echo $VERUN_PORT_0 $VERUN_REPO_PATH > env-test.txt",
+            &vars,
+        )
+        .unwrap();
         let content = fs::read_to_string(dir.path().join("env-test.txt")).unwrap();
         assert!(content.contains("10000"));
         assert!(content.contains("/tmp/repo"));

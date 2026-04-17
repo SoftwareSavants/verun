@@ -11,10 +11,18 @@ use super::{Agent, AgentKind, InputMode, SessionArgs};
 pub struct Gemini;
 
 impl Agent for Gemini {
-    fn kind(&self) -> AgentKind { AgentKind::Gemini }
-    fn display_name(&self) -> &'static str { "Gemini CLI" }
-    fn cli_binary(&self) -> &'static str { "gemini" }
-    fn input_mode(&self) -> InputMode { InputMode::PositionalOrStdin }
+    fn kind(&self) -> AgentKind {
+        AgentKind::Gemini
+    }
+    fn display_name(&self) -> &'static str {
+        "Gemini CLI"
+    }
+    fn cli_binary(&self) -> &'static str {
+        "gemini"
+    }
+    fn input_mode(&self) -> InputMode {
+        InputMode::PositionalOrStdin
+    }
 
     fn install_hint(&self) -> &'static str {
         "npm i -g @google/gemini-cli"
@@ -28,15 +36,24 @@ impl Agent for Gemini {
         use crate::agent::ModelOption;
         vec![
             ModelOption::new("auto", "Auto", "Automatic model selection based on task"),
-            ModelOption::new("pro", "Gemini Pro", "Gemini 3 Pro - Complex reasoning tasks"),
+            ModelOption::new(
+                "pro",
+                "Gemini Pro",
+                "Gemini 3 Pro - Complex reasoning tasks",
+            ),
             ModelOption::new("flash", "Gemini Flash", "Gemini 2.5 Flash - Fast responses"),
-            ModelOption::new("flash-lite", "Gemini Flash Lite", "Lightweight flash variant"),
+            ModelOption::new(
+                "flash-lite",
+                "Gemini Flash Lite",
+                "Lightweight flash variant",
+            ),
         ]
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {
         let mut v: Vec<String> = vec![
-            "--output-format".into(), "stream-json".into(),
+            "--output-format".into(),
+            "stream-json".into(),
             "--yolo".into(),
         ];
 
@@ -58,13 +75,23 @@ impl Agent for Gemini {
         v
     }
 
-    fn supports_plan_mode(&self) -> bool { true }
-    fn supports_attachments(&self) -> bool { true }
+    fn supports_plan_mode(&self) -> bool {
+        true
+    }
+    fn supports_attachments(&self) -> bool {
+        true
+    }
 
     fn extract_resume_id(&self, v: &serde_json::Value) -> Option<String> {
         // Gemini stream-json emits an init event with session metadata.
         // Try common field names for the session identifier.
-        v.get("sessionId").and_then(|s| s.as_str()).map(str::to_string)
-            .or_else(|| v.get("session_id").and_then(|s| s.as_str()).map(str::to_string))
+        v.get("sessionId")
+            .and_then(|s| s.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                v.get("session_id")
+                    .and_then(|s| s.as_str())
+                    .map(str::to_string)
+            })
     }
 }
