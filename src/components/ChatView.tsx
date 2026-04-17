@@ -1066,7 +1066,7 @@ export const ChatView: Component<Props> = (props) => {
               </Match>
               <Match when={block.type === 'system'}>
                 <div class="flex justify-center px-5 py-1">
-                  <span class="text-[11px] text-text-dim">{(block as SystemBlock).text}</span>
+                  <span class="text-[11px] text-text-dim whitespace-pre-wrap">{(block as SystemBlock).text}</span>
                 </div>
               </Match>
             </Switch>
