@@ -1823,7 +1823,14 @@ pub async fn list_directory(
             }
 
             let mut entries = Vec::new();
-            for result in WalkBuilder::new(&base).max_depth(Some(1)).hidden(false).build() {
+            for result in WalkBuilder::new(&base)
+                .max_depth(Some(1))
+                .hidden(false)
+                .git_ignore(false)
+                .git_global(false)
+                .git_exclude(false)
+                .build()
+            {
                 let entry = result.map_err(|e| format!("Walk error: {e}"))?;
                 // Skip the root directory itself
                 if entry.path() == base {
