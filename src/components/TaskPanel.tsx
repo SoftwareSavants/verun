@@ -217,6 +217,7 @@ export const TaskPanel: Component = () => {
     if (!tid) return
     const session = await createSession(tid, agentType, model)
     setSelectedSessionId(session.id)
+    setMainView(tid, 'session')
   }
 
   const currentSession = () => {
