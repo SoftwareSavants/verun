@@ -202,6 +202,12 @@ pub fn migrations() -> Vec<Migration> {
         description: "rename claude_session_id to resume_session_id",
         sql: "ALTER TABLE sessions RENAME COLUMN claude_session_id TO resume_session_id;",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 18,
+        description: "add last_pushed_sha to tasks",
+        sql: "ALTER TABLE tasks ADD COLUMN last_pushed_sha TEXT;",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -246,6 +252,8 @@ pub struct Task {
     pub parent_task_id: Option<String>,
     #[sqlx(default)]
     pub agent_type: String,
+    #[sqlx(default)]
+    pub last_pushed_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -363,6 +371,10 @@ pub enum DbWrite {
     },
     RestoreTask {
         id: String,
+    },
+    SetLastPushedSha {
+        id: String,
+        sha: String,
     },
 
     // Sessions
@@ -660,6 +672,10 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .bind(&id)
                 .execute(pool)
                 .await?;
+        }
+        DbWrite::SetLastPushedSha { id, sha } => {
+            sqlx::query("UPDATE tasks SET last_pushed_sha = ? WHERE id = ?")
+                .bind(&sha).bind(&id).execute(pool).await?;
         }
 
         // -- Sessions --
@@ -1093,7 +1109,7 @@ mod tests {
     #[test]
     fn has_twelve_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 17);
+        assert_eq!(m.len(), 18);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
@@ -1157,6 +1173,7 @@ mod tests {
             last_commit_message: None,
             parent_task_id: None,
             agent_type: "claude".into(),
+            last_pushed_sha: None,
         }
     }
 

@@ -878,15 +878,23 @@ pub async fn merge_branch(
 #[tauri::command]
 pub async fn get_branch_status(
     pool: State<'_, SqlitePool>,
+    db_tx: State<'_, db::DbWriteTx>,
     task_id: String,
 ) -> Result<(u32, u32, u32), String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
-    flatten_join(
-        tokio::task::spawn_blocking(move || worktree::get_branch_status(&t.worktree_path)).await,
-    )
+    let last_pushed = t.last_pushed_sha.clone();
+    let status = flatten_join(
+        tokio::task::spawn_blocking(move || worktree::get_branch_status(&t.worktree_path, last_pushed.as_deref())).await,
+    )?;
+
+    if let Some(sha) = status.tracking_sha {
+        let _ = db_tx.try_send(db::DbWrite::SetLastPushedSha { id: task_id, sha });
+    }
+
+    Ok((status.ahead, status.behind, status.unpushed))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1087,14 +1095,25 @@ pub async fn git_commit(
 pub async fn git_push(
     app: AppHandle,
     pool: State<'_, SqlitePool>,
+    db_tx: State<'_, db::DbWriteTx>,
     task_id: String,
 ) -> Result<(), String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
+    let wt = t.worktree_path.clone();
+    let tid = t.id.clone();
+    let tx = db_tx.inner().clone();
     flatten_join(
-        tokio::task::spawn_blocking(move || git_ops::push_branch(&t.worktree_path)).await,
+        tokio::task::spawn_blocking(move || {
+            git_ops::push_branch(&wt)?;
+            if let Ok(sha) = worktree::get_head_sha(&wt) {
+                let _ = tx.try_send(db::DbWrite::SetLastPushedSha { id: tid, sha });
+            }
+            Ok(())
+        })
+        .await,
     )?;
     emit_git_status_changed(&app, &task_id);
     Ok(())
@@ -1340,6 +1359,7 @@ pub async fn mark_pr_ready(
 pub async fn merge_pull_request(
     app: AppHandle,
     pool: State<'_, SqlitePool>,
+    db_tx: State<'_, db::DbWriteTx>,
     task_id: String,
     force: Option<bool>,
     delete_branch: Option<bool>,
@@ -1350,9 +1370,15 @@ pub async fn merge_pull_request(
 
     let force = force.unwrap_or(false);
     let delete_branch = delete_branch.unwrap_or(false);
+    let wt = t.worktree_path.clone();
+    let tid = t.id.clone();
+    let tx = db_tx.inner().clone();
     flatten_join(
         tokio::task::spawn_blocking(move || {
-            github::merge_pr(&t.worktree_path, force, delete_branch)
+            if let Ok(sha) = worktree::get_head_sha(&wt) {
+                let _ = tx.try_send(db::DbWrite::SetLastPushedSha { id: tid, sha });
+            }
+            github::merge_pr(&wt, force, delete_branch)
         })
         .await,
     )?;

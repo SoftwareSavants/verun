@@ -8,6 +8,7 @@
 - Chat search position no longer jumps to last match when new agent messages arrive
 - File browser now shows .env and other gitignored files
 - Quick open now boosts project-scoped recent files, including ignored files like `.env` when recently opened, without indexing build output or `node_modules`
+- Store `last_pushed_sha` on tasks (migration 18) so unpushed commit count no longer depends on the remote tracking branch existing - fixes Archive button showing as Push after merging a PR with deleted remote branch
 
 ## 0.7.1 — 2026-04-17
 

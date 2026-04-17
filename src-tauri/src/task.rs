@@ -401,6 +401,7 @@ pub async fn create_task(
         last_commit_message: None,
         parent_task_id: None,
         agent_type: agent_type.clone(),
+        last_pushed_sha: None,
     };
 
     db_tx
@@ -1485,6 +1486,7 @@ pub async fn fork_session_to_new_task(
         last_commit_message: None,
         parent_task_id: Some(parent_task.id.clone()),
         agent_type: parent_session.agent_type.clone(),
+        last_pushed_sha: None,
     };
 
     let parent_agent = AgentKind::parse(&parent_session.agent_type).implementation();
