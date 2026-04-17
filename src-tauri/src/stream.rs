@@ -407,6 +407,24 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
                         is_error,
                     }]
                 }
+                "file_change" => format_codex_file_change(item),
+                "file_read" => {
+                    let path = item
+                        .get("path")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("(unknown)")
+                        .to_string();
+                    vec![
+                        OutputItem::ToolStart {
+                            tool: "Read".to_string(),
+                            input: path.clone(),
+                        },
+                        OutputItem::ToolResult {
+                            text: path,
+                            is_error: false,
+                        },
+                    ]
+                }
                 _ => vec![],
             }
         }
@@ -582,6 +600,45 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         }
 
         _ => vec![],
+    }
+}
+
+fn format_codex_file_change(item: &serde_json::Value) -> Vec<OutputItem> {
+    let changes = item
+        .get("changes")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut items = Vec::with_capacity(changes.len() * 2);
+    for change in &changes {
+        let path = change
+            .get("path")
+            .and_then(|p| p.as_str())
+            .unwrap_or("(unknown)")
+            .to_string();
+        let kind = change.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        let tool = match kind {
+            "add" => "Write",
+            "delete" => "Delete",
+            _ => "Edit",
+        };
+        items.push(OutputItem::ToolStart {
+            tool: tool.to_string(),
+            input: path.clone(),
+        });
+        items.push(OutputItem::ToolResult {
+            text: path,
+            is_error: false,
+        });
+    }
+
+    if items.is_empty() {
+        vec![OutputItem::System {
+            text: "File changed".to_string(),
+        }]
+    } else {
+        items
     }
 }
 
@@ -1567,6 +1624,74 @@ mod tests {
         match &items[0] {
             OutputItem::Raw { text } => assert_eq!(text, "not json at all"),
             _ => panic!("Expected Raw item"),
+        }
+    }
+
+    #[test]
+    fn parse_codex_file_change_as_tool_call() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/tmp/verun-normal-test.txt","kind":"add"}],"status":"completed"}}"#;
+        let items = parse_sdk_event(line);
+        assert_eq!(items.len(), 2);
+        match &items[0] {
+            OutputItem::ToolStart { tool, input } => {
+                assert_eq!(tool, "Write");
+                assert_eq!(input, "/tmp/verun-normal-test.txt");
+            }
+            _ => panic!("Expected ToolStart"),
+        }
+        match &items[1] {
+            OutputItem::ToolResult { text, is_error } => {
+                assert_eq!(text, "/tmp/verun-normal-test.txt");
+                assert!(!is_error);
+            }
+            _ => panic!("Expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn format_codex_file_change_multiple() {
+        let item = serde_json::json!({
+            "changes": [
+                { "path": "src/a.ts", "kind": "update" },
+                { "path": "src/b.ts", "kind": "delete" },
+                { "path": "src/c.ts", "kind": "add" }
+            ]
+        });
+
+        let items = format_codex_file_change(&item);
+        assert_eq!(items.len(), 6);
+        match &items[0] {
+            OutputItem::ToolStart { tool, .. } => assert_eq!(tool, "Edit"),
+            _ => panic!("Expected ToolStart"),
+        }
+        match &items[2] {
+            OutputItem::ToolStart { tool, .. } => assert_eq!(tool, "Delete"),
+            _ => panic!("Expected ToolStart"),
+        }
+        match &items[4] {
+            OutputItem::ToolStart { tool, .. } => assert_eq!(tool, "Write"),
+            _ => panic!("Expected ToolStart"),
+        }
+    }
+
+    #[test]
+    fn parse_codex_file_read_as_tool_call() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_3","type":"file_read","path":"/tmp/foo.txt","status":"completed"}}"#;
+        let items = parse_sdk_event(line);
+        assert_eq!(items.len(), 2);
+        match &items[0] {
+            OutputItem::ToolStart { tool, input } => {
+                assert_eq!(tool, "Read");
+                assert_eq!(input, "/tmp/foo.txt");
+            }
+            _ => panic!("Expected ToolStart"),
+        }
+        match &items[1] {
+            OutputItem::ToolResult { text, is_error } => {
+                assert_eq!(text, "/tmp/foo.txt");
+                assert!(!is_error);
+            }
+            _ => panic!("Expected ToolResult"),
         }
     }
 
