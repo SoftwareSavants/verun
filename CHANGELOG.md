@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Chat search position no longer jumps to last match when new agent messages arrive
+- File browser now shows .env and other gitignored files
 
 ## 0.7.1 — 2026-04-17
 
