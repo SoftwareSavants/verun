@@ -1,4 +1,4 @@
-import { Component, Show, For, createSignal, createEffect, on } from 'solid-js'
+import { Component, Show, For, createSignal, createEffect, on, onCleanup } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
 import { Search, X } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
@@ -84,6 +84,12 @@ export const QuickOpen: Component = () => {
   let inputRef: HTMLInputElement | undefined
   let scrollRef: HTMLDivElement | undefined
 
+  const focusInput = () => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => inputRef?.focus())
+    })
+  }
+
   // Load files when overlay opens
   createEffect(on(showQuickOpen, (open) => {
     if (!open) return
@@ -91,15 +97,30 @@ export const QuickOpen: Component = () => {
     setSelectedIndex(0)
 
     // Focus input after DOM renders (double-rAF for Solid's Show)
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => inputRef?.focus())
-    })
+    focusInput()
 
     // Load file list async
     const taskId = selectedTaskId()
     if (!taskId) return
     ipc.listWorktreeFiles(taskId).then(setFiles).catch(() => setFiles([]))
   }))
+
+  createEffect(() => {
+    if (!showQuickOpen()) return
+
+    const refocusIfNeeded = () => {
+      if (!showQuickOpen()) return
+      if (document.visibilityState !== 'visible') return
+      focusInput()
+    }
+
+    window.addEventListener('focus', refocusIfNeeded)
+    document.addEventListener('visibilitychange', refocusIfNeeded)
+    onCleanup(() => {
+      window.removeEventListener('focus', refocusIfNeeded)
+      document.removeEventListener('visibilitychange', refocusIfNeeded)
+    })
+  })
 
   // Filtered results
   type QuickOpenResult = {
