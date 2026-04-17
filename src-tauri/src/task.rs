@@ -625,6 +625,8 @@ pub async fn send_message(
         let title_msg = message.clone();
         let title_wt = worktree_path.clone();
         tokio::spawn(async move {
+            // Let the main session claim CPU/network before spawning a second claude process
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             if let Some(title) = generate_session_title(&title_msg, &title_wt).await {
                 if needs_session_name {
                     let _ = title_db

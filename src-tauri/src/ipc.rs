@@ -588,9 +588,13 @@ pub async fn send_message(
         .await?
         .ok_or_else(|| format!("Task {} not found", session.task_id))?;
 
-    let trust_str = db::get_trust_level(pool.inner(), &session.task_id).await?;
+    let (trust_result, repo_result) = tokio::join!(
+        db::get_trust_level(pool.inner(), &session.task_id),
+        db::get_repo_path_for_task(pool.inner(), &session.task_id),
+    );
+    let trust_str = trust_result?;
     let trust_level = crate::policy::TrustLevel::from_str(&trust_str);
-    let repo_path = db::get_repo_path_for_task(pool.inner(), &session.task_id).await?;
+    let repo_path = repo_result?;
 
     task::send_message(
         app,
