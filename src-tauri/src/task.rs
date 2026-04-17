@@ -6,6 +6,7 @@ use crate::worktree;
 use dashmap::DashMap;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin};
@@ -342,6 +343,55 @@ pub fn new_pending_approval_meta() -> PendingApprovalMeta {
     Arc::new(DashMap::new())
 }
 
+/// request_id → oneshot channel awaiting a matching `control_response` from the CLI.
+/// Used by IPC callers that issue `control_request`s (interrupt, get_context_usage, ...)
+/// and need to correlate the async reply.
+pub type PendingControlResponses =
+    Arc<DashMap<String, oneshot::Sender<Result<serde_json::Value, String>>>>;
+
+pub fn new_pending_control_responses() -> PendingControlResponses {
+    Arc::new(DashMap::new())
+}
+
+/// Best-effort graceful shutdown of a claude CLI subprocess. Matches the cadence
+/// the official claude-agent-sdk-python uses: EOF on stdin, then a 5s grace,
+/// then SIGTERM + 5s, then SIGKILL.
+///
+/// Why: hard SIGKILL interrupts the CLI mid-write of its session JSONL file,
+/// causing the last assistant message to be lost on `--resume` (python-sdk #625/#729).
+pub async fn graceful_shutdown(child: &mut Child, stdin: &Arc<TokioMutex<Option<ChildStdin>>>) {
+    // 1. Drop stdin to send EOF — lets the CLI flush its transcript and exit cleanly.
+    {
+        let mut guard = stdin.lock().await;
+        drop(guard.take());
+    }
+
+    // 2. Wait up to 5s for natural exit.
+    if tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .is_ok()
+    {
+        return;
+    }
+
+    // 3. SIGTERM. tokio::process::Child only exposes SIGKILL directly; send SIGTERM via libc.
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+    if tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .is_ok()
+    {
+        return;
+    }
+
+    // 4. SIGKILL as last resort.
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
 // ---------------------------------------------------------------------------
 // Task lifecycle
 // ---------------------------------------------------------------------------
@@ -653,12 +703,14 @@ pub struct SendMessageParams {
 /// Send a message to Claude in this session's worktree.
 /// Always uses `--input-format stream-json` and pipes content via stdin, keeping stdin
 /// open so we can write `control_response` messages for tool approval.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_message(
     app: AppHandle,
     db_tx: &DbWriteTx,
     active: ActiveMap,
     pending_approvals: PendingApprovals,
     pending_approval_meta: PendingApprovalMeta,
+    pending_control_responses: PendingControlResponses,
     params: SendMessageParams,
 ) -> Result<(), String> {
     let SendMessageParams {
@@ -785,6 +837,10 @@ pub async fn send_message(
     for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
         cmd.env(&k, &v);
     }
+    // Match claude-agent-sdk-python: strip `CLAUDECODE` (issue #573) so the spawned
+    // CLI doesn't detect itself as nested, and tag the entrypoint for Anthropic telemetry.
+    cmd.env_remove("CLAUDECODE");
+    cmd.env("CLAUDE_CODE_ENTRYPOINT", "verun");
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -912,6 +968,7 @@ pub async fn send_message(
     let monitor_active = active.clone();
     let monitor_pending = pending_approvals.clone();
     let monitor_pending_meta = pending_approval_meta.clone();
+    let monitor_pending_ctrl = pending_control_responses.clone();
     let monitor_wt = worktree_path.clone();
     let monitor_repo = repo_path;
     let monitor_trust = trust_level;
@@ -927,6 +984,7 @@ pub async fn send_message(
             stdin,
             monitor_pending,
             monitor_pending_meta,
+            monitor_pending_ctrl,
             monitor_db_tx.clone(),
             monitor_wt,
             monitor_repo,
@@ -1044,7 +1102,11 @@ pub async fn abort_message(
     session_id: &str,
 ) -> Result<(), String> {
     if let Some((_, mut proc)) = active.remove(session_id) {
-        let _ = proc.child.kill().await;
+        // Do the EOF → SIGTERM → SIGKILL dance in the background so the UI
+        // doesn't block on the grace period.
+        tokio::spawn(async move {
+            graceful_shutdown(&mut proc.child, &proc.stdin).await;
+        });
 
         // Update session status so the UI reflects the abort
         let _ = db_tx
@@ -1066,6 +1128,122 @@ pub async fn abort_message(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Control protocol helpers — send `control_request` to a running CLI over stdin
+// and correlate the `control_response` reply.
+// ---------------------------------------------------------------------------
+
+/// Generate a unique request id matching the claude-agent-sdk format.
+fn new_control_request_id() -> String {
+    let mut bytes = [0u8; 4];
+    getrandom_bytes(&mut bytes);
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("req_{}_{hex}", uuid::Uuid::new_v4().simple())
+}
+
+/// Tiny wrapper around /dev/urandom — avoids pulling in a new crate just for 4 bytes.
+fn getrandom_bytes(buf: &mut [u8]) {
+    use std::io::Read;
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(buf);
+    }
+}
+
+/// Write a `control_request` JSON line to the given stdin and optionally register
+/// a oneshot to await the matching `control_response`. Returns the request id.
+async fn send_control_request(
+    stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
+    pending: Option<&PendingControlResponses>,
+    request: serde_json::Value,
+) -> Result<
+    (
+        String,
+        Option<oneshot::Receiver<Result<serde_json::Value, String>>>,
+    ),
+    String,
+> {
+    let request_id = new_control_request_id();
+    let envelope = serde_json::json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": request,
+    });
+
+    let mut payload = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
+    payload.push('\n');
+
+    let rx = if let Some(pending) = pending {
+        let (tx, rx) = oneshot::channel();
+        pending.insert(request_id.clone(), tx);
+        Some(rx)
+    } else {
+        None
+    };
+
+    let mut guard = stdin.lock().await;
+    let writer = guard
+        .as_mut()
+        .ok_or_else(|| "Session stdin is closed".to_string())?;
+    writer
+        .write_all(payload.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    writer.flush().await.map_err(|e| e.to_string())?;
+
+    Ok((request_id, rx))
+}
+
+/// Send `{subtype: "interrupt"}` to cancel the current turn without killing the process.
+/// Fire-and-forget — the CLI ACKs via a control_response we don't need to inspect.
+pub async fn interrupt_session(active: &ActiveMap, session_id: &str) -> Result<(), String> {
+    let stdin = active
+        .get(session_id)
+        .map(|proc| proc.stdin.clone())
+        .ok_or_else(|| "No active session".to_string())?;
+
+    let (_req_id, _rx) = send_control_request(
+        &stdin,
+        None,
+        serde_json::json!({ "subtype": "interrupt" }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Ask the CLI for the current context-window usage, awaiting the response.
+pub async fn get_session_context_usage(
+    active: &ActiveMap,
+    pending: &PendingControlResponses,
+    session_id: &str,
+) -> Result<serde_json::Value, String> {
+    let stdin = active
+        .get(session_id)
+        .map(|proc| proc.stdin.clone())
+        .ok_or_else(|| "No active session".to_string())?;
+
+    let (request_id, rx) = send_control_request(
+        &stdin,
+        Some(pending),
+        serde_json::json!({ "subtype": "get_context_usage" }),
+    )
+    .await?;
+    let rx = rx.expect("pending map provided");
+
+    let result = tokio::time::timeout(Duration::from_secs(10), rx).await;
+
+    // Always clean up the pending entry on timeout so we don't leak.
+    if result.is_err() {
+        pending.remove(&request_id);
+    }
+
+    match result {
+        Ok(Ok(Ok(v))) => Ok(v),
+        Ok(Ok(Err(e))) => Err(e),
+        Ok(Err(_)) => Err("Session closed before responding".to_string()),
+        Err(_) => Err("Timed out waiting for CLI response".to_string()),
+    }
+}
+
 /// Generate a short title using a standalone Haiku call (fast, doesn't affect session).
 /// Uses the Claude CLI regardless of agent type since title generation is a Verun feature.
 async fn generate_session_title(first_message: &str, worktree_path: &str) -> Option<String> {
@@ -1083,6 +1261,8 @@ async fn generate_session_title(first_message: &str, worktree_path: &str) -> Opt
             "--model",
             "haiku",
         ])
+        .env_remove("CLAUDECODE")
+        .env("CLAUDE_CODE_ENTRYPOINT", "verun")
         .current_dir(worktree_path)
         .output()
         .await
@@ -1643,5 +1823,14 @@ mod tests {
     fn adjectives_and_animals_have_enough_variety() {
         assert!(ADJECTIVES.len() >= 20);
         assert!(ANIMALS.len() >= 20);
+    }
+
+    #[test]
+    fn control_request_id_is_unique_and_prefixed() {
+        let a = new_control_request_id();
+        let b = new_control_request_id();
+        assert!(a.starts_with("req_"));
+        assert!(b.starts_with("req_"));
+        assert_ne!(a, b);
     }
 }

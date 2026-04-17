@@ -44,6 +44,7 @@ pub fn run() {
         .manage(task::new_active_map())
         .manage(task::new_pending_approvals())
         .manage(task::new_pending_approval_meta())
+        .manage(task::new_pending_control_responses())
         .manage(task::new_setup_in_progress())
         .manage(task::new_hook_pty_map())
         .manage(pty::new_active_pty_map())
@@ -255,6 +256,8 @@ pub fn run() {
             ipc::close_session,
             ipc::clear_session,
             ipc::abort_message,
+            ipc::interrupt_session,
+            ipc::get_session_context_usage,
             ipc::get_active_sessions,
             ipc::respond_to_approval,
             ipc::get_pending_approvals,

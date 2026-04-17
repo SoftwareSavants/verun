@@ -2,7 +2,10 @@ use crate::claude_jsonl;
 use crate::db::{DbWrite, DbWriteTx};
 use crate::policy::{self, PolicyDecision, TrustLevel};
 use crate::snapshots;
-use crate::task::{ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals};
+use crate::task::{
+    ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals,
+    PendingControlResponses,
+};
 use serde::Serialize;
 use std::path::Path;
 use std::sync::Arc;
@@ -152,21 +155,26 @@ pub struct PolicyAutoApprovedEvent {
 // ---------------------------------------------------------------------------
 
 /// Parse a single NDJSON line from Claude's stream-json output into OutputItems.
+///
+/// Kept for tests and rare call sites that only have the raw line. The stream
+/// loop itself parses once upfront and calls `parse_sdk_event_value` directly to
+/// avoid re-parsing the same line two or three times per tick.
+#[cfg_attr(not(test), allow(dead_code))]
 fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
-    let v: serde_json::Value = match serde_json::from_str(line) {
-        Ok(v) => v,
-        Err(_) => {
-            return vec![OutputItem::Raw {
-                text: line.to_string(),
-            }]
-        }
-    };
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(v) => parse_sdk_event_value(&v),
+        Err(_) => vec![OutputItem::Raw {
+            text: line.to_string(),
+        }],
+    }
+}
 
+fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
     let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
     match msg_type {
         // -- Streaming token deltas (real-time) --
-        "stream_event" => parse_stream_event(&v),
+        "stream_event" => parse_stream_event(v),
 
         // -- Assistant message --
         // Cursor with --stream-partial-output sends per-token `assistant` events
@@ -174,24 +182,20 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         "assistant" => {
             if v.get("timestamp_ms").is_some() {
                 // Streaming delta: extract just the text content
-                parse_assistant_text_only(&v)
+                parse_assistant_text_only(v)
             } else {
                 // Final snapshot or non-streaming: extract text + tool_use blocks
-                parse_assistant_message(&v)
+                parse_assistant_message(v)
             }
         }
 
         // -- User message (tool results) --
-        "user" => parse_user_message(&v),
+        "user" => parse_user_message(v),
 
         // -- System messages --
-        "system" => {
-            if v.get("subtype").and_then(|s| s.as_str()) == Some("init") {
-                vec![]
-            } else {
-                vec![]
-            }
-        }
+        // `system.init` gives us the resume id (extracted in stream_and_capture);
+        // other system subtypes are silently ignored.
+        "system" => vec![],
 
         // -- Result (turn completed) --
         // Text is already delivered via stream_event deltas; skip result.result to avoid duplication.
@@ -1032,6 +1036,7 @@ pub async fn stream_and_capture(
     stdin: Arc<TokioMutex<Option<ChildStdin>>>,
     pending_approvals: PendingApprovals,
     pending_approval_meta: PendingApprovalMeta,
+    pending_control_responses: PendingControlResponses,
     db_tx: DbWriteTx,
     worktree_path: String,
     repo_path: String,
@@ -1061,15 +1066,66 @@ pub async fn stream_and_capture(
                     Ok(Some(line)) => {
                         let preview = if line.len() > 200 { &line[..200] } else { &line };
                         eprintln!("[verun][stream][{session_id}] {preview}");
+
+                        // Cleanly skip non-JSON garbage (e.g. `[SandboxDebug]` lines the CLI
+                        // can interleave under permission/sandbox modes). Matches the
+                        // claude-agent-sdk-python fix for issue #347.
+                        let trimmed = line.trim_start();
+                        if !trimmed.starts_with('{') {
+                            if !trimmed.is_empty() {
+                                eprintln!("[verun][stream][{session_id}] skipping non-JSON: {}",
+                                    trimmed.chars().take(200).collect::<String>());
+                            }
+                            continue;
+                        }
+
+                        // Parse each line exactly once. Every downstream check (control_request,
+                        // control_response, resume_id extraction, rate_limit, event parse) now
+                        // works off this one `Value`.
+                        let v: serde_json::Value = match serde_json::from_str(&line) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("[verun][stream][{session_id}] JSON parse error: {e}");
+                                // Keep the raw line visible in the UI rather than silently dropping it
+                                let items = vec![OutputItem::Raw { text: line.clone() }];
+                                for item in &items { buffer.push(item.clone()); }
+                                persist_items(&db_tx, &session_id, &items, &mut total_persisted);
+                                continue;
+                            }
+                        };
+                        let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                        // Incoming `control_response` — resolve the matching pending oneshot so
+                        // IPC callers like `interrupt_session` / `get_session_context_usage`
+                        // can unblock. No UI emission for these.
+                        if msg_type == "control_response" {
+                            if let Some(response) = v.get("response") {
+                                if let Some(req_id) = response.get("request_id").and_then(|r| r.as_str()) {
+                                    if let Some((_, tx)) = pending_control_responses.remove(req_id) {
+                                        let subtype = response.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+                                        let result = if subtype == "error" {
+                                            Err(response.get("error")
+                                                .and_then(|e| e.as_str())
+                                                .unwrap_or("CLI returned error")
+                                                .to_string())
+                                        } else {
+                                            Ok(response.get("response").cloned().unwrap_or(serde_json::Value::Null))
+                                        };
+                                        let _ = tx.send(result);
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
                         // Intercept control_request for tool approval
                         if let Some(cr) = handle_control_request(
-                            &app, &session_id, &task_id, &line, &stdin,
+                            &app, &session_id, &task_id, &v, &stdin,
                             &pending_approvals, &pending_approval_meta,
                             &worktree_path, &repo_path,
                             trust_level, &db_tx,
                         ).await {
                             if cr.handled {
-                                // Emit ToolStart so the frontend knows which tool is running
                                 if let Some(tool_start) = cr.tool_start {
                                     buffer.push(tool_start.clone());
                                     persist_items(&db_tx, &session_id, &[tool_start], &mut total_persisted);
@@ -1080,41 +1136,37 @@ pub async fn stream_and_capture(
 
                         // Extract the resume session id via the agent's own logic
                         if resume_id_for_snapshot.is_none() {
-                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                                if let Some(sid) = agent.extract_resume_id(&v) {
-                                    resume_id_for_snapshot = Some(sid.clone());
-                                    if defers_resume {
-                                        pending_resume_id = Some(sid);
-                                    } else {
-                                        let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
-                                            id: session_id.clone(),
-                                            resume_session_id: sid,
-                                        }).await;
-                                    }
+                            if let Some(sid) = agent.extract_resume_id(&v) {
+                                resume_id_for_snapshot = Some(sid.clone());
+                                if defers_resume {
+                                    pending_resume_id = Some(sid);
+                                } else {
+                                    let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
+                                        id: session_id.clone(),
+                                        resume_session_id: sid,
+                                    }).await;
                                 }
                             }
                         }
 
                         // Intercept rate_limit_event — emit as separate Tauri event
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                            if v.get("type").and_then(|t| t.as_str()) == Some("rate_limit_event") {
-                                if let Some(info) = v.get("rate_limit_info") {
-                                    let _ = app.emit("rate-limit-info", RateLimitInfoEvent {
-                                        session_id: session_id.clone(),
-                                        resets_at: info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
-                                        overage_resets_at: info.get("overageResetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
-                                        rate_limit_type: info.get("rateLimitType").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-                                        overage_status: info.get("overageStatus").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-                                        is_using_overage: info.get("isUsingOverage").and_then(|r| r.as_bool()).unwrap_or(false),
-                                    });
-                                }
-                                persist_line(&db_tx, &session_id, &line, &mut total_persisted);
-                                continue;
+                        if msg_type == "rate_limit_event" {
+                            if let Some(info) = v.get("rate_limit_info") {
+                                let _ = app.emit("rate-limit-info", RateLimitInfoEvent {
+                                    session_id: session_id.clone(),
+                                    resets_at: info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
+                                    overage_resets_at: info.get("overageResetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
+                                    rate_limit_type: info.get("rateLimitType").and_then(|r| r.as_str()).unwrap_or("").to_string(),
+                                    overage_status: info.get("overageStatus").and_then(|r| r.as_str()).unwrap_or("").to_string(),
+                                    is_using_overage: info.get("isUsingOverage").and_then(|r| r.as_bool()).unwrap_or(false),
+                                });
                             }
+                            persist_line(&db_tx, &session_id, &line, &mut total_persisted);
+                            continue;
                         }
 
-                        // Parse NDJSON into structured items
-                        let items = parse_sdk_event(&line);
+                        // Parse NDJSON into structured items (already have Value — no re-parse)
+                        let items = parse_sdk_event_value(&v);
 
                         // Emit text/thinking deltas immediately for real-time streaming
                         let mut has_immediate = false;
@@ -1235,7 +1287,7 @@ async fn handle_control_request(
     app: &AppHandle,
     session_id: &str,
     task_id: &str,
-    line: &str,
+    v: &serde_json::Value,
     stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
     pending_approvals: &PendingApprovals,
     pending_meta: &PendingApprovalMeta,
@@ -1244,8 +1296,6 @@ async fn handle_control_request(
     trust_level: TrustLevel,
     db_tx: &DbWriteTx,
 ) -> Option<ControlRequestResult> {
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-
     if v.get("type").and_then(|t| t.as_str()) != Some("control_request") {
         return Some(ControlRequestResult {
             handled: false,
