@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.7.2 — 2026-04-17
 
+### Changes
+
+- Move db init into async spawn to prevent startup crash on macOS
 - Chat search position no longer jumps to last match when new agent messages arrive
 - File browser now shows .env and other gitignored files
 

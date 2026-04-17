@@ -383,7 +383,7 @@ pub type DbWriteTx = mpsc::Sender<DbWrite>;
 /// Spawn the background write loop. Returns a sender handle to enqueue writes.
 pub fn spawn_write_queue(pool: SqlitePool) -> DbWriteTx {
     let (tx, mut rx) = mpsc::channel::<DbWrite>(1024);
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         while let Some(write) = rx.recv().await {
             if let Err(e) = process_write(&pool, write).await {
                 eprintln!("[verun] db write error: {e}");
