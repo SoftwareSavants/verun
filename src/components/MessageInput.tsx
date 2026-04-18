@@ -565,37 +565,60 @@ export const MessageInput: Component<Props> = (props) => {
     return !!taskPlanFilePath[tid]
   }
 
-  const handleApprovePlan = () => {
+  const [planActionPending, setPlanActionPending] = createSignal(false)
+
+  const handleApprovePlan = async () => {
+    if (planActionPending()) return
     const sid = props.sessionId
     if (!sid) return
+    setPlanActionPending(true)
     const tid = selectedTaskId()
     if (tid) setTaskPlanFilePath(tid, null)
     setPlanMode(false)
-    sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+    try {
+      await sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+    } catch (error) {
+      setPlanActionPending(false)
+      throw error
+    }
   }
 
   // Handles both live ExitPlanMode approval and persisted plan viewer
-  const handlePlanViewerAction = (feedback: string) => {
+  const handlePlanViewerAction = async (feedback: string) => {
+    if (planActionPending()) return
     const sid = props.sessionId
     if (!sid) return
+    setPlanActionPending(true)
     const approval = currentApproval()
     if (feedback) {
       // Request changes
       setPlanChanges('')
-      if (approval && isExitPlanMode()) {
-        denyToolUse(approval.requestId, approval.sessionId)
+      try {
+        if (approval && isExitPlanMode()) {
+          await denyToolUse(approval.requestId, approval.sessionId)
+        }
+        await sendMessage(sid, feedback, undefined, currentModel(), true)
+      } catch (error) {
+        setPlanActionPending(false)
+        throw error
       }
-      sendMessage(sid, feedback, undefined, currentModel(), true)
     } else {
-      // Approve — always send a message so plan_mode: false gets persisted
+      // Approve the plan and persist local plan mode/file state.
       setPlanMode(false)
       const tid = selectedTaskId()
       if (tid) setTaskPlanFilePath(tid, null)
-      if (approval && isExitPlanMode()) {
-        approveToolUse(approval.requestId, approval.sessionId)
+      try {
+        if (approval && isExitPlanMode()) {
+          await approveToolUse(approval.requestId, approval.sessionId)
+          return
+        }
+        // Persisted plan review has no live approval waiting on the backend, so
+        // we still need to send the implementation message explicitly.
+        await sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+      } catch (error) {
+        setPlanActionPending(false)
+        throw error
       }
-      // Send implementation message (persists plan_mode: false so restart doesn't re-show)
-      sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
     }
   }
 
@@ -646,6 +669,7 @@ export const MessageInput: Component<Props> = (props) => {
 
   // Whether to show the full plan viewer (live approval OR persisted plan file)
   const showPlanViewer = () => {
+    if (planActionPending()) return false
     // Never show while session is running (implementing)
     if (props.isRunning && !isExitPlanMode()) return false
     if (isExitPlanMode()) return true
@@ -669,7 +693,7 @@ export const MessageInput: Component<Props> = (props) => {
         const inlinePlan = approval.toolInput.plan as string | undefined
         const filePath = approval.toolInput.planFilePath as string | undefined
         const tid = selectedTaskId()
-        if (tid && filePath) setTaskPlanFilePath(tid, filePath)
+        if (tid && filePath && !planActionPending()) setTaskPlanFilePath(tid, filePath)
         setPlanFilePathSignal(filePath || null)
         if (inlinePlan) {
           setPlanFileContent(inlinePlan)
@@ -709,6 +733,14 @@ export const MessageInput: Component<Props> = (props) => {
     return { plan: content, filePath: planFilePathSignal() }
   }
   const [planChanges, setPlanChanges] = createSignal('')
+
+  createEffect(on(() => currentApproval()?.requestId, (requestId) => {
+    if (requestId) setPlanActionPending(false)
+  }))
+
+  createEffect(on(() => props.isRunning, (isRunning) => {
+    if (!isRunning) setPlanActionPending(false)
+  }))
 
   const pendingCount = () => {
     const sid = props.sessionId
@@ -1451,7 +1483,7 @@ export const MessageInput: Component<Props> = (props) => {
       if (showPlanResponse() && !currentApproval()) {
         const active = document.activeElement
         const isInputFocused = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')
-        if (e.key === 'Enter' && !e.shiftKey && !isInputFocused) {
+        if (e.key === 'Enter' && !e.shiftKey && !isInputFocused && !planActionPending()) {
           e.preventDefault()
           handleApprovePlan()
           return
@@ -1864,22 +1896,25 @@ export const MessageInput: Component<Props> = (props) => {
                 value={planChanges()}
                 onInput={(e) => setPlanChanges(e.currentTarget.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
+                  if (e.key === 'Enter' && !e.shiftKey && !planActionPending()) {
                     e.preventDefault()
                     handlePlanViewerAction(planChanges().trim())
                   }
                 }}
+                disabled={planActionPending()}
               />
               <button
                 class={clsx(
                   'px-4 py-2 rounded-lg text-sm font-medium transition-colors shrink-0',
+                  planActionPending() && 'opacity-60 cursor-not-allowed',
                   planChanges().trim()
                     ? 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25'
                     : 'bg-status-running/15 text-status-running hover:bg-status-running/25'
                 )}
+                disabled={planActionPending()}
                 onClick={() => handlePlanViewerAction(planChanges().trim())}
               >
-                {planChanges().trim() ? 'Send' : 'Approve'} <span class="text-text-dim ml-1">(Enter)</span>
+                {planActionPending() ? 'Working...' : planChanges().trim() ? 'Send' : 'Approve'} <span class="text-text-dim ml-1">(Enter)</span>
               </button>
             </div>
           </div>
@@ -1944,10 +1979,16 @@ export const MessageInput: Component<Props> = (props) => {
                 <X size={14} />
               </button>
               <button
-                class="px-3 py-1.5 rounded-lg bg-status-running/15 text-status-running text-xs font-medium hover:bg-status-running/25 transition-colors"
+                class={clsx(
+                  'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                  planActionPending()
+                    ? 'bg-status-running/15 text-status-running opacity-60 cursor-not-allowed'
+                    : 'bg-status-running/15 text-status-running hover:bg-status-running/25'
+                )}
+                disabled={planActionPending()}
                 onClick={handleApprovePlan}
               >
-                Approve <span class="text-text-dim ml-1">(Enter)</span>
+                {planActionPending() ? 'Working...' : 'Approve'} <span class="text-text-dim ml-1">(Enter)</span>
               </button>
             </div>
           </div>
