@@ -34,6 +34,7 @@ src/components/— UI components
 
 ## Key Rules
 
+- Always TDD: before implementing a fix or feature, write a new failing test (or adjust an existing one to be red) that captures the desired behaviour, run it to confirm it fails, then make the change and re-run to confirm it passes. Applies to both Rust (`cargo test`) and frontend (`pnpm test`).
 - Never do file I/O, git ops, or process management in JS — always in Rust
 - Never poll from frontend — use Tauri events (emit/listen)
 - Never await SQLite writes on the UI thread — fire and forget

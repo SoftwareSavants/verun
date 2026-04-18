@@ -1,29 +1,36 @@
 import { Component, For, Show, createSignal } from 'solid-js'
-import { GripVertical, Play, Pause, Pencil, Trash2, ArrowUp, ListChecks, Zap, Paperclip } from 'lucide-solid'
+import { GripVertical, Play, Pause, X, ArrowUp, ListChecks, Zap, Paperclip, Brain } from 'lucide-solid'
 import { getSteps, removeStep, updateStep, reorderSteps, extractStep } from '../store/steps'
-import { sendMessage } from '../store/sessions'
-import { setEditStepRequest } from '../store/ui'
+import { sendMessage, sessionById } from '../store/sessions'
+import { agents } from '../store/agents'
 import { clsx } from 'clsx'
+import { ModelSelector } from './ModelSelector'
+import type { AgentType, ModelId } from '../types'
 
 interface Props {
   sessionId: string | null
   isRunning: boolean
 }
 
+const ROW_HEIGHT = 32
+
 export const StepList: Component<Props> = (props) => {
   const [dragging, setDragging] = createSignal<number | null>(null)
   const [dropTarget, setDropTarget] = createSignal<number | null>(null)
+  const [editingId, setEditingId] = createSignal<string | null>(null)
+  const [editText, setEditText] = createSignal('')
 
   const stepList = () => getSteps(props.sessionId)
+
+  const sessionAgent = () => {
+    const sid = props.sessionId
+    const at = sid ? sessionById(sid)?.agentType : undefined
+    return at ? agents.find(a => a.id === at) : undefined
+  }
 
   const toggleArmed = (stepId: string, currentArmed: boolean) => {
     if (!props.sessionId) return
     updateStep(props.sessionId, stepId, { armed: !currentArmed })
-  }
-
-  const handleEdit = (stepId: string, message: string, attachmentsJson?: string | null) => {
-    if (!props.sessionId) return
-    setEditStepRequest({ sessionId: props.sessionId, stepId, message, attachmentsJson })
   }
 
   const handleDelete = (stepId: string) => {
@@ -43,7 +50,25 @@ export const StepList: Component<Props> = (props) => {
     )
   }
 
-  const ROW_HEIGHT = 32
+  const startEdit = (stepId: string, message: string) => {
+    setEditingId(stepId)
+    setEditText(message)
+  }
+
+  const saveEdit = () => {
+    const id = editingId()
+    if (!id || !props.sessionId) return
+    const msg = editText().trim()
+    if (msg) updateStep(props.sessionId, id, { message: msg })
+    setEditingId(null)
+  }
+
+  const cancelEdit = () => setEditingId(null)
+
+  const autoResize = (el: HTMLTextAreaElement) => {
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }
 
   const startDrag = (e: MouseEvent, dragIndex: number) => {
     e.preventDefault()
@@ -80,93 +105,203 @@ export const StepList: Component<Props> = (props) => {
 
   return (
     <Show when={stepList().length > 0}>
-      <div class="border-t border-border px-3 py-1.5 max-h-40 overflow-y-auto">
+      <div class="border-t border-border px-3 py-1.5 max-h-48 flex flex-col min-h-0">
         <div class="flex items-center justify-between mb-1">
           <span class="text-[10px] text-text-dim font-medium uppercase tracking-wider">Next Steps</span>
         </div>
-        <For each={stepList()}>
-          {(step, i) => (
-            <div
-              class={clsx(
-                'flex items-center gap-1 px-1.5 py-1 rounded text-xs transition-colors',
-                dragging() === i() && 'opacity-40',
-                dropTarget() === i() && dragging() !== null && dragging() !== i() && 'border-t-2 border-accent',
-                'hover:bg-surface-2',
-              )}
-              style={{ height: `${ROW_HEIGHT}px` }}
-            >
-              {/* Drag handle */}
+        <div class="flex-1 overflow-y-auto min-h-0">
+          <For each={stepList()}>
+          {(step, i) => {
+            const isEditing = () => editingId() === step.id
+            const attachmentCount = () => {
+              if (!step.attachmentsJson) return 0
+              try { return JSON.parse(step.attachmentsJson).length } catch { return 0 }
+            }
+            return (
               <div
-                class="cursor-grab text-text-dim hover:text-text-muted shrink-0 flex items-center"
-                onMouseDown={(e) => startDrag(e, i())}
-              >
-                <GripVertical size={12} />
-              </div>
-
-              {/* Number */}
-              <span class="text-text-dim w-4 text-right shrink-0">{i() + 1}.</span>
-
-              {/* Message + mode indicators */}
-              <div class="flex-1 flex items-center gap-1 min-w-0">
-                <span class="truncate text-text-secondary">{step.message}</span>
-                <Show when={step.planMode}>
-                  <span class="text-text-dim shrink-0 flex items-center" title="Plan mode"><ListChecks size={11} /></span>
-                </Show>
-                <Show when={step.fastMode}>
-                  <span class="text-text-dim shrink-0 flex items-center" title="Fast mode"><Zap size={11} /></span>
-                </Show>
-                <Show when={step.attachmentsJson}>
-                  {(() => {
-                    try { const n = JSON.parse(step.attachmentsJson!).length; return n > 0 ? <span class="text-text-dim shrink-0 flex items-center" title={`${n} attachment${n > 1 ? 's' : ''}`}><Paperclip size={11} /></span> : null } catch { return null }
-                  })()}
-                </Show>
-              </div>
-
-              {/* Armed toggle */}
-              <button
+                data-step-id={step.id}
                 class={clsx(
-                  'p-0.5 rounded transition-colors shrink-0',
-                  step.armed
-                    ? 'text-accent hover:text-accent/80'
-                    : 'text-text-dim hover:text-text-muted',
+                  'group flex gap-1 px-1.5 py-1 rounded text-xs relative transition-colors',
+                  isEditing() ? 'items-start' : 'items-center',
+                  dragging() === i() && 'opacity-40',
+                  dropTarget() === i() && dragging() !== null && dragging() !== i() && 'border-t-2 border-accent',
+                  !isEditing() && 'hover:bg-surface-2',
+                  isEditing() && 'bg-surface-2 ring-1 ring-accent/40',
+                  !isEditing() && step.armed && 'shadow-[inset_2px_0_0_0_#2d6e4f]',
                 )}
-                onClick={() => toggleArmed(step.id, step.armed)}
-                title={step.armed ? 'Disarm (won\'t auto-send)' : 'Arm (auto-send when idle)'}
+                style={!isEditing() ? { height: `${ROW_HEIGHT}px` } : undefined}
+                onMouseDown={(e) => {
+                  // Keep textarea focused when clicking buttons/selector in edit mode
+                  // so the blur-to-save doesn't fire. WebKit (Tauri) does not focus
+                  // buttons on click, so relatedTarget-based detection is unreliable.
+                  if (!isEditing()) return
+                  const t = e.target as HTMLElement
+                  if (!t.closest('textarea, input')) e.preventDefault()
+                }}
               >
-                {step.armed ? <Play size={12} /> : <Pause size={12} />}
-              </button>
-
-              {/* Fire button — only for first step when idle */}
-              <Show when={i() === 0 && !props.isRunning}>
-                <button
-                  class="p-0.5 rounded text-accent hover:bg-accent/10 transition-colors shrink-0"
-                  onClick={() => handleFire(step.id)}
-                  title="Send now"
+                {/* Drag handle */}
+                <div
+                  class={clsx(
+                    'text-text-dim shrink-0 flex items-center',
+                    isEditing() ? 'pt-1' : 'cursor-grab hover:text-text-muted',
+                  )}
+                  onMouseDown={(e) => { if (!isEditing()) startDrag(e, i()) }}
                 >
-                  <ArrowUp size={13} />
-                </button>
-              </Show>
+                  <GripVertical size={12} />
+                </div>
 
-              {/* Edit */}
-              <button
-                class="p-0.5 rounded text-text-dim hover:text-text-muted hover:bg-surface-3 transition-colors shrink-0"
-                onClick={() => handleEdit(step.id, step.message, step.attachmentsJson)}
-                title="Edit"
-              >
-                <Pencil size={12} />
-              </button>
+                <Show
+                  when={isEditing()}
+                  fallback={
+                    <>
+                      {/* Message (click to edit) */}
+                      <div
+                        class="flex-1 flex items-center gap-1 min-w-0 cursor-text"
+                        onClick={() => startEdit(step.id, step.message)}
+                      >
+                        <span class="truncate text-text-secondary">{step.message}</span>
+                        <Show when={step.planMode}>
+                          <span class="text-text-dim shrink-0 flex items-center" title="Plan mode"><ListChecks size={11} /></span>
+                        </Show>
+                        <Show when={step.fastMode}>
+                          <span class="text-text-dim shrink-0 flex items-center" title="Fast mode"><Zap size={11} /></span>
+                        </Show>
+                        <Show when={attachmentCount() > 0}>
+                          <span class="text-text-dim shrink-0 flex items-center" title={`${attachmentCount()} attachment${attachmentCount() > 1 ? 's' : ''}`}>
+                            <Paperclip size={11} />
+                          </span>
+                        </Show>
+                      </div>
 
-              {/* Delete */}
-              <button
-                class="p-0.5 rounded text-text-dim hover:text-status-error hover:bg-status-error/10 transition-colors shrink-0"
-                onClick={() => handleDelete(step.id)}
-                title="Remove"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          )}
-        </For>
+                      {/* Action cluster: fire (first idle step) → arm → delete.
+                          First idle step shows icons always; other rows hover-reveal. */}
+                      <div
+                        class={clsx(
+                          'flex items-center shrink-0 transition-opacity',
+                          !(i() === 0 && !props.isRunning) && 'opacity-0 group-hover:opacity-100',
+                        )}
+                      >
+                        <Show when={i() === 0 && !props.isRunning}>
+                          <button
+                            class="p-0.5 rounded text-accent hover:bg-accent/10 transition-colors shrink-0"
+                            onClick={() => handleFire(step.id)}
+                            title="Send now"
+                          >
+                            <ArrowUp size={13} />
+                          </button>
+                        </Show>
+
+                        <Show when={!(i() === 0 && !props.isRunning)}>
+                          <button
+                            class="p-0.5 rounded transition-colors shrink-0 text-text-dim hover:text-text-muted"
+                            onClick={() => toggleArmed(step.id, step.armed)}
+                            title={step.armed ? 'Disarm (won\'t auto-send)' : 'Arm (auto-send when idle)'}
+                          >
+                            {step.armed ? <Pause size={12} /> : <Play size={12} />}
+                          </button>
+                        </Show>
+
+                        <button
+                          class="p-0.5 rounded text-text-dim hover:text-status-error hover:bg-status-error/10 transition-colors shrink-0"
+                          onClick={() => handleDelete(step.id)}
+                          title="Remove"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    </>
+                  }
+                >
+                  {/* Edit mode */}
+                  <div class="flex-1 flex flex-col gap-1 min-w-0">
+                    <textarea
+                      class="w-full bg-transparent text-text-primary outline-none resize-none text-xs leading-tight py-0.5"
+                      rows={1}
+                      value={editText()}
+                      ref={(el) => {
+                        requestAnimationFrame(() => {
+                          autoResize(el)
+                          el.focus()
+                          el.setSelectionRange(el.value.length, el.value.length)
+                        })
+                      }}
+                      onInput={(e) => { setEditText(e.currentTarget.value); autoResize(e.currentTarget) }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEdit() }
+                        else if (e.key === 'Escape') { e.preventDefault(); cancelEdit() }
+                      }}
+                      onBlur={(e) => {
+                        const row = e.currentTarget.closest('[data-step-id]')
+                        const next = e.relatedTarget as HTMLElement | null
+                        if (!next || !row || !row.contains(next)) saveEdit()
+                      }}
+                    />
+                    <div class="flex items-center gap-1 flex-wrap">
+                      <Show when={sessionAgent()?.supportsPlanMode !== false}>
+                        <button
+                          class={clsx(
+                            'flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors',
+                            step.planMode
+                              ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                              : 'text-text-muted hover:bg-surface-3',
+                          )}
+                          onClick={() => updateStep(props.sessionId!, step.id, { planMode: !step.planMode })}
+                          title="Plan mode"
+                        >
+                          <ListChecks size={10} />
+                          <span>Plan</span>
+                        </button>
+                      </Show>
+                      <Show when={sessionAgent()?.supportsEffort !== false}>
+                        <button
+                          class={clsx(
+                            'flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors',
+                            step.thinkingMode
+                              ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                              : 'text-text-muted hover:bg-surface-3',
+                          )}
+                          onClick={() => updateStep(props.sessionId!, step.id, { thinkingMode: !step.thinkingMode })}
+                          title="Thinking mode"
+                        >
+                          <Brain size={10} />
+                          <span>Think</span>
+                        </button>
+                        <button
+                          class={clsx(
+                            'flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors',
+                            step.fastMode
+                              ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                              : 'text-text-muted hover:bg-surface-3',
+                          )}
+                          onClick={() => updateStep(props.sessionId!, step.id, { fastMode: !step.fastMode })}
+                          title="Fast mode"
+                        >
+                          <Zap size={10} />
+                          <span>Fast</span>
+                        </button>
+                      </Show>
+                      <ModelSelector
+                        model={step.model as ModelId | null | undefined}
+                        agentType={sessionAgent()?.id ?? ('claude' as AgentType)}
+                        onChange={(m) => updateStep(props.sessionId!, step.id, { model: m })}
+                        fixedPosition
+                        compact
+                      />
+                      <Show when={attachmentCount() > 0}>
+                        <span class="text-text-dim flex items-center gap-1 text-[10px] px-1.5 py-0.5">
+                          <Paperclip size={10} />
+                          <span>{attachmentCount()}</span>
+                        </span>
+                      </Show>
+                      <span class="ml-auto text-[10px] text-text-dim">Enter to save · Esc to cancel</span>
+                    </div>
+                  </div>
+                </Show>
+              </div>
+            )
+          }}
+          </For>
+        </div>
       </div>
     </Show>
   )

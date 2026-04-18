@@ -17,12 +17,17 @@ interface Props {
   agentType: AgentType
   onChange: (model: ModelId) => void
   disabled?: boolean
+  /** Render popover with fixed positioning so it escapes overflow-clipping ancestors */
+  fixedPosition?: boolean
+  compact?: boolean
 }
 
 export const ModelSelector: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [query, setQuery] = createSignal('')
   const [updateModel, setUpdateModel] = createSignal<ModelOption | null>(null)
+  const [popoverPos, setPopoverPos] = createSignal<{ x: number; y: number } | undefined>()
+  let buttonRef: HTMLButtonElement | undefined
 
   const agentInfo = () => agents.find(a => a.id === props.agentType)
   const cliVersion = () => agentInfo()?.cliVersion
@@ -71,22 +76,40 @@ export const ModelSelector: Component<Props> = (props) => {
     setOpen(false)
   }
 
+  const handleToggle = () => {
+    if (!open() && props.fixedPosition && buttonRef) {
+      const r = buttonRef.getBoundingClientRect()
+      setPopoverPos({ x: r.left, y: r.top })
+    }
+    setOpen(o => !o)
+  }
+
   return (
     <div class="relative">
       <button
+        ref={buttonRef}
         class={clsx(
-          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-30',
+          'flex items-center gap-1.5 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-30',
+          props.compact ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-1 text-[11px]',
           open() && 'text-text-secondary bg-surface-2',
         )}
-        onClick={() => setOpen(o => !o)}
+        onClick={handleToggle}
         disabled={props.disabled}
       >
-        <SvgIcon svg={agentSvg()} size={12} />
+        <SvgIcon svg={agentSvg()} size={props.compact ? 10 : 12} />
         <span>{currentOpt()?.label ?? resolvedModel()}</span>
-        <ChevronDown size={9} class={clsx('transition-transform', open() && 'rotate-180')} />
+        <ChevronDown size={props.compact ? 8 : 9} class={clsx('transition-transform', open() && 'rotate-180')} />
       </button>
 
-      <Popover open={open()} onClose={() => setOpen(false)} class="py-1 min-w-52 absolute bottom-full left-0 mb-1">
+      <Popover
+        open={open()}
+        onClose={() => setOpen(false)}
+        pos={props.fixedPosition ? popoverPos() : undefined}
+        class={clsx(
+          'py-1 min-w-52',
+          props.fixedPosition ? '-translate-y-full -mt-1' : 'absolute bottom-full left-0 mb-1',
+        )}
+      >
         <div class="px-3 py-1.5 text-[10px] text-text-dim uppercase tracking-wider flex items-center gap-1.5">
           <SvgIcon svg={agentSvg()} size={10} />
           {AGENT_DISPLAY_NAMES[props.agentType]}

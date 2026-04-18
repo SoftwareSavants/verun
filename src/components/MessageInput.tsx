@@ -1,6 +1,6 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
 import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
-import { setSelectedSessionId, selectedTaskId, editStepRequest, setEditStepRequest, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
+import { setSelectedSessionId, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
@@ -413,26 +413,6 @@ export const MessageInput: Component<Props> = (props) => {
   // Per-session edit state so switching tasks preserves in-progress edits
   type SessionEditState = { messageIdx: number | null; stepId: string | null; draft: string; draftAttachments: Attachment[] }
   const sessionEditStates = new Map<string, SessionEditState>()
-
-  // React to edit requests from StepList (clicking Edit on a step)
-  createEffect(on(editStepRequest, (req) => {
-    if (!req) return
-    setEditStepRequest(null) // consume the request
-    setSavedDraft(message())
-    setSavedDraftAttachments(attachments())
-    setEditingStepId(req.stepId)
-    setMessage(req.message)
-    // Restore step's attachments into the input
-    const stepAttachments: Attachment[] = req.attachmentsJson ? deserializeAttachments(req.attachmentsJson) : []
-    setAttachments(stepAttachments)
-    requestAnimationFrame(() => {
-      if (inputRef) {
-        setInputContent(req.message)
-        setCursorToEnd()
-        inputRef.focus()
-      }
-    })
-  }))
 
   // React to prefill requests from the editor's merged hover ("Ask agent to fix")
   createEffect(on(chatPrefillRequest, (req) => {
@@ -2157,7 +2137,7 @@ export const MessageInput: Component<Props> = (props) => {
                 const sid = props.sessionId
                 if (sid) updateSessionModel(sid, m)
               }}
-              disabled={!props.sessionId || props.isRunning}
+              disabled={!props.sessionId}
             />
 
             <Show when={sessionAgent()?.supportsPlanMode !== false}>
@@ -2170,7 +2150,7 @@ export const MessageInput: Component<Props> = (props) => {
                   'disabled:opacity-30'
                 )}
                 onClick={() => setPlanMode(!planMode())}
-                disabled={!props.sessionId || props.isRunning}
+                disabled={!props.sessionId}
                 title="Plan mode - agent will plan before acting"
               >
                 <ListChecks size={13} />
@@ -2188,7 +2168,7 @@ export const MessageInput: Component<Props> = (props) => {
                   'disabled:opacity-30'
                 )}
                 onClick={() => setThinking(!thinkingMode())}
-                disabled={!props.sessionId || props.isRunning}
+                disabled={!props.sessionId}
                 title="Thinking mode - extended thinking for complex tasks"
               >
                 <Brain size={13} />
@@ -2206,7 +2186,7 @@ export const MessageInput: Component<Props> = (props) => {
                   'disabled:opacity-30'
                 )}
                 onClick={() => setFast(!fastMode())}
-                disabled={!props.sessionId || props.isRunning}
+                disabled={!props.sessionId}
                 title="Fast mode - less thinking, quicker responses"
               >
                 <Zap size={13} />
@@ -2375,8 +2355,7 @@ export const MessageInput: Component<Props> = (props) => {
                 disabled={(!message().trim() && attachments().length === 0) || !props.sessionId || sending()}
                 title="Add next step (Enter)"
               >
-                <ArrowUp size={16} />
-                <div class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent" />
+                <ListPlus size={16} />
               </button>
             </Show>
           </div>
