@@ -98,6 +98,13 @@ After making changes, update the following as needed:
 - Update the Features list if a user-facing capability was added or significantly changed
 - Do not rewrite sections that are still accurate
 
+## Pull Requests
+
+Before creating a PR, run `gh issue list` (or search by keyword) to find any open issues the change relates to. In the PR description, tag them explicitly:
+
+- `Closes #123` when the PR fully resolves the issue
+- `Related to #123` when the PR touches or partially addresses it
+
 ## Definition of Done
 
 A task is only complete when:

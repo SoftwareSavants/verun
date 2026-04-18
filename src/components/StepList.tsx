@@ -105,7 +105,7 @@ export const StepList: Component<Props> = (props) => {
 
   return (
     <Show when={stepList().length > 0}>
-      <div class="border-t border-border px-3 py-1.5 max-h-48 flex flex-col min-h-0">
+      <div class="border-t border-border bg-surface-1 px-3 py-1.5 max-h-48 flex flex-col min-h-0">
         <div class="flex items-center justify-between mb-1">
           <span class="text-[10px] text-text-dim font-medium uppercase tracking-wider">Next Steps</span>
         </div>
