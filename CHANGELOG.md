@@ -15,6 +15,9 @@
 - Next Steps: first idle step hides the arm/play button (redundant with the send button) and keeps its icons visible without hover; arm button no longer uses accent colour in the armed state
 - Next Steps: remove button uses an `X` icon instead of a trash bin, reflecting "dismiss from queue" semantics rather than permanent delete
 - Next Steps: "Next Steps" header sticks to the top of the list when scrolling so it remains visible as additional steps scroll past
+- Opening the New Task dialog after adding a project now works from every entry point (empty-state button no longer skips it)
+- Sidebar task tiles show unread/attention state as a pulsing left-edge strip (amber for attention, blue for unread) instead of a trailing dot
+- Cmd+1…9 now focuses the existing window when the target task is already open in a separate window (matching sidebar click behavior); sidebar tiles display the shortcut, which swaps to the archive button on hover (#142)
 
 ## 0.7.3 — 2026-04-17
 

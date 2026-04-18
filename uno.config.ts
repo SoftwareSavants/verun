@@ -90,6 +90,29 @@ export default defineConfig({
           animation: tabUnreadPulse 3s ease-in-out infinite;
         }
 
+        /* Sidebar task tile indicator — inset left-edge strip (matches the
+           selected-state visual language). Hover pauses animation at the
+           high-intensity color so the affordance is obvious. */
+        @keyframes taskAttentionPulse {
+          0%, 100% { box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.2); }
+          50%      { box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.5); }
+        }
+        .task-attention-pulse { animation: taskAttentionPulse 2s ease-in-out infinite; }
+        .task-attention-pulse:hover {
+          animation: none;
+          box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.6);
+        }
+
+        @keyframes taskUnreadPulse {
+          0%, 100% { box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.25); }
+          50%      { box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.55); }
+        }
+        .task-unread-pulse { animation: taskUnreadPulse 2.5s ease-in-out infinite; }
+        .task-unread-pulse:hover {
+          animation: none;
+          box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.65);
+        }
+
         /* Hide scrollbar but keep scrolling */
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { scrollbar-width: none; }

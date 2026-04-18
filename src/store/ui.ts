@@ -1,6 +1,7 @@
 import { createSignal } from 'solid-js'
 import { registerWindowedTaskChecker } from '../lib/windowContext'
 import { pendingSessionNavForTask, selectedSessionForTask, setPendingSessionNavForTask, setSelectedSessionForTask, setTerminalOpenForTask, terminalOpenForTask } from './taskContext'
+import { openTaskWindow } from '../lib/ipc'
 
 export const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
 
@@ -122,6 +123,15 @@ export function setRightPanelTab(tab: 'changes' | 'files') {
 }
 
 export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
+
+// Set to a project id to open the New Task dialog for that project. Shared
+// across Layout, Sidebar, and post-addProject flows so every entry point that
+// creates a project can open the dialog consistently.
+export const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null)
+
+export function requestNewTaskForProject(projectId: string) {
+  setNewTaskProjectId(projectId)
+}
 
 export const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null)
 export const [showSettings, setShowSettings] = createSignal(false)
@@ -263,3 +273,17 @@ export function markTaskWindowed(taskId: string, open: boolean) {
 
 // Register the windowed-task checker so windowContext can use it without circular deps
 registerWindowedTaskChecker(isTaskWindowed)
+
+// Single entry point for "user wants to look at task X": if the task is open in
+// its own OS window, focus that window; otherwise select it in the main view.
+// Keeps Sidebar clicks and Cmd+Number shortcuts consistent.
+export function focusOrSelectTask(task: { id: string; projectId: string; name: string | null }) {
+  if (isTaskWindowed(task.id)) {
+    openTaskWindow(task.id, task.name || undefined)
+    return
+  }
+  setSelectedTaskId(task.id)
+  setSelectedProjectId(task.projectId)
+  setShowSettings(false)
+  setShowArchived(false)
+}
