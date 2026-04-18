@@ -239,9 +239,6 @@ export function dismissToast(id: string) {
   })
 }
 
-// Shared edit-step signal — set by StepList edit button, consumed by MessageInput
-export const [editStepRequest, setEditStepRequest] = createSignal<{ sessionId: string; stepId: string; message: string; attachmentsJson?: string | null } | null>(null)
-
 // Shared chat-prefill signal — set by the editor's merged hover ("Ask agent to fix")
 // button and consumed by MessageInput. Draft is set but NOT sent — the user
 // reviews and sends manually.

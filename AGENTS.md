@@ -34,6 +34,7 @@ src/components/— UI components
 
 ## Key Rules
 
+- Always TDD: before implementing a fix or feature, write a new failing test (or adjust an existing one to be red) that captures the desired behaviour, run it to confirm it fails, then make the change and re-run to confirm it passes. Applies to both Rust (`cargo test`) and frontend (`pnpm test`).
 - Never do file I/O, git ops, or process management in JS — always in Rust
 - Never poll from frontend — use Tauri events (emit/listen)
 - Never await SQLite writes on the UI thread — fire and forget
@@ -96,6 +97,13 @@ After making changes, update the following as needed:
 ### README.md
 - Update the Features list if a user-facing capability was added or significantly changed
 - Do not rewrite sections that are still accurate
+
+## Pull Requests
+
+Before creating a PR, run `gh issue list` (or search by keyword) to find any open issues the change relates to. In the PR description, tag them explicitly:
+
+- `Closes #123` when the PR fully resolves the issue
+- `Related to #123` when the PR touches or partially addresses it
 
 ## Definition of Done
 

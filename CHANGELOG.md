@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Plan/Think/Fast toggles no longer disabled while the agent is running, so mode changes can take effect on queued steps and steers
+- Composer model selector no longer disabled while the agent is running; the new selection applies to subsequent sends (manual, armed auto-send, or queued step)
+- Next Steps: click a step to edit inline (textarea + per-step mode toggles + model selector); removed the separate pencil icon and the edit-via-composer round-trip
+- Next Steps: armed state shown as an accent left-border; fire/arm/delete actions revealed on row hover to reduce visual noise
+- Next Steps: arm toggle now uses action-button semantics — armed step shows Pause (click to pause), disarmed shows Play (click to play)
+- Next Steps: fire button sits as the leftmost icon of the right-hand hover cluster (no longer prefixing the message) and is revealed only on hover
+- Next Steps: armed indicator is now an inset box-shadow instead of a left border, so armed rows keep the same horizontal alignment as disarmed ones
+- Next Steps: row contents vertically centered in view mode; buttons in edit mode no longer blur-save the textarea (WebKit fix)
+- ModelSelector: added `fixedPosition` option so the popover escapes overflow-clipping containers (used by inline step editing)
+- Composer: when the agent is running, the Enter button now uses a `ListPlus` icon to match its actual behaviour (add next step) instead of the send arrow
+- Next Steps: first idle step hides the arm/play button (redundant with the send button) and keeps its icons visible without hover; arm button no longer uses accent colour in the armed state
+- Next Steps: remove button uses an `X` icon instead of a trash bin, reflecting "dismiss from queue" semantics rather than permanent delete
+- Next Steps: "Next Steps" header sticks to the top of the list when scrolling so it remains visible as additional steps scroll past
+
 ## 0.7.3 — 2026-04-17
 
 - Creating a new session now focuses it even when a file tab is open
