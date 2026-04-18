@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Graceful shutdown for aborted claude sessions: close stdin, wait 5s, SIGTERM, wait 5s, then SIGKILL - prevents losing the last assistant message on `--resume` when the CLI is mid-write of its session JSONL
+- Strip `CLAUDECODE` from the spawned CLI's env and set `CLAUDE_CODE_ENTRYPOINT=verun` so nested-detection and telemetry are correct
+- Stream parser skips non-JSON stdout lines (e.g. `[SandboxDebug]`) instead of surfacing them as raw output
+- Stream loop now parses each NDJSON line once instead of up to three times
+- New `interrupt_session` IPC: cancel the current turn over stdin without killing the process
+- New `get_session_context_usage` IPC: ask the running CLI for current context-window usage
+
 ## 0.7.3 — 2026-04-17
 
 - Creating a new session now focuses it even when a file tab is open

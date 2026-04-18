@@ -91,6 +91,12 @@ export const clearSession = (sessionId: string) =>
 export const abortMessage = (sessionId: string) =>
   invoke<void>('abort_message', { sessionId })
 
+export const interruptSession = (sessionId: string) =>
+  invoke<void>('interrupt_session', { sessionId })
+
+export const getSessionContextUsage = (sessionId: string) =>
+  invoke<unknown>('get_session_context_usage', { sessionId })
+
 export const getActiveSessions = (): Promise<string[]> =>
   DEMO ? Promise.resolve([]) : invoke<string[]>('get_active_sessions')
 
