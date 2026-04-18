@@ -6,12 +6,12 @@ import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
-import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, setAddProjectPath } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, setAddProjectPath, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
 import { activeTasksForProject, taskById } from '../store/tasks'
 import { projects, projectById } from '../store/projects'
-import { selectedProjectId, setSelectedProjectId, setSelectedTaskId, selectedTaskId } from '../store/ui'
+import { selectedProjectId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
 import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView } from '../store/editorView'
 import { rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/ui'
@@ -24,7 +24,6 @@ async function pickAndAddProject() {
 
 export const Layout: Component = () => {
   const [dragging, setDragging] = createSignal(false)
-  const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null)
 
   // Restore sidebar width from localStorage
   onMount(() => {
@@ -68,8 +67,8 @@ export const Layout: Component = () => {
       if (modPressed(e) && e.key === 'n') {
         e.preventDefault()
         const pid = selectedProjectId()
-        if (pid) setNewTaskProjectId(pid)
-        else if (projects.length > 0) setNewTaskProjectId(projects[projects.length - 1].id)
+        if (pid) requestNewTaskForProject(pid)
+        else if (projects.length > 0) requestNewTaskForProject(projects[projects.length - 1].id)
         else pickAndAddProject()
       }
       if (modPressed(e) && e.key >= '1' && e.key <= '9') {
@@ -87,9 +86,7 @@ export const Layout: Component = () => {
           // Match sidebar ordering: iterate projects, then tasks within each project
           const ordered = projects.flatMap(p => activeTasksForProject(p.id))
           if (idx < ordered.length) {
-            setSelectedTaskId(ordered[idx].id)
-            setSelectedProjectId(ordered[idx].projectId)
-            setShowArchived(false)
+            focusOrSelectTask(ordered[idx])
           }
         }
       }

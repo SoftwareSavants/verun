@@ -37,12 +37,13 @@ import {
   setAddProjectPath,
   isTaskWindowed,
   markTaskWindowed,
+  requestNewTaskForProject,
+  focusOrSelectTask,
 } from "../store/ui";
 import { sessionsForTask, loadSessions } from "../store/sessions";
 import { isStartCommandRunning } from "../store/terminals";
 import { deleteProject } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { NewTaskDialog } from "./NewTaskDialog";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { selectSettingsSection } from "./SettingsPage";
@@ -187,8 +188,20 @@ export const Sidebar: Component = () => {
     action: () => void;
   } | null>(null);
   const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null);
-  const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null);
   const [renamingTaskId, setRenamingTaskId] = createSignal<string | null>(null);
+
+  // Cmd+1…Cmd+9 selects tasks in sidebar order. Returns 0-8 for keybound tasks,
+  // null for tasks beyond the 9th (no shortcut) so we don't show ⌘0 etc.
+  const taskBindingIndex = (taskId: string): number | null => {
+    let idx = 0;
+    for (const p of projects) {
+      for (const t of activeTasksForProject(p.id)) {
+        if (t.id === taskId) return idx < 9 ? idx : null;
+        idx++;
+      }
+    }
+    return null;
+  };
 
   // Track which tasks have open windows
   onMount(() => {
@@ -355,7 +368,7 @@ export const Sidebar: Component = () => {
                     class="p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-secondary shrink-0"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setNewTaskProjectId(project.id);
+                      requestNewTaskForProject(project.id);
                     }}
                     title="New Task (⌘N)"
                   >
@@ -367,7 +380,7 @@ export const Sidebar: Component = () => {
                   <div class="px-2 pt-1">
                     <button
                       class="text-[10px] text-text-dim hover:text-text-muted transition-colors cursor-pointer"
-                      onClick={() => setNewTaskProjectId(project.id)}
+                      onClick={() => requestNewTaskForProject(project.id)}
                     >
                       + New task
                     </button>
@@ -388,27 +401,21 @@ export const Sidebar: Component = () => {
                         const hasIndicator = () => attention() || unread();
                         const disabled = () => creating() || archiving();
                         const windowed = () => isTaskWindowed(task.id);
+                        const bindingIdx = () => taskBindingIndex(task.id);
 
-                        const handleClick = () => {
-                          if (windowed()) {
-                            // Redirect to the existing task window
-                            ipc.openTaskWindow(task.id, task.name || undefined);
-                            return;
-                          }
-                          setSelectedTaskId(task.id);
-                          setSelectedProjectId(task.projectId);
-                          setShowSettings(false);
-                          setShowArchived(false);
-                        };
+                        const handleClick = () => focusOrSelectTask(task);
 
                         const isSelected = () => !windowed() && selectedTaskId() === task.id;
 
                         return (
                           <div
                             class={clsx(
-                              "group/task relative pl-3 pr-2 py-1.5 rounded-md flex items-start gap-2 cursor-pointer",
-                              "hover:bg-surface-2",
-                              isSelected() && "bg-surface-2",
+                              "group/task relative pl-3 pr-2 py-1.5 rounded-md flex items-center gap-2 cursor-pointer",
+                              isSelected()
+                                ? "bg-surface-2"
+                                : "hover:bg-surface-2",
+                              !isSelected() && attention() && "task-attention-pulse",
+                              !isSelected() && !attention() && unread() && "task-unread-pulse",
                               archiving() && "opacity-50 pointer-events-none",
                               windowed() && "opacity-50",
                             )}
@@ -419,23 +426,17 @@ export const Sidebar: Component = () => {
                             title={windowed() ? 'Open in separate window — click to focus' : archiving() ? 'Archiving…' : creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
                           >
                             <span
-                              class={clsx("shrink-0 mt-0.5", disabled() ? 'text-accent' : hasError() ? 'text-status-error' : config().color)}
+                              class={clsx("shrink-0", disabled() ? 'text-accent' : hasError() ? 'text-status-error' : config().color)}
                             >
                               {disabled() ? <Loader2 size={12} class="animate-spin" /> : hasError() ? <AlertCircle size={12} /> : <PhaseIcon phase={phase()} />}
                             </span>
                             <div class="flex-1 min-w-0">
                               <Show when={renamingTaskId() === task.id} fallback={
                                 <div class={clsx(
-                                  "text-xs truncate flex items-center gap-1.5",
+                                  "text-xs truncate",
                                   hasIndicator() || isSelected() ? "text-text-primary font-medium" : "text-text-secondary"
                                 )}>
-                                  <span class="truncate">{task.name || "New task"}</span>
-                                  <Show when={attention()}>
-                                    <span class="shrink-0 w-1.5 h-1.5 rounded-full bg-amber-400" />
-                                  </Show>
-                                  <Show when={unread()}>
-                                    <span class="shrink-0 w-1.5 h-1.5 rounded-full bg-accent" />
-                                  </Show>
+                                  {task.name || "New task"}
                                 </div>
                               }>
                                 <input
@@ -473,8 +474,13 @@ export const Sidebar: Component = () => {
                               </div>
                             </div>
                             <Show when={!archiving()}>
+                              <Show when={bindingIdx() !== null}>
+                                <kbd class="absolute right-2 top-1/2 -translate-y-1/2 -mt-px h-5 flex items-center leading-none text-[10px] font-mono text-text-dim pointer-events-none group-hover/task:opacity-0 transition-opacity">
+                                  {'\u2318'}{bindingIdx()! + 1}
+                                </kbd>
+                              </Show>
                               <button
-                                class="absolute right-2 top-1 p-0.5 rounded opacity-0 group-hover/task:opacity-100 text-text-dim hover:text-text-muted bg-surface-2"
+                                class="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 text-text-dim hover:text-text-muted bg-surface-2"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setArchiveTaskTarget(task.id);
@@ -586,17 +592,11 @@ export const Sidebar: Component = () => {
         onCancel={() => setArchiveTaskTarget(null)}
       />
 
-      <NewTaskDialog
-        open={!!newTaskProjectId()}
-        projectId={newTaskProjectId()}
-        onClose={() => setNewTaskProjectId(null)}
-      />
-
       <AddProjectDialog
         open={!!addProjectPath()}
         repoPath={addProjectPath()}
         onClose={() => setAddProjectPath(null)}
-        onAdded={(id) => { setSelectedProjectId(id); setNewTaskProjectId(id) }}
+        onAdded={(id) => { setSelectedProjectId(id); requestNewTaskForProject(id) }}
       />
     </>
   );
