@@ -988,15 +988,6 @@ export const MessageInput: Component<Props> = (props) => {
         if (sid) clearOutputItems(sid)
         break
       }
-      case 'model': {
-        const parts = message().trim().split(/\s+/)
-        const modelArg = parts[1] ?? null
-        const sid = props.sessionId
-        if (sid && modelArg) {
-          updateSessionModel(sid, modelArg)
-        }
-        break
-      }
       case 'plan': {
         setPlanMode(!planMode())
         break
@@ -1008,13 +999,6 @@ export const MessageInput: Component<Props> = (props) => {
 
   const handleCommandSelect = (cmd: Command) => {
     if (cmd.category === 'app') {
-      // For /model, prefill the command and let user type the model name
-      if (cmd.name === 'model') {
-        setMessage('/model ')
-        setShowPalette(false)
-        inputRef?.focus()
-        return
-      }
       handleAppCommand(cmd)
     } else {
       setMessage(`/${cmd.name} `)
@@ -1315,7 +1299,7 @@ export const MessageInput: Component<Props> = (props) => {
       const msg = message().trim()
       if (msg.startsWith('/')) {
         const cmdName = msg.slice(1).split(/\s+/)[0]
-        const appCmds = ['new-session', 'clear', 'model', 'plan']
+        const appCmds = ['new-session', 'clear', 'plan']
         if (appCmds.includes(cmdName)) {
           handleAppCommand({ name: cmdName, description: '', category: 'app' })
           return
