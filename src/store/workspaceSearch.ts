@@ -117,6 +117,19 @@ export const clearSearchResults = (taskId: string) => {
   }))
 }
 
+// Seed the query from outside the panel (e.g. Cmd+Shift+F with editor selection).
+// Atomically replaces the query and clears stale results so the panel re-runs.
+export const seedSearchQuery = (taskId: string, query: string) => {
+  ensure(taskId)
+  setStore(taskId, produce((s) => {
+    s.query = query
+    s.matches = []
+    s.done = null
+    s.error = null
+    s.selectedIndex = -1
+  }))
+}
+
 export function appendSearchMatches(taskId: string, incoming: SearchMatch[]) {
   ensure(taskId)
   const current = store[taskId].matches

@@ -83,6 +83,12 @@ export const GlobalSearchPanel: Component<Props> = (props) => {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => inputRef?.focus())
     })
+    // Cold-mount with a pre-seeded query (e.g. Cmd+Shift+F with selection while
+    // the panel was unmounted). The deps effect is deferred so it won't fire on
+    // initial read — run the search directly here instead.
+    if (s().query.length >= 2 && s().matches.length === 0 && !s().busy && !s().done) {
+      runSearch()
+    }
   })
 
   // Switching tasks changes every `s().*` dep at once because `s()` now reads
@@ -290,8 +296,8 @@ export const GlobalSearchPanel: Component<Props> = (props) => {
     const d = s().done
     if (d) {
       if (d.totalMatches === 0) return s().query.length >= 2 ? 'No results' : ''
-      const suffix = d.truncated ? ' (truncated)' : ''
-      return `${d.totalMatches} result${d.totalMatches === 1 ? '' : 's'} in ${d.totalFiles} file${d.totalFiles === 1 ? '' : 's'}${suffix}`
+      const plus = d.truncated ? '+' : ''
+      return `${d.totalMatches}${plus} result${d.totalMatches === 1 ? '' : 's'} in ${d.totalFiles}${plus} file${d.totalFiles === 1 ? '' : 's'}`
     }
     return ''
   }

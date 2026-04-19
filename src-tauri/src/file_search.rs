@@ -147,7 +147,11 @@ pub async fn start(
 
         let _ = blocking.await;
 
-        if task_cancelled.load(Ordering::Relaxed) {
+        // Cancelled but not because of the cap: the frontend started a new
+        // search, so don't emit a stale done event. (A user-triggered cancel
+        // would normally abort this task before we get here, but the flag
+        // check covers the narrow window where the walker finished first.)
+        if task_cancelled.load(Ordering::Relaxed) && !truncated.load(Ordering::Relaxed) {
             return;
         }
 

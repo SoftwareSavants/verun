@@ -39,6 +39,9 @@
 - Fix API/auth errors on Claude sessions rendering as plain text: persistent-agent `turn_end` now propagates the provider error through `session-status`, restoring the red inline banner with Retry / Retry in new session
 - Provider errors (auth, overload, prompt-too-long) now render as a single persistent block inside the transcript instead of duplicating across an assistant bubble + system bubble + bottom banner. The block stays visible across follow-up turns, carries Retry / Retry in new session, and exposes the raw CLI JSON behind a "Show details" toggle (copyable)
 - Workspace file search (Cmd+Shift+F): new right-panel "Search" tab that searches file contents across the active task's worktree - embedded ripgrep (grep-regex + grep-searcher) with parallel walk, 150ms debounce, per-keystroke cancellation, batched streaming results, case/whole-word/regex toggles, and include/exclude globs; respects `.gitignore` and caps at 1000 matches / 500 files
+- Workspace search: Cmd+Shift+F seeds the query from the current editor selection (first line, trimmed) and auto-runs the search
+- Workspace search: opening a markdown or SVG result now lands in edit mode so the matched line is visible immediately
+- Right panel tabs redesigned as icon-only buttons (Files / Search / Source Control) matching Cursor / VS Code
 
 ## 0.7.3 — 2026-04-17
 

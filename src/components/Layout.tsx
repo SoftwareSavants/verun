@@ -15,6 +15,7 @@ import { selectedProjectId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
 import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView } from '../store/editorView'
 import { rightPanelTab, setRightPanelTab, setShowQuickOpen, setFocusSearchRequest } from '../store/ui'
+import { seedSearchQuery } from '../store/workspaceSearch'
 import { GlobalCommandPalette, setShowGlobalPalette } from './GlobalCommandPalette'
 
 async function pickAndAddProject() {
@@ -120,9 +121,14 @@ export const Layout: Component = () => {
         e.preventDefault()
         setShowQuickOpen(true)
       }
-      // Cmd+Shift+F — global workspace search
+      // Cmd+Shift+F — global workspace search. If the user has text selected,
+      // seed the query with it so hitting the shortcut while viewing code runs
+      // the search for the selection immediately.
       if (modPressed(e) && e.shiftKey && (e.key === 'f' || e.key === 'F') && selectedTaskId()) {
         e.preventDefault()
+        const tid = selectedTaskId()!
+        const sel = (window.getSelection()?.toString() ?? '').split('\n')[0].trim()
+        if (sel.length >= 2 && sel.length <= 200) seedSearchQuery(tid, sel)
         setRightPanelTab('search')
         setFocusSearchRequest(t => t + 1)
       }

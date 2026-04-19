@@ -8,7 +8,7 @@ import { BreadcrumbBar } from './BreadcrumbBar'
 import { getPreviewType } from '../lib/fileTypes'
 import * as ipc from '../lib/ipc'
 import { getCachedContent, setCachedContent, setCachedOriginal, isDiffKey, pathFromDiffKey } from '../store/files'
-import { openTabs } from '../store/editorView'
+import { openTabs, pendingGoToLine } from '../store/editorView'
 
 interface Props {
   taskId: string
@@ -246,6 +246,13 @@ const MarkdownViewer: Component<Props> = (props) => {
 
   createEffect(on(() => props.relativePath, loadContent))
 
+  // Opening from workspace search (or any pending go-to-line) for this file
+  // jumps straight to edit mode so the target line is visible and editable.
+  createEffect(() => {
+    const req = pendingGoToLine(props.taskId)
+    if (req && req.relativePath === props.relativePath) setMode('edit')
+  })
+
   const saveScroll = () => {
     if (previewEl) {
       const max = previewEl.scrollHeight - previewEl.clientHeight
@@ -382,6 +389,13 @@ const SvgViewer: Component<Props> = (props) => {
   }
 
   createEffect(on(() => props.relativePath, loadContent))
+
+  // Opening from workspace search (or any pending go-to-line) for this file
+  // jumps straight to edit mode so the target line is visible and editable.
+  createEffect(() => {
+    const req = pendingGoToLine(props.taskId)
+    if (req && req.relativePath === props.relativePath) setMode('edit')
+  })
 
   const saveScroll = () => {
     if (previewEl) {
