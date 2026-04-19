@@ -1006,32 +1006,20 @@ export const MessageInput: Component<Props> = (props) => {
     setShowPalette(false)
   }
 
-  const handleCommandSelect = async (cmd: Command) => {
+  const handleCommandSelect = (cmd: Command) => {
     if (cmd.category === 'app') {
       // For /model, prefill the command and let user type the model name
       if (cmd.name === 'model') {
         setMessage('/model ')
         setShowPalette(false)
+        inputRef?.focus()
         return
       }
       handleAppCommand(cmd)
     } else {
-      // Claude skill — send as message
-      setMessage(`/${cmd.name}`)
+      setMessage(`/${cmd.name} `)
       setShowPalette(false)
-      // Auto-send claude skills immediately
-      const sid = props.sessionId
-      if (sid && !sending()) {
-        setSending(true)
-        setMessage('')
-        try {
-          await sendMessage(sid, `/${cmd.name}`, undefined, currentModel())
-        } catch (e) {
-          console.error('Failed to send skill:', e)
-        } finally {
-          setSending(false)
-        }
-      }
+      inputRef?.focus()
     }
   }
 
