@@ -14,6 +14,7 @@ import { addToast, setSelectedTaskId, setSelectedSessionId } from '../store/ui'
 import { setSessions, loadOutputLines, sendMessage, createSession, taskPlanMode, taskThinkingMode, taskFastMode } from '../store/sessions'
 import { setTasks } from '../store/tasks'
 import { setMainView } from '../store/editorView'
+import { formatCost, formatTokens } from '../lib/format'
 
 function formatDuration(ms: number): string {
   const totalSec = Math.round(ms / 1000)
@@ -24,17 +25,6 @@ function formatDuration(ms: number): string {
   const h = Math.floor(m / 60)
   const rm = m % 60
   return rm > 0 ? `${h}h ${rm}m` : `${h}h`
-}
-
-function formatCost(cost: number): string {
-  if (cost < 0.01) return `$${cost.toFixed(4)}`
-  if (cost < 1) return `$${cost.toFixed(3)}`
-  return `$${cost.toFixed(2)}`
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return `${n}`
 }
 
 function formatTokensWithCache(t: { input: number; output: number; cacheRead: number; cacheWrite: number }): string {

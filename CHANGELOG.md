@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Usage popover redesigned: prominent cost header, grouped rate-limit cards (active overage highlighted in red), aligned token grid with split cached-read/cached-write rows, and M/B token formatting past 1M (e.g. `24.7M` instead of `24657.1k`)
+- Shared `formatCost` / `formatTokens` helpers extracted to `src/lib/format.ts` and reused across `ChatView` + `MessageInput`
 - Branch names replaced from animal-based to programming-humor themed; stack detection merges noun pools for Rust, Go, Python, JS/TS, and Java (monorepo-aware)
 - Fix archive/delete killing running sessions on other tasks - the kill loop now scopes to session ids belonging to the target task instead of iterating every active process (#169)
 - Plan/Think/Fast toggles no longer disabled while the agent is running, so mode changes can take effect on queued steps and steers

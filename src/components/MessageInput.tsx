@@ -20,6 +20,7 @@ import { Popover } from './Popover'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
 import { serializeAttachments, deserializeAttachments } from '../lib/binary'
+import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 
 interface Props {
   sessionId: string | null
@@ -60,27 +61,16 @@ function setPlanExpanded(v: boolean) {
 
 const [showUsagePopover, setShowUsagePopover] = createSignal(false)
 
-const fmtCost = (c: number) => c < 0.01 ? `$${c.toFixed(4)}` : c < 1 ? `$${c.toFixed(3)}` : `$${c.toFixed(2)}`
-const fmtTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
-
 function formatResetTime(epochSec: number): string {
   const d = new Date(epochSec * 1000)
   const now = new Date()
-  const isToday = d.getUTCDate() === now.getUTCDate() && d.getUTCMonth() === now.getUTCMonth()
+  const isToday = d.getUTCDate() === now.getUTCDate() && d.getUTCMonth() === now.getUTCMonth() && d.getUTCFullYear() === now.getUTCFullYear()
   const h = d.getUTCHours()
   const ampm = h >= 12 ? 'pm' : 'am'
   const h12 = h % 12 || 12
-  if (isToday) return `${h12}${ampm} (UTC)`
+  if (isToday) return `${h12}${ampm} UTC`
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-  return `${months[d.getUTCMonth()]} ${d.getUTCDate()} at ${h12}${ampm} (UTC)`
-}
-
-function formatTimeUntil(epochSec: number): string {
-  const diffMs = epochSec * 1000 - Date.now()
-  if (diffMs <= 0) return 'now'
-  const h = Math.floor(diffMs / 3_600_000)
-  const m = Math.floor((diffMs % 3_600_000) / 60_000)
-  return h > 0 ? `${h}h ${m}m` : `${m}m`
+  return `${months[d.getUTCMonth()]} ${d.getUTCDate()} · ${h12}${ampm} UTC`
 }
 
 function UsageChip(chipProps: { sessionId: string | null }) {
@@ -99,13 +89,17 @@ function UsageChip(chipProps: { sessionId: string | null }) {
   const rl = () => isClaudeSession() ? rateLimitInfo() : null
 
   const hasAnything = () => cost() > 0 || tokens() || rl()
+  const hasCache = () => {
+    const t = tokens()
+    return !!t && (t.cacheRead > 0 || t.cacheWrite > 0)
+  }
 
   const chipLabel = () => {
     const c = cost()
     const r = rl()
-    if (c > 0 && r) return `${fmtCost(c)} · Resets ${formatTimeUntil(r.resetsAt)}`
+    if (c > 0 && r) return `${fmtCost(c)} · resets in ${formatDurationShort(r.resetsAt * 1000 - Date.now())}`
     if (c > 0) return fmtCost(c)
-    if (r) return `Resets ${formatTimeUntil(r.resetsAt)}`
+    if (r) return `resets in ${formatDurationShort(r.resetsAt * 1000 - Date.now())}`
     return 'Usage'
   }
 
@@ -114,7 +108,7 @@ function UsageChip(chipProps: { sessionId: string | null }) {
       <div class="relative">
         <button
           class={clsx(
-            'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
+            'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-colors',
             rl()?.isUsingOverage
               ? 'text-status-error/80 hover:text-status-error hover:bg-status-error/10'
               : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
@@ -125,71 +119,87 @@ function UsageChip(chipProps: { sessionId: string | null }) {
           <Activity size={13} />
           <span>{chipLabel()}</span>
         </button>
-        <Popover open={showUsagePopover()} onClose={() => setShowUsagePopover(false)} class="py-3 px-4 min-w-64 absolute bottom-full left-0 mb-1">
+        <Popover
+          open={showUsagePopover()}
+          onClose={() => setShowUsagePopover(false)}
+          class="w-72 absolute bottom-full left-0 mb-1.5 overflow-hidden"
+        >
+          {/* Prominent cost header */}
+          <Show when={cost() > 0}>
+            <div class="px-4 pt-3.5 pb-3.5">
+              <div class="text-[10px] uppercase tracking-wider text-text-muted font-medium mb-1">Session cost</div>
+              <div class="text-[22px] leading-none font-mono font-semibold text-text-primary tabular-nums">{fmtCost(cost())}</div>
+            </div>
+          </Show>
+
           {/* Rate limit windows (Claude only) */}
           <Show when={rl()}>
             {(() => {
               const r = rl()!
               return (
-                <>
-                  <div class="mb-3">
-                    <div class="text-[11px] font-medium text-text-primary mb-0.5">Current session</div>
-                    <div class="text-[10px] text-text-dim">
-                      Resets {formatResetTime(r.resetsAt)}
+                <div class={clsx(
+                  'px-4 py-3 space-y-2.5',
+                  cost() > 0 && 'border-t-1 border-t-solid border-t-border-subtle'
+                )}>
+                  <div class="text-[10px] uppercase tracking-wider text-text-muted font-medium">Rate limits</div>
+                  <div>
+                    <div class="flex items-baseline justify-between gap-3">
+                      <span class="text-[11px] font-medium text-text-secondary">Current session</span>
+                      <span class="text-[10px] font-mono tabular-nums text-text-muted">{formatDurationShort(r.resetsAt * 1000 - Date.now())}</span>
                     </div>
+                    <div class="text-[10px] text-text-dim mt-0.5 truncate">Resets {formatResetTime(r.resetsAt)}</div>
                   </div>
                   <Show when={r.overageResetsAt > 0}>
-                    <div class="mb-3">
-                      <div class="flex items-center gap-1.5">
-                        <span class="text-[11px] font-medium text-text-primary">Overage window</span>
-                        <Show when={r.isUsingOverage}>
-                          <span class="text-[9px] px-1 py-0.5 rounded bg-status-error/15 text-status-error font-medium">Active</span>
-                        </Show>
+                    <div class={clsx(
+                      'rounded-md px-2.5 py-2',
+                      r.isUsingOverage ? 'bg-status-error/8 ring-1 ring-status-error/20' : 'bg-surface-3/50 ring-1 ring-white/4'
+                    )}>
+                      <div class="flex items-baseline justify-between gap-3">
+                        <div class="flex items-center gap-1.5 min-w-0">
+                          <span class={clsx(
+                            'text-[11px] font-medium truncate',
+                            r.isUsingOverage ? 'text-status-error' : 'text-text-secondary'
+                          )}>Overage window</span>
+                          <Show when={r.isUsingOverage}>
+                            <span class="text-[9px] px-1.5 py-0.5 rounded-sm bg-status-error/20 text-status-error font-semibold uppercase tracking-wider flex-shrink-0">Active</span>
+                          </Show>
+                        </div>
+                        <span class="text-[10px] font-mono tabular-nums text-text-muted flex-shrink-0">{formatDurationShort(r.overageResetsAt * 1000 - Date.now())}</span>
                       </div>
-                      <div class="text-[10px] text-text-dim mt-0.5">
-                        Resets {formatResetTime(r.overageResetsAt)}
-                      </div>
+                      <div class={clsx(
+                        'text-[10px] mt-0.5 truncate',
+                        r.isUsingOverage ? 'text-status-error/70' : 'text-text-dim'
+                      )}>Resets {formatResetTime(r.overageResetsAt)}</div>
                     </div>
                   </Show>
-                </>
+                </div>
               )
             })()}
           </Show>
 
-          {/* Session stats */}
-          <Show when={cost() > 0 || tokens()}>
-            <Show when={rl()}>
-              <div class="border-t border-border-subtle my-2.5" />
-            </Show>
-            <div class="text-[11px] font-medium text-text-primary mb-1.5">This session</div>
-            <div class="space-y-1 text-[11px]">
-              <Show when={cost() > 0}>
-                <div class="flex justify-between gap-6">
-                  <span class="text-text-dim">Cost</span>
-                  <span class="text-text-secondary font-mono">{fmtCost(cost())}</span>
-                </div>
-              </Show>
-              <Show when={tokens()}>
-                <div class="flex justify-between gap-6">
-                  <span class="text-text-dim">Input</span>
-                  <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.input)} tokens</span>
-                </div>
-                <Show when={tokens()!.cacheRead > 0 || tokens()!.cacheWrite > 0}>
-                  <div class="flex justify-between gap-6">
-                    <span class="text-text-dim">Cached</span>
-                    <span class="text-text-secondary font-mono">
-                      {[
-                        tokens()!.cacheRead > 0 ? `${fmtTokens(tokens()!.cacheRead)} read` : '',
-                        tokens()!.cacheWrite > 0 ? `${fmtTokens(tokens()!.cacheWrite)} write` : '',
-                      ].filter(Boolean).join(' / ')}
-                    </span>
-                  </div>
+          {/* Session token breakdown */}
+          <Show when={tokens()}>
+            <div class={clsx(
+              'px-4 py-3',
+              (cost() > 0 || rl()) && 'border-t-1 border-t-solid border-t-border-subtle'
+            )}>
+              <div class="text-[10px] uppercase tracking-wider text-text-muted font-medium mb-2">Tokens</div>
+              <div class="grid grid-cols-[1fr_auto] gap-y-1.5 gap-x-4 text-[11px] items-baseline">
+                <span class="text-text-dim">Input</span>
+                <span class="text-text-secondary font-mono tabular-nums text-right">{fmtTokens(tokens()!.input)}</span>
+                <Show when={hasCache()}>
+                  <Show when={tokens()!.cacheRead > 0}>
+                    <span class="text-text-dim">Cached read</span>
+                    <span class="text-text-secondary font-mono tabular-nums text-right">{fmtTokens(tokens()!.cacheRead)}</span>
+                  </Show>
+                  <Show when={tokens()!.cacheWrite > 0}>
+                    <span class="text-text-dim">Cached write</span>
+                    <span class="text-text-secondary font-mono tabular-nums text-right">{fmtTokens(tokens()!.cacheWrite)}</span>
+                  </Show>
                 </Show>
-                <div class="flex justify-between gap-6">
-                  <span class="text-text-dim">Output</span>
-                  <span class="text-text-secondary font-mono">{fmtTokens(tokens()!.output)} tokens</span>
-                </div>
-              </Show>
+                <span class="text-text-dim">Output</span>
+                <span class="text-text-secondary font-mono tabular-nums text-right">{fmtTokens(tokens()!.output)}</span>
+              </div>
             </div>
           </Show>
         </Popover>
