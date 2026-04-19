@@ -191,6 +191,14 @@ export async function deleteTask(id: string, deleteBranch = true, skipDestroyHoo
 
 export async function archiveTask(id: string, skipDestroyHook = false) {
   addArchiving(id)
+  // Optimistic — flip the flag immediately so the sidebar (and any other
+  // window via the task-removed event) reflect the archive before the
+  // destroy hook finishes. Reverted on IPC failure.
+  const prevArchived = tasks.find(t => t.id === id)?.archived ?? false
+  setTasks(t => t.id === id, 'archived', true)
+  import('./ui').then(({ selectedTaskId, setSelectedTaskId }) => {
+    if (selectedTaskId() === id) setSelectedTaskId(null)
+  })
   try {
     stopLspClient(id).catch(() => {})
     closeTerminalsForTask(id)
@@ -202,10 +210,9 @@ export async function archiveTask(id: string, skipDestroyHook = false) {
     dropTaskSkills(id)
     cleanupTaskStorage(id)
     await ipc.archiveTask(id, skipDestroyHook)
-    setTasks(t => t.id === id, 'archived', true)
-    import('./ui').then(({ selectedTaskId, setSelectedTaskId }) => {
-      if (selectedTaskId() === id) setSelectedTaskId(null)
-    })
+  } catch (err) {
+    setTasks(t => t.id === id, 'archived', prevArchived)
+    throw err
   } finally {
     removeArchiving(id)
   }

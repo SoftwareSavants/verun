@@ -369,6 +369,10 @@ pub enum DbWrite {
         archived_at: i64,
         last_commit_message: Option<String>,
     },
+    SetLastCommitMessage {
+        id: String,
+        msg: Option<String>,
+    },
     RestoreTask {
         id: String,
     },
@@ -665,6 +669,14 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         } => {
             sqlx::query("UPDATE tasks SET archived = 1, archived_at = ?, last_commit_message = ? WHERE id = ?")
                 .bind(archived_at).bind(&last_commit_message).bind(&id).execute(pool).await?;
+        }
+
+        DbWrite::SetLastCommitMessage { id, msg } => {
+            sqlx::query("UPDATE tasks SET last_commit_message = ? WHERE id = ?")
+                .bind(&msg)
+                .bind(&id)
+                .execute(pool)
+                .await?;
         }
 
         DbWrite::RestoreTask { id } => {
@@ -1419,6 +1431,81 @@ mod tests {
         // Sessions and output preserved
         assert!(get_session(&pool, "s-001").await.unwrap().is_some());
         assert!(!get_output_lines(&pool, "s-001").await.unwrap().is_empty());
+    }
+
+    // Issue #138 — archive_task now flips the archived flag with
+    // last_commit_message: None first, then writes the captured commit
+    // message asynchronously after the destroy hook finishes. This split
+    // lets the UI close the window instantly without waiting for the hook.
+    #[tokio::test]
+    async fn archive_task_with_none_message_then_set_last_commit_message() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+
+        // Phase 1: instant archive — no message yet
+        process_write(
+            &pool,
+            DbWrite::ArchiveTask {
+                id: "t-001".into(),
+                archived_at: 9999,
+                last_commit_message: None,
+            },
+        )
+        .await
+        .unwrap();
+        let task = get_task(&pool, "t-001").await.unwrap().unwrap();
+        assert!(task.archived);
+        assert_eq!(task.last_commit_message, None);
+
+        // Phase 2: background hook captured the message; backfill it
+        process_write(
+            &pool,
+            DbWrite::SetLastCommitMessage {
+                id: "t-001".into(),
+                msg: Some("captured later".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let task = get_task(&pool, "t-001").await.unwrap().unwrap();
+        assert!(task.archived);
+        assert_eq!(task.last_commit_message.as_deref(), Some("captured later"));
+    }
+
+    #[tokio::test]
+    async fn set_last_commit_message_can_clear_with_none() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::SetLastCommitMessage {
+                id: "t-001".into(),
+                msg: Some("hello".into()),
+            },
+        )
+        .await
+        .unwrap();
+        process_write(
+            &pool,
+            DbWrite::SetLastCommitMessage {
+                id: "t-001".into(),
+                msg: None,
+            },
+        )
+        .await
+        .unwrap();
+        let task = get_task(&pool, "t-001").await.unwrap().unwrap();
+        assert_eq!(task.last_commit_message, None);
     }
 
     #[tokio::test]

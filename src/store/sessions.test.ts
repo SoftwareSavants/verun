@@ -1,5 +1,30 @@
-import { describe, test, expect, beforeEach } from 'vitest'
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById } from './sessions'
+import { describe, test, expect, beforeAll, beforeEach, vi } from 'vitest'
+
+// Capture every `listen(eventName, cb)` registration so tests can fire events
+// directly. Mock factory must be self-contained — vi.mock is hoisted above
+// imports, so referencing module-scope symbols is invalid.
+const listenCallbacks = new Map<string, (e: { payload: unknown }) => void>()
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn((event: string, cb: (e: { payload: unknown }) => void) => {
+    listenCallbacks.set(event, cb)
+    return Promise.resolve(() => listenCallbacks.delete(event))
+  }),
+  emit: vi.fn(),
+}))
+
+vi.mock('../lib/ipc', () => ({
+  listSessions: vi.fn().mockResolvedValue([]),
+  listSteps: vi.fn().mockResolvedValue([]),
+  syncSessionStatuses: vi.fn().mockResolvedValue(undefined),
+  createSession: vi.fn(),
+}))
+
+vi.mock('../lib/notifications', () => ({
+  notify: vi.fn(),
+}))
+
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, createSession } from './sessions'
+import * as ipc from '../lib/ipc'
 import type { Session, OutputItem } from '../types'
 
 const makeSession = (overrides: Partial<Session> = {}): Session => ({
@@ -77,5 +102,146 @@ describe('sessions store', () => {
     setSessions([makeSession({ id: 's-1', status: 'running' })])
     setSessions(s => s.id === 's-1', 'status', 'idle')
     expect(sessions[0].status).toBe('idle')
+  })
+})
+
+// Cross-window session sync (issue #143). The Rust side broadcasts
+// `session-created` and `session-removed` whenever a session is created or
+// closed in any window; every other window must apply the change locally so
+// the sidebar's task phase chip stays current without forcing a reload.
+describe('cross-window session listeners', () => {
+  beforeAll(async () => {
+    // initSessionListeners is idempotent (module-scoped guard) — register once
+    // and the captured callbacks survive across every test in this suite.
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+  })
+
+  test('session-created adds the session to the store', () => {
+    const fire = listenCallbacks.get('session-created')
+    expect(fire).toBeDefined()
+    const s = makeSession({ id: 's-new', taskId: 't-001' })
+    fire!({ payload: s })
+    expect(sessions.length).toBe(1)
+    expect(sessions[0].id).toBe('s-new')
+  })
+
+  test('session-created is idempotent — duplicate events do not double-insert', () => {
+    const fire = listenCallbacks.get('session-created')!
+    const s = makeSession({ id: 's-dup' })
+    fire({ payload: s })
+    fire({ payload: s })
+    expect(sessions.length).toBe(1)
+  })
+
+  test('session-removed deletes the session and its output items', () => {
+    setSessions([makeSession({ id: 's-1' }), makeSession({ id: 's-2' })])
+    setOutputItems('s-1', [{ kind: 'text', text: 'hi' }])
+    const fire = listenCallbacks.get('session-removed')!
+    fire({ payload: { sessionId: 's-1', taskId: 't-001' } })
+    expect(sessions.length).toBe(1)
+    expect(sessions[0].id).toBe('s-2')
+    expect(outputItems['s-1']).toBeUndefined()
+  })
+
+  test('session-removed for an unknown id is a no-op', () => {
+    setSessions([makeSession({ id: 's-1' })])
+    const fire = listenCallbacks.get('session-removed')!
+    fire({ payload: { sessionId: 's-unknown', taskId: 't-001' } })
+    expect(sessions.length).toBe(1)
+  })
+})
+
+// Backstop for #143 — when the window becomes visible, refresh sessions for
+// every task currently in the store so any missed cross-window event heals.
+describe('initSessionWindowFocusRefresh', () => {
+  beforeEach(() => {
+    setSessions([])
+    vi.mocked(ipc.listSessions).mockClear()
+    vi.mocked(ipc.listSessions).mockResolvedValue([])
+    initSessionWindowFocusRefresh()
+  })
+
+  test('refreshes sessions for every distinct task on visibility change', async () => {
+    setSessions([
+      makeSession({ id: 's-1', taskId: 't-001' }),
+      makeSession({ id: 's-2', taskId: 't-002' }),
+      makeSession({ id: 's-3', taskId: 't-001' }),
+    ])
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await Promise.resolve()
+    const calls = vi.mocked(ipc.listSessions).mock.calls.map(c => c[0]).sort()
+    expect(calls).toEqual(['t-001', 't-002'])
+  })
+
+  test('does not refresh while the window is hidden', () => {
+    setSessions([makeSession()])
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(vi.mocked(ipc.listSessions)).not.toHaveBeenCalled()
+  })
+})
+
+// Sanity check that the loadSessions helper still merges correctly when
+// the cross-window listeners are also applying writes.
+describe('loadSessions', () => {
+  beforeEach(() => {
+    setSessions([])
+    vi.mocked(ipc.listSessions).mockClear()
+  })
+
+  test('replaces only the target task, leaving other tasks untouched', async () => {
+    setSessions([
+      makeSession({ id: 's-other', taskId: 't-other' }),
+      makeSession({ id: 's-stale', taskId: 't-001' }),
+    ])
+    vi.mocked(ipc.listSessions).mockResolvedValueOnce([
+      makeSession({ id: 's-fresh', taskId: 't-001' }),
+    ])
+    await loadSessions('t-001')
+    const ids = sessions.map(s => s.id).sort()
+    expect(ids).toEqual(['s-fresh', 's-other'])
+  })
+})
+
+// Regression — when the source window calls createSession, Rust both returns
+// the session AND broadcasts session-created. If the broadcast lands before the
+// IPC await resolves, the listener pushes first; without dedup the local push
+// duplicates it, doubling the entry in the sessions store (and the tab bar).
+describe('createSession dedup vs cross-window broadcast', () => {
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    vi.mocked(ipc.createSession).mockReset()
+  })
+
+  test('does not double-insert when session-created event fires before IPC resolves', async () => {
+    const s = makeSession({ id: 's-race', taskId: 't-001' })
+    vi.mocked(ipc.createSession).mockImplementation(async () => {
+      // Simulate the broadcast arriving while the IPC is still in-flight
+      const fire = listenCallbacks.get('session-created')!
+      fire({ payload: s })
+      return s
+    })
+    await createSession('t-001', 'claude')
+    expect(sessions.filter(x => x.id === 's-race').length).toBe(1)
+  })
+
+  test('does not double-insert when broadcast arrives after IPC resolves', async () => {
+    const s = makeSession({ id: 's-after', taskId: 't-001' })
+    vi.mocked(ipc.createSession).mockResolvedValue(s)
+    await createSession('t-001', 'claude')
+    // Now the broadcast lands at the source window
+    listenCallbacks.get('session-created')!({ payload: s })
+    expect(sessions.filter(x => x.id === 's-after').length).toBe(1)
   })
 })

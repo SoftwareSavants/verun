@@ -6,7 +6,9 @@ import { initListeners, dismissSplash, installContextMenu, initQuitListener, sho
 import { initTheme } from '../lib/theme'
 import { refreshTaskGit } from '../store/git'
 import { loadTasks, taskById } from '../store/tasks'
-import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, addToast } from '../store/ui'
+import { loadProjects } from '../store/projects'
+import { loadAgents } from '../store/agents'
+import { selectedTaskId, setSelectedTaskId, setSelectedProjectId } from '../store/ui'
 import { modPressed } from '../lib/platform'
 import { toggleTerminal, showTerminal, setShowTerminal } from '../store/ui'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
@@ -48,7 +50,10 @@ export const TaskWindowShell: Component = () => {
     initQuitListener()
     installContextMenu(setSelMenu)
 
-    // Register listeners and load task data in parallel for fast startup
+    // Register listeners and load task data in parallel for fast startup.
+    // Detached windows must hydrate the projects + agents stores too, because
+    // the new-session menu reads from `agents` and the start-command button
+    // reads from `projects[].startCommand`.
     const taskDataPromise = ctx.taskId
       ? ipc.getTask(ctx.taskId).then(async (task) => {
           if (task) {
@@ -60,8 +65,9 @@ export const TaskWindowShell: Component = () => {
       : ctx.projectId
         ? loadTasks(ctx.projectId)
         : Promise.resolve()
+    const storeHydratePromise = Promise.all([loadProjects(), loadAgents()])
 
-    await Promise.all([initListeners(), taskDataPromise])
+    await Promise.all([initListeners(), taskDataPromise, storeHydratePromise])
 
     dismissSplash()
     getCurrentWindow().show()
@@ -70,12 +76,12 @@ export const TaskWindowShell: Component = () => {
   // --- Task lifecycle listeners ---
 
   onMount(() => {
-    // Close window when task is deleted or archived
+    // Close window immediately when task is deleted or archived. The main
+    // window shows the toast (see appInit.ts) so it survives the close.
     const unlistenRemoved = listen<{ taskId: string; reason: string }>('task-removed', (event) => {
       const myTaskId = ctx.taskId || selectedTaskId()
       if (event.payload.taskId === myTaskId) {
-        addToast(event.payload.reason === 'archived' ? 'Task was archived' : 'Task was deleted', 'info')
-        setTimeout(() => getCurrentWindow().close(), 1500)
+        getCurrentWindow().close()
       }
     })
 
