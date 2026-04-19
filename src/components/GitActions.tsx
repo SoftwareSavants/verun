@@ -1,9 +1,10 @@
-import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
+import { Component, createSignal, createEffect, createMemo, on, Show, For, onCleanup } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { ArrowUpFromLine, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye, Archive } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import * as ipc from '../lib/ipc'
-import { agentSkills } from '../store/commands'
+import { hasSkill, primeSkills, type SkillContext } from '../store/commands'
+import { sessionById } from '../store/sessions'
 import { sendMessage } from '../store/sessions'
 import { archiveTask } from '../store/tasks'
 import { addToast } from '../store/ui'
@@ -150,7 +151,26 @@ export const GitActions: Component<Props> = (props) => {
     }
   }
 
-  const hasReviewSkill = () => agentSkills().some(s => s.name === 'review')
+  const skillContext = createMemo((): SkillContext | null => {
+    const sid = props.sessionId
+    const sess = sid ? sessionById(sid) : null
+    const task = taskById(props.taskId)
+    const project = task ? projectById(task.projectId) : null
+    if (!sess || !task || !project) return null
+    return {
+      agentKind: sess.agentType,
+      projectRoot: project.repoPath,
+      taskId: task.id,
+      worktreePath: task.worktreePath,
+    }
+  })
+  createEffect(on(skillContext, ctx => {
+    if (ctx) primeSkills(ctx)
+  }))
+  const hasReviewSkill = () => {
+    const ctx = skillContext()
+    return ctx ? hasSkill('review', ctx) : false
+  }
   const conflicts = () => pr()?.mergeable === 'CONFLICTING'
   const failedChecks = () => checks().filter(c => c.status === 'FAILURE' || c.status === 'ERROR')
   const pendingChecks = () => checks().filter(c => c.status === 'PENDING' || c.status === 'QUEUED' || c.status === 'IN_PROGRESS')

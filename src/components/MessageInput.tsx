@@ -9,7 +9,8 @@ import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
 import { openFile, setMainView } from '../store/editorView'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
-import type { Command } from '../store/commands'
+import { primeSkills, type Command, type SkillContext } from '../store/commands'
+import { projectById } from '../store/projects'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
@@ -413,6 +414,28 @@ export const MessageInput: Component<Props> = (props) => {
   const [sending, setSending] = createSignal(false)
   const [dragOver, setDragOver] = createSignal(false)
   const [showPalette, setShowPalette] = createSignal(false)
+
+  const skillContext = (): SkillContext | null => {
+    const sid = props.sessionId
+    const sess = sid ? sessionById(sid) : null
+    const task = sess ? taskById(sess.taskId) : null
+    const project = task ? projectById(task.projectId) : null
+    if (!sess || !task || !project) return null
+    return {
+      agentKind: sess.agentType,
+      projectRoot: project.repoPath,
+      taskId: task.id,
+      worktreePath: task.worktreePath,
+    }
+  }
+
+  // Prime skills when palette opens or session changes.
+  createEffect(on([showPalette, () => props.sessionId], ([open]) => {
+    if (!open) return
+    const ctx = skillContext()
+    if (ctx) primeSkills(ctx)
+  }))
+
   const [showFileMention, setShowFileMention] = createSignal(false)
   const [fileMentionQuery, setFileMentionQuery] = createSignal('')
   const [worktreeFiles, setWorktreeFiles] = createSignal<string[]>([])
@@ -965,15 +988,6 @@ export const MessageInput: Component<Props> = (props) => {
         if (sid) clearOutputItems(sid)
         break
       }
-      case 'model': {
-        const parts = message().trim().split(/\s+/)
-        const modelArg = parts[1] ?? null
-        const sid = props.sessionId
-        if (sid && modelArg) {
-          updateSessionModel(sid, modelArg)
-        }
-        break
-      }
       case 'plan': {
         setPlanMode(!planMode())
         break
@@ -983,32 +997,13 @@ export const MessageInput: Component<Props> = (props) => {
     setShowPalette(false)
   }
 
-  const handleCommandSelect = async (cmd: Command) => {
+  const handleCommandSelect = (cmd: Command) => {
     if (cmd.category === 'app') {
-      // For /model, prefill the command and let user type the model name
-      if (cmd.name === 'model') {
-        setMessage('/model ')
-        setShowPalette(false)
-        return
-      }
       handleAppCommand(cmd)
     } else {
-      // Claude skill — send as message
-      setMessage(`/${cmd.name}`)
+      setMessage(`/${cmd.name} `)
       setShowPalette(false)
-      // Auto-send claude skills immediately
-      const sid = props.sessionId
-      if (sid && !sending()) {
-        setSending(true)
-        setMessage('')
-        try {
-          await sendMessage(sid, `/${cmd.name}`, undefined, currentModel())
-        } catch (e) {
-          console.error('Failed to send skill:', e)
-        } finally {
-          setSending(false)
-        }
-      }
+      inputRef?.focus()
     }
   }
 
@@ -1304,7 +1299,7 @@ export const MessageInput: Component<Props> = (props) => {
       const msg = message().trim()
       if (msg.startsWith('/')) {
         const cmdName = msg.slice(1).split(/\s+/)[0]
-        const appCmds = ['new-session', 'clear', 'model', 'plan']
+        const appCmds = ['new-session', 'clear', 'plan']
         if (appCmds.includes(cmdName)) {
           handleAppCommand({ name: cmdName, description: '', category: 'app' })
           return
@@ -2072,10 +2067,11 @@ export const MessageInput: Component<Props> = (props) => {
               : ''
       )}>
         {/* Command palette — onMouseDown preventDefault keeps focus in the input */}
-        <Show when={showPalette()}>
+        <Show when={showPalette() && skillContext()}>
           <div onMouseDown={e => e.preventDefault()}>
             <CommandPalette
               query={message()}
+              context={skillContext()!}
               onSelect={handleCommandSelect}
               onTab={(cmd) => {
                 if (cmd.name === 'plan') {

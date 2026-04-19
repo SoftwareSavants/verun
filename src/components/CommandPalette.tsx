@@ -1,9 +1,10 @@
 import { Component, For, Show, createSignal, createEffect, on } from 'solid-js'
-import { filterCommands, type Command } from '../store/commands'
+import { filterCommands, type Command, type SkillContext } from '../store/commands'
 import { clsx } from 'clsx'
 
 interface Props {
   query: string
+  context: SkillContext
   onSelect: (command: Command) => void
   onTab: (command: Command) => void
   onDismiss: () => void
@@ -12,7 +13,7 @@ interface Props {
 export const CommandPalette: Component<Props> = (props) => {
   const [selectedIndex, setSelectedIndex] = createSignal(0)
 
-  const filtered = () => filterCommands(props.query)
+  const filtered = () => filterCommands(props.query, props.context)
 
   // Reset selection when query changes
   createEffect(on(() => props.query, () => setSelectedIndex(0)))

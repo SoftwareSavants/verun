@@ -45,6 +45,10 @@
 - Workspace search: Cmd+Shift+F seeds the query from the current editor selection (first line, trimmed) and auto-runs the search
 - Workspace search: opening a markdown or SVG result now lands in edit mode so the matched line is visible immediately
 - Right panel tabs redesigned as icon-only buttons (Files / Search / Source Control) matching Cursor / VS Code
+- Discover Claude skills by reading `SKILL.md` frontmatter from `~/.claude/skills/`, `~/.claude/plugins/cache/**/skills/`, and the project's `.claude/skills/` directly, instead of scraping `claude skills list` output. Fixes empty `/` palette after the CLI changed its human-readable bullet format, and surfaces project-scoped skills when a project root is supplied
+- Also scan `.claude/commands/*.md` (project, global, and plugin) so user-authored slash commands like `bump-version` appear in the `/` palette
+- Pushed skill discovery onto the `Agent` trait; each agent (Claude, Codex, Gemini, Cursor, OpenCode) owns its own `discover_skills` impl (default empty). `list_agent_skills` IPC now takes `agentKind` + `scanRoot`, so the `/` palette shows the correct set per session's agent
+- Two-tier skill cache on the frontend: coarse `(agent, projectRoot)` for instant palette open, background refresh keyed by `(taskId, agent)` when the composer prime fires, so the palette always reflects the task's actual worktree without showing a spinner
 
 ## 0.7.3 — 2026-04-17
 

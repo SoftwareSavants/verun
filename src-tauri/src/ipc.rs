@@ -1760,55 +1760,27 @@ pub async fn write_binary_file(request: tauri::ipc::Request<'_>) -> Result<(), S
 // Utility
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentSkill {
-    pub name: String,
-    pub description: String,
-}
+pub use crate::agent::AgentSkill;
 
 #[tauri::command]
-pub async fn list_agent_skills() -> Result<Vec<AgentSkill>, String> {
-    let agent = crate::agent::AgentKind::Claude.implementation();
-    if !agent.supports_skills() {
+pub async fn list_agent_skills(
+    agent_kind: String,
+    scan_root: Option<String>,
+) -> Result<Vec<AgentSkill>, String> {
+    let kind = crate::agent::AgentKind::parse(&agent_kind);
+    if !kind.implementation().supports_skills() {
         return Ok(vec![]);
     }
-    let output = std::process::Command::new(agent.cli_binary())
-        .args(["skills", "list"])
-        .output()
-        .map_err(|e| format!("Failed to run {} skills list: {e}", agent.display_name()))?;
-
-    if !output.status.success() {
-        return Err(format!("{} skills list failed", agent.display_name()));
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut skills = Vec::new();
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed
-            .strip_prefix("- `/")
-            .or_else(|| trimmed.strip_prefix("- `/"))
-        {
-            if let Some(idx) = rest.find('`') {
-                let name = rest[..idx].to_string();
-                let desc = rest[idx + 1..]
-                    .trim_start_matches(" - ")
-                    .trim_start_matches(" - ")
-                    .trim()
-                    .to_string();
-                if !name.is_empty() {
-                    skills.push(AgentSkill {
-                        name,
-                        description: desc,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(skills)
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return Ok(vec![]);
+    };
+    tokio::task::spawn_blocking(move || {
+        let agent = kind.implementation();
+        let root = scan_root.as_deref().map(std::path::Path::new);
+        agent.discover_skills(root, &home)
+    })
+    .await
+    .map_err(|e| format!("skill discovery task failed: {e}"))
 }
 
 #[tauri::command]
@@ -2597,4 +2569,5 @@ mod tests {
         let json = serde_json::to_value(&info).unwrap();
         assert!(json.get("currentBranch").is_some());
     }
+
 }

@@ -7,6 +7,7 @@ mod git_ops;
 mod github;
 mod ipc;
 mod lsp;
+mod markdown_skills;
 mod policy;
 mod pty;
 mod snapshots;

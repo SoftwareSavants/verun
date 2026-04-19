@@ -272,8 +272,11 @@ export const checkGitignored = (taskId: string, paths: string[]) =>
   invoke<string[]>('check_gitignored', { taskId, paths })
 
 // Utility
-export const listAgentSkills = () =>
-  invoke<AgentSkill[]>('list_agent_skills')
+export const listAgentSkills = (agentKind: AgentType, scanRoot?: string) =>
+  invoke<AgentSkill[]>('list_agent_skills', {
+    agentKind,
+    scanRoot: scanRoot ?? null,
+  })
 
 export const checkAgent = (agentType: AgentType) =>
   invoke<string>('check_agent', { agentType })
