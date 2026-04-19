@@ -18,6 +18,7 @@
 - Opening the New Task dialog after adding a project now works from every entry point (empty-state button no longer skips it)
 - Sidebar task tiles show unread/attention state as a pulsing left-edge strip (amber for attention, blue for unread) instead of a trailing dot
 - Cmd+1…9 now focuses the existing window when the target task is already open in a separate window (matching sidebar click behavior); sidebar tiles display the shortcut, which swaps to the archive button on hover (#142)
+- Fix newly created task occasionally disappearing from sidebar after setup - the `task-created` event now carries the source window label so the originating window skips its own reload, avoiding a race with the async DB write queue (#135)
 
 ## 0.7.3 — 2026-04-17
 

@@ -280,6 +280,7 @@ pub async fn create_task(
         .ok_or_else(|| format!("Project {project_id} not found"))?;
 
     let from_task_window = window.label().starts_with("task-");
+    let source_window = window.label().to_string();
 
     let branch = base_branch.unwrap_or(project.base_branch);
     let port_offset = db::next_port_offset(pool.inner(), &project_id).await?;
@@ -298,6 +299,7 @@ pub async fn create_task(
             from_task_window,
             agent_type: agent_type
                 .unwrap_or_else(|| crate::agent::AgentKind::Claude.as_str().to_string()),
+            source_window,
         },
     )
     .await?;

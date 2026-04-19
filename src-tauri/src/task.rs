@@ -354,6 +354,7 @@ pub struct CreateTaskParams {
     pub port_offset: i64,
     pub from_task_window: bool,
     pub agent_type: String, // flows to the first session, not stored on the task
+    pub source_window: String,
 }
 
 pub async fn create_task(
@@ -372,6 +373,7 @@ pub async fn create_task(
         port_offset,
         from_task_window,
         agent_type,
+        source_window,
     } = params;
     let id = Uuid::new_v4().to_string();
     let branch = funny_branch_name();
@@ -412,10 +414,17 @@ pub async fn create_task(
     // Auto-create the first session with the chosen agent
     let session = create_session(db_tx, task.id.clone(), agent_type, None).await?;
 
-    // Notify all windows about the new task so other windows can reload
+    // Notify all windows about the new task so other windows can reload.
+    // The source window skips the reload since it already has the task from
+    // the IPC response — this avoids a race where the DB write queue hasn't
+    // yet applied InsertTask and the reload would drop the new task.
     let _ = app.emit(
         "task-created",
-        serde_json::json!({ "taskId": task.id, "projectId": task.project_id }),
+        serde_json::json!({
+            "taskId": task.id,
+            "projectId": task.project_id,
+            "sourceWindow": source_window,
+        }),
     );
 
     // If created from a task window, also mark it as windowed BEFORE spawning the hook
