@@ -2,9 +2,13 @@ use crate::claude_jsonl;
 use crate::db::{DbWrite, DbWriteTx};
 use crate::policy::{self, PolicyDecision, TrustLevel};
 use crate::snapshots;
-use crate::task::{ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals};
+use crate::task::{
+    ApprovalResponse, PendingApprovalEntry, PendingApprovalMeta, PendingApprovals,
+    PendingControlResponses,
+};
 use serde::Serialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -50,6 +54,15 @@ pub enum OutputItem {
     /// System/status message
     #[serde(rename_all = "camelCase")]
     System { text: String },
+
+    /// Provider error (API failure, auth, overload, prompt-too-long, etc.).
+    /// Carries the human message plus the raw source JSON so the frontend
+    /// can show a persistent retry banner with an expandable details panel.
+    #[serde(rename_all = "camelCase")]
+    ErrorMessage {
+        message: String,
+        raw: Option<String>,
+    },
 
     /// Turn completed
     #[serde(rename_all = "camelCase")]
@@ -152,21 +165,26 @@ pub struct PolicyAutoApprovedEvent {
 // ---------------------------------------------------------------------------
 
 /// Parse a single NDJSON line from Claude's stream-json output into OutputItems.
+///
+/// Kept for tests and rare call sites that only have the raw line. The stream
+/// loop itself parses once upfront and calls `parse_sdk_event_value` directly to
+/// avoid re-parsing the same line two or three times per tick.
+#[cfg_attr(not(test), allow(dead_code))]
 fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
-    let v: serde_json::Value = match serde_json::from_str(line) {
-        Ok(v) => v,
-        Err(_) => {
-            return vec![OutputItem::Raw {
-                text: line.to_string(),
-            }]
-        }
-    };
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(v) => parse_sdk_event_value(&v),
+        Err(_) => vec![OutputItem::Raw {
+            text: line.to_string(),
+        }],
+    }
+}
 
+fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
     let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
     match msg_type {
         // -- Streaming token deltas (real-time) --
-        "stream_event" => parse_stream_event(&v),
+        "stream_event" => parse_stream_event(v),
 
         // -- Assistant message --
         // Cursor with --stream-partial-output sends per-token `assistant` events
@@ -174,24 +192,20 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
         "assistant" => {
             if v.get("timestamp_ms").is_some() {
                 // Streaming delta: extract just the text content
-                parse_assistant_text_only(&v)
+                parse_assistant_text_only(v)
             } else {
                 // Final snapshot or non-streaming: extract text + tool_use blocks
-                parse_assistant_message(&v)
+                parse_assistant_message(v)
             }
         }
 
         // -- User message (tool results) --
-        "user" => parse_user_message(&v),
+        "user" => parse_user_message(v),
 
         // -- System messages --
-        "system" => {
-            if v.get("subtype").and_then(|s| s.as_str()) == Some("init") {
-                vec![]
-            } else {
-                vec![]
-            }
-        }
+        // `system.init` gives us the resume id (extracted in stream_and_capture);
+        // other system subtypes are silently ignored.
+        "system" => vec![],
 
         // -- Result (turn completed) --
         // Text is already delivered via stream_event deltas; skip result.result to avoid duplication.
@@ -221,7 +235,13 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
                         None
                     }
                 });
-            let status = if is_error || status_str != "success" {
+            // `error_during_execution` is how the Claude CLI signals that the
+            // user aborted the turn via `control_request interrupt`. Treat it
+            // as a distinct `interrupted` status so the renderer can suppress
+            // the bubble (the user already knows they hit stop).
+            let status = if status_str == "error_during_execution" {
+                "interrupted"
+            } else if is_error || status_str != "success" {
                 "error"
             } else {
                 "completed"
@@ -741,14 +761,21 @@ fn parse_stream_event(v: &serde_json::Value) -> Vec<OutputItem> {
 /// in real-time, so the snapshot is redundant for those. We skip it to avoid duplication.
 /// However, we DO extract tool_use blocks since content_block_start may not always arrive.
 fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
-    let content = match v
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_array())
-    {
+    let message = match v.get("message") {
+        Some(m) => m,
+        None => return vec![],
+    };
+    let content = match message.get("content").and_then(|c| c.as_array()) {
         Some(c) => c,
         None => return vec![],
     };
+
+    // Synthetic assistant snapshots (e.g. "Prompt is too long", API errors)
+    // arrive with `model: "<synthetic>"` and carry the error text as a text
+    // block — they never have stream_event deltas, so skipping text here
+    // would drop the message entirely. For regular assistant snapshots text
+    // is already delivered via deltas, so we skip it to avoid duplication.
+    let is_synthetic = message.get("model").and_then(|m| m.as_str()) == Some("<synthetic>");
 
     let mut items = Vec::new();
     for block in content {
@@ -771,6 +798,17 @@ fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
                     tool: name.to_string(),
                     input: input_str,
                 });
+            }
+            "text" if is_synthetic => {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        let raw = serde_json::to_string(v).ok();
+                        items.push(OutputItem::ErrorMessage {
+                            message: text.to_string(),
+                            raw,
+                        });
+                    }
+                }
             }
             _ => {}
         }
@@ -1043,8 +1081,10 @@ pub async fn stream_and_capture(
     task_id: String,
     stdout: ChildStdout,
     stdin: Arc<TokioMutex<Option<ChildStdin>>>,
+    busy: Arc<AtomicBool>,
     pending_approvals: PendingApprovals,
     pending_approval_meta: PendingApprovalMeta,
+    pending_control_responses: PendingControlResponses,
     db_tx: DbWriteTx,
     worktree_path: String,
     repo_path: String,
@@ -1072,17 +1112,66 @@ pub async fn stream_and_capture(
             line = reader.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        let preview = if line.len() > 200 { &line[..200] } else { &line };
-                        eprintln!("[verun][stream][{session_id}] {preview}");
+                        eprintln!("[verun][stream][{session_id}] {line}");
+
+                        // Cleanly skip non-JSON garbage (e.g. `[SandboxDebug]` lines the CLI
+                        // can interleave under permission/sandbox modes). Matches the
+                        // claude-agent-sdk-python fix for issue #347.
+                        let trimmed = line.trim_start();
+                        if !trimmed.starts_with('{') {
+                            if !trimmed.is_empty() {
+                                eprintln!("[verun][stream][{session_id}] skipping non-JSON: {trimmed}");
+                            }
+                            continue;
+                        }
+
+                        // Parse each line exactly once. Every downstream check (control_request,
+                        // control_response, resume_id extraction, rate_limit, event parse) now
+                        // works off this one `Value`.
+                        let v: serde_json::Value = match serde_json::from_str(&line) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("[verun][stream][{session_id}] JSON parse error: {e}");
+                                // Keep the raw line visible in the UI rather than silently dropping it
+                                let items = vec![OutputItem::Raw { text: line.clone() }];
+                                for item in &items { buffer.push(item.clone()); }
+                                persist_items(&db_tx, &session_id, &items, &mut total_persisted);
+                                continue;
+                            }
+                        };
+                        let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                        // Incoming `control_response` — resolve the matching pending oneshot so
+                        // IPC callers like `interrupt_session` / `get_session_context_usage`
+                        // can unblock. No UI emission for these.
+                        if msg_type == "control_response" {
+                            if let Some(response) = v.get("response") {
+                                if let Some(req_id) = response.get("request_id").and_then(|r| r.as_str()) {
+                                    if let Some((_, tx)) = pending_control_responses.remove(req_id) {
+                                        let subtype = response.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+                                        let result = if subtype == "error" {
+                                            Err(response.get("error")
+                                                .and_then(|e| e.as_str())
+                                                .unwrap_or("CLI returned error")
+                                                .to_string())
+                                        } else {
+                                            Ok(response.get("response").cloned().unwrap_or(serde_json::Value::Null))
+                                        };
+                                        let _ = tx.send(result);
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
                         // Intercept control_request for tool approval
                         if let Some(cr) = handle_control_request(
-                            &app, &session_id, &task_id, &line, &stdin,
+                            &app, &session_id, &task_id, &v, &stdin,
                             &pending_approvals, &pending_approval_meta,
                             &worktree_path, &repo_path,
                             trust_level, &db_tx,
                         ).await {
                             if cr.handled {
-                                // Emit ToolStart so the frontend knows which tool is running
                                 if let Some(tool_start) = cr.tool_start {
                                     buffer.push(tool_start.clone());
                                     persist_items(&db_tx, &session_id, &[tool_start], &mut total_persisted);
@@ -1093,41 +1182,37 @@ pub async fn stream_and_capture(
 
                         // Extract the resume session id via the agent's own logic
                         if resume_id_for_snapshot.is_none() {
-                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                                if let Some(sid) = agent.extract_resume_id(&v) {
-                                    resume_id_for_snapshot = Some(sid.clone());
-                                    if defers_resume {
-                                        pending_resume_id = Some(sid);
-                                    } else {
-                                        let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
-                                            id: session_id.clone(),
-                                            resume_session_id: sid,
-                                        }).await;
-                                    }
+                            if let Some(sid) = agent.extract_resume_id(&v) {
+                                resume_id_for_snapshot = Some(sid.clone());
+                                if defers_resume {
+                                    pending_resume_id = Some(sid);
+                                } else {
+                                    let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
+                                        id: session_id.clone(),
+                                        resume_session_id: sid,
+                                    }).await;
                                 }
                             }
                         }
 
                         // Intercept rate_limit_event — emit as separate Tauri event
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                            if v.get("type").and_then(|t| t.as_str()) == Some("rate_limit_event") {
-                                if let Some(info) = v.get("rate_limit_info") {
-                                    let _ = app.emit("rate-limit-info", RateLimitInfoEvent {
-                                        session_id: session_id.clone(),
-                                        resets_at: info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
-                                        overage_resets_at: info.get("overageResetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
-                                        rate_limit_type: info.get("rateLimitType").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-                                        overage_status: info.get("overageStatus").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-                                        is_using_overage: info.get("isUsingOverage").and_then(|r| r.as_bool()).unwrap_or(false),
-                                    });
-                                }
-                                persist_line(&db_tx, &session_id, &line, &mut total_persisted);
-                                continue;
+                        if msg_type == "rate_limit_event" {
+                            if let Some(info) = v.get("rate_limit_info") {
+                                let _ = app.emit("rate-limit-info", RateLimitInfoEvent {
+                                    session_id: session_id.clone(),
+                                    resets_at: info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
+                                    overage_resets_at: info.get("overageResetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
+                                    rate_limit_type: info.get("rateLimitType").and_then(|r| r.as_str()).unwrap_or("").to_string(),
+                                    overage_status: info.get("overageStatus").and_then(|r| r.as_str()).unwrap_or("").to_string(),
+                                    is_using_overage: info.get("isUsingOverage").and_then(|r| r.as_bool()).unwrap_or(false),
+                                });
                             }
+                            persist_line(&db_tx, &session_id, &line, &mut total_persisted);
+                            continue;
                         }
 
-                        // Parse NDJSON into structured items
-                        let items = parse_sdk_event(&line);
+                        // Parse NDJSON into structured items (already have Value — no re-parse)
+                        let items = parse_sdk_event_value(&v);
 
                         // Emit text/thinking deltas immediately for real-time streaming
                         let mut has_immediate = false;
@@ -1172,11 +1257,36 @@ pub async fn stream_and_capture(
                             }
                         }
 
-                        // Close stdin after turn completes so the CLI process can exit
+                        // For one-shot-per-turn agents (e.g. Codex), close stdin so
+                        // the CLI exits and we respawn on next send. For persistent
+                        // agents (Claude), keep stdin open — `busy=false` signals the
+                        // process is ready for the next turn. Since the process never
+                        // exits, the monitor's post-stream status emission never fires,
+                        // so we emit it here: idle on success, error (with the provider
+                        // message) on an API/auth failure so the retry banner renders.
                         if is_turn_end {
-                            // Take the ChildStdin out and drop it to close the fd (sends EOF)
-                            let mut guard = stdin.lock().await;
-                            drop(guard.take());
+                            if !agent.persists_across_turns() {
+                                let mut guard = stdin.lock().await;
+                                drop(guard.take());
+                            } else {
+                                let (status, error) = turn_end_session_status(&last_error);
+                                let _ = db_tx.send(DbWrite::UpdateSessionStatus {
+                                    id: session_id.clone(),
+                                    status: status.to_string(),
+                                }).await;
+                                let _ = app.emit(
+                                    "session-status",
+                                    SessionStatusEvent {
+                                        session_id: session_id.clone(),
+                                        status: status.to_string(),
+                                        error,
+                                    },
+                                );
+                                // Clear so the next turn starts clean — the error is
+                                // associated with the turn that just ended, not future ones.
+                                last_error = None;
+                            }
+                            busy.store(false, Ordering::SeqCst);
                         }
 
                         // Flush buffer. On turn end we ALWAYS flush so the TurnEnd
@@ -1248,7 +1358,7 @@ async fn handle_control_request(
     app: &AppHandle,
     session_id: &str,
     task_id: &str,
-    line: &str,
+    v: &serde_json::Value,
     stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
     pending_approvals: &PendingApprovals,
     pending_meta: &PendingApprovalMeta,
@@ -1257,8 +1367,6 @@ async fn handle_control_request(
     trust_level: TrustLevel,
     db_tx: &DbWriteTx,
 ) -> Option<ControlRequestResult> {
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-
     if v.get("type").and_then(|t| t.as_str()) != Some("control_request") {
         return Some(ControlRequestResult {
             handled: false,
@@ -1392,9 +1500,9 @@ async fn handle_control_request(
                 },
             );
 
-            let (behavior, updated_input) = match rx.await {
-                Ok(resp) => (resp.behavior, resp.updated_input),
-                Err(_) => ("deny".to_string(), None),
+            let (behavior, updated_input, deny_message) = match rx.await {
+                Ok(resp) => (resp.behavior, resp.updated_input, resp.message),
+                Err(_) => ("deny".to_string(), None, None),
             };
 
             pending_approvals.remove(&request_id);
@@ -1407,9 +1515,10 @@ async fn handle_control_request(
                     "updatedInput": input
                 })
             } else {
+                let msg = deny_message.unwrap_or_else(|| "User denied this action".to_string());
                 serde_json::json!({
                     "behavior": "deny",
-                    "message": "User denied this action",
+                    "message": msg,
                     "interrupt": false
                 })
             };
@@ -1500,6 +1609,17 @@ pub fn map_exit_status(code: Option<i32>) -> &'static str {
         Some(0) => "done",
         Some(_) => "error",
         None => "error",
+    }
+}
+
+/// Decide the `session-status` event payload to emit at turn_end for a
+/// persistent agent. The process stays alive, so we can't wait for exit —
+/// a turn-level error (e.g. API 401, overload) must propagate as the
+/// session status so the frontend can render the retry banner.
+pub fn turn_end_session_status(err: &Option<String>) -> (&'static str, Option<String>) {
+    match err {
+        Some(msg) => ("error", Some(msg.clone())),
+        None => ("idle", None),
     }
 }
 
@@ -1652,6 +1772,69 @@ mod tests {
             OutputItem::Raw { text } => assert_eq!(text, "not json at all"),
             _ => panic!("Expected Raw item"),
         }
+    }
+
+    #[test]
+    fn turn_end_session_status_idle_when_no_error() {
+        let (status, err) = turn_end_session_status(&None);
+        assert_eq!(status, "idle");
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn turn_end_session_status_error_when_present() {
+        // Regression: auth/API errors on persistent Claude sessions were
+        // dropped because the persistent-agent turn_end branch always
+        // emitted idle. The red retry banner depends on status=error +
+        // the provider message propagating through session-status.
+        let msg = "API Error: 401 authentication_error".to_string();
+        let (status, err) = turn_end_session_status(&Some(msg.clone()));
+        assert_eq!(status, "error");
+        assert_eq!(err.as_deref(), Some(msg.as_str()));
+    }
+
+    #[test]
+    fn parse_result_error_during_execution_maps_to_interrupted() {
+        // Claude CLI emits this subtype when the user sends a
+        // `control_request interrupt` mid-turn. It is NOT an error worth
+        // surfacing as a red bubble in chat — the user already knows they
+        // hit stop. We map it to a distinct `interrupted` status so the
+        // renderer can suppress the bubble entirely.
+        let line = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":1000,"session_id":"abc"}"#;
+        let items = parse_sdk_event(line);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::TurnEnd { status, error, .. } => {
+                assert_eq!(status, "interrupted");
+                assert!(error.is_none(), "interrupt should not carry an error");
+            }
+            _ => panic!("Expected TurnEnd item"),
+        }
+    }
+
+    #[test]
+    fn parse_assistant_synthetic_error_emits_error_message_with_raw() {
+        // When the Claude API returns an error mid-turn (e.g. "Prompt is
+        // too long"), the CLI emits a synthetic assistant message with
+        // `model: "<synthetic>"` and a text block carrying the error
+        // message. We surface it as an `ErrorMessage` item so the UI can
+        // render a single persistent retry banner (no duplicate text / sys
+        // bubbles) with the raw JSON available for "Show details".
+        let line = r#"{"type":"assistant","message":{"id":"x","model":"<synthetic>","role":"assistant","type":"message","content":[{"type":"text","text":"Prompt is too long"}]},"session_id":"abc","uuid":"u","error":"invalid_request"}"#;
+        let items = parse_sdk_event(line);
+        let err = items.iter().find_map(|i| match i {
+            OutputItem::ErrorMessage { message, raw } => Some((message.clone(), raw.clone())),
+            _ => None,
+        });
+        let (message, raw) = err.expect("expected ErrorMessage item");
+        assert_eq!(message, "Prompt is too long");
+        let raw = raw.expect("expected raw JSON payload");
+        assert!(raw.contains("\"<synthetic>\""), "raw should carry source JSON: {raw}");
+        // Should NOT emit a duplicate plain Text item for the same synthetic error.
+        assert!(
+            !items.iter().any(|i| matches!(i, OutputItem::Text { .. })),
+            "synthetic error must not also emit a plain Text item: {items:?}"
+        );
     }
 
     #[test]

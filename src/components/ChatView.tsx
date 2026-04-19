@@ -3,7 +3,7 @@ import { createStore, produce, reconcile } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { OutputItem, SessionStatus } from '../types'
-import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus } from 'lucide-solid'
+import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
@@ -54,7 +54,6 @@ function renderMarkdownForTask(text: string, taskId?: string): string {
 interface Props {
   output: OutputItem[]
   sessionStatus?: SessionStatus
-  sessionError?: string
   sessionId?: string | null
   taskId?: string
   agentType?: string
@@ -97,9 +96,16 @@ interface SystemBlock {
   type: 'system'
   text: string
 }
-type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock
+interface ErrorBlock {
+  type: 'error'
+  message: string
+  raw?: string
+  /** Turn marker so retry picks the right user message. */
+  turnIndex: number
+}
+type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock | ErrorBlock
 
-function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
+export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
   const blocks: DisplayBlock[] = []
   let currentText = ''
   let currentThinking = ''
@@ -129,6 +135,11 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
   let toolCounter = 0
   let thinkingCounter = 0
   let turnStartTs: number | undefined
+  let turnIndex = 0
+  // Track whether this turn has already produced an error block so we can
+  // drop the duplicate turnEnd-derived bubble (synthetic assistant + result
+  // both carry the same provider error).
+  let turnHasError = false
 
   for (const item of items) {
     switch (item.kind) {
@@ -143,7 +154,14 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
       case 'userMessage':
         flushText(); flushThinking()
         turnStartTs = item.timestamp
+        turnIndex += 1
+        turnHasError = false
         blocks.push({ type: 'user', text: item.text, images: item.images })
+        break
+      case 'errorMessage':
+        flushText(); flushThinking()
+        blocks.push({ type: 'error', message: item.message, raw: item.raw, turnIndex })
+        turnHasError = true
         break
       case 'toolStart': {
         // Hide ExitPlanMode from the chat — it's shown as a dedicated plan overlay
@@ -194,7 +212,18 @@ function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
           }
           if (blocks[i].type === 'user') break
         }
-        if (item.status !== 'completed' && !item.error) {
+        // Render rules:
+        //   - completed         → no bubble (happy path)
+        //   - interrupted       → no bubble (user already hit stop)
+        //   - error + message   → one error block per turn (de-duped — the
+        //                         synthetic assistant already produced one)
+        //   - other non-success → show the status as a system bubble
+        if (item.error) {
+          if (!turnHasError) {
+            blocks.push({ type: 'error', message: item.error, raw: undefined, turnIndex })
+            turnHasError = true
+          }
+        } else if (item.status !== 'completed' && item.status !== 'interrupted') {
           blocks.push({ type: 'system', text: `Turn ended: ${item.status}` })
         }
         turnStartTs = undefined
@@ -601,15 +630,31 @@ const savedScrollPositions = new Map<string, { scrollTop: number; autoScroll: bo
 // Error banner with retry actions
 // ---------------------------------------------------------------------------
 
-function getLastUserMessage(output: OutputItem[]): string | undefined {
-  for (let i = output.length - 1; i >= 0; i--) {
-    if (output[i].kind === 'userMessage') return (output[i] as { kind: 'userMessage'; text: string }).text
+/** Walk `output` and return the text of the user message that started the
+ *  given 1-based turn. Retry always resends the correct message even for
+ *  historical error blocks further up the transcript. */
+function userMessageForTurn(output: OutputItem[], turnIndex: number): string | undefined {
+  let seen = 0
+  for (const item of output) {
+    if (item.kind === 'userMessage') {
+      seen += 1
+      if (seen === turnIndex) return item.text
+    }
   }
   return undefined
 }
 
-const ErrorBanner: Component<{
-  error?: string
+/** Pretty-print a JSON blob if parseable, else return as-is. Keeps the raw
+ *  details panel readable regardless of what the CLI sent. */
+function prettyJson(raw?: string): string {
+  if (!raw) return ''
+  try { return JSON.stringify(JSON.parse(raw), null, 2) } catch { return raw }
+}
+
+const ErrorBlockView: Component<{
+  message: string
+  raw?: string
+  turnIndex: number
   output: OutputItem[]
   sessionId?: string | null
   taskId?: string
@@ -617,7 +662,9 @@ const ErrorBanner: Component<{
   model?: string | null
 }> = (props) => {
   const [retrying, setRetrying] = createSignal(false)
-  const lastMessage = () => getLastUserMessage(props.output)
+  const [showDetails, setShowDetails] = createSignal(false)
+  const [copiedRaw, setCopiedRaw] = createSignal(false)
+  const retryMessage = () => userMessageForTurn(props.output, props.turnIndex)
 
   const modeArgs = (): [string | undefined, boolean | undefined, boolean | undefined, boolean | undefined] => {
     const tid = props.taskId
@@ -630,7 +677,7 @@ const ErrorBanner: Component<{
   }
 
   const retry = async () => {
-    const msg = lastMessage()
+    const msg = retryMessage()
     if (!msg || !props.sessionId) return
     setRetrying(true)
     try {
@@ -641,7 +688,7 @@ const ErrorBanner: Component<{
   }
 
   const retryNewSession = async () => {
-    const msg = lastMessage()
+    const msg = retryMessage()
     if (!msg || !props.taskId) return
     setRetrying(true)
     try {
@@ -654,16 +701,21 @@ const ErrorBanner: Component<{
     setRetrying(false)
   }
 
+  const copyRaw = async () => {
+    if (!props.raw) return
+    await navigator.clipboard.writeText(prettyJson(props.raw))
+    setCopiedRaw(true)
+    setTimeout(() => setCopiedRaw(false), 2000)
+  }
+
   return (
     <div class="mx-5 mt-1 flex flex-col gap-2 px-3 py-2.5 rounded-lg bg-status-error/8 ring-1 ring-status-error/15">
       <div class="flex items-start gap-2">
         <AlertTriangle size={14} class="text-status-error shrink-0 mt-0.5" />
-        <span class="text-xs text-status-error">
-          {props.error || 'Session encountered an error'}
-        </span>
+        <span class="text-xs text-status-error whitespace-pre-wrap break-words">{props.message}</span>
       </div>
-      <Show when={lastMessage()}>
-        <div class="flex items-center gap-2 ml-5.5">
+      <div class="flex items-center gap-2 ml-5.5 flex-wrap">
+        <Show when={retryMessage()}>
           <button
             class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-status-error/12 text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"
             onClick={retry}
@@ -680,6 +732,31 @@ const ErrorBanner: Component<{
             <Plus size={11} />
             Retry in new session
           </button>
+        </Show>
+        <Show when={props.raw}>
+          <button
+            class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-2 text-text-secondary hover:bg-surface-3 transition-colors"
+            onClick={() => setShowDetails(v => !v)}
+          >
+            <Show when={showDetails()} fallback={<ChevronDown size={11} />}>
+              <ChevronUp size={11} />
+            </Show>
+            {showDetails() ? 'Hide details' : 'Show details'}
+          </button>
+        </Show>
+      </div>
+      <Show when={showDetails() && props.raw}>
+        <div class="ml-5.5 mt-1 relative">
+          <button
+            class="absolute top-1.5 right-1.5 p-1 rounded-md text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors"
+            onClick={copyRaw}
+            title="Copy"
+          >
+            <Show when={copiedRaw()} fallback={<Copy size={11} />}>
+              <Check size={11} class="text-status-running" />
+            </Show>
+          </button>
+          <pre class="my-0 max-h-64 overflow-auto text-[11px] text-text-secondary bg-surface-1 rounded-md p-2 pr-7 ring-1 ring-white/5 whitespace-pre-wrap break-words">{prettyJson(props.raw)}</pre>
         </div>
       </Show>
     </div>
@@ -1069,20 +1146,26 @@ export const ChatView: Component<Props> = (props) => {
                   <span class="text-[11px] text-text-dim whitespace-pre-wrap">{(block as SystemBlock).text}</span>
                 </div>
               </Match>
+              <Match when={block.type === 'error'}>
+                {(() => {
+                  const b = block as ErrorBlock
+                  return (
+                    <ErrorBlockView
+                      message={b.message}
+                      raw={b.raw}
+                      turnIndex={b.turnIndex}
+                      output={props.output}
+                      sessionId={props.sessionId}
+                      taskId={props.taskId}
+                      agentType={props.agentType}
+                      model={props.model}
+                    />
+                  )
+                })()}
+              </Match>
             </Switch>
           )}
         </For>
-
-        <Show when={props.sessionStatus === 'error'}>
-          <ErrorBanner
-            error={props.sessionError}
-            output={props.output}
-            sessionId={props.sessionId}
-            taskId={props.taskId}
-            agentType={props.agentType}
-            model={props.model}
-          />
-        </Show>
 
         <Show when={props.sessionStatus === 'running'}>
           <div class="px-5 py-2">
@@ -1092,7 +1175,7 @@ export const ChatView: Component<Props> = (props) => {
           </div>
         </Show>
 
-        <Show when={blocks.length === 0 && props.sessionStatus !== 'error'}>
+        <Show when={blocks.length === 0}>
           <div class="flex-1 flex items-center justify-center pt-20">
             <div class="text-center max-w-sm">
               <p class="text-sm text-text-secondary mb-1">New session</p>

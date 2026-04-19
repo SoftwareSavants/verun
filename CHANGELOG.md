@@ -19,6 +19,23 @@
 - Sidebar task tiles show unread/attention state as a pulsing left-edge strip (amber for attention, blue for unread) instead of a trailing dot
 - Cmd+1…9 now focuses the existing window when the target task is already open in a separate window (matching sidebar click behavior); sidebar tiles display the shortcut, which swaps to the archive button on hover (#142)
 - Fix newly created task occasionally disappearing from sidebar after setup - the `task-created` event now carries the source window label so the originating window skips its own reload, avoiding a race with the async DB write queue (#135)
+- Graceful shutdown for aborted claude sessions: close stdin, wait 5s, SIGTERM, wait 5s, then SIGKILL - prevents losing the last assistant message on `--resume` when the CLI is mid-write of its session JSONL
+- Strip `CLAUDECODE` from the spawned CLI's env and set `CLAUDE_CODE_ENTRYPOINT=verun` so nested-detection and telemetry are correct
+- Stream parser skips non-JSON stdout lines (e.g. `[SandboxDebug]`) instead of surfacing them as raw output
+- Stream loop now parses each NDJSON line once instead of up to three times
+- New `interrupt_session` IPC: cancel the current turn over stdin without killing the process
+- New `get_session_context_usage` IPC: ask the running CLI for current context-window usage
+- Claude sessions now reuse a single persistent CLI process across all turns in a session (matches claude-agent-sdk-python): eliminates the 2-3s CLI boot cost on every message and fixes the armed-step race where a queued send would collide with the dying CLI's final JSONL write
+- Fix loading indicator sticking on after turn end: persistent-agent stream loop now emits `session-status: idle` from `turn_end` (the monitor's post-exit idle emission never fires for processes that stay alive across turns)
+- Abort on Claude sessions is now a single `control_request interrupt` write to stdin - the process stays alive for the next message, so there's no graceful-shutdown delay and no "Stopping..." spinner
+- New `prewarm_session` IPC + `TaskPanel` hook: opening a Claude session spawns the CLI in the background so the first message is instant. No-op for non-persistent agents (Codex, Gemini, Cursor, OpenCode)
+- `close_session` / `clear_session` / app-quit now shut down any live persistent CLI before DB writes or exit, so switching tasks or quitting doesn't leak orphan processes
+- New `Agent` trait methods (`persists_across_turns`, `abort_strategy`, `encode_stream_user_message`, `encode_stream_interrupt`): call sites stay agent-agnostic, any future agent opts into persistent sessions by flipping one flag
+- Plan viewer "Request changes..." input now forwards the typed feedback as the tool-deny message so Claude sees it as the refusal reason and continues the same turn; the plan UI dismisses immediately instead of sticking around waiting for a second message
+- Fix persistent-session mode/model race: fast-path `set_permission_mode` / `set_model` now waits for the CLI's `control_response` ACK before writing the user message, so plan mode (and model switches) take effect before Claude reads the prompt - previously the CLI could process the message in the old mode
+- Composer stays visible alongside the persisted "Plan ready" banner, and is dismissed automatically when the user sends a fresh message via the main composer - previously a stale plan file from a prior session could hide the composer and block follow-ups
+- Fix API/auth errors on Claude sessions rendering as plain text: persistent-agent `turn_end` now propagates the provider error through `session-status`, restoring the red inline banner with Retry / Retry in new session
+- Provider errors (auth, overload, prompt-too-long) now render as a single persistent block inside the transcript instead of duplicating across an assistant bubble + system bubble + bottom banner. The block stays visible across follow-up turns, carries Retry / Retry in new session, and exposes the raw CLI JSON behind a "Show details" toggle (copyable)
 
 ## 0.7.3 — 2026-04-17
 

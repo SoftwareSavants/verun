@@ -50,6 +50,9 @@ function formatItem(item: OutputItem): string {
       if (item.status === 'completed') {
         return `\r\n${GREEN}${DIM} Turn completed${RESET}\r\n`
       }
+      if (item.status === 'interrupted') {
+        return ''
+      }
       return `\r\n${RED}${DIM} ${item.error || `Turn ended: ${item.status}`}${RESET}\r\n`
 
     case 'raw':

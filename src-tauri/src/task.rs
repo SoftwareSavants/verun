@@ -5,7 +5,9 @@ use crate::stream;
 use crate::worktree;
 use dashmap::DashMap;
 use serde::Deserialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin};
@@ -76,9 +78,29 @@ pub fn funny_branch_name() -> String {
 pub struct ActiveProcess {
     pub child: Child,
     /// Kept alive so `stream_and_capture` can write control_response messages via the Arc clone.
-    /// Inner Option is `take()`n on turn end to close the fd and let the process exit.
-    #[allow(dead_code)]
+    /// For persistent agents this stays Some across turns; for one-shot agents it's
+    /// `take()`n on `turn_end` to close the fd and let the process exit.
     pub stdin: Arc<TokioMutex<Option<ChildStdin>>>,
+    /// True while a turn is in flight. For persistent agents the stream loop
+    /// flips this to false on `turn_end` so the next `send_message` can take
+    /// the fast path instead of erroring as "already processing".
+    pub busy: Arc<AtomicBool>,
+    /// Which agent owns this process. Lets `abort_message` /
+    /// `close_session` / app-exit dispatch on the trait without a DB read.
+    pub kind: AgentKind,
+    /// Last-applied permission mode ("default" or "plan"). Persistent-session
+    /// sends compare against this to decide whether to emit a
+    /// `set_permission_mode` control_request before the user message.
+    pub current_permission_mode: String,
+    /// Last-applied model (`None` = CLI default). Persistent-session sends
+    /// compare against this to decide whether to emit a `set_model`
+    /// control_request before the user message.
+    pub current_model: Option<String>,
+    /// Last-applied effort flag (`thinking_mode`/`fast_mode`). The Claude CLI
+    /// only accepts `--effort` at spawn — there is no mid-session control
+    /// request — so any change forces a respawn.
+    pub current_thinking_mode: bool,
+    pub current_fast_mode: bool,
 }
 
 /// session_id → currently running claude process (only while processing a message)
@@ -314,9 +336,13 @@ pub fn get_active_session_ids(active: &ActiveMap) -> Vec<String> {
 /// Response from the frontend for a tool approval request.
 /// For normal tools: behavior is "allow" or "deny".
 /// For AskUserQuestion: behavior is "allow" and updated_input contains the answers.
+/// For deny: `message` carries the user's reason (e.g. plan-viewer feedback)
+/// so Claude can continue the turn with that context instead of seeing a
+/// generic "user denied" placeholder.
 pub struct ApprovalResponse {
     pub behavior: String,
     pub updated_input: Option<serde_json::Value>,
+    pub message: Option<String>,
 }
 
 /// Stored metadata for a pending approval so it can be re-emitted on frontend reload
@@ -340,6 +366,55 @@ pub fn new_pending_approvals() -> PendingApprovals {
 
 pub fn new_pending_approval_meta() -> PendingApprovalMeta {
     Arc::new(DashMap::new())
+}
+
+/// request_id → oneshot channel awaiting a matching `control_response` from the CLI.
+/// Used by IPC callers that issue `control_request`s (interrupt, get_context_usage, ...)
+/// and need to correlate the async reply.
+pub type PendingControlResponses =
+    Arc<DashMap<String, oneshot::Sender<Result<serde_json::Value, String>>>>;
+
+pub fn new_pending_control_responses() -> PendingControlResponses {
+    Arc::new(DashMap::new())
+}
+
+/// Best-effort graceful shutdown of a claude CLI subprocess. Matches the cadence
+/// the official claude-agent-sdk-python uses: EOF on stdin, then a 5s grace,
+/// then SIGTERM + 5s, then SIGKILL.
+///
+/// Why: hard SIGKILL interrupts the CLI mid-write of its session JSONL file,
+/// causing the last assistant message to be lost on `--resume` (python-sdk #625/#729).
+pub async fn graceful_shutdown(child: &mut Child, stdin: &Arc<TokioMutex<Option<ChildStdin>>>) {
+    // 1. Drop stdin to send EOF — lets the CLI flush its transcript and exit cleanly.
+    {
+        let mut guard = stdin.lock().await;
+        drop(guard.take());
+    }
+
+    // 2. Wait up to 5s for natural exit.
+    if tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .is_ok()
+    {
+        return;
+    }
+
+    // 3. SIGTERM. tokio::process::Child only exposes SIGKILL directly; send SIGTERM via libc.
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+    if tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .is_ok()
+    {
+        return;
+    }
+
+    // 4. SIGKILL as last resort.
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -659,15 +734,22 @@ pub struct SendMessageParams {
     pub agent_type: String,
 }
 
-/// Send a message to Claude in this session's worktree.
-/// Always uses `--input-format stream-json` and pipes content via stdin, keeping stdin
-/// open so we can write `control_response` messages for tool approval.
+/// Send a message to the agent's CLI in this session's worktree.
+///
+/// Two paths, both trait-driven:
+/// * **Fast path** (persistent agent, process already alive): encode the
+///   user message via `agent.encode_stream_user_message` and write it to
+///   the existing stdin. No spawn, no cold start.
+/// * **Spawn path** (no live process, or non-persistent agent): build the
+///   command, spawn the child, and hand off to `spawn_session_process`.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_message(
     app: AppHandle,
     db_tx: &DbWriteTx,
     active: ActiveMap,
     pending_approvals: PendingApprovals,
     pending_approval_meta: PendingApprovalMeta,
+    pending_control_responses: PendingControlResponses,
     params: SendMessageParams,
 ) -> Result<(), String> {
     let SendMessageParams {
@@ -689,62 +771,218 @@ pub async fn send_message(
         agent_type,
     } = params;
     let agent = AgentKind::parse(&agent_type).implementation();
-    // Don't allow concurrent messages on the same session
+    let is_first_turn = resume_session_id.as_ref().is_none_or(|s| s.is_empty());
+
+    // ── Fast path: persistent agent with a live, idle process in `active` ──
+    //
+    // Three sub-decisions, evaluated against the `ActiveProcess` entry:
+    //   1. Dead / missing   → fall through to spawn path.
+    //   2. Busy             → error ("already processing").
+    //   3. Effort changed   → kill and respawn (Claude CLI only accepts
+    //                         `--effort` at spawn, no mid-session control).
+    //   4. Mode/model diff  → write `set_permission_mode` / `set_model`
+    //                         control_request frames before the user message.
+    let want_permission_mode = if plan_mode { "plan" } else { "default" };
+    if agent.persists_across_turns() {
+        enum FastPath {
+            Go {
+                stdin: Arc<TokioMutex<Option<ChildStdin>>>,
+                busy: Arc<AtomicBool>,
+                send_set_permission_mode: bool,
+                send_set_model: bool,
+            },
+            Respawn,
+            Spawn,
+        }
+
+        let decision = {
+            if let Some(mut entry) = active.get_mut(&session_id) {
+                let alive = matches!(entry.child.try_wait(), Ok(None));
+                let busy_now = entry.busy.load(Ordering::SeqCst);
+                if !alive {
+                    drop(entry);
+                    active.remove(&session_id);
+                    FastPath::Spawn
+                } else if busy_now {
+                    return Err("Session is already processing a message".to_string());
+                } else if entry.current_thinking_mode != thinking_mode
+                    || entry.current_fast_mode != fast_mode
+                {
+                    drop(entry);
+                    FastPath::Respawn
+                } else {
+                    let send_set_permission_mode =
+                        entry.current_permission_mode != want_permission_mode;
+                    let send_set_model = entry.current_model != model;
+                    if send_set_permission_mode {
+                        entry.current_permission_mode = want_permission_mode.to_string();
+                    }
+                    if send_set_model {
+                        entry.current_model.clone_from(&model);
+                    }
+                    FastPath::Go {
+                        stdin: entry.stdin.clone(),
+                        busy: entry.busy.clone(),
+                        send_set_permission_mode,
+                        send_set_model,
+                    }
+                }
+            } else {
+                FastPath::Spawn
+            }
+        };
+
+        match decision {
+            FastPath::Go {
+                stdin,
+                busy,
+                send_set_permission_mode,
+                send_set_model,
+            } => {
+                let user_bytes = agent.encode_stream_user_message(&message, &attachments)?;
+                persist_verun_user_message(
+                    db_tx,
+                    &session_id,
+                    &message,
+                    &attachments,
+                    plan_mode,
+                    thinking_mode,
+                    fast_mode,
+                )
+                .await;
+                spawn_session_title_generation(
+                    app.clone(),
+                    db_tx.clone(),
+                    session_id.clone(),
+                    task_id.clone(),
+                    message.clone(),
+                    worktree_path.clone(),
+                    is_first_turn,
+                    task_name.is_none(),
+                );
+                // Control requests must complete before the user message: the
+                // CLI applies mode/model changes only after ACKing. Writing the
+                // user message first (or before the ACK arrives) can race the
+                // switch, leaving Claude running the previous mode/model.
+                if send_set_permission_mode {
+                    let req_id = new_control_request_id();
+                    let bytes =
+                        agent.encode_stream_set_permission_mode(&req_id, want_permission_mode)?;
+                    await_control_ack(
+                        &stdin,
+                        &pending_control_responses,
+                        &req_id,
+                        &bytes,
+                        "set_permission_mode",
+                    )
+                    .await?;
+                }
+                if send_set_model {
+                    let req_id = new_control_request_id();
+                    let bytes = agent.encode_stream_set_model(&req_id, model.as_deref())?;
+                    await_control_ack(
+                        &stdin,
+                        &pending_control_responses,
+                        &req_id,
+                        &bytes,
+                        "set_model",
+                    )
+                    .await?;
+                }
+                write_to_stdin(&stdin, &user_bytes).await?;
+                busy.store(true, Ordering::SeqCst);
+                let _ = db_tx
+                    .send(db::DbWrite::UpdateSessionStatus {
+                        id: session_id.clone(),
+                        status: "running".to_string(),
+                    })
+                    .await;
+                let _ = app.emit(
+                    "session-status",
+                    stream::SessionStatusEvent {
+                        session_id,
+                        status: "running".to_string(),
+                        error: None,
+                    },
+                );
+                return Ok(());
+            }
+            FastPath::Respawn => {
+                if let Some((_, mut proc)) = active.remove(&session_id) {
+                    graceful_shutdown(&mut proc.child, &proc.stdin).await;
+                }
+            }
+            FastPath::Spawn => {}
+        }
+    }
+
+    // ── Spawn path ──
     if active.contains_key(&session_id) {
         return Err("Session is already processing a message".to_string());
     }
 
-    let is_first_turn = resume_session_id.as_ref().is_none_or(|s| s.is_empty());
+    spawn_session_title_generation(
+        app.clone(),
+        db_tx.clone(),
+        session_id.clone(),
+        task_id.clone(),
+        message.clone(),
+        worktree_path.clone(),
+        is_first_turn,
+        task_name.is_none(),
+    );
 
-    // Generate AI title in background (non-blocking, tab shows "New session" until it arrives)
-    let needs_session_name = is_first_turn && !message.is_empty();
-    let needs_task_name = task_name.is_none() && !message.is_empty();
-    if needs_session_name || needs_task_name {
-        let title_app = app.clone();
-        let title_db = db_tx.clone();
-        let title_sid = session_id.clone();
-        let title_tid = task_id.clone();
-        let title_msg = message.clone();
-        let title_wt = worktree_path.clone();
-        tokio::spawn(async move {
-            // Let the main session claim CPU/network before spawning a second claude process
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            if let Some(title) = generate_session_title(&title_msg, &title_wt).await {
-                if needs_session_name {
-                    let _ = title_db
-                        .send(db::DbWrite::UpdateSessionName {
-                            id: title_sid.clone(),
-                            name: title.clone(),
-                        })
-                        .await;
-                    let _ = title_app.emit(
-                        "session-name",
-                        stream::SessionNameEvent {
-                            session_id: title_sid,
-                            name: title.clone(),
-                        },
-                    );
-                }
-                if needs_task_name {
-                    let _ = title_db
-                        .send(db::DbWrite::UpdateTaskName {
-                            id: title_tid.clone(),
-                            name: title.clone(),
-                        })
-                        .await;
-                    let _ = title_app.emit(
-                        "task-name",
-                        stream::TaskNameEvent {
-                            task_id: title_tid,
-                            name: title,
-                        },
-                    );
-                }
-            }
-        });
-    }
+    persist_verun_user_message(
+        db_tx,
+        &session_id,
+        &message,
+        &attachments,
+        plan_mode,
+        thinking_mode,
+        fast_mode,
+    )
+    .await;
 
-    // Persist user message so it shows up on reload
+    spawn_session_process(
+        app,
+        db_tx.clone(),
+        active,
+        pending_approvals,
+        pending_approval_meta,
+        pending_control_responses,
+        SpawnSessionParams {
+            session_id,
+            task_id,
+            project_id,
+            worktree_path,
+            repo_path,
+            port_offset,
+            trust_level,
+            resume_session_id,
+            model,
+            plan_mode,
+            thinking_mode,
+            fast_mode,
+            agent_type,
+            message,
+            attachments,
+            prewarm: false,
+        },
+    )
+    .await
+}
+
+/// Persist the user's message to `output_lines` so it shows up after reload.
+/// Fire-and-forget semantics (send on the write queue; errors are logged upstream).
+async fn persist_verun_user_message(
+    db_tx: &DbWriteTx,
+    session_id: &str,
+    message: &str,
+    attachments: &[Attachment],
+    plan_mode: bool,
+    thinking_mode: bool,
+    fast_mode: bool,
+) {
     let attachment_names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
     let user_line = serde_json::json!({
         "type": "verun_user_message",
@@ -757,11 +995,172 @@ pub async fn send_message(
     .to_string();
     let _ = db_tx
         .send(db::DbWrite::InsertOutputLines {
-            session_id: session_id.clone(),
+            session_id: session_id.to_string(),
             lines: vec![(user_line, epoch_ms())],
         })
         .await;
+}
 
+/// Kick off the background Haiku call that names the session and task.
+/// No-op unless there's something to name.
+#[allow(clippy::too_many_arguments)]
+fn spawn_session_title_generation(
+    app: AppHandle,
+    db_tx: DbWriteTx,
+    session_id: String,
+    task_id: String,
+    message: String,
+    worktree_path: String,
+    is_first_turn: bool,
+    task_needs_name: bool,
+) {
+    let needs_session_name = is_first_turn && !message.is_empty();
+    let needs_task_name = task_needs_name && !message.is_empty();
+    if !needs_session_name && !needs_task_name {
+        return;
+    }
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        if let Some(title) = generate_session_title(&message, &worktree_path).await {
+            if needs_session_name {
+                let _ = db_tx
+                    .send(db::DbWrite::UpdateSessionName {
+                        id: session_id.clone(),
+                        name: title.clone(),
+                    })
+                    .await;
+                let _ = app.emit(
+                    "session-name",
+                    stream::SessionNameEvent {
+                        session_id,
+                        name: title.clone(),
+                    },
+                );
+            }
+            if needs_task_name {
+                let _ = db_tx
+                    .send(db::DbWrite::UpdateTaskName {
+                        id: task_id.clone(),
+                        name: title.clone(),
+                    })
+                    .await;
+                let _ = app.emit(
+                    "task-name",
+                    stream::TaskNameEvent {
+                        task_id,
+                        name: title,
+                    },
+                );
+            }
+        }
+    });
+}
+
+/// Send a `control_request` frame and block until the CLI's matching
+/// `control_response` arrives. Use this when the next stdin write depends on
+/// the CLI having fully applied the request (e.g. a `set_permission_mode`
+/// before the user message, so Claude runs in the new mode).
+async fn await_control_ack(
+    stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
+    pending: &PendingControlResponses,
+    request_id: &str,
+    bytes: &[u8],
+    label: &str,
+) -> Result<(), String> {
+    let (tx, rx) = oneshot::channel();
+    pending.insert(request_id.to_string(), tx);
+    if let Err(e) = write_to_stdin(stdin, bytes).await {
+        pending.remove(request_id);
+        return Err(e);
+    }
+    match tokio::time::timeout(Duration::from_secs(5), rx).await {
+        Ok(Ok(Ok(_))) => Ok(()),
+        Ok(Ok(Err(e))) => Err(format!("{label} failed: {e}")),
+        Ok(Err(_)) => Err(format!("{label}: response channel dropped")),
+        Err(_) => {
+            pending.remove(request_id);
+            Err(format!("{label}: CLI did not ACK within 5s"))
+        }
+    }
+}
+
+/// Write a payload to the session's stdin, keeping the fd open afterwards.
+/// Used both by the send-message fast path (user message) and abort (interrupt frame).
+async fn write_to_stdin(
+    stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let mut guard = stdin.lock().await;
+    let writer = guard
+        .as_mut()
+        .ok_or_else(|| "Session stdin is closed".to_string())?;
+    writer
+        .write_all(bytes)
+        .await
+        .map_err(|e| format!("write stdin: {e}"))?;
+    writer
+        .flush()
+        .await
+        .map_err(|e| format!("flush stdin: {e}"))?;
+    Ok(())
+}
+
+/// Params for [`spawn_session_process`]. `prewarm=true` skips writing any
+/// initial user message; the CLI just boots and waits for the first send.
+pub struct SpawnSessionParams {
+    pub session_id: String,
+    pub task_id: String,
+    pub project_id: String,
+    pub worktree_path: String,
+    pub repo_path: String,
+    pub port_offset: i64,
+    pub trust_level: TrustLevel,
+    pub resume_session_id: Option<String>,
+    pub model: Option<String>,
+    pub plan_mode: bool,
+    pub thinking_mode: bool,
+    pub fast_mode: bool,
+    pub agent_type: String,
+    pub message: String,
+    pub attachments: Vec<Attachment>,
+    pub prewarm: bool,
+}
+
+/// Spawn a new CLI process for this session and start the stream monitor.
+///
+/// Registers the child in `active` with `busy = !prewarm` (pre-warm leaves
+/// the process idle). The caller is responsible for persisting the user
+/// message and kicking off title generation.
+#[allow(clippy::too_many_arguments)]
+pub async fn spawn_session_process(
+    app: AppHandle,
+    db_tx: DbWriteTx,
+    active: ActiveMap,
+    pending_approvals: PendingApprovals,
+    pending_approval_meta: PendingApprovalMeta,
+    pending_control_responses: PendingControlResponses,
+    params: SpawnSessionParams,
+) -> Result<(), String> {
+    let SpawnSessionParams {
+        session_id,
+        task_id,
+        project_id,
+        worktree_path,
+        repo_path,
+        port_offset,
+        trust_level,
+        resume_session_id,
+        model,
+        plan_mode,
+        thinking_mode,
+        fast_mode,
+        agent_type,
+        message,
+        attachments,
+        prewarm,
+    } = params;
+
+    let agent = AgentKind::parse(&agent_type).implementation();
     let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let session_args = crate::agent::SessionArgs {
         resume_session_id: resume_id,
@@ -777,8 +1176,9 @@ pub async fn send_message(
 
     let args_list = agent.build_session_args(&session_args);
     eprintln!(
-        "[verun][{}] spawn: {} {}",
+        "[verun][{}] spawn{}: {} {}",
         agent.display_name(),
+        if prewarm { " (prewarm)" } else { "" },
         agent.cli_binary(),
         args_list.join(" ")
     );
@@ -794,6 +1194,10 @@ pub async fn send_message(
     for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
         cmd.env(&k, &v);
     }
+    // Match claude-agent-sdk-python: strip `CLAUDECODE` (issue #573) so the spawned
+    // CLI doesn't detect itself as nested, and tag the entrypoint for Anthropic telemetry.
+    cmd.env_remove("CLAUDECODE");
+    cmd.env("CLAUDE_CODE_ENTRYPOINT", "verun");
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -811,53 +1215,30 @@ pub async fn send_message(
 
     let stdin = match agent.input_mode() {
         crate::agent::InputMode::StreamJsonStdin => {
-            // Claude: send the message as a stream-json payload on stdin, keep open for control_response
             let mut stdin_handle = child
                 .stdin
                 .take()
                 .ok_or_else(|| "Failed to capture stdin".to_string())?;
 
-            let mut content_blocks = Vec::new();
-            for attachment in &attachments {
-                content_blocks.push(serde_json::json!({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": attachment.mime_type,
-                        "data": attachment.data_base64,
-                    }
-                }));
-            }
-            if !message.is_empty() {
-                content_blocks.push(serde_json::json!({ "type": "text", "text": message }));
+            if !prewarm {
+                let bytes = agent.encode_stream_user_message(&message, &attachments)?;
+                stdin_handle
+                    .write_all(&bytes)
+                    .await
+                    .map_err(|e| format!("Failed to write to stdin: {e}"))?;
+                stdin_handle
+                    .flush()
+                    .await
+                    .map_err(|e| format!("Failed to flush stdin: {e}"))?;
             }
 
-            let user_msg = serde_json::json!({
-                "type": "user",
-                "session_id": "",
-                "parent_tool_use_id": null,
-                "message": { "role": "user", "content": content_blocks },
-            });
-
-            let mut payload = serde_json::to_string(&user_msg)
-                .map_err(|e| format!("Failed to serialize message: {e}"))?;
-            payload.push('\n');
-
-            stdin_handle
-                .write_all(payload.as_bytes())
-                .await
-                .map_err(|e| format!("Failed to write to stdin: {e}"))?;
-            stdin_handle
-                .flush()
-                .await
-                .map_err(|e| format!("Failed to flush stdin: {e}"))?;
-
-            // Keep stdin open — needed for control_response messages
+            // Keep stdin open — persistent agents reuse it for subsequent
+            // user messages + control_request/response frames.
             Arc::new(TokioMutex::new(Some(stdin_handle)))
         }
         crate::agent::InputMode::PositionalOrStdin => {
-            // Non-Claude agents receive the prompt as a positional arg (already in args_list).
-            // Close stdin immediately so the process doesn't wait for input.
+            // Non-stream agents take the prompt as a positional arg (already in args_list).
+            // Close stdin so the process doesn't wait for input.
             let stdin_handle = child.stdin.take();
             drop(stdin_handle);
             Arc::new(TokioMutex::new(None::<tokio::process::ChildStdin>))
@@ -886,29 +1267,42 @@ pub async fn send_message(
         });
     }
 
-    // Mark session as running
-    let _ = db_tx
-        .send(db::DbWrite::UpdateSessionStatus {
-            id: session_id.clone(),
-            status: "running".to_string(),
-        })
-        .await;
+    // Busy flag: prewarm = idle, real send = in-flight. Stream loop will flip
+    // it to false on turn_end (only meaningful for persistent agents).
+    let busy = Arc::new(AtomicBool::new(!prewarm));
 
-    let _ = app.emit(
-        "session-status",
-        stream::SessionStatusEvent {
-            session_id: session_id.clone(),
-            status: "running".to_string(),
-            error: None,
-        },
-    );
+    // Mark session as running (skip for prewarm — the session is idle).
+    if !prewarm {
+        let _ = db_tx
+            .send(db::DbWrite::UpdateSessionStatus {
+                id: session_id.clone(),
+                status: "running".to_string(),
+            })
+            .await;
+
+        let _ = app.emit(
+            "session-status",
+            stream::SessionStatusEvent {
+                session_id: session_id.clone(),
+                status: "running".to_string(),
+                error: None,
+            },
+        );
+    }
 
     // Track the active process
+    let kind = AgentKind::parse(&agent_type);
     active.insert(
         session_id.clone(),
         ActiveProcess {
             child,
             stdin: stdin.clone(),
+            busy: busy.clone(),
+            kind,
+            current_permission_mode: if plan_mode { "plan" } else { "default" }.to_string(),
+            current_model: model.clone(),
+            current_thinking_mode: thinking_mode,
+            current_fast_mode: fast_mode,
         },
     );
 
@@ -921,10 +1315,12 @@ pub async fn send_message(
     let monitor_active = active.clone();
     let monitor_pending = pending_approvals.clone();
     let monitor_pending_meta = pending_approval_meta.clone();
+    let monitor_pending_ctrl = pending_control_responses.clone();
     let monitor_wt = worktree_path.clone();
     let monitor_repo = repo_path;
     let monitor_trust = trust_level;
     let monitor_agent = AgentKind::parse(&agent_type).implementation();
+    let monitor_busy = busy.clone();
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let wt_for_hooks = monitor_wt.clone();
@@ -934,8 +1330,10 @@ pub async fn send_message(
             monitor_tid.clone(),
             stdout,
             stdin,
+            monitor_busy,
             monitor_pending,
             monitor_pending_meta,
+            monitor_pending_ctrl,
             monitor_db_tx.clone(),
             monitor_wt,
             monitor_repo,
@@ -1045,34 +1443,210 @@ pub async fn send_message(
     Ok(())
 }
 
-/// Abort a currently running message
+/// Abort the in-flight turn.
+///
+/// Dispatches on [`crate::agent::AbortStrategy`]:
+/// * `Interrupt` (persistent agents): write a control_request interrupt frame
+///   to stdin and leave the process alive. Emits `session-status: idle` and
+///   `session-aborted` immediately — both near-instant.
+/// * `Kill` (one-shot agents): remove from `active` and run
+///   `graceful_shutdown` (EOF → SIGTERM → SIGKILL) in the background.
+///   The process exits; a subsequent `send_message` respawns with `--resume`.
 pub async fn abort_message(
     app: &AppHandle,
     db_tx: &DbWriteTx,
     active: &ActiveMap,
     session_id: &str,
 ) -> Result<(), String> {
-    if let Some((_, mut proc)) = active.remove(session_id) {
-        let _ = proc.child.kill().await;
+    let kind = match active.get(session_id) {
+        Some(entry) => entry.kind,
+        None => return Ok(()), // Nothing to abort
+    };
+    let agent = kind.implementation();
 
-        // Update session status so the UI reflects the abort
-        let _ = db_tx
-            .send(db::DbWrite::UpdateSessionStatus {
-                id: session_id.to_string(),
-                status: "idle".to_string(),
-            })
-            .await;
+    match agent.abort_strategy() {
+        crate::agent::AbortStrategy::Interrupt => {
+            let stdin = match active.get(session_id) {
+                Some(entry) => entry.stdin.clone(),
+                None => return Ok(()),
+            };
+            let bytes = agent.encode_stream_interrupt(&new_control_request_id())?;
+            // Best-effort: if stdin is already closed we fall through (session will
+            // hit the regular exit path).
+            let _ = write_to_stdin(&stdin, &bytes).await;
 
-        let _ = app.emit(
-            "session-status",
-            stream::SessionStatusEvent {
-                session_id: session_id.to_string(),
-                status: "idle".to_string(),
-                error: None,
-            },
-        );
+            let _ = db_tx
+                .send(db::DbWrite::UpdateSessionStatus {
+                    id: session_id.to_string(),
+                    status: "idle".to_string(),
+                })
+                .await;
+            let _ = app.emit(
+                "session-status",
+                stream::SessionStatusEvent {
+                    session_id: session_id.to_string(),
+                    status: "idle".to_string(),
+                    error: None,
+                },
+            );
+            // Interrupt completes on a single stdin write; no background wait.
+            // Emit session-aborted right away so the frontend drains armed steps.
+            let _ = app.emit("session-aborted", session_id.to_string());
+        }
+        crate::agent::AbortStrategy::Kill => {
+            let Some((_, mut proc)) = active.remove(session_id) else {
+                return Ok(());
+            };
+            // Send interrupt first so the CLI cancels token generation immediately,
+            // instead of finishing the in-flight turn before seeing EOF on stdin.
+            // Non-persistent agents: best-effort, most won't support it.
+            if let Ok(bytes) = agent.encode_stream_interrupt(&new_control_request_id()) {
+                let _ = write_to_stdin(&proc.stdin, &bytes).await;
+            }
+
+            // Do the EOF → SIGTERM → SIGKILL dance in the background so the UI
+            // doesn't block on the grace period. Emit `session-aborted` when truly
+            // stopped so the frontend can drain its armed-step queue.
+            let app_clone = app.clone();
+            let sid_clone = session_id.to_string();
+            tokio::spawn(async move {
+                graceful_shutdown(&mut proc.child, &proc.stdin).await;
+                let _ = app_clone.emit("session-aborted", sid_clone);
+            });
+
+            let _ = db_tx
+                .send(db::DbWrite::UpdateSessionStatus {
+                    id: session_id.to_string(),
+                    status: "idle".to_string(),
+                })
+                .await;
+            let _ = app.emit(
+                "session-status",
+                stream::SessionStatusEvent {
+                    session_id: session_id.to_string(),
+                    status: "idle".to_string(),
+                    error: None,
+                },
+            );
+        }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Control protocol helpers — send `control_request` to a running CLI over stdin
+// and correlate the `control_response` reply.
+// ---------------------------------------------------------------------------
+
+/// Generate a unique request id matching the claude-agent-sdk format.
+fn new_control_request_id() -> String {
+    let mut bytes = [0u8; 4];
+    getrandom_bytes(&mut bytes);
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("req_{}_{hex}", uuid::Uuid::new_v4().simple())
+}
+
+/// Tiny wrapper around /dev/urandom — avoids pulling in a new crate just for 4 bytes.
+fn getrandom_bytes(buf: &mut [u8]) {
+    use std::io::Read;
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(buf);
+    }
+}
+
+/// Write a `control_request` JSON line to the given stdin and optionally register
+/// a oneshot to await the matching `control_response`. Returns the request id.
+async fn send_control_request(
+    stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
+    pending: Option<&PendingControlResponses>,
+    request: serde_json::Value,
+) -> Result<
+    (
+        String,
+        Option<oneshot::Receiver<Result<serde_json::Value, String>>>,
+    ),
+    String,
+> {
+    let request_id = new_control_request_id();
+    let envelope = serde_json::json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": request,
+    });
+
+    let mut payload = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
+    payload.push('\n');
+
+    let rx = if let Some(pending) = pending {
+        let (tx, rx) = oneshot::channel();
+        pending.insert(request_id.clone(), tx);
+        Some(rx)
+    } else {
+        None
+    };
+
+    let mut guard = stdin.lock().await;
+    let writer = guard
+        .as_mut()
+        .ok_or_else(|| "Session stdin is closed".to_string())?;
+    writer
+        .write_all(payload.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    writer.flush().await.map_err(|e| e.to_string())?;
+
+    Ok((request_id, rx))
+}
+
+/// Send `{subtype: "interrupt"}` to cancel the current turn without killing the process.
+/// Fire-and-forget — the CLI ACKs via a control_response we don't need to inspect.
+pub async fn interrupt_session(active: &ActiveMap, session_id: &str) -> Result<(), String> {
+    let stdin = active
+        .get(session_id)
+        .map(|proc| proc.stdin.clone())
+        .ok_or_else(|| "No active session".to_string())?;
+
+    let (_req_id, _rx) = send_control_request(
+        &stdin,
+        None,
+        serde_json::json!({ "subtype": "interrupt" }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Ask the CLI for the current context-window usage, awaiting the response.
+pub async fn get_session_context_usage(
+    active: &ActiveMap,
+    pending: &PendingControlResponses,
+    session_id: &str,
+) -> Result<serde_json::Value, String> {
+    let stdin = active
+        .get(session_id)
+        .map(|proc| proc.stdin.clone())
+        .ok_or_else(|| "No active session".to_string())?;
+
+    let (request_id, rx) = send_control_request(
+        &stdin,
+        Some(pending),
+        serde_json::json!({ "subtype": "get_context_usage" }),
+    )
+    .await?;
+    let rx = rx.expect("pending map provided");
+
+    let result = tokio::time::timeout(Duration::from_secs(10), rx).await;
+
+    // Always clean up the pending entry on timeout so we don't leak.
+    if result.is_err() {
+        pending.remove(&request_id);
+    }
+
+    match result {
+        Ok(Ok(Ok(v))) => Ok(v),
+        Ok(Ok(Err(e))) => Err(e),
+        Ok(Err(_)) => Err("Session closed before responding".to_string()),
+        Err(_) => Err("Timed out waiting for CLI response".to_string()),
+    }
 }
 
 /// Generate a short title using a standalone Haiku call (fast, doesn't affect session).
@@ -1092,6 +1666,8 @@ async fn generate_session_title(first_message: &str, worktree_path: &str) -> Opt
             "--model",
             "haiku",
         ])
+        .env_remove("CLAUDECODE")
+        .env("CLAUDE_CODE_ENTRYPOINT", "verun")
         .current_dir(worktree_path)
         .output()
         .await
@@ -1652,5 +2228,14 @@ mod tests {
     fn adjectives_and_animals_have_enough_variety() {
         assert!(ADJECTIVES.len() >= 20);
         assert!(ANIMALS.len() >= 20);
+    }
+
+    #[test]
+    fn control_request_id_is_unique_and_prefixed() {
+        let a = new_control_request_id();
+        let b = new_control_request_id();
+        assert!(a.starts_with("req_"));
+        assert!(b.starts_with("req_"));
+        assert_ne!(a, b);
     }
 }

@@ -178,6 +178,13 @@ export const TaskPanel: Component = () => {
       clearSessionUnread(sessionId)
       await loadOutputLines(sessionId)
       await loadSteps(sessionId)
+      // Best-effort pre-warm so the first message on a Claude session doesn't
+      // pay the CLI boot cost. No-op for non-persistent agents (Codex, etc).
+      // Skip if the session is already running — it has a live process.
+      const s = sessionById(sessionId)
+      if (s && s.status !== 'running') {
+        ipc.prewarmSession(sessionId).catch(() => {})
+      }
     }
   }))
 
@@ -623,7 +630,6 @@ export const TaskPanel: Component = () => {
                             <ChatView
                               output={currentOutput()}
                               sessionStatus={currentSession()?.status}
-                              sessionError={currentSession()?.error}
                               sessionId={selectedSessionId()}
                               taskId={t().id}
                               agentType={currentSession()?.agentType}

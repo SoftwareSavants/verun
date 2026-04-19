@@ -5,7 +5,7 @@ use crate::lsp::LspMap;
 use crate::pty::{self, ActivePtyMap};
 use crate::task::{
     self, ActiveMap, ApprovalResponse, HookPtyMap, PendingApprovalEntry, PendingApprovalMeta,
-    PendingApprovals, SetupInProgress,
+    PendingApprovals, PendingControlResponses, SetupInProgress,
 };
 use crate::tsgo_check::TsgoCheckMap;
 use crate::watcher::FileWatcherMap;
@@ -620,6 +620,7 @@ pub async fn send_message(
     active: State<'_, ActiveMap>,
     pending: State<'_, PendingApprovals>,
     pending_meta: State<'_, PendingApprovalMeta>,
+    pending_ctrl: State<'_, PendingControlResponses>,
     session_id: String,
     message: String,
     attachments: Option<Vec<task::Attachment>>,
@@ -650,6 +651,7 @@ pub async fn send_message(
         active.inner().clone(),
         pending.inner().clone(),
         pending_meta.inner().clone(),
+        pending_ctrl.inner().clone(),
         task::SendMessageParams {
             session_id,
             task_id: session.task_id.clone(),
@@ -672,6 +674,75 @@ pub async fn send_message(
     .await
 }
 
+/// Pre-warm a persistent-agent session by spawning its CLI in the background
+/// so the first `send_message` doesn't pay the boot cost. Best-effort: no-op
+/// for non-persistent agents (Codex/Gemini/Cursor), already-warm sessions, or
+/// any failure — the normal spawn path will take over on the next send.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn prewarm_session(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    active: State<'_, ActiveMap>,
+    pending: State<'_, PendingApprovals>,
+    pending_meta: State<'_, PendingApprovalMeta>,
+    pending_ctrl: State<'_, PendingControlResponses>,
+    session_id: String,
+) -> Result<(), String> {
+    let session = match db::get_session(pool.inner(), &session_id).await? {
+        Some(s) => s,
+        None => return Ok(()), // session closed or gone
+    };
+
+    let agent = crate::agent::AgentKind::parse(&session.agent_type).implementation();
+    if !agent.persists_across_turns() {
+        return Ok(());
+    }
+    if active.contains_key(&session_id) {
+        return Ok(()); // already warm
+    }
+
+    let t = match db::get_task(pool.inner(), &session.task_id).await? {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+    let (trust_result, repo_result) = tokio::join!(
+        db::get_trust_level(pool.inner(), &session.task_id),
+        db::get_repo_path_for_task(pool.inner(), &session.task_id),
+    );
+    let trust_level = crate::policy::TrustLevel::from_str(&trust_result?);
+    let repo_path = repo_result?;
+
+    task::spawn_session_process(
+        app,
+        db_tx.inner().clone(),
+        active.inner().clone(),
+        pending.inner().clone(),
+        pending_meta.inner().clone(),
+        pending_ctrl.inner().clone(),
+        task::SpawnSessionParams {
+            session_id,
+            task_id: session.task_id.clone(),
+            project_id: t.project_id,
+            worktree_path: t.worktree_path,
+            repo_path,
+            port_offset: t.port_offset,
+            trust_level,
+            resume_session_id: session.resume_session_id,
+            model: session.model,
+            plan_mode: false,
+            thinking_mode: false,
+            fast_mode: false,
+            agent_type: session.agent_type.clone(),
+            message: String::new(),
+            attachments: Vec::new(),
+            prewarm: true,
+        },
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn update_session_model(
     db_tx: State<'_, DbWriteTx>,
@@ -689,7 +760,16 @@ pub async fn update_session_model(
 
 /// Close a session (hides from UI, persists in DB as 'closed')
 #[tauri::command]
-pub async fn close_session(db_tx: State<'_, DbWriteTx>, session_id: String) -> Result<(), String> {
+pub async fn close_session(
+    active: State<'_, ActiveMap>,
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+) -> Result<(), String> {
+    // Persistent agents keep a live CLI across turns — kill it before DB close
+    // so we don't leak a pid after the tab disappears.
+    if let Some((_, mut proc)) = active.remove(&session_id) {
+        task::graceful_shutdown(&mut proc.child, &proc.stdin).await;
+    }
     db_tx
         .send(db::DbWrite::CloseSession { id: session_id })
         .await
@@ -698,7 +778,17 @@ pub async fn close_session(db_tx: State<'_, DbWriteTx>, session_id: String) -> R
 
 /// Clear a session's Claude context (reset session_id + delete output lines)
 #[tauri::command]
-pub async fn clear_session(db_tx: State<'_, DbWriteTx>, session_id: String) -> Result<(), String> {
+pub async fn clear_session(
+    active: State<'_, ActiveMap>,
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+) -> Result<(), String> {
+    // If a persistent CLI is running on the old session, shut it down so the
+    // next message starts fresh instead of resuming the old context.
+    if let Some((_, mut proc)) = active.remove(&session_id) {
+        task::graceful_shutdown(&mut proc.child, &proc.stdin).await;
+    }
+
     // Clear the resume_session_id so next message starts fresh
     db_tx
         .send(db::DbWrite::SetResumeSessionId {
@@ -728,6 +818,28 @@ pub async fn abort_message(
     task::abort_message(&app, db_tx.inner(), active.inner(), &session_id).await
 }
 
+/// Send a `control_request` `interrupt` to a running claude CLI. Cancels the
+/// current turn without killing the process, so the session can keep going on
+/// the next message.
+#[tauri::command]
+pub async fn interrupt_session(
+    active: State<'_, ActiveMap>,
+    session_id: String,
+) -> Result<(), String> {
+    task::interrupt_session(active.inner(), &session_id).await
+}
+
+/// Ask the running claude CLI for its current context-window usage and wait
+/// for the matching `control_response`.
+#[tauri::command]
+pub async fn get_session_context_usage(
+    active: State<'_, ActiveMap>,
+    pending_ctrl: State<'_, PendingControlResponses>,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    task::get_session_context_usage(active.inner(), pending_ctrl.inner(), &session_id).await
+}
+
 /// Return session IDs that currently have an active process
 #[tauri::command]
 pub async fn get_active_sessions(active: State<'_, ActiveMap>) -> Result<Vec<String>, String> {
@@ -742,11 +854,13 @@ pub async fn respond_to_approval(
     request_id: String,
     behavior: String,
     updated_input: Option<serde_json::Value>,
+    message: Option<String>,
 ) -> Result<(), String> {
     if let Some((_, tx)) = pending.remove(&request_id) {
         let _ = tx.send(ApprovalResponse {
             behavior,
             updated_input,
+            message,
         });
         Ok(())
     } else {
@@ -2197,7 +2311,15 @@ pub async fn tsgo_check_cancel(
 }
 
 #[tauri::command]
-pub fn quit_app() {
+pub async fn quit_app(active: State<'_, ActiveMap>) -> Result<(), String> {
+    // Persistent agents keep CLIs alive across turns; drain them all so we
+    // don't leak orphan processes after the app exits.
+    let session_ids: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
+    for sid in session_ids {
+        if let Some((_, mut proc)) = active.remove(&sid) {
+            task::graceful_shutdown(&mut proc.child, &proc.stdin).await;
+        }
+    }
     std::process::exit(0);
 }
 
