@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeAll, beforeEach, vi } from 'vitest'
+import { produce } from 'solid-js/store'
 
 // Capture every `listen(eventName, cb)` registration so tests can fire events
 // directly. Mock factory must be self-contained — vi.mock is hoisted above
@@ -23,8 +24,9 @@ vi.mock('../lib/notifications', () => ({
   notify: vi.fn(),
 }))
 
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, createSession } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, createSession, clearSessionContextsForTask } from './sessions'
 import * as ipc from '../lib/ipc'
+import { setPlanFilePathForSession, planFilePathForSession, sessionContexts, setSessionContexts } from './sessionContext'
 import type { Session, OutputItem } from '../types'
 
 const makeSession = (overrides: Partial<Session> = {}): Session => ({
@@ -102,6 +104,30 @@ describe('sessions store', () => {
     setSessions([makeSession({ id: 's-1', status: 'running' })])
     setSessions(s => s.id === 's-1', 'status', 'idle')
     expect(sessions[0].status).toBe('idle')
+  })
+
+  test('clearSessionContextsForTask wipes only the target task sessions', () => {
+    localStorage.clear()
+    setSessionContexts(produce(store => {
+      for (const k of Object.keys(store)) delete store[k]
+    }))
+    setSessions([
+      makeSession({ id: 's-1', taskId: 't-001' }),
+      makeSession({ id: 's-2', taskId: 't-002' }),
+      makeSession({ id: 's-3', taskId: 't-001' }),
+    ])
+    setPlanFilePathForSession('s-1', '/tmp/1.md')
+    setPlanFilePathForSession('s-2', '/tmp/2.md')
+    setPlanFilePathForSession('s-3', '/tmp/3.md')
+
+    clearSessionContextsForTask('t-001')
+
+    expect(sessionContexts['s-1']).toBeUndefined()
+    expect(sessionContexts['s-3']).toBeUndefined()
+    expect(planFilePathForSession('s-2')).toBe('/tmp/2.md')
+    expect(localStorage.getItem('verun:sessionContext:s-1')).toBeNull()
+    expect(localStorage.getItem('verun:sessionContext:s-3')).toBeNull()
+    expect(localStorage.getItem('verun:sessionContext:s-2')).not.toBeNull()
   })
 })
 

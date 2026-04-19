@@ -6,7 +6,7 @@ import { closeTerminalsForTask } from './terminals'
 import { clearTaskGitState } from './git'
 import { clearProblemsForTask } from './problems'
 import { fireTaskCleanup } from './editorView'
-import { sessionsForTask, cleanupTaskModeStorage, cleanupSessionStorage, clearPlanState } from './sessions'
+import { sessionsForTask, cleanupSessionStorage, clearSessionContextsForTask } from './sessions'
 import { clearTaskContext } from './taskContext'
 import { clearTaskContextStorage } from './taskContextStorage'
 import { dropTaskSkills } from './commands'
@@ -180,7 +180,7 @@ export async function deleteTask(id: string, deleteBranch = true, skipDestroyHoo
   closeTerminalsForTask(id)
   clearTaskGitState(id)
   clearProblemsForTask(id)
-  clearPlanState(id)
+  clearSessionContextsForTask(id)
   fireTaskCleanup(id)
   clearTaskContext(id)
   dropTaskSkills(id)
@@ -204,7 +204,7 @@ export async function archiveTask(id: string, skipDestroyHook = false) {
     closeTerminalsForTask(id)
     clearTaskGitState(id)
     clearProblemsForTask(id)
-    clearPlanState(id)
+    clearSessionContextsForTask(id)
     fireTaskCleanup(id)
     clearTaskContext(id)
     dropTaskSkills(id)
@@ -233,7 +233,6 @@ export const taskById = (id: string) =>
 
 /** Remove all localStorage keys associated with a task */
 export function cleanupTaskStorage(id: string) {
-  cleanupTaskModeStorage(id)
   clearTaskContextStorage(id)
   for (const s of sessionsForTask(id)) {
     cleanupSessionStorage(s.id)

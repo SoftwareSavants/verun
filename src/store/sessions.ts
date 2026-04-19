@@ -8,6 +8,8 @@ import { dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
 import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
 import { deserializeAttachments } from '../lib/binary'
+import { clearSessionContext } from './sessionContext'
+import { clearSessionContextStorage } from './sessionContextStorage'
 
 const MAX_ITEMS_IN_MEMORY = 50_000
 
@@ -21,34 +23,6 @@ export const [sessionTokens, setSessionTokens] = createStore<Record<string, { in
 /// Set on abort click, cleared when the backend emits `session-aborted`.
 export const [abortingSessions, setAbortingSessions] = createStore<Record<string, boolean>>({})
 export const [rateLimitInfo, setRateLimitInfo] = createSignal<RateLimitInfo | null>(null)
-const [_taskPlanMode, _setTaskPlanMode] = createStore<Record<string, boolean>>({})
-const [_taskThinkingMode, _setTaskThinkingMode] = createStore<Record<string, boolean>>({})
-const [_taskFastMode, _setTaskFastMode] = createStore<Record<string, boolean>>({})
-export const taskPlanMode = _taskPlanMode
-export const taskThinkingMode = _taskThinkingMode
-export const taskFastMode = _taskFastMode
-export function setTaskPlanMode(taskId: string, v: boolean) {
-  _setTaskPlanMode(taskId, v)
-  localStorage.setItem(`verun:planMode:${taskId}`, String(v))
-}
-export function setTaskThinkingMode(taskId: string, v: boolean) {
-  _setTaskThinkingMode(taskId, v)
-  localStorage.setItem(`verun:thinkingMode:${taskId}`, String(v))
-}
-export function setTaskFastMode(taskId: string, v: boolean) {
-  _setTaskFastMode(taskId, v)
-  localStorage.setItem(`verun:fastMode:${taskId}`, String(v))
-}
-const [_taskPlanFilePath, _setTaskPlanFilePath] = createStore<Record<string, string | null>>({})
-export const taskPlanFilePath = _taskPlanFilePath
-export function setTaskPlanFilePath(taskId: string, path: string | null) {
-  _setTaskPlanFilePath(taskId, path)
-  if (path) {
-    localStorage.setItem(`verun:planFilePath:${taskId}`, path)
-  } else {
-    localStorage.removeItem(`verun:planFilePath:${taskId}`)
-  }
-}
 
 /**
  * Backstop for cross-window session sync: when the window becomes visible,
@@ -72,15 +46,6 @@ export async function loadSessions(taskId: string) {
   for (const s of list) {
     if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
   }
-  // Restore mode switches from localStorage (authoritative source for toggles)
-  const savedPlan = localStorage.getItem(`verun:planMode:${taskId}`)
-  const savedThinking = localStorage.getItem(`verun:thinkingMode:${taskId}`)
-  const savedFast = localStorage.getItem(`verun:fastMode:${taskId}`)
-  if (savedPlan !== null) _setTaskPlanMode(taskId, savedPlan === 'true')
-  if (savedThinking !== null) _setTaskThinkingMode(taskId, savedThinking === 'true')
-  if (savedFast !== null) _setTaskFastMode(taskId, savedFast === 'true')
-  const savedPlanFilePath = localStorage.getItem(`verun:planFilePath:${taskId}`)
-  if (savedPlanFilePath) _setTaskPlanFilePath(taskId, savedPlanFilePath)
 }
 
 export async function createSession(taskId: string, agentType: string, model?: string): Promise<Session> {
@@ -492,23 +457,12 @@ export async function initSessionListeners() {
   }
 }
 
-export function clearPlanState(taskId: string) {
-  setTaskPlanFilePath(taskId, null) // also clears localStorage via wrapper
-  _setTaskPlanMode(taskId, false)
-  localStorage.removeItem(`verun:planMode:${taskId}`)
-}
-
-export function cleanupTaskModeStorage(taskId: string) {
-  const keys = [
-    `verun:planMode:${taskId}`,
-    `verun:thinkingMode:${taskId}`,
-    `verun:fastMode:${taskId}`,
-    `verun:planFilePath:${taskId}`,
-  ]
-  for (const k of keys) localStorage.removeItem(k)
+export function clearSessionContextsForTask(taskId: string) {
+  for (const s of sessionsForTask(taskId)) clearSessionContext(s.id)
 }
 
 export function cleanupSessionStorage(sessionId: string) {
+  clearSessionContextStorage(sessionId)
   localStorage.removeItem(`verun:draft-msg:${sessionId}`)
   localStorage.removeItem(`verun:draft-att:${sessionId}`)
 }

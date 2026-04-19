@@ -11,7 +11,8 @@ import { Popover } from './Popover'
 import { parseMentions } from '../lib/mentions'
 import * as ipc from '../lib/ipc'
 import { addToast, setSelectedTaskId, setSelectedSessionId } from '../store/ui'
-import { setSessions, loadOutputLines, sendMessage, createSession, taskPlanMode, taskThinkingMode, taskFastMode } from '../store/sessions'
+import { setSessions, loadOutputLines, sendMessage, createSession } from '../store/sessions'
+import { planModeForSession, thinkingModeForSession, fastModeForSession } from '../store/sessionContext'
 import { setTasks } from '../store/tasks'
 import { setMainView } from '../store/editorView'
 import { formatCost, formatTokens } from '../lib/format'
@@ -657,12 +658,12 @@ const ErrorBlockView: Component<{
   const retryMessage = () => userMessageForTurn(props.output, props.turnIndex)
 
   const modeArgs = (): [string | undefined, boolean | undefined, boolean | undefined, boolean | undefined] => {
-    const tid = props.taskId
+    const sid = props.sessionId
     return [
       props.model ?? undefined,
-      tid ? taskPlanMode[tid] ?? undefined : undefined,
-      tid ? taskThinkingMode[tid] ?? undefined : undefined,
-      tid ? taskFastMode[tid] ?? undefined : undefined,
+      sid ? planModeForSession(sid) : undefined,
+      sid ? thinkingModeForSession(sid) : undefined,
+      sid ? fastModeForSession(sid) : undefined,
     ]
   }
 
