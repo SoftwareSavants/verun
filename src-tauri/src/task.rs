@@ -15,43 +15,141 @@ use tokio::sync::{oneshot, Mutex as TokioMutex};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// Funny branch name generator
+// Branch name generator — programming-humor themed, stack-aware
 // ---------------------------------------------------------------------------
 
 const ADJECTIVES: &[&str] = &[
-    "sleepy", "bouncy", "fuzzy", "sneaky", "grumpy", "silly", "wobbly", "zappy", "cranky",
-    "spooky", "fluffy", "dizzy", "rusty", "jazzy", "lucky", "witty", "peppy", "quirky", "zippy",
-    "snappy", "wacky", "goofy", "funky", "jumpy",
+    // State/condition
+    "broken", "stale", "null", "dangling", "cursed", "legacy", "flaky", "frozen", "leaky",
+    "panicking", "volatile", "blocked", "corrupt", "unhandled", "undefined", "deprecated",
+    "recursive", "mutating", "thrashing", "fragile", "poisoned", "detached", "overloaded",
+    "async",
+    // Behavior
+    "haunted", "sleeping", "spinning", "crashing", "burning", "exploding", "melting", "drifting",
+    "sneaking", "lurking", "escaping", "leaking", "hanging", "starving", "evicting", "colliding",
+    "flushing",
+    // Dev-lifecycle
+    "tangled", "nested", "bloated", "sharded", "cached", "proxied", "forked", "merged",
+    "rebased", "squashed", "reverted", "patched", "shipped", "hotfixed", "hacked", "yolo",
+    // Modern buzzwords
+    "serverless", "containerized", "orchestrated", "distributed", "eventual", "idempotent",
+    "immutable", "stateless", "reactive", "declarative", "imperative", "functional", "monadic",
+    "curried", "memoized", "lazy",
 ];
 
-const ANIMALS: &[&str] = &[
-    "penguin",
-    "capybara",
-    "otter",
-    "raccoon",
-    "platypus",
-    "axolotl",
-    "quokka",
-    "narwhal",
-    "armadillo",
-    "chinchilla",
-    "flamingo",
-    "lemur",
-    "pangolin",
-    "wombat",
-    "gecko",
-    "puffin",
-    "sloth",
-    "toucan",
-    "hedgehog",
-    "chameleon",
-    "koala",
-    "walrus",
-    "dingo",
-    "ferret",
+const NOUNS_GENERIC: &[&str] = &[
+    // Classic CS
+    "pointer", "closure", "semaphore", "deadlock", "segfault", "exception", "footgun",
+    "regression", "monolith", "bottleneck", "timeout", "mutex", "thread", "heap", "pipeline",
+    "iterator", "dependency", "hotfix", "workaround", "refactor", "codebase", "spaghetti",
+    "callback", "stack",
+    // Architecture/infra
+    "microservice", "abstraction", "singleton", "factory", "middleware", "gateway", "proxy",
+    "cache", "queue", "broker", "replica", "sidecar", "loadbalancer", "circuit", "backpressure",
+    "checkpoint",
+    // Dev pain
+    "migration", "rollback", "incident", "postmortem", "oncall", "flakiness", "flakytest",
+    "techdebt", "bikeshed", "yagni", "rewrite", "greenfield", "brownfield", "triage", "runbook",
+    // Modern concepts
+    "container", "webhook", "cronjob", "sideeffect", "invariant", "predicate", "combinator",
+    "monad", "functor", "reducer", "selector", "observable", "subscription", "serializer",
+    "hydration", "abstraction", "interface",
 ];
 
-pub fn funny_branch_name() -> String {
+const NOUNS_RUST: &[&str] = &[
+    "borrow", "lifetime", "trait", "ownership", "unsafe", "transmute", "phantom", "future",
+    "executor", "clippy", "linker", "crate", "macro", "reference", "slice", "deriving",
+    "pinbox", "allocator", "borrowchecker", "dropglue", "sendbound", "syncbound", "arcmutex",
+    "refcell", "rwlock", "channel", "tokioruntime", "asynctrait", "pinned", "variance",
+    "covariance", "contravariance", "turbofish", "newtype", "typestate", "destructor", "waker",
+    "poll", "spawntask", "blockingcall", "unsafecode", "rawpointer", "dangler", "useafterfree",
+    "doublefree", "stacksmash", "intoverflow", "datarace", "borrowmut", "movesemantics",
+    "copytype", "cloneimpl", "derefcoercion", "autoref",
+];
+
+const NOUNS_JS: &[&str] = &[
+    "prototype", "hoisting", "coercion", "bundler", "polyfill", "transpiler", "promise",
+    "hydration", "rerender", "middleware", "lockfile", "semver", "treeshake", "eslint",
+    "tsconfig", "webpack", "vite", "closure", "eventloop", "callstack", "microtask",
+    "macrotask", "settimeout", "npmaudit", "leftpad", "yarnwhy", "nodemodules", "peerconflict",
+    "typewidening", "typenarrowing", "anytype", "assertion", "overload", "memoization",
+    "stalestate", "staleclosure", "useeffect", "infiniteloop", "proptypes", "hookrule",
+    "propdrilling", "reactivity", "solidstore", "sveltestores", "nextrouter", "bundlesize",
+    "chunksplitting", "codesplitting", "lazyload", "suspense", "concurrentmode", "diffing",
+    "treeflattening", "signalapocalypse",
+];
+
+const NOUNS_PYTHON: &[&str] = &[
+    "pickle", "gil", "decorator", "metaclass", "generator", "virtualenv", "dunder", "lambda",
+    "walrus", "asyncio", "celery", "pydantic", "namespace", "unpacking", "dataclass",
+    "comprehension", "typehint", "importerror", "monkeypatch", "mutabledefault", "latebound",
+    "circularimport", "venv", "conda", "poetrylock", "pipfreeze", "pipconflict", "egginfo",
+    "abstractmethod", "classmethod", "staticmethod", "propertydecorator", "slots", "weakref",
+    "finalizer", "garbagecollector", "cyclicref", "asyncgenerator", "coroutine", "threadlocal",
+    "multiprocessing", "pickling", "shelve", "ormquery", "djangomigration", "flaskcontext",
+    "fastapimodel", "pandasframe", "numpybroadcast", "typeerror", "indentationerror",
+    "syntaxwarning", "deprecationwarn", "runtimeerror",
+];
+
+const NOUNS_GO: &[&str] = &[
+    "goroutine", "channel", "interface", "defer", "recover", "embedding", "reflection",
+    "vendor", "context", "waitgroup", "errorf", "nilpointer", "module", "struct", "receiver",
+    "concurrency", "gofmt", "init", "goroutineleak", "channelblock", "selectstmt",
+    "closurecapture", "nilinterface", "goroutinepool", "ticker", "timer", "signalchan",
+    "syncmap", "atomicop", "mutexlock", "rwmutex", "oncefn", "poolreset", "goroutinerace",
+    "datarace", "golangci", "govet", "gomod", "gosum", "buildtag", "cgocall", "unsafeptr",
+    "typeassert", "panicrecovery", "namedreturn", "deferorder", "initorder", "blankimport",
+    "shadowedvar", "shortdecl", "multireturn", "errorwrap", "errortarget", "errorchain",
+];
+
+const NOUNS_JAVA: &[&str] = &[
+    "nullpointer", "classloader", "reflection", "serializable", "generics", "boilerplate",
+    "singleton", "factory", "enterprise", "inheritance", "bytecode", "jvm", "annotation",
+    "abstraction", "dependency", "injection", "exception", "stackoverflowex", "outofmemory",
+    "classcastex", "arraybounds", "concurrentmod", "deadlockjvm", "threadpool", "executorservice",
+    "springbean", "hibernateproxy", "jpaquery", "lazyload", "eagerfetch", "transactional",
+    "aspectj", "cglibproxy", "lombokdata", "buildergenerator", "mapstruct", "jacksondeser",
+    "gradledep", "mavenplugin", "classpathconflict", "jarconflict", "modulepath", "jigsaw",
+    "recordtype", "sealedclass", "patternmatch", "virtualthread", "loom", "graalvm",
+    "nativeimage", "jitcompile", "g1gc", "zgc",
+];
+
+fn collect_stack_nouns(repo_path: &str) -> Vec<&'static str> {
+    let p = std::path::Path::new(repo_path);
+    let mut nouns: Vec<&'static str> = Vec::new();
+    let mut found_any = false;
+
+    if p.join("Cargo.toml").exists() {
+        nouns.extend_from_slice(NOUNS_RUST);
+        found_any = true;
+    }
+    if p.join("go.mod").exists() {
+        nouns.extend_from_slice(NOUNS_GO);
+        found_any = true;
+    }
+    if p.join("requirements.txt").exists()
+        || p.join("pyproject.toml").exists()
+        || p.join("setup.py").exists()
+    {
+        nouns.extend_from_slice(NOUNS_PYTHON);
+        found_any = true;
+    }
+    if p.join("package.json").exists() {
+        nouns.extend_from_slice(NOUNS_JS);
+        found_any = true;
+    }
+    if p.join("pom.xml").exists() || p.join("build.gradle").exists() {
+        nouns.extend_from_slice(NOUNS_JAVA);
+        found_any = true;
+    }
+
+    if !found_any {
+        nouns.extend_from_slice(NOUNS_GENERIC);
+    }
+    nouns
+}
+
+pub fn generate_branch_name(repo_path: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::time::SystemTime;
@@ -64,11 +162,12 @@ pub fn funny_branch_name() -> String {
         .hash(&mut hasher);
     let h = hasher.finish();
 
+    let nouns = collect_stack_nouns(repo_path);
     let adj = ADJECTIVES[(h as usize) % ADJECTIVES.len()];
-    let animal = ANIMALS[((h >> 16) as usize) % ANIMALS.len()];
+    let noun = nouns[((h >> 16) as usize) % nouns.len()];
     let num = (h >> 32) % 1000;
 
-    format!("{adj}-{animal}-{num}")
+    format!("{adj}-{noun}-{num}")
 }
 
 // ---------------------------------------------------------------------------
@@ -451,7 +550,7 @@ pub async fn create_task(
         source_window,
     } = params;
     let id = Uuid::new_v4().to_string();
-    let branch = funny_branch_name();
+    let branch = generate_branch_name(&repo_path);
     let now = epoch_ms();
 
     // Phase 1: Create worktree only (fast — git ops)
@@ -1994,8 +2093,8 @@ pub async fn fork_session_to_new_task(
     validate_fork_marker_present(&parent_lines, &fork_after_message_uuid)?;
 
     // Create the new worktree (off the runtime).
-    let branch = funny_branch_name();
     let repo_path = project.repo_path.clone();
+    let branch = generate_branch_name(&repo_path);
     let parent_worktree = parent_task.worktree_path.clone();
     let base_branch = project.base_branch.clone();
     let branch_for_blocking = branch.clone();
@@ -2189,25 +2288,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn funny_branch_name_format() {
-        let name = funny_branch_name();
+    fn branch_name_format() {
+        let name = generate_branch_name("");
         let parts: Vec<&str> = name.split('-').collect();
-        assert_eq!(
-            parts.len(),
-            3,
-            "Expected adjective-animal-number, got: {name}"
-        );
+        assert!(!name.is_empty(), "Branch name should not be empty");
         assert!(
-            parts[2].parse::<u64>().is_ok(),
-            "Third part should be a number"
+            parts.last().unwrap().parse::<u64>().is_ok(),
+            "Last part should be a number, got: {name}"
         );
     }
 
     #[test]
-    fn funny_branch_names_vary() {
-        let a = funny_branch_name();
+    fn branch_names_vary() {
+        let a = generate_branch_name("");
         std::thread::sleep(std::time::Duration::from_millis(1));
-        let b = funny_branch_name();
+        let b = generate_branch_name("");
         assert_ne!(a, b, "Branch names should differ");
     }
 
@@ -2225,9 +2320,31 @@ mod tests {
     }
 
     #[test]
-    fn adjectives_and_animals_have_enough_variety() {
-        assert!(ADJECTIVES.len() >= 20);
-        assert!(ANIMALS.len() >= 20);
+    fn word_banks_have_enough_variety() {
+        assert!(ADJECTIVES.len() >= 72);
+        assert!(NOUNS_GENERIC.len() >= 72);
+    }
+
+    #[test]
+    fn collect_stack_nouns_empty_path_returns_generic() {
+        let nouns = collect_stack_nouns("/tmp/verun-nonexistent-test-path-xyz");
+        assert_eq!(nouns, NOUNS_GENERIC);
+    }
+
+    #[test]
+    fn collect_stack_nouns_merges_multiple_stacks() {
+        let dir = std::env::temp_dir().join(format!("verun-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "").unwrap();
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+
+        let nouns = collect_stack_nouns(dir.to_str().unwrap());
+        let has_rust = NOUNS_RUST.iter().any(|n| nouns.contains(n));
+        let has_js = NOUNS_JS.iter().any(|n| nouns.contains(n));
+        assert!(has_rust, "Should contain Rust nouns");
+        assert!(has_js, "Should contain JS nouns");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
