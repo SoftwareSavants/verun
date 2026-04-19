@@ -1,4 +1,4 @@
-use super::{Agent, AgentKind, InputMode, SessionArgs};
+use super::{Agent, AgentKind, AbortStrategy, InputMode, SessionArgs};
 
 /// Claude Code - Anthropic's CLI coding agent.
 ///
@@ -62,8 +62,9 @@ impl Agent for Claude {
     }
 
     fn build_session_args(&self, args: &SessionArgs<'_>) -> Vec<String> {
+        // No `-p`: the CLI stays alive reading NDJSON on stdin across turns,
+        // matching claude-agent-sdk-python (subprocess_cli.py:207).
         let mut v = vec![
-            "-p".into(),
             "--output-format".into(),
             "stream-json".into(),
             "--input-format".into(),
@@ -120,5 +121,90 @@ impl Agent for Claude {
             "result" => v.get("session_id")?.as_str().map(str::to_string),
             _ => None,
         }
+    }
+
+    fn persists_across_turns(&self) -> bool {
+        true
+    }
+
+    fn abort_strategy(&self) -> AbortStrategy {
+        AbortStrategy::Interrupt
+    }
+
+    fn encode_stream_user_message(
+        &self,
+        message: &str,
+        attachments: &[crate::task::Attachment],
+    ) -> Result<Vec<u8>, String> {
+        let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+        for attachment in attachments {
+            content_blocks.push(serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": attachment.mime_type,
+                    "data": attachment.data_base64,
+                }
+            }));
+        }
+        if !message.is_empty() {
+            content_blocks.push(serde_json::json!({ "type": "text", "text": message }));
+        }
+
+        let user_msg = serde_json::json!({
+            "type": "user",
+            "session_id": "",
+            "parent_tool_use_id": null,
+            "message": { "role": "user", "content": content_blocks },
+        });
+
+        let mut payload =
+            serde_json::to_vec(&user_msg).map_err(|e| format!("serialize user msg: {e}"))?;
+        payload.push(b'\n');
+        Ok(payload)
+    }
+
+    fn encode_stream_interrupt(&self, request_id: &str) -> Result<Vec<u8>, String> {
+        let envelope = serde_json::json!({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": { "subtype": "interrupt" },
+        });
+        let mut payload =
+            serde_json::to_vec(&envelope).map_err(|e| format!("serialize interrupt: {e}"))?;
+        payload.push(b'\n');
+        Ok(payload)
+    }
+
+    fn encode_stream_set_permission_mode(
+        &self,
+        request_id: &str,
+        mode: &str,
+    ) -> Result<Vec<u8>, String> {
+        let envelope = serde_json::json!({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": { "subtype": "set_permission_mode", "mode": mode },
+        });
+        let mut payload = serde_json::to_vec(&envelope)
+            .map_err(|e| format!("serialize set_permission_mode: {e}"))?;
+        payload.push(b'\n');
+        Ok(payload)
+    }
+
+    fn encode_stream_set_model(
+        &self,
+        request_id: &str,
+        model: Option<&str>,
+    ) -> Result<Vec<u8>, String> {
+        let envelope = serde_json::json!({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": { "subtype": "set_model", "model": model },
+        });
+        let mut payload =
+            serde_json::to_vec(&envelope).map_err(|e| format!("serialize set_model: {e}"))?;
+        payload.push(b'\n');
+        Ok(payload)
     }
 }

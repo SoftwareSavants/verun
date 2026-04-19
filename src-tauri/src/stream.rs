@@ -8,6 +8,7 @@ use crate::task::{
 };
 use serde::Serialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -53,6 +54,15 @@ pub enum OutputItem {
     /// System/status message
     #[serde(rename_all = "camelCase")]
     System { text: String },
+
+    /// Provider error (API failure, auth, overload, prompt-too-long, etc.).
+    /// Carries the human message plus the raw source JSON so the frontend
+    /// can show a persistent retry banner with an expandable details panel.
+    #[serde(rename_all = "camelCase")]
+    ErrorMessage {
+        message: String,
+        raw: Option<String>,
+    },
 
     /// Turn completed
     #[serde(rename_all = "camelCase")]
@@ -225,7 +235,13 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                         None
                     }
                 });
-            let status = if is_error || status_str != "success" {
+            // `error_during_execution` is how the Claude CLI signals that the
+            // user aborted the turn via `control_request interrupt`. Treat it
+            // as a distinct `interrupted` status so the renderer can suppress
+            // the bubble (the user already knows they hit stop).
+            let status = if status_str == "error_during_execution" {
+                "interrupted"
+            } else if is_error || status_str != "success" {
                 "error"
             } else {
                 "completed"
@@ -745,14 +761,21 @@ fn parse_stream_event(v: &serde_json::Value) -> Vec<OutputItem> {
 /// in real-time, so the snapshot is redundant for those. We skip it to avoid duplication.
 /// However, we DO extract tool_use blocks since content_block_start may not always arrive.
 fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
-    let content = match v
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_array())
-    {
+    let message = match v.get("message") {
+        Some(m) => m,
+        None => return vec![],
+    };
+    let content = match message.get("content").and_then(|c| c.as_array()) {
         Some(c) => c,
         None => return vec![],
     };
+
+    // Synthetic assistant snapshots (e.g. "Prompt is too long", API errors)
+    // arrive with `model: "<synthetic>"` and carry the error text as a text
+    // block — they never have stream_event deltas, so skipping text here
+    // would drop the message entirely. For regular assistant snapshots text
+    // is already delivered via deltas, so we skip it to avoid duplication.
+    let is_synthetic = message.get("model").and_then(|m| m.as_str()) == Some("<synthetic>");
 
     let mut items = Vec::new();
     for block in content {
@@ -775,6 +798,17 @@ fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
                     tool: name.to_string(),
                     input: input_str,
                 });
+            }
+            "text" if is_synthetic => {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        let raw = serde_json::to_string(v).ok();
+                        items.push(OutputItem::ErrorMessage {
+                            message: text.to_string(),
+                            raw,
+                        });
+                    }
+                }
             }
             _ => {}
         }
@@ -1047,6 +1081,7 @@ pub async fn stream_and_capture(
     task_id: String,
     stdout: ChildStdout,
     stdin: Arc<TokioMutex<Option<ChildStdin>>>,
+    busy: Arc<AtomicBool>,
     pending_approvals: PendingApprovals,
     pending_approval_meta: PendingApprovalMeta,
     pending_control_responses: PendingControlResponses,
@@ -1077,8 +1112,7 @@ pub async fn stream_and_capture(
             line = reader.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        let preview = if line.len() > 200 { &line[..200] } else { &line };
-                        eprintln!("[verun][stream][{session_id}] {preview}");
+                        eprintln!("[verun][stream][{session_id}] {line}");
 
                         // Cleanly skip non-JSON garbage (e.g. `[SandboxDebug]` lines the CLI
                         // can interleave under permission/sandbox modes). Matches the
@@ -1086,8 +1120,7 @@ pub async fn stream_and_capture(
                         let trimmed = line.trim_start();
                         if !trimmed.starts_with('{') {
                             if !trimmed.is_empty() {
-                                eprintln!("[verun][stream][{session_id}] skipping non-JSON: {}",
-                                    trimmed.chars().take(200).collect::<String>());
+                                eprintln!("[verun][stream][{session_id}] skipping non-JSON: {trimmed}");
                             }
                             continue;
                         }
@@ -1224,11 +1257,36 @@ pub async fn stream_and_capture(
                             }
                         }
 
-                        // Close stdin after turn completes so the CLI process can exit
+                        // For one-shot-per-turn agents (e.g. Codex), close stdin so
+                        // the CLI exits and we respawn on next send. For persistent
+                        // agents (Claude), keep stdin open — `busy=false` signals the
+                        // process is ready for the next turn. Since the process never
+                        // exits, the monitor's post-stream status emission never fires,
+                        // so we emit it here: idle on success, error (with the provider
+                        // message) on an API/auth failure so the retry banner renders.
                         if is_turn_end {
-                            // Take the ChildStdin out and drop it to close the fd (sends EOF)
-                            let mut guard = stdin.lock().await;
-                            drop(guard.take());
+                            if !agent.persists_across_turns() {
+                                let mut guard = stdin.lock().await;
+                                drop(guard.take());
+                            } else {
+                                let (status, error) = turn_end_session_status(&last_error);
+                                let _ = db_tx.send(DbWrite::UpdateSessionStatus {
+                                    id: session_id.clone(),
+                                    status: status.to_string(),
+                                }).await;
+                                let _ = app.emit(
+                                    "session-status",
+                                    SessionStatusEvent {
+                                        session_id: session_id.clone(),
+                                        status: status.to_string(),
+                                        error,
+                                    },
+                                );
+                                // Clear so the next turn starts clean — the error is
+                                // associated with the turn that just ended, not future ones.
+                                last_error = None;
+                            }
+                            busy.store(false, Ordering::SeqCst);
                         }
 
                         // Flush buffer. On turn end we ALWAYS flush so the TurnEnd
@@ -1442,9 +1500,9 @@ async fn handle_control_request(
                 },
             );
 
-            let (behavior, updated_input) = match rx.await {
-                Ok(resp) => (resp.behavior, resp.updated_input),
-                Err(_) => ("deny".to_string(), None),
+            let (behavior, updated_input, deny_message) = match rx.await {
+                Ok(resp) => (resp.behavior, resp.updated_input, resp.message),
+                Err(_) => ("deny".to_string(), None, None),
             };
 
             pending_approvals.remove(&request_id);
@@ -1457,9 +1515,10 @@ async fn handle_control_request(
                     "updatedInput": input
                 })
             } else {
+                let msg = deny_message.unwrap_or_else(|| "User denied this action".to_string());
                 serde_json::json!({
                     "behavior": "deny",
-                    "message": "User denied this action",
+                    "message": msg,
                     "interrupt": false
                 })
             };
@@ -1550,6 +1609,17 @@ pub fn map_exit_status(code: Option<i32>) -> &'static str {
         Some(0) => "done",
         Some(_) => "error",
         None => "error",
+    }
+}
+
+/// Decide the `session-status` event payload to emit at turn_end for a
+/// persistent agent. The process stays alive, so we can't wait for exit —
+/// a turn-level error (e.g. API 401, overload) must propagate as the
+/// session status so the frontend can render the retry banner.
+pub fn turn_end_session_status(err: &Option<String>) -> (&'static str, Option<String>) {
+    match err {
+        Some(msg) => ("error", Some(msg.clone())),
+        None => ("idle", None),
     }
 }
 
@@ -1702,6 +1772,69 @@ mod tests {
             OutputItem::Raw { text } => assert_eq!(text, "not json at all"),
             _ => panic!("Expected Raw item"),
         }
+    }
+
+    #[test]
+    fn turn_end_session_status_idle_when_no_error() {
+        let (status, err) = turn_end_session_status(&None);
+        assert_eq!(status, "idle");
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn turn_end_session_status_error_when_present() {
+        // Regression: auth/API errors on persistent Claude sessions were
+        // dropped because the persistent-agent turn_end branch always
+        // emitted idle. The red retry banner depends on status=error +
+        // the provider message propagating through session-status.
+        let msg = "API Error: 401 authentication_error".to_string();
+        let (status, err) = turn_end_session_status(&Some(msg.clone()));
+        assert_eq!(status, "error");
+        assert_eq!(err.as_deref(), Some(msg.as_str()));
+    }
+
+    #[test]
+    fn parse_result_error_during_execution_maps_to_interrupted() {
+        // Claude CLI emits this subtype when the user sends a
+        // `control_request interrupt` mid-turn. It is NOT an error worth
+        // surfacing as a red bubble in chat — the user already knows they
+        // hit stop. We map it to a distinct `interrupted` status so the
+        // renderer can suppress the bubble entirely.
+        let line = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":1000,"session_id":"abc"}"#;
+        let items = parse_sdk_event(line);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::TurnEnd { status, error, .. } => {
+                assert_eq!(status, "interrupted");
+                assert!(error.is_none(), "interrupt should not carry an error");
+            }
+            _ => panic!("Expected TurnEnd item"),
+        }
+    }
+
+    #[test]
+    fn parse_assistant_synthetic_error_emits_error_message_with_raw() {
+        // When the Claude API returns an error mid-turn (e.g. "Prompt is
+        // too long"), the CLI emits a synthetic assistant message with
+        // `model: "<synthetic>"` and a text block carrying the error
+        // message. We surface it as an `ErrorMessage` item so the UI can
+        // render a single persistent retry banner (no duplicate text / sys
+        // bubbles) with the raw JSON available for "Show details".
+        let line = r#"{"type":"assistant","message":{"id":"x","model":"<synthetic>","role":"assistant","type":"message","content":[{"type":"text","text":"Prompt is too long"}]},"session_id":"abc","uuid":"u","error":"invalid_request"}"#;
+        let items = parse_sdk_event(line);
+        let err = items.iter().find_map(|i| match i {
+            OutputItem::ErrorMessage { message, raw } => Some((message.clone(), raw.clone())),
+            _ => None,
+        });
+        let (message, raw) = err.expect("expected ErrorMessage item");
+        assert_eq!(message, "Prompt is too long");
+        let raw = raw.expect("expected raw JSON payload");
+        assert!(raw.contains("\"<synthetic>\""), "raw should carry source JSON: {raw}");
+        // Should NOT emit a duplicate plain Text item for the same synthetic error.
+        assert!(
+            !items.iter().any(|i| matches!(i, OutputItem::Text { .. })),
+            "synthetic error must not also emit a plain Text item: {items:?}"
+        );
     }
 
     #[test]

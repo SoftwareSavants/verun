@@ -25,19 +25,17 @@
 - Stream loop now parses each NDJSON line once instead of up to three times
 - New `interrupt_session` IPC: cancel the current turn over stdin without killing the process
 - New `get_session_context_usage` IPC: ask the running CLI for current context-window usage
-- Plan/Think/Fast toggles no longer disabled while the agent is running, so mode changes can take effect on queued steps and steers
-- Composer model selector no longer disabled while the agent is running; the new selection applies to subsequent sends (manual, armed auto-send, or queued step)
-- Next Steps: click a step to edit inline (textarea + per-step mode toggles + model selector); removed the separate pencil icon and the edit-via-composer round-trip
-- Next Steps: armed state shown as an accent left-border; fire/arm/delete actions revealed on row hover to reduce visual noise
-- Next Steps: arm toggle now uses action-button semantics — armed step shows Pause (click to pause), disarmed shows Play (click to play)
-- Next Steps: fire button sits as the leftmost icon of the right-hand hover cluster (no longer prefixing the message) and is revealed only on hover
-- Next Steps: armed indicator is now an inset box-shadow instead of a left border, so armed rows keep the same horizontal alignment as disarmed ones
-- Next Steps: row contents vertically centered in view mode; buttons in edit mode no longer blur-save the textarea (WebKit fix)
-- ModelSelector: added `fixedPosition` option so the popover escapes overflow-clipping containers (used by inline step editing)
-- Composer: when the agent is running, the Enter button now uses a `ListPlus` icon to match its actual behaviour (add next step) instead of the send arrow
-- Next Steps: first idle step hides the arm/play button (redundant with the send button) and keeps its icons visible without hover; arm button no longer uses accent colour in the armed state
-- Next Steps: remove button uses an `X` icon instead of a trash bin, reflecting "dismiss from queue" semantics rather than permanent delete
-- Next Steps: "Next Steps" header sticks to the top of the list when scrolling so it remains visible as additional steps scroll past
+- Claude sessions now reuse a single persistent CLI process across all turns in a session (matches claude-agent-sdk-python): eliminates the 2-3s CLI boot cost on every message and fixes the armed-step race where a queued send would collide with the dying CLI's final JSONL write
+- Fix loading indicator sticking on after turn end: persistent-agent stream loop now emits `session-status: idle` from `turn_end` (the monitor's post-exit idle emission never fires for processes that stay alive across turns)
+- Abort on Claude sessions is now a single `control_request interrupt` write to stdin - the process stays alive for the next message, so there's no graceful-shutdown delay and no "Stopping..." spinner
+- New `prewarm_session` IPC + `TaskPanel` hook: opening a Claude session spawns the CLI in the background so the first message is instant. No-op for non-persistent agents (Codex, Gemini, Cursor, OpenCode)
+- `close_session` / `clear_session` / app-quit now shut down any live persistent CLI before DB writes or exit, so switching tasks or quitting doesn't leak orphan processes
+- New `Agent` trait methods (`persists_across_turns`, `abort_strategy`, `encode_stream_user_message`, `encode_stream_interrupt`): call sites stay agent-agnostic, any future agent opts into persistent sessions by flipping one flag
+- Plan viewer "Request changes..." input now forwards the typed feedback as the tool-deny message so Claude sees it as the refusal reason and continues the same turn; the plan UI dismisses immediately instead of sticking around waiting for a second message
+- Fix persistent-session mode/model race: fast-path `set_permission_mode` / `set_model` now waits for the CLI's `control_response` ACK before writing the user message, so plan mode (and model switches) take effect before Claude reads the prompt - previously the CLI could process the message in the old mode
+- Composer stays visible alongside the persisted "Plan ready" banner, and is dismissed automatically when the user sends a fresh message via the main composer - previously a stale plan file from a prior session could hide the composer and block follow-ups
+- Fix API/auth errors on Claude sessions rendering as plain text: persistent-agent `turn_end` now propagates the provider error through `session-status`, restoring the red inline banner with Retry / Retry in new session
+- Provider errors (auth, overload, prompt-too-long) now render as a single persistent block inside the transcript instead of duplicating across an assistant bubble + system bubble + bottom banner. The block stays visible across follow-up turns, carries Retry / Retry in new session, and exposes the raw CLI JSON behind a "Show details" toggle (copyable)
 
 ## 0.7.3 — 2026-04-17
 

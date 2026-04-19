@@ -573,11 +573,18 @@ export const MessageInput: Component<Props> = (props) => {
     if (feedback) {
       // Request changes
       setPlanChanges('')
+      const tid = selectedTaskId()
       try {
         if (approval && isExitPlanMode()) {
-          await denyToolUse(approval.requestId, approval.sessionId)
+          // Forward the feedback as the tool-deny message so Claude sees it as
+          // the reason and continues the same turn. No separate sendMessage.
+          if (tid) setTaskPlanFilePath(tid, null)
+          await denyToolUse(approval.requestId, approval.sessionId, feedback)
+        } else {
+          // Persisted plan viewer — no live approval, send as a new message.
+          if (tid) setTaskPlanFilePath(tid, null)
+          await sendMessage(sid, feedback, undefined, currentModel(), true)
         }
-        await sendMessage(sid, feedback, undefined, currentModel(), true)
       } catch (error) {
         setPlanActionPending(false)
         throw error
@@ -862,6 +869,8 @@ export const MessageInput: Component<Props> = (props) => {
     setMessage('')
     setAttachments([])
     setShowPalette(false)
+    // Dismiss any persisted plan panel — the user has moved on from that plan.
+    if (tid && taskPlanFilePath[tid]) setTaskPlanFilePath(tid, null)
     try {
       await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
     } catch (e) {
@@ -2042,7 +2051,7 @@ export const MessageInput: Component<Props> = (props) => {
 
       <div class={clsx(
         'relative bg-surface-1 rounded-xl transition-all outline-none',
-        currentApproval() || showPlanResponse() || (showPlanViewer() && planContent()) ? 'hidden' : '',
+        currentApproval() || (showPlanViewer() && planContent()) ? 'hidden' : '',
         (editingMessageIdx() !== null || editingStepId() !== null)
           ? 'border border-amber-500/40 shadow-[0_0_0_2px_rgba(245,158,11,0.12)]'
           : planMode()

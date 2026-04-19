@@ -17,6 +17,9 @@ export const [pendingApprovals, setPendingApprovals] = createStore<Record<string
 export const [autoApprovedCounts, setAutoApprovedCounts] = createStore<Record<string, number>>({})
 export const [sessionCosts, setSessionCosts] = createStore<Record<string, number>>({})
 export const [sessionTokens, setSessionTokens] = createStore<Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>>({})
+/// Tracks sessions whose CLI is in the middle of a graceful shutdown after abort.
+/// Set on abort click, cleared when the backend emits `session-aborted`.
+export const [abortingSessions, setAbortingSessions] = createStore<Record<string, boolean>>({})
 export const [rateLimitInfo, setRateLimitInfo] = createSignal<RateLimitInfo | null>(null)
 const [_taskPlanMode, _setTaskPlanMode] = createStore<Record<string, boolean>>({})
 const [_taskThinkingMode, _setTaskThinkingMode] = createStore<Record<string, boolean>>({})
@@ -108,10 +111,12 @@ export async function sendMessage(sessionId: string, message: string, attachment
 }
 
 export async function abortMessage(sessionId: string) {
+  setAbortingSessions(sessionId, true)
   setSessions(s => s.id === sessionId, 'status', 'idle')
   try {
     await ipc.abortMessage(sessionId)
   } catch (e) {
+    setAbortingSessions(produce(store => { delete store[sessionId] }))
     setSessions(s => s.id === sessionId, 'status', 'running')
     throw e
   }
@@ -122,8 +127,8 @@ export async function approveToolUse(requestId: string, sessionId: string) {
   removeApproval(requestId, sessionId)
 }
 
-export async function denyToolUse(requestId: string, sessionId: string) {
-  await ipc.respondToApproval(requestId, 'deny')
+export async function denyToolUse(requestId: string, sessionId: string, message?: string) {
+  await ipc.respondToApproval(requestId, 'deny', undefined, message)
   removeApproval(requestId, sessionId)
 }
 
@@ -162,6 +167,7 @@ export async function closeSession(sessionId: string) {
   setOutputItems(produce(store => { delete store[sessionId] }))
   setSessionCosts(produce(store => { delete store[sessionId] }))
   setSessionTokens(produce(store => { delete store[sessionId] }))
+  setAbortingSessions(produce(store => { delete store[sessionId] }))
   // Persist closure to DB (status = 'closed', filtered from future loads)
   await ipc.closeSession(sessionId)
 }
@@ -337,8 +343,12 @@ export async function initSessionListeners() {
     if (status !== 'running') {
       setPendingApprovals(produce(store => { delete store[sessionId] }))
     }
-    // Drain armed steps on idle
-    if (status === 'idle') {
+    // Drain armed steps on idle — but only if this idle didn't come from an
+    // abort that's still graceful-shutting-down. Spawning a new `--resume`
+    // process while the old one is still writing its JSONL races the transcript
+    // and the queued message gets eaten. Deferred drain happens in the
+    // `session-aborted` listener below.
+    if (status === 'idle' && !abortingSessions[sessionId]) {
       const next = dequeueArmedStep(sessionId)
       if (next) {
         const attachments = next.attachmentsJson ? JSON.parse(next.attachmentsJson) : undefined
@@ -393,6 +403,21 @@ export async function initSessionListeners() {
   await listen<{ sessionId: string; name: string }>('session-name', (event) => {
     const { sessionId, name } = event.payload
     setSessions(s => s.id === sessionId, 'name', name)
+  })
+
+  await listen<string>('session-aborted', (event) => {
+    const sid = event.payload
+    setAbortingSessions(produce(store => { delete store[sid] }))
+    // Now that graceful shutdown is done, drain any armed step that the
+    // session-status:idle listener skipped to avoid racing the transcript.
+    const session = sessions.find(s => s.id === sid)
+    if (session?.status === 'idle') {
+      const next = dequeueArmedStep(sid)
+      if (next) {
+        const attachments = next.attachmentsJson ? deserializeAttachments(next.attachmentsJson) : undefined
+        sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
+      }
+    }
   })
 
   await listen<{ taskId: string; name: string }>('task-name', (event) => {

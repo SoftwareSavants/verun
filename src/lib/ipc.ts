@@ -82,6 +82,12 @@ export const sendMessage = (sessionId: string, message: string, attachments?: At
 export const updateSessionModel = (sessionId: string, model: string | null) =>
   invoke<void>('update_session_model', { sessionId, model })
 
+// Best-effort pre-warm: for persistent agents (Claude) this spawns the CLI in
+// the background so the first user message doesn't pay the boot cost. No-op
+// for non-persistent agents. Fire-and-forget — callers should swallow errors.
+export const prewarmSession = (sessionId: string) =>
+  invoke<void>('prewarm_session', { sessionId })
+
 export const closeSession = (sessionId: string) =>
   invoke<void>('close_session', { sessionId })
 
@@ -100,8 +106,8 @@ export const getSessionContextUsage = (sessionId: string) =>
 export const getActiveSessions = (): Promise<string[]> =>
   DEMO ? Promise.resolve([]) : invoke<string[]>('get_active_sessions')
 
-export const respondToApproval = (requestId: string, behavior: 'allow' | 'deny', updatedInput?: Record<string, unknown>) =>
-  invoke<void>('respond_to_approval', { requestId, behavior, updatedInput })
+export const respondToApproval = (requestId: string, behavior: 'allow' | 'deny', updatedInput?: Record<string, unknown>, message?: string) =>
+  invoke<void>('respond_to_approval', { requestId, behavior, updatedInput, message })
 
 export const getPendingApprovals = (): Promise<ToolApprovalRequest[]> =>
   DEMO ? Promise.resolve([]) : invoke<ToolApprovalRequest[]>('get_pending_approvals')
