@@ -99,8 +99,15 @@ export function startTaskCreation(projectId: string, baseBranch: string, agentTy
 
   // Fire and forget — runs in background
   ipc.createTask(projectId, baseBranch, agentType).then(result => {
-    // Replace placeholder with real task
-    setTasks(prev => prev.map(t => t.id === placeholderId ? result.task : t))
+    // Replace placeholder with real task — upsert so the task still lands
+    // if the placeholder was dropped by a concurrent loadTasks reload.
+    setTasks(prev => {
+      if (prev.some(t => t.id === placeholderId)) {
+        return prev.map(t => t.id === placeholderId ? result.task : t)
+      }
+      if (prev.some(t => t.id === result.task.id)) return prev
+      return [result.task, ...prev]
+    })
     removeCreating(placeholderId)
 
     // Set up session
@@ -132,7 +139,13 @@ export function retryTaskCreation(placeholderId: string, projectId: string, base
   addCreating(placeholderId)
 
   ipc.createTask(projectId, baseBranch).then(result => {
-    setTasks(prev => prev.map(t => t.id === placeholderId ? result.task : t))
+    setTasks(prev => {
+      if (prev.some(t => t.id === placeholderId)) {
+        return prev.map(t => t.id === placeholderId ? result.task : t)
+      }
+      if (prev.some(t => t.id === result.task.id)) return prev
+      return [result.task, ...prev]
+    })
     removeCreating(placeholderId)
 
     import('./sessions').then(({ setSessions, setOutputItems }) => {

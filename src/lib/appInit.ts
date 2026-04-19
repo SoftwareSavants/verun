@@ -13,6 +13,7 @@ import { refreshTaskGit } from '../store/git'
 import { addToast, setSelectedTaskId, setSelectedProjectId, setPendingSessionNav } from '../store/ui'
 import { onNotificationClicked } from '@choochmeque/tauri-plugin-notifications-api'
 import { consumePendingNav, clearDeliveredNotifications } from './notifications'
+import { windowContext } from './windowContext'
 import * as ipc from './ipc'
 
 /**
@@ -74,8 +75,13 @@ export async function initListeners() {
     }
   })
 
-  // Cross-window sync: reload when tasks change in another window
-  listen<{ taskId: string; projectId: string }>('task-created', (event) => {
+  // Cross-window sync: reload when tasks change in another window.
+  // Skip events from our own window — we already have the task from the IPC
+  // response, and reloading would race with the async DB write queue (the
+  // InsertTask may not be applied yet when listTasks runs, causing the new
+  // task to vanish from the store until another refresh).
+  listen<{ taskId: string; projectId: string; sourceWindow?: string }>('task-created', (event) => {
+    if (event.payload.sourceWindow === windowContext.windowLabel) return
     loadTasks(event.payload.projectId)
     loadSessions(event.payload.taskId)
     refreshTaskGit(event.payload.taskId)
