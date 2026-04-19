@@ -993,6 +993,19 @@ pub async fn list_sessions_for_task(
     .map_err(|e| e.to_string())
 }
 
+/// All session ids for a task, regardless of status. Used by archive/delete to
+/// scope process kills to a single task without missing in-flight sessions.
+pub async fn list_all_session_ids_for_task(
+    pool: &SqlitePool,
+    task_id: &str,
+) -> Result<Vec<String>, String> {
+    sqlx::query_scalar::<_, String>("SELECT id FROM sessions WHERE task_id = ?")
+        .bind(task_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // Output
 
 pub async fn get_output_lines(

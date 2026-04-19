@@ -122,6 +122,7 @@ pub async fn delete_project(
     for t in &tasks {
         task::delete_task(
             &app,
+            pool.inner(),
             db_tx.inner(),
             active.inner(),
             &project.repo_path,
@@ -413,6 +414,7 @@ pub async fn delete_task(
 
     task::delete_task(
         &app,
+        pool.inner(),
         db_tx.inner(),
         active.inner(),
         &project.repo_path,
@@ -443,6 +445,7 @@ pub async fn archive_task(
 
     task::archive_task(
         &app,
+        pool.inner(),
         db_tx.inner(),
         active.inner(),
         &t,
