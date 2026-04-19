@@ -9,7 +9,8 @@ import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
 import { openFile, setMainView } from '../store/editorView'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
-import type { Command } from '../store/commands'
+import { primeSkills, type Command, type SkillContext } from '../store/commands'
+import { projectById } from '../store/projects'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
@@ -413,6 +414,28 @@ export const MessageInput: Component<Props> = (props) => {
   const [sending, setSending] = createSignal(false)
   const [dragOver, setDragOver] = createSignal(false)
   const [showPalette, setShowPalette] = createSignal(false)
+
+  const skillContext = (): SkillContext | null => {
+    const sid = props.sessionId
+    const sess = sid ? sessionById(sid) : null
+    const task = sess ? taskById(sess.taskId) : null
+    const project = task ? projectById(task.projectId) : null
+    if (!sess || !task || !project) return null
+    return {
+      agentKind: sess.agentType,
+      projectRoot: project.repoPath,
+      taskId: task.id,
+      worktreePath: task.worktreePath,
+    }
+  }
+
+  // Prime skills when palette opens or session changes.
+  createEffect(on([showPalette, () => props.sessionId], ([open]) => {
+    if (!open) return
+    const ctx = skillContext()
+    if (ctx) primeSkills(ctx)
+  }))
+
   const [showFileMention, setShowFileMention] = createSignal(false)
   const [fileMentionQuery, setFileMentionQuery] = createSignal('')
   const [worktreeFiles, setWorktreeFiles] = createSignal<string[]>([])
@@ -2072,10 +2095,11 @@ export const MessageInput: Component<Props> = (props) => {
               : ''
       )}>
         {/* Command palette — onMouseDown preventDefault keeps focus in the input */}
-        <Show when={showPalette()}>
+        <Show when={showPalette() && skillContext()}>
           <div onMouseDown={e => e.preventDefault()}>
             <CommandPalette
               query={message()}
+              context={skillContext()!}
               onSelect={handleCommandSelect}
               onTab={(cmd) => {
                 if (cmd.name === 'plan') {

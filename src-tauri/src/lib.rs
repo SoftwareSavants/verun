@@ -9,6 +9,7 @@ mod ipc;
 mod lsp;
 mod policy;
 mod pty;
+mod markdown_skills;
 mod snapshots;
 mod stream;
 mod task;

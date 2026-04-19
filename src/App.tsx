@@ -11,7 +11,6 @@ import { initTheme } from './lib/theme'
 import { projects } from './store/projects'
 import { loadTasks, taskById } from './store/tasks'
 import { initProblemsListener } from './store/problems'
-import { loadAgentSkills } from './store/commands'
 import * as ipc from './lib/ipc'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, markTaskUnread } from './store/ui'
 import { initNotifications } from './lib/notifications'
@@ -64,7 +63,6 @@ const MainApp: Component = () => {
     dismissSplash()
 
     await checkCli()
-    loadAgentSkills()
 
     initNotifications()
     initUpdateListener()

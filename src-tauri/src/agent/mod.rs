@@ -97,6 +97,7 @@ mod gemini;
 mod opencode;
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 // Re-export the concrete types so callers can reference them if needed.
 pub use claude::Claude;
@@ -196,6 +197,17 @@ impl ModelOption {
         self.min_version = Some(version.into());
         self
     }
+}
+
+// ---------------------------------------------------------------------------
+// Agent skill / slash-command definition
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkill {
+    pub name: String,
+    pub description: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +410,18 @@ pub trait Agent: Send + Sync {
         _model: Option<&str>,
     ) -> Result<Vec<u8>, String> {
         Err("agent does not support set_model".into())
+    }
+
+    /// Discover agent-specific skills/commands available in the given scan
+    /// root (typically a repo root or worktree path) and the user's home
+    /// directory. Returns empty by default; each agent that supports skills
+    /// overrides this.
+    fn discover_skills(
+        &self,
+        _scan_root: Option<&Path>,
+        _user_home: &Path,
+    ) -> Vec<AgentSkill> {
+        Vec::new()
     }
 }
 
@@ -977,6 +1001,23 @@ mod tests {
     }
 
     // ── All agents have non-empty basics ────────────────────────────────
+
+    // ── Skill discovery defaults ────────────────────────────────────────
+
+    #[test]
+    fn non_claude_agents_discover_empty_skills_by_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for &kind in AgentKind::all() {
+            if kind == AgentKind::Claude {
+                continue;
+            }
+            let agent = kind.implementation();
+            assert!(
+                agent.discover_skills(None, tmp.path()).is_empty(),
+                "{kind:?} should default to empty skills"
+            );
+        }
+    }
 
     #[test]
     fn all_agents_have_display_name_and_binary() {
