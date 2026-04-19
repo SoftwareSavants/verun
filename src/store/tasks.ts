@@ -9,6 +9,7 @@ import { fireTaskCleanup } from './editorView'
 import { sessionsForTask, cleanupTaskModeStorage, cleanupSessionStorage, clearPlanState } from './sessions'
 import { clearTaskContext } from './taskContext'
 import { clearTaskContextStorage } from './taskContextStorage'
+import { dropTaskSkills } from './commands'
 
 // Dynamic-imported on first use: static import would pull lib/lsp.ts's
 // module-level `listen(...)` side effects into test evaluation for any file
@@ -182,6 +183,7 @@ export async function deleteTask(id: string, deleteBranch = true, skipDestroyHoo
   clearPlanState(id)
   fireTaskCleanup(id)
   clearTaskContext(id)
+  dropTaskSkills(id)
   cleanupTaskStorage(id)
   await ipc.deleteTask(id, deleteBranch, skipDestroyHook)
   setTasks(prev => prev.filter(t => t.id !== id))
@@ -197,6 +199,7 @@ export async function archiveTask(id: string, skipDestroyHook = false) {
     clearPlanState(id)
     fireTaskCleanup(id)
     clearTaskContext(id)
+    dropTaskSkills(id)
     cleanupTaskStorage(id)
     await ipc.archiveTask(id, skipDestroyHook)
     setTasks(t => t.id === id, 'archived', true)

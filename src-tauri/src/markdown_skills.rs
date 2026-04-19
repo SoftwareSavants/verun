@@ -157,6 +157,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_crlf_frontmatter_without_leaking_carriage_return() {
+        let md = "---\r\nname: review\r\ndescription: Review a PR\r\n---\r\n# Review\r\n";
+        let skill = parse_skill_frontmatter(md).expect("should parse CRLF frontmatter");
+        assert_eq!(skill.name, "review");
+        assert_eq!(skill.description, "Review a PR");
+    }
+
+    #[test]
     fn returns_none_when_no_frontmatter() {
         assert!(parse_skill_frontmatter("# just a heading\n").is_none());
     }

@@ -49,13 +49,16 @@ export function hasSkill(name: string, ctx: SkillContext): boolean {
 
 async function loadCoarse(agent: AgentType, projectRoot: string): Promise<void> {
   const key = coarseKey(agent, projectRoot)
-  if (byKey.has(key)) return
+  if (byKey.has(key) || inFlight.has(key)) return
+  inFlight.add(key)
   try {
     const skills = await ipc.listAgentSkills(agent, projectRoot)
     byKey.set(key, skills)
     setVersion(v => v + 1)
   } catch (e) {
     console.warn('coarse skill load failed:', e)
+  } finally {
+    inFlight.delete(key)
   }
 }
 

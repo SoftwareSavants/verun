@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, on, Show, For, onCleanup } from 'solid-js'
+import { Component, createSignal, createEffect, createMemo, on, Show, For, onCleanup } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { ArrowUpFromLine, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye, Archive } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -151,7 +151,7 @@ export const GitActions: Component<Props> = (props) => {
     }
   }
 
-  const skillContext = (): SkillContext | null => {
+  const skillContext = createMemo((): SkillContext | null => {
     const sid = props.sessionId
     const sess = sid ? sessionById(sid) : null
     const task = taskById(props.taskId)
@@ -163,11 +163,10 @@ export const GitActions: Component<Props> = (props) => {
       taskId: task.id,
       worktreePath: task.worktreePath,
     }
-  }
-  createEffect(() => {
-    const ctx = skillContext()
-    if (ctx) primeSkills(ctx)
   })
+  createEffect(on(skillContext, ctx => {
+    if (ctx) primeSkills(ctx)
+  }))
   const hasReviewSkill = () => {
     const ctx = skillContext()
     return ctx ? hasSkill('review', ctx) : false
