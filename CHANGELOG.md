@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Tool policy selector: renamed levels to "Ask every time" / "Auto-approve safe" / "Full auto" with clearer example subtitles; popover gets a section header, check icon on the selected row, and safety-ordered layout; chip label now reads `auto-safe` / `ask` / `full auto` instead of `Normal` / `Supervised` / `Auto`
 - Usage popover redesigned: prominent cost header, grouped rate-limit cards (active overage highlighted in red), aligned token grid with split cached-read/cached-write rows, and M/B token formatting past 1M (e.g. `24.7M` instead of `24657.1k`)
 - Shared `formatCost` / `formatTokens` helpers extracted to `src/lib/format.ts` and reused across `ChatView` + `MessageInput`
 - Branch names replaced from animal-based to programming-humor themed; stack detection merges noun pools for Rust, Go, Python, JS/TS, and Java (monorepo-aware)

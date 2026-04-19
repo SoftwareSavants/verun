@@ -61,6 +61,12 @@ function setPlanExpanded(v: boolean) {
 
 const [showUsagePopover, setShowUsagePopover] = createSignal(false)
 
+const TRUST_OPTIONS: ReadonlyArray<{ value: TrustLevel; title: string; subtitle: string }> = [
+  { value: 'supervised', title: 'Ask every time', subtitle: 'Approve each tool call' },
+  { value: 'normal', title: 'Auto-approve safe', subtitle: 'Edits in-repo, reads anything' },
+  { value: 'full_auto', title: 'Full auto', subtitle: 'No prompts. Anything goes.' },
+]
+
 function formatResetTime(epochSec: number): string {
   const d = new Date(epochSec * 1000)
   const now = new Date()
@@ -2268,39 +2274,45 @@ export const MessageInput: Component<Props> = (props) => {
                 )}
                 onClick={() => setShowTrustMenu(!showTrustMenu())}
                 disabled={!props.sessionId}
-                title={`Trust: ${trustLevel()}`}
+                title={`Tool policy: ${TRUST_OPTIONS.find(o => o.value === trustLevel())?.title ?? trustLevel()}`}
               >
                 {trustLevel() === 'full_auto' ? <ShieldCheck size={13} /> :
                  trustLevel() === 'supervised' ? <ShieldAlert size={13} /> :
                  <Shield size={13} />}
                 <span>
-                  {trustLevel() === 'full_auto' ? 'Auto' :
-                   trustLevel() === 'supervised' ? 'Supervised' :
-                   'Normal'}
+                  {trustLevel() === 'full_auto' ? 'full auto' :
+                   trustLevel() === 'supervised' ? 'ask' :
+                   'auto-safe'}
                 </span>
               </button>
-              <Popover open={showTrustMenu()} onClose={() => setShowTrustMenu(false)} class="py-1 min-w-44 absolute bottom-full left-0 mb-1">
-                <button
-                  class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'normal' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
-                  onClick={() => handleTrustChange('normal')}
-                >
-                  <div class="font-medium">Normal</div>
-                  <div class="text-[10px] text-text-dim mt-0.5">Auto-approve safe actions</div>
-                </button>
-                <button
-                  class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'full_auto' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
-                  onClick={() => handleTrustChange('full_auto')}
-                >
-                  <div class="font-medium">Full Auto</div>
-                  <div class="text-[10px] text-text-dim mt-0.5">Auto-approve everything</div>
-                </button>
-                <button
-                  class={clsx('w-full text-left px-3 py-1.5 text-[11px] transition-colors', trustLevel() === 'supervised' ? 'text-accent bg-accent-muted' : 'text-text-secondary hover:bg-surface-4')}
-                  onClick={() => handleTrustChange('supervised')}
-                >
-                  <div class="font-medium">Supervised</div>
-                  <div class="text-[10px] text-text-dim mt-0.5">Approve every action</div>
-                </button>
+              <Popover open={showTrustMenu()} onClose={() => setShowTrustMenu(false)} class="py-2 w-64 absolute bottom-full left-0 mb-1">
+                <div class="px-3 pb-2 text-[10px] uppercase tracking-wider text-text-muted font-medium">Tool policy</div>
+                <For each={TRUST_OPTIONS}>
+                  {(opt) => {
+                    const selected = () => trustLevel() === opt.value
+                    return (
+                      <button
+                        class={clsx(
+                          'w-full text-left px-3 py-2 text-[11px] flex items-center gap-2 transition-colors',
+                          selected()
+                            ? 'bg-accent/10 text-text-primary'
+                            : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary'
+                        )}
+                        onClick={() => handleTrustChange(opt.value)}
+                      >
+                        <div class="flex-1 min-w-0">
+                          <div class={clsx('font-medium text-[12px]', selected() ? 'text-text-primary' : 'text-text-primary/90')}>
+                            {opt.title}
+                          </div>
+                          <div class="text-[10px] text-text-dim mt-0.5">{opt.subtitle}</div>
+                        </div>
+                        <Show when={selected()}>
+                          <Check size={13} class="text-accent-hover flex-shrink-0" />
+                        </Show>
+                      </button>
+                    )
+                  }}
+                </For>
               </Popover>
             </div>
 
