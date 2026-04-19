@@ -9,7 +9,6 @@ import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
 import { deserializeAttachments } from '../lib/binary'
 import { clearSessionContext } from './sessionContext'
-import { clearSessionContextStorage } from './sessionContextStorage'
 
 const MAX_ITEMS_IN_MEMORY = 50_000
 
@@ -462,7 +461,6 @@ export function clearSessionContextsForTask(taskId: string) {
 }
 
 export function cleanupSessionStorage(sessionId: string) {
-  clearSessionContextStorage(sessionId)
   localStorage.removeItem(`verun:draft-msg:${sessionId}`)
   localStorage.removeItem(`verun:draft-att:${sessionId}`)
 }

@@ -64,7 +64,6 @@ describe('sessionContext store', () => {
       'verun:sessionContext:s-9',
       JSON.stringify({ planMode: true, thinkingMode: false, fastMode: true, planFilePath: '/x.md' }),
     )
-    setSessionContexts({})
 
     expect(planModeForSession('s-9')).toBe(true)
     expect(thinkingModeForSession('s-9')).toBe(false)

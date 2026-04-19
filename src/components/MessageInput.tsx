@@ -607,16 +607,15 @@ export const MessageInput: Component<Props> = (props) => {
     if (feedback) {
       // Request changes
       setPlanChanges('')
-      const tid = selectedTaskId()
       try {
         if (approval && isExitPlanMode()) {
           // Forward the feedback as the tool-deny message so Claude sees it as
           // the reason and continues the same turn. No separate sendMessage.
-          if (tid) setTaskPlanFilePath(tid, null)
+          setPlanFilePathForSession(approval.sessionId, null)
           await denyToolUse(approval.requestId, approval.sessionId, feedback)
         } else {
           // Persisted plan viewer — no live approval, send as a new message.
-          if (tid) setTaskPlanFilePath(tid, null)
+          setPlanFilePathForSession(sid, null)
           await sendMessage(sid, feedback, undefined, currentModel(), true)
         }
       } catch (error) {
@@ -901,7 +900,7 @@ export const MessageInput: Component<Props> = (props) => {
     setAttachments([])
     setShowPalette(false)
     // Dismiss any persisted plan panel — the user has moved on from that plan.
-    if (tid && taskPlanFilePath[tid]) setTaskPlanFilePath(tid, null)
+    if (planFilePathForSession(sid)) setPlanFilePathForSession(sid, null)
     try {
       await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
     } catch (e) {
