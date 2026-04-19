@@ -23,6 +23,10 @@
 - Opening the New Task dialog after adding a project now works from every entry point (empty-state button no longer skips it)
 - Sidebar task tiles show unread/attention state as a pulsing left-edge strip (amber for attention, blue for unread) instead of a trailing dot
 - Cmd+1…9 now focuses the existing window when the target task is already open in a separate window (matching sidebar click behavior); sidebar tiles display the shortcut, which swaps to the archive button on hover (#142)
+- Detached task windows now hydrate the projects + agents stores on mount, so the new-session menu lists installed agents and the Start button picks up the project's start command (#166)
+- Archiving a task closes its detached window instantly: the sidebar updates optimistically, `task-removed` fires before the destroy hook runs, and the destroy hook + last-commit-message capture finish in the background (#138)
+- `open_task_window` now unminimizes and shows the window before focusing, so Cmd+1…9 (and sidebar clicks) reliably bring detached windows forward on macOS even when minimized (#142)
+- Cross-window task state stays in sync: new sessions and closed sessions started in one window now broadcast `session-created` / `session-removed` so other windows update without a reload, plus a visibility-change backstop refreshes sessions for every loaded task (#143)
 - Fix newly created task occasionally disappearing from sidebar after setup - the `task-created` event now carries the source window label so the originating window skips its own reload, avoiding a race with the async DB write queue (#135)
 - Graceful shutdown for aborted claude sessions: close stdin, wait 5s, SIGTERM, wait 5s, then SIGKILL - prevents losing the last assistant message on `--resume` when the CLI is mid-write of its session JSONL
 - Strip `CLAUDECODE` from the spawned CLI's env and set `CLAUDE_CODE_ENTRYPOINT=verun` so nested-detection and telemetry are correct

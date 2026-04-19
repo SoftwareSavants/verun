@@ -543,23 +543,25 @@ pub async fn rename_task(
 /// Create a new session (no process spawned — call send_message to talk to Claude)
 #[tauri::command]
 pub async fn create_session(
+    app: AppHandle,
     db_tx: State<'_, DbWriteTx>,
     task_id: String,
     agent_type: String,
     model: Option<String>,
 ) -> Result<Session, String> {
-    task::create_session(db_tx.inner(), task_id, agent_type, model).await
+    task::create_session(&app, db_tx.inner(), task_id, agent_type, model).await
 }
 
 /// Fork an existing session at a specific assistant message uuid into a new
 /// session inside the SAME task. The worktree is unchanged.
 #[tauri::command]
 pub async fn fork_session_in_task(
+    app: AppHandle,
     pool: State<'_, SqlitePool>,
     session_id: String,
     fork_after_message_uuid: String,
 ) -> Result<Session, String> {
-    task::fork_session_in_task(pool.inner(), session_id, fork_after_message_uuid).await
+    task::fork_session_in_task(&app, pool.inner(), session_id, fork_after_message_uuid).await
 }
 
 /// Fork an existing session at a specific assistant message uuid into a new
@@ -765,7 +767,9 @@ pub async fn update_session_model(
 /// Close a session (hides from UI, persists in DB as 'closed')
 #[tauri::command]
 pub async fn close_session(
+    app: AppHandle,
     active: State<'_, ActiveMap>,
+    pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     session_id: String,
 ) -> Result<(), String> {
@@ -774,10 +778,20 @@ pub async fn close_session(
     if let Some((_, mut proc)) = active.remove(&session_id) {
         task::graceful_shutdown(&mut proc.child, &proc.stdin).await;
     }
+    let task_id = db::get_session(pool.inner(), &session_id)
+        .await?
+        .map(|s| s.task_id);
     db_tx
-        .send(db::DbWrite::CloseSession { id: session_id })
+        .send(db::DbWrite::CloseSession {
+            id: session_id.clone(),
+        })
         .await
-        .map_err(|e| format!("DB write failed: {e}"))
+        .map_err(|e| format!("DB write failed: {e}"))?;
+    let _ = app.emit(
+        "session-removed",
+        serde_json::json!({ "sessionId": session_id, "taskId": task_id }),
+    );
+    Ok(())
 }
 
 /// Clear a session's Claude context (reset session_id + delete output lines)
@@ -2477,8 +2491,16 @@ pub async fn open_task_window(
     let label = format!("task-{task_id}");
 
     if let Some(win) = app.get_webview_window(&label) {
+        // unminimize + show first — set_focus alone is unreliable on macOS
+        // when the window is minimized or behind another app.
+        let _ = win.unminimize();
+        let _ = win.show();
         win.set_focus()
             .map_err(|e| format!("Failed to focus window: {e}"))?;
+        let _ = app.emit(
+            "task-window-changed",
+            serde_json::json!({ "taskId": task_id, "open": true }),
+        );
         return Ok(());
     }
 

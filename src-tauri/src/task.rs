@@ -602,7 +602,7 @@ pub async fn create_task(
         .map_err(|e| format!("DB write failed: {e}"))?;
 
     // Auto-create the first session with the chosen agent
-    let session = create_session(db_tx, task.id.clone(), agent_type, None).await?;
+    let session = create_session(app, db_tx, task.id.clone(), agent_type, None).await?;
 
     // Notify all windows about the new task so other windows can reload.
     // The source window skips the reload since it already has the task from
@@ -753,27 +753,10 @@ pub async fn archive_task(
         hook_map.remove(&task.id);
     }
 
-    // Run destroy hook (unless skipped) and capture last commit message
-    let rp = repo_path.to_string();
-    let branch = task.branch.clone();
-    let hook = if skip_destroy_hook {
-        String::new()
-    } else {
-        destroy_hook.to_string()
-    };
-    let wtp = task.worktree_path.clone();
-    let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
-    let last_commit_message = tokio::task::spawn_blocking(move || {
-        if !hook.is_empty() {
-            if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
-                eprintln!("[verun] destroy hook failed: {e}");
-            }
-        }
-        worktree::last_commit_message(&rp, &branch)
-    })
-    .await
-    .unwrap_or(None);
-
+    // Flip the archive flag and notify listeners immediately. The destroy
+    // hook + last-commit-message capture run in the background — the user
+    // gets instant feedback (window closes, sidebar updates) and the hook's
+    // exit status no longer blocks UI.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -783,7 +766,7 @@ pub async fn archive_task(
         .send(db::DbWrite::ArchiveTask {
             id: task.id.clone(),
             archived_at: now,
-            last_commit_message,
+            last_commit_message: None,
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
@@ -792,6 +775,39 @@ pub async fn archive_task(
         "task-removed",
         serde_json::json!({ "taskId": task.id, "reason": "archived" }),
     );
+
+    let rp = repo_path.to_string();
+    let branch = task.branch.clone();
+    let hook = if skip_destroy_hook {
+        String::new()
+    } else {
+        destroy_hook.to_string()
+    };
+    let wtp = task.worktree_path.clone();
+    let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
+    let task_id = task.id.clone();
+    let db_tx_bg = db_tx.clone();
+    tokio::spawn(async move {
+        let last_commit_message = tokio::task::spawn_blocking(move || {
+            if !hook.is_empty() {
+                if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
+                    eprintln!("[verun] destroy hook failed: {e}");
+                }
+            }
+            worktree::last_commit_message(&rp, &branch)
+        })
+        .await
+        .unwrap_or(None);
+
+        if last_commit_message.is_some() {
+            let _ = db_tx_bg
+                .send(db::DbWrite::SetLastCommitMessage {
+                    id: task_id,
+                    msg: last_commit_message,
+                })
+                .await;
+        }
+    });
 
     Ok(())
 }
@@ -802,6 +818,7 @@ pub async fn archive_task(
 
 /// Create a new session record (no process spawned yet — that happens on send_message)
 pub async fn create_session(
+    app: &AppHandle,
     db_tx: &DbWriteTx,
     task_id: String,
     agent_type: String,
@@ -826,6 +843,8 @@ pub async fn create_session(
         .send(db::DbWrite::CreateSession(session.clone()))
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
+
+    let _ = app.emit("session-created", &session);
 
     Ok(session)
 }
@@ -1878,6 +1897,7 @@ pub enum WorktreeForkState {
 /// session's chat view shows the inherited history. Session row + output
 /// lines are written in a single transaction for consistency.
 pub async fn fork_session_in_task(
+    app: &AppHandle,
     pool: &sqlx::sqlite::SqlitePool,
     source_session_id: String,
     fork_after_message_uuid: String,
@@ -1956,6 +1976,8 @@ pub async fn fork_session_in_task(
     .await?;
     copy_turn_snapshots_tx(&mut tx, &parent.id, &new_verun_sid).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
+
+    let _ = app.emit("session-created", &new_session);
 
     Ok(new_session)
 }
@@ -2268,6 +2290,7 @@ pub async fn fork_session_to_new_task(
         "task-created",
         serde_json::json!({ "taskId": new_task.id, "projectId": new_task.project_id }),
     );
+    let _ = app.emit("session-created", &new_session);
 
     Ok((new_task, new_session))
 }

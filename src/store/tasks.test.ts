@@ -9,6 +9,8 @@ import type { Task, Session } from '../types'
 
 let createTaskResolve: ((v: { task: Task; session: Session }) => void) | null = null
 let listTasksResult: Task[] = []
+let archiveTaskResolve: (() => void) | null = null
+let archiveTaskReject: ((e: Error) => void) | null = null
 
 vi.mock('../lib/ipc', () => ({
   createTask: vi.fn(() => new Promise<{ task: Task; session: Session }>((resolve) => {
@@ -16,12 +18,15 @@ vi.mock('../lib/ipc', () => ({
   })),
   listTasks: vi.fn(() => Promise.resolve(listTasksResult)),
   deleteTask: vi.fn().mockResolvedValue(undefined),
-  archiveTask: vi.fn().mockResolvedValue(undefined),
+  archiveTask: vi.fn(() => new Promise<void>((resolve, reject) => {
+    archiveTaskResolve = resolve
+    archiveTaskReject = reject
+  })),
   restoreTask: vi.fn().mockResolvedValue(undefined),
   renameTask: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { tasks, setTasks, startTaskCreation, loadTasks } from './tasks'
+import { tasks, setTasks, startTaskCreation, loadTasks, archiveTask } from './tasks'
 
 const makeTask = (overrides: Partial<Task> = {}): Task => ({
   id: 'task-real',
@@ -53,6 +58,39 @@ const makeSession = (): Session => ({
   forkedAtMessageUuid: null,
   agentType: 'claude',
   model: null,
+})
+
+describe('archiveTask', () => {
+  beforeEach(() => {
+    setTasks([])
+    archiveTaskResolve = null
+    archiveTaskReject = null
+    vi.clearAllMocks()
+  })
+
+  test('marks the task archived in the store before the IPC resolves (issue #138)', async () => {
+    setTasks([makeTask({ id: 'task-real', archived: false })])
+
+    const promise = archiveTask('task-real')
+    // The IPC has not resolved yet; the optimistic update should already
+    // have flipped the task to archived so the sidebar reflects it instantly.
+    expect(tasks[0].archived).toBe(true)
+
+    archiveTaskResolve!()
+    await promise
+    expect(tasks[0].archived).toBe(true)
+  })
+
+  test('reverts archived flag if the IPC rejects', async () => {
+    setTasks([makeTask({ id: 'task-real', archived: false })])
+
+    const promise = archiveTask('task-real')
+    expect(tasks[0].archived).toBe(true)
+
+    archiveTaskReject!(new Error('boom'))
+    await expect(promise).rejects.toThrow('boom')
+    expect(tasks[0].archived).toBe(false)
+  })
 })
 
 describe('startTaskCreation', () => {

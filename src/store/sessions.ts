@@ -50,6 +50,20 @@ export function setTaskPlanFilePath(taskId: string, path: string | null) {
   }
 }
 
+/**
+ * Backstop for cross-window session sync: when the window becomes visible,
+ * refresh sessions for every task currently in the store. The session-created
+ * / session-removed events cover the common case, but a missed event (e.g. the
+ * user was on another desktop) would leave the sidebar stale until reload.
+ */
+export function initSessionWindowFocusRefresh(): void {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    const taskIds = Array.from(new Set(sessions.map(s => s.taskId)))
+    for (const tid of taskIds) loadSessions(tid)
+  })
+}
+
 export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
   // Merge — keep sessions from other tasks, replace sessions for this task
@@ -418,6 +432,26 @@ export async function initSessionListeners() {
         sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
       }
     }
+  })
+
+  // Cross-window session lifecycle. New sessions or closes happening in another
+  // window must reflect locally so the sidebar's per-task phase chip stays in
+  // sync without forcing a full reload.
+  await listen<Session>('session-created', (event) => {
+    const s = event.payload
+    if (sessions.some(x => x.id === s.id)) return
+    setSessions(produce(list => { list.push(s) }))
+    if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
+  })
+
+  await listen<{ sessionId: string; taskId: string | null }>('session-removed', (event) => {
+    const { sessionId } = event.payload
+    setSessions(prev => prev.filter(s => s.id !== sessionId))
+    setOutputItems(produce(store => { delete store[sessionId] }))
+    setPendingApprovals(produce(store => { delete store[sessionId] }))
+    setSessionCosts(produce(store => { delete store[sessionId] }))
+    setSessionTokens(produce(store => { delete store[sessionId] }))
+    clearSteps(sessionId)
   })
 
   await listen<{ taskId: string; name: string }>('task-name', (event) => {

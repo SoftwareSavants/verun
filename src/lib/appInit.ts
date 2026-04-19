@@ -2,7 +2,7 @@ import { createSignal } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { loadProjects, initProjectListeners } from '../store/projects'
 import { loadAgents, initAgentListeners } from '../store/agents'
-import { initSessionListeners, syncSessionStatuses } from '../store/sessions'
+import { initSessionListeners, initSessionWindowFocusRefresh, syncSessionStatuses } from '../store/sessions'
 import { initTerminalListeners } from '../store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from '../store/git'
 import { initOpenFilesRefresh } from '../store/fileSync'
@@ -45,6 +45,7 @@ export async function initListeners() {
     initAgentListeners(),
   ])
   initWindowFocusRefresh()
+  initSessionWindowFocusRefresh()
   initEnvPathFocusRefresh()
   initOpenFilesRefresh()
   document.addEventListener('visibilitychange', () => {
