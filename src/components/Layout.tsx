@@ -14,7 +14,7 @@ import { projects, projectById } from '../store/projects'
 import { selectedProjectId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
 import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView } from '../store/editorView'
-import { rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/ui'
+import { rightPanelTab, setRightPanelTab, setShowQuickOpen, setFocusSearchRequest } from '../store/ui'
 import { GlobalCommandPalette, setShowGlobalPalette } from './GlobalCommandPalette'
 
 async function pickAndAddProject() {
@@ -119,6 +119,12 @@ export const Layout: Component = () => {
       if (modPressed(e) && e.key === 'p' && selectedTaskId()) {
         e.preventDefault()
         setShowQuickOpen(true)
+      }
+      // Cmd+Shift+F — global workspace search
+      if (modPressed(e) && e.shiftKey && (e.key === 'f' || e.key === 'F') && selectedTaskId()) {
+        e.preventDefault()
+        setRightPanelTab('search')
+        setFocusSearchRequest(t => t + 1)
       }
       // Cmd+E — toggle Files panel
       if (modPressed(e) && e.key === 'e') {

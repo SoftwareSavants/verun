@@ -12,7 +12,7 @@ import { toggleTerminal, showTerminal, setShowTerminal } from '../store/ui'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
 import { projectById } from '../store/projects'
 import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView } from '../store/editorView'
-import { rightPanelTab, setRightPanelTab, setShowQuickOpen } from '../store/ui'
+import { rightPanelTab, setRightPanelTab, setShowQuickOpen, setFocusSearchRequest } from '../store/ui'
 import { TaskPanel } from './TaskPanel'
 import { NewTaskDialog } from './NewTaskDialog'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -112,6 +112,11 @@ export const TaskWindowShell: Component = () => {
 
       if (modPressed(e) && e.key === 'p' && tid) {
         e.preventDefault(); setShowQuickOpen(true)
+      }
+      if (modPressed(e) && e.shiftKey && (e.key === 'f' || e.key === 'F') && tid) {
+        e.preventDefault()
+        setRightPanelTab('search')
+        setFocusSearchRequest(t => t + 1)
       }
       if (modPressed(e) && e.key === 'e') {
         e.preventDefault(); setRightPanelTab(rightPanelTab() === 'files' ? 'changes' : 'files')

@@ -892,7 +892,7 @@ export const ChatView: Component<Props> = (props) => {
   // Cmd+F / Ctrl+F handler
   onMount(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'f') {
         // Only handle if this ChatView is visible (container in DOM)
         if (!containerRef || !containerRef.offsetParent) return
         e.preventDefault()

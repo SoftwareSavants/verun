@@ -3,6 +3,7 @@ import { clsx } from 'clsx'
 import { ChevronDown, ChevronRight, Loader2, AlertCircle } from 'lucide-solid'
 import { CodeChanges } from './CodeChanges'
 import { FilesPanel } from './FilesPanel'
+import { GlobalSearchPanel } from './GlobalSearchPanel'
 import { ProblemsPanel } from './ProblemsPanel'
 import { rightPanelTab, setRightPanelTab } from '../store/ui'
 import { problemCountForTask, isProblemsLoading } from '../store/problems'
@@ -15,6 +16,7 @@ interface Props {
 const TABS = [
   { id: 'changes' as const, label: 'Changes' },
   { id: 'files' as const, label: 'Files' },
+  { id: 'search' as const, label: 'Search' },
 ]
 
 export const RightPanel: Component<Props> = (props) => {
@@ -55,6 +57,9 @@ export const RightPanel: Component<Props> = (props) => {
         </Show>
         <Show when={rightPanelTab() === 'files'}>
           <FilesPanel taskId={props.taskId} />
+        </Show>
+        <Show when={rightPanelTab() === 'search'}>
+          <GlobalSearchPanel taskId={props.taskId} />
         </Show>
       </div>
 

@@ -7,6 +7,7 @@ use crate::task::{
     self, ActiveMap, ApprovalResponse, HookPtyMap, PendingApprovalEntry, PendingApprovalMeta,
     PendingApprovals, PendingControlResponses, SetupInProgress,
 };
+use crate::file_search::{SearchMap, SearchOpts};
 use crate::tsgo_check::TsgoCheckMap;
 use crate::watcher::FileWatcherMap;
 use crate::worktree;
@@ -2310,6 +2311,38 @@ pub async fn tsgo_check_cancel(
     task_id: String,
 ) -> Result<(), String> {
     crate::tsgo_check::cancel(&map, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn workspace_search_start(
+    pool: State<'_, SqlitePool>,
+    map: State<'_, SearchMap>,
+    app: AppHandle,
+    task_id: String,
+    query: String,
+    opts: Option<SearchOpts>,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    crate::file_search::start(
+        map.inner().clone(),
+        app,
+        task_id,
+        t.worktree_path,
+        query,
+        opts.unwrap_or_default(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn workspace_search_cancel(
+    map: State<'_, SearchMap>,
+    task_id: String,
+) -> Result<(), String> {
+    crate::file_search::cancel(&map, &task_id);
     Ok(())
 }
 

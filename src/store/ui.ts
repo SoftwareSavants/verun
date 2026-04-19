@@ -112,15 +112,21 @@ export const [sidebarWidth, setSidebarWidth] = createSignal(280)
 const savedRightPanelWidth = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:rightPanelWidth') : null
 export const [rightPanelWidth, setRightPanelWidth] = createSignal(savedRightPanelWidth ? parseInt(savedRightPanelWidth, 10) : 280)
 
+export type RightPanelTab = 'changes' | 'files' | 'search'
+
 const savedRightTab = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:rightPanelTab') : null
-const [_rightPanelTab, _setRightPanelTab] = createSignal<'changes' | 'files'>(
-  (savedRightTab as 'changes' | 'files') || 'changes'
+const [_rightPanelTab, _setRightPanelTab] = createSignal<RightPanelTab>(
+  (savedRightTab as RightPanelTab) || 'changes'
 )
 export const rightPanelTab = _rightPanelTab
-export function setRightPanelTab(tab: 'changes' | 'files') {
+export function setRightPanelTab(tab: RightPanelTab) {
   _setRightPanelTab(tab)
   localStorage.setItem('verun:rightPanelTab', tab)
 }
+
+// Incremented whenever the user invokes Cmd+Shift+F so the search panel knows
+// to focus its input even if it's already open.
+export const [focusSearchRequest, setFocusSearchRequest] = createSignal(0)
 
 export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
 

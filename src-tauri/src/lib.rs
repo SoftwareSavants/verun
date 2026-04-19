@@ -2,6 +2,7 @@ pub mod agent;
 mod claude_jsonl;
 mod db;
 mod env_path;
+mod file_search;
 mod git_ops;
 mod github;
 mod ipc;
@@ -51,6 +52,7 @@ pub fn run() {
         .manage(watcher::new_file_watcher_map())
         .manage(lsp::new_lsp_map())
         .manage(tsgo_check::new_tsgo_check_map())
+        .manage(file_search::new_search_map())
         .manage(WindowTaskMap::new())
         .setup(|app| {
             // Capture the user's full PATH from their interactive shell so
@@ -336,6 +338,8 @@ pub fn run() {
             ipc::lsp_stop,
             ipc::tsgo_check_run,
             ipc::tsgo_check_cancel,
+            ipc::workspace_search_start,
+            ipc::workspace_search_cancel,
             // Notifications (debug-only: test click navigation from devtools)
             #[cfg(debug_assertions)]
             ipc::debug_navigate_to_task,
