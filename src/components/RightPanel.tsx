@@ -1,8 +1,9 @@
 import { Component, Show, createSignal } from 'solid-js'
 import { clsx } from 'clsx'
-import { ChevronDown, ChevronRight, Loader2, AlertCircle } from 'lucide-solid'
+import { ChevronDown, ChevronRight, Loader2, AlertCircle, Files, Search, GitBranch } from 'lucide-solid'
 import { CodeChanges } from './CodeChanges'
 import { FilesPanel } from './FilesPanel'
+import { GlobalSearchPanel } from './GlobalSearchPanel'
 import { ProblemsPanel } from './ProblemsPanel'
 import { rightPanelTab, setRightPanelTab } from '../store/ui'
 import { problemCountForTask, isProblemsLoading } from '../store/problems'
@@ -13,8 +14,9 @@ interface Props {
 }
 
 const TABS = [
-  { id: 'changes' as const, label: 'Changes' },
-  { id: 'files' as const, label: 'Files' },
+  { id: 'files' as const, label: 'Files', icon: Files },
+  { id: 'search' as const, label: 'Search', icon: Search },
+  { id: 'changes' as const, label: 'Source Control', icon: GitBranch },
 ]
 
 export const RightPanel: Component<Props> = (props) => {
@@ -31,19 +33,20 @@ export const RightPanel: Component<Props> = (props) => {
 
   return (
     <div class="flex flex-col h-full bg-surface-1">
-      {/* Tab bar */}
-      <div class="flex items-center gap-0.5 px-3 pt-10 pb-1.5 bg-surface-1 shrink-0 drag-region" data-tauri-drag-region>
+      {/* Tab bar — icon-only (Cursor/VS Code style) */}
+      <div class="flex items-center gap-0.5 px-2 pt-10 pb-1.5 bg-surface-1 shrink-0 drag-region" data-tauri-drag-region>
         {TABS.map(tab => (
           <button
             class={clsx(
-              'px-3 py-1 text-[11px] font-medium rounded-md transition-colors no-drag',
+              'h-7 w-7 flex items-center justify-center rounded-md transition-colors no-drag',
               rightPanelTab() === tab.id
                 ? 'bg-surface-3 text-text-secondary'
                 : 'text-text-dim hover:text-text-muted hover:bg-surface-2'
             )}
             onClick={() => setRightPanelTab(tab.id)}
+            title={tab.label}
           >
-            {tab.label}
+            {(() => { const I = tab.icon; return <I size={15} /> })()}
           </button>
         ))}
       </div>
@@ -55,6 +58,9 @@ export const RightPanel: Component<Props> = (props) => {
         </Show>
         <Show when={rightPanelTab() === 'files'}>
           <FilesPanel taskId={props.taskId} />
+        </Show>
+        <Show when={rightPanelTab() === 'search'}>
+          <GlobalSearchPanel taskId={props.taskId} />
         </Show>
       </div>
 

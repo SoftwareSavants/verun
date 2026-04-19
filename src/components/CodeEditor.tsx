@@ -926,7 +926,7 @@ export const CodeEditor: Component<Props> = (props) => {
 
   // ── Go-to-line ──────────────────────────────────────────────────────
   // Scrolls the editor to a specific line/column and focuses it.
-  const goToLine = (line: number, column: number) => {
+  const goToLine = (line: number, column: number, preserveFocus?: boolean) => {
     if (!editorView) return
     const l = Math.min(line, editorView.state.doc.lines)
     const lineInfo = editorView.state.doc.line(l)
@@ -936,7 +936,7 @@ export const CodeEditor: Component<Props> = (props) => {
       selection: { anchor: pos },
       effects: EditorView.scrollIntoView(pos, { y: 'center' }),
     })
-    editorView.focus()
+    if (!preserveFocus) editorView.focus()
   }
 
   // Drains the pendingGoToLine signal if it targets this file.
@@ -945,7 +945,7 @@ export const CodeEditor: Component<Props> = (props) => {
     if (!req || req.relativePath !== props.relativePath) return
     if (!editorView) return
     consumeGoToLine(props.taskId)
-    goToLine(req.line, req.column)
+    goToLine(req.line, req.column, req.preserveFocus)
   }
 
   // ── Editor lifecycle ──────────────────────────────────────────────
@@ -1024,11 +1024,15 @@ export const CodeEditor: Component<Props> = (props) => {
       registerEditorView(currentFileUri, editorView)
     }
 
-    // Apply any pending go-to-line now that the editor is ready
+    // Apply any pending go-to-line now that the editor is ready.
+    // Snapshot the preserveFocus flag before draining (which clears the signal).
+    const pending = pendingGoToLine(props.taskId)
+    const preserveFocus = !!(pending && pending.relativePath === props.relativePath && pending.preserveFocus)
     drainPendingGoToLine()
 
-    // Auto-focus the editor so the cursor is visible and keyboard input works
-    editorView.focus()
+    // Auto-focus the editor so the cursor is visible and keyboard input works,
+    // unless the open was a preview-style request (e.g. workspace search nav).
+    if (!preserveFocus) editorView.focus()
   }
 
   // Load file content and (re)create the editor when the file changes
@@ -1084,11 +1088,15 @@ export const CodeEditor: Component<Props> = (props) => {
     }
   })
 
-  // React to go-to-line requests for the file already shown (no editor recreation)
+  // React to go-to-line requests for the file already shown (no editor recreation).
+  // Skip when editorView still belongs to the OLD file during an in-flight switch —
+  // createEditor drains the pending after mounting the new view, which is the only
+  // place preserveFocus can be honored correctly.
   createEffect(() => {
     const req = pendingGoToLine(props.taskId)
-    void props.relativePath // track so effect re-fires on file switch
+    void props.relativePath
     if (!req || !editorView) return
+    if (currentFileKey !== cacheKey(props.taskId, props.relativePath)) return
     drainPendingGoToLine()
   })
 

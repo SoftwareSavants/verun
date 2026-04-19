@@ -30,6 +30,7 @@ Pluggable agent backend with Claude Code support today, Codex and Cursor coming 
 - **Git workflow** - commit, push, create PR, and merge without leaving the app
 - **Integrated terminal** - drop into any task's worktree with a built-in shell
 - **File tree & Quick Open** - browse files, fuzzy-find with CMD+P, preview media and markdown inline
+- **Workspace search** - Cmd+Shift+F content search across the task's worktree with case/whole-word/regex toggles and include/exclude globs, powered by embedded ripgrep
 - **Multi-window** - pop any task into its own window for side-by-side work across monitors
 
 ## Open source & local

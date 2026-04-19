@@ -253,6 +253,21 @@ export const hasConflicts = (taskId: string): Promise<boolean> =>
 export const listWorktreeFiles = (taskId: string) =>
   invoke<string[]>('list_worktree_files', { taskId })
 
+// Workspace content search (Cmd+Shift+F)
+export interface WorkspaceSearchOpts {
+  caseSensitive?: boolean
+  wholeWord?: boolean
+  regex?: boolean
+  includes?: string[]
+  excludes?: string[]
+}
+
+export const workspaceSearchStart = (taskId: string, query: string, opts?: WorkspaceSearchOpts) =>
+  invoke<void>('workspace_search_start', { taskId, query, opts })
+
+export const workspaceSearchCancel = (taskId: string) =>
+  invoke<void>('workspace_search_cancel', { taskId })
+
 export const checkGitignored = (taskId: string, paths: string[]) =>
   invoke<string[]>('check_gitignored', { taskId, paths })
 

@@ -19,4 +19,6 @@ export interface PendingGoToLineRequest {
   relativePath: string
   line: number
   column: number
+  /** When true, scroll + select but do NOT focus the editor. Used by preview-style opens (e.g. workspace search keyboard nav). */
+  preserveFocus?: boolean
 }
