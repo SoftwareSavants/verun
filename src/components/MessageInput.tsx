@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, autoApprovedCounts, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
 import { setSelectedSessionId, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
@@ -510,11 +510,6 @@ export const MessageInput: Component<Props> = (props) => {
     await ipc.setTrustLevel(taskId, level)
     setTrustLevelLocal(level)
     setShowTrustMenu(false)
-  }
-
-  const autoApprovedCount = () => {
-    const sid = props.sessionId
-    return sid ? (autoApprovedCounts[sid] || 0) : 0
   }
 
   // Plan mode
@@ -2280,9 +2275,9 @@ export const MessageInput: Component<Props> = (props) => {
                  trustLevel() === 'supervised' ? <ShieldAlert size={13} /> :
                  <Shield size={13} />}
                 <span>
-                  {trustLevel() === 'full_auto' ? 'full auto' :
-                   trustLevel() === 'supervised' ? 'ask' :
-                   'auto-safe'}
+                  {trustLevel() === 'full_auto' ? 'Full auto' :
+                   trustLevel() === 'supervised' ? 'Ask' :
+                   'Auto-safe'}
                 </span>
               </button>
               <Popover open={showTrustMenu()} onClose={() => setShowTrustMenu(false)} class="py-2 w-64 absolute bottom-full left-0 mb-1">
@@ -2315,16 +2310,6 @@ export const MessageInput: Component<Props> = (props) => {
                 </For>
               </Popover>
             </div>
-
-            {/* Auto-approved count */}
-            <Show when={autoApprovedCount() > 0}>
-              <span
-                class="text-[10px] text-status-running/70 px-1.5 py-0.5 rounded-full flex items-center"
-                title={`${autoApprovedCount()} tool calls auto-approved this session`}
-              >
-                {autoApprovedCount()} auto-approved
-              </span>
-            </Show>
 
             {/* Usage chip */}
             <UsageChip sessionId={props.sessionId} />
