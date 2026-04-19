@@ -85,7 +85,9 @@ export async function loadSessions(taskId: string) {
 
 export async function createSession(taskId: string, agentType: string, model?: string): Promise<Session> {
   const session = await ipc.createSession(taskId, agentType, model)
-  setSessions(produce(s => s.push(session)))
+  // Dedup vs the session-created broadcast: Rust emits to all windows including
+  // the source, and the broadcast can land before this await resolves.
+  setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
   setOutputItems(session.id, [])
   return session
 }

@@ -16,13 +16,14 @@ vi.mock('../lib/ipc', () => ({
   listSessions: vi.fn().mockResolvedValue([]),
   listSteps: vi.fn().mockResolvedValue([]),
   syncSessionStatuses: vi.fn().mockResolvedValue(undefined),
+  createSession: vi.fn(),
 }))
 
 vi.mock('../lib/notifications', () => ({
   notify: vi.fn(),
 }))
 
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, createSession } from './sessions'
 import * as ipc from '../lib/ipc'
 import type { Session, OutputItem } from '../types'
 
@@ -205,5 +206,42 @@ describe('loadSessions', () => {
     await loadSessions('t-001')
     const ids = sessions.map(s => s.id).sort()
     expect(ids).toEqual(['s-fresh', 's-other'])
+  })
+})
+
+// Regression — when the source window calls createSession, Rust both returns
+// the session AND broadcasts session-created. If the broadcast lands before the
+// IPC await resolves, the listener pushes first; without dedup the local push
+// duplicates it, doubling the entry in the sessions store (and the tab bar).
+describe('createSession dedup vs cross-window broadcast', () => {
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    vi.mocked(ipc.createSession).mockReset()
+  })
+
+  test('does not double-insert when session-created event fires before IPC resolves', async () => {
+    const s = makeSession({ id: 's-race', taskId: 't-001' })
+    vi.mocked(ipc.createSession).mockImplementation(async () => {
+      // Simulate the broadcast arriving while the IPC is still in-flight
+      const fire = listenCallbacks.get('session-created')!
+      fire({ payload: s })
+      return s
+    })
+    await createSession('t-001', 'claude')
+    expect(sessions.filter(x => x.id === 's-race').length).toBe(1)
+  })
+
+  test('does not double-insert when broadcast arrives after IPC resolves', async () => {
+    const s = makeSession({ id: 's-after', taskId: 't-001' })
+    vi.mocked(ipc.createSession).mockResolvedValue(s)
+    await createSession('t-001', 'claude')
+    // Now the broadcast lands at the source window
+    listenCallbacks.get('session-created')!({ payload: s })
+    expect(sessions.filter(x => x.id === 's-after').length).toBe(1)
   })
 })
