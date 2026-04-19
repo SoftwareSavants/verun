@@ -5,6 +5,7 @@ use crate::stream;
 use crate::worktree;
 use dashmap::DashMap;
 use serde::Deserialize;
+use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -207,6 +208,21 @@ pub type ActiveMap = Arc<DashMap<String, ActiveProcess>>;
 
 pub fn new_active_map() -> ActiveMap {
     Arc::new(DashMap::new())
+}
+
+/// Intersect currently-active session ids with the session ids belonging to a
+/// given task. Used by archive/delete to scope the kill to one task only.
+fn active_session_ids_for_task<I, S>(active_ids: I, task_session_ids: &[S]) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+    S: AsRef<str>,
+{
+    let task_set: std::collections::HashSet<&str> =
+        task_session_ids.iter().map(|s| s.as_ref()).collect();
+    active_ids
+        .into_iter()
+        .filter(|id| task_set.contains(id.as_str()))
+        .collect()
 }
 
 /// task_id → true while the setup hook is still running in the background
@@ -629,6 +645,7 @@ pub async fn create_task(
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_task(
     app: &AppHandle,
+    pool: &SqlitePool,
     db_tx: &DbWriteTx,
     active: &ActiveMap,
     repo_path: &str,
@@ -637,9 +654,12 @@ pub async fn delete_task(
     delete_branch: bool,
     skip_destroy_hook: bool,
 ) -> Result<(), String> {
-    // Kill any active processes for this task's sessions
-    let keys: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
-    for sid in keys {
+    // Kill active processes belonging to THIS task only - never sessions on other tasks.
+    let task_session_ids = db::list_all_session_ids_for_task(pool, &task.id)
+        .await
+        .unwrap_or_default();
+    let active_ids = active.iter().map(|e| e.key().clone());
+    for sid in active_session_ids_for_task(active_ids, &task_session_ids) {
         abort_message(app, db_tx, active, &sid).await?;
     }
 
@@ -698,8 +718,10 @@ pub async fn delete_task(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn archive_task(
     app: &AppHandle,
+    pool: &SqlitePool,
     db_tx: &DbWriteTx,
     active: &ActiveMap,
     task: &Task,
@@ -707,9 +729,12 @@ pub async fn archive_task(
     repo_path: &str,
     skip_destroy_hook: bool,
 ) -> Result<(), String> {
-    // Kill any active processes for this task's sessions
-    let keys: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
-    for sid in keys {
+    // Kill active processes belonging to THIS task only - never sessions on other tasks.
+    let task_session_ids = db::list_all_session_ids_for_task(pool, &task.id)
+        .await
+        .unwrap_or_default();
+    let active_ids = active.iter().map(|e| e.key().clone());
+    for sid in active_session_ids_for_task(active_ids, &task_session_ids) {
         abort_message(app, db_tx, active, &sid).await?;
     }
 
@@ -2354,5 +2379,35 @@ mod tests {
         assert!(a.starts_with("req_"));
         assert!(b.starts_with("req_"));
         assert_ne!(a, b);
+    }
+
+    // Regression: archiving / deleting a task must not kill sessions on other tasks.
+    // See https://github.com/SoftwareSavants/verun/issues/169
+    #[test]
+    fn active_session_ids_for_task_returns_only_matching_sessions() {
+        let active_ids = vec!["s1".to_string(), "s2".to_string(), "s3".to_string()];
+        let task_session_ids = ["s2".to_string(), "s4".to_string()];
+        let result = active_session_ids_for_task(active_ids, &task_session_ids);
+        assert_eq!(result, vec!["s2".to_string()]);
+    }
+
+    #[test]
+    fn active_session_ids_for_task_empty_when_no_overlap() {
+        let active_ids = vec!["s1".to_string()];
+        let task_session_ids = ["s2".to_string()];
+        let result = active_session_ids_for_task(active_ids, &task_session_ids);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn active_session_ids_for_task_excludes_other_tasks_sessions() {
+        // Active sessions: s1, s2 belong to task A; s3, s4 belong to task B.
+        // Archiving task B should return only s3, s4 - never s1, s2.
+        let active_ids: Vec<String> =
+            vec!["s1".into(), "s2".into(), "s3".into(), "s4".into()];
+        let task_b_session_ids = ["s3".to_string(), "s4".to_string()];
+        let mut result = active_session_ids_for_task(active_ids, &task_b_session_ids);
+        result.sort();
+        assert_eq!(result, vec!["s3".to_string(), "s4".to_string()]);
     }
 }
