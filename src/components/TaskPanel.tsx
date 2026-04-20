@@ -113,7 +113,7 @@ function OpenInButton(props: { path: string }) {
       >
         <SvgIcon svg={defaultEditor().svg} size={14} />
       </button>
-      <span class="w-px self-stretch bg-white/8" />
+      <span class="w-px self-stretch bg-outline/8" />
       <button
         class="flex items-center px-1 hover:bg-surface-2 transition-colors rounded-r-md"
         onClick={() => setOpen(!open())}
@@ -288,7 +288,7 @@ export const TaskPanel: Component = () => {
                         }
                       }}
                     >
-                      Add Project <kbd class="ml-1.5 px-1 py-0.5 rounded bg-white/8 text-[10px] font-mono">{'\u2318'}O</kbd>
+                      Add Project <kbd class="ml-1.5 px-1 py-0.5 rounded bg-outline/8 text-[10px] font-mono">{'\u2318'}O</kbd>
                     </button>
                   </>
                 }
@@ -424,13 +424,13 @@ export const TaskPanel: Component = () => {
                         <Terminal size={13} />
                       </button>
                       <Show when={hasGitActionsContent(t().id)}>
-                        <span class="w-px h-4 bg-white/8 mx-1" />
+                        <span class="w-px h-4 bg-outline/8 mx-1" />
                         <GitActions
                           taskId={t().id}
                           sessionId={selectedSessionId()}
                           isRunning={currentSession()?.status === 'running'}
                         />
-                        <span class="w-px h-4 bg-white/8 mx-1" />
+                        <span class="w-px h-4 bg-outline/8 mx-1" />
                       </Show>
                       <button
                         class="toolbar-btn w-6 justify-center"
@@ -519,7 +519,7 @@ export const TaskPanel: Component = () => {
                                 ? 'relative z-10 bg-surface-0 text-text-primary tab-active-frame'
                                 : hasUnread()
                                   ? 'text-accent hover:text-accent-hover tab-unread-pulse'
-                                  : 'text-text-muted hover:text-text-secondary hover:bg-white/3'
+                                  : 'text-text-muted hover:text-text-secondary hover:bg-outline/3'
                             )}
                             onClick={() => { setSelectedSessionId(session.id); setMainView(t().id, 'session') }}
                           >
@@ -580,7 +580,7 @@ export const TaskPanel: Component = () => {
                               'group h-8 flex items-center gap-1.5 px-3 text-[11px] rounded-t-md whitespace-nowrap cursor-pointer',
                               isActive()
                                 ? 'relative z-10 bg-surface-0 text-text-primary tab-active-frame'
-                                : 'text-text-muted hover:text-text-secondary hover:bg-white/3'
+                                : 'text-text-muted hover:text-text-secondary hover:bg-outline/3'
                             )}
                             onClick={() => { if (mainView(t().id) === tab.relativePath) return; setActiveTab(t().id, tab.relativePath); if (!isDiff()) revealFileInTree(t().id, tab.relativePath) }}
                             onDblClick={() => pinTab(t().id, tab.relativePath)}
@@ -621,7 +621,7 @@ export const TaskPanel: Component = () => {
                   </div>
 
                   {/* Main content — chat or editor. Side borders extend the active tab's frame. */}
-                  <div class="relative -mt-px flex-1 flex flex-col min-h-0 overflow-hidden rounded-t-md bg-surface-0 border-t-1 border-t-solid border-t-white/8 border-l-1 border-l-solid border-l-white/8 border-r-1 border-r-solid border-r-white/8" style="isolation: isolate; clip-path: inset(0 round 4px 4px 0 0);">
+                  <div class="relative -mt-px flex-1 flex flex-col min-h-0 overflow-hidden rounded-t-md bg-surface-0 border-t-1 border-t-solid border-t-outline/8 border-l-1 border-l-solid border-l-outline/8 border-r-1 border-r-solid border-r-outline/8" style="isolation: isolate; clip-path: inset(0 round 4px 4px 0 0);">
                     <Show
                       when={mainView(t().id) !== 'session'}
                       fallback={

@@ -180,7 +180,7 @@ export const CodeChanges: Component<Props> = (props) => {
 
       {/* Error */}
       <Show when={error()}>
-        <div class="px-3 py-2 text-xs text-red-400 bg-red-400/5 border-b-1 border-b-solid border-b-white/8 flex items-center justify-between">
+        <div class="px-3 py-2 text-xs text-red-400 bg-red-400/5 border-b-1 border-b-solid border-b-outline/8 flex items-center justify-between">
           <span class="truncate">{error()}</span>
           <button class="shrink-0 ml-2" onClick={() => setError(null)}><X size={12} /></button>
         </div>
@@ -249,7 +249,7 @@ export const CodeChanges: Component<Props> = (props) => {
       </div>
 
       {/* Branch commits — collapsible, bottom-aligned like VS Code */}
-      <div class="h-px bg-white/8 shrink-0" />
+      <div class="h-px bg-outline/8 shrink-0" />
       <div class="shrink-0">
         <button
           class="w-full h-8 flex items-center gap-1.5 px-3 text-xs hover:bg-surface-2"

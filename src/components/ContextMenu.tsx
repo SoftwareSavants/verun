@@ -32,7 +32,7 @@ export const ContextMenu: Component<Props> = (props) => (
       {(item) => (
         <Show
           when={!('separator' in item)}
-          fallback={<div class="my-1 h-px bg-white/8" />}
+          fallback={<div class="my-1 h-px bg-outline/8" />}
         >
           {(() => {
             const action = item as Extract<ContextMenuItem, { label: string }>

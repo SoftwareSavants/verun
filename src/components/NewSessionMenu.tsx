@@ -109,7 +109,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
     <>
       <button
         ref={buttonRef}
-        class="h-8 w-8 shrink-0 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-white/3 transition-colors disabled:opacity-40"
+        class="h-8 w-8 shrink-0 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-outline/3 transition-colors disabled:opacity-40"
         onClick={openMenu}
         disabled={props.disabled || creating()}
         title="New Session"
@@ -129,7 +129,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
           />
 
           <div
-            class="fixed z-[101] bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl py-1 w-44"
+            class="fixed z-[101] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1 w-44"
             style={{
               left: `${menuRect()?.left ?? 0}px`,
               top: `${menuRect()?.top ?? 0}px`,
@@ -179,7 +179,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
 
           <Show when={hoveredAgentInfo() && hoveredAgentInfo()!.models.length > 0}>
             <div
-              class="fixed z-[102] bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl py-1 w-44 max-h-80 flex flex-col"
+              class="fixed z-[102] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1 w-44 max-h-80 flex flex-col"
               style={{
                 left: `${submenuRect()?.left ?? 0}px`,
                 top: `${submenuRect()?.top ?? 0}px`,
@@ -189,7 +189,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
             >
               <Show when={showModelSearch()}>
                 <div class="px-2 py-1 shrink-0">
-                  <div class="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-1 ring-1 ring-white/6">
+                  <div class="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-1 ring-1 ring-outline/6">
                     <Search size={10} class="text-text-dim shrink-0" />
                     <input
                       type="text"

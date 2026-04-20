@@ -116,7 +116,7 @@ export const ModelSelector: Component<Props> = (props) => {
         </div>
         <Show when={showSearch()}>
           <div class="px-2 pt-1 pb-1">
-            <div class="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-1 ring-1 ring-white/6">
+            <div class="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-1 ring-1 ring-outline/6">
               <Search size={10} class="text-text-dim shrink-0" />
               <input
                 type="text"

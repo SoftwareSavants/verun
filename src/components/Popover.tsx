@@ -24,7 +24,7 @@ export const Popover: Component<Props> = (props) => {
         onContextMenu={(e) => { e.preventDefault(); props.onClose() }}
       />
       <div
-        class={`${props.pos ? 'fixed' : ''} z-50 bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl animate-in ${props.class || ''}`}
+        class={`${props.pos ? 'fixed' : ''} z-50 bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl animate-in ${props.class || ''}`}
         style={props.pos ? { left: `${props.pos.x}px`, top: `${props.pos.y}px` } : undefined}
         onMouseDown={(e) => e.preventDefault()}
       >

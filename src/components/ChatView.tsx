@@ -361,7 +361,7 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
           </button>
           <Show when={submenuOpen()}>
             <div
-              class="absolute -top-1 left-[calc(100%-4px)] py-1 min-w-48 bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl animate-in"
+              class="absolute -top-1 left-[calc(100%-4px)] py-1 min-w-48 bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl animate-in"
               onMouseDown={(e) => e.preventDefault()}
             >
               <button
@@ -384,7 +384,7 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
           </Show>
         </div>
         <Show when={error()}>
-          <div class="mt-1 px-2.5 py-1 text-[10px] text-status-error border-t border-white/8">{error()}</div>
+          <div class="mt-1 px-2.5 py-1 text-[10px] text-status-error border-t border-outline/8">{error()}</div>
         </Show>
       </Popover>
     </div>
@@ -747,7 +747,7 @@ const ErrorBlockView: Component<{
               <Check size={11} class="text-status-running" />
             </Show>
           </button>
-          <pre class="my-0 max-h-64 overflow-auto text-[11px] text-text-secondary bg-surface-1 rounded-md p-2 pr-7 ring-1 ring-white/5 whitespace-pre-wrap break-words">{prettyJson(props.raw)}</pre>
+          <pre class="my-0 max-h-64 overflow-auto text-[11px] text-text-secondary bg-surface-1 rounded-md p-2 pr-7 ring-1 ring-outline/5 whitespace-pre-wrap break-words">{prettyJson(props.raw)}</pre>
         </div>
       </Show>
     </div>
@@ -1180,7 +1180,7 @@ export const ChatView: Component<Props> = (props) => {
       </div>
       <Show when={!isAtBottom()}>
         <button
-          class="absolute bottom-4 right-4 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-surface-2 ring-1 ring-white/10 shadow-lg text-text-dim hover:text-text-secondary hover:ring-white/20 transition-colors"
+          class="absolute bottom-4 right-4 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-surface-2 ring-1 ring-outline/10 shadow-lg text-text-dim hover:text-text-secondary hover:ring-outline/20 transition-colors"
           onClick={scrollToBottom}
           title="Scroll to bottom"
         >

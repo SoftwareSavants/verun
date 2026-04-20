@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 import type { OutputItem } from '../types'
+import { getXtermTheme, getXtermFontConfig, subscribeXtermToAppearance } from '../lib/terminalTheme'
 
 // ANSI escape helpers
 const RESET = '\x1b[0m'
@@ -156,15 +157,11 @@ export const Terminal: Component<Props> = (props) => {
   }
 
   onMount(() => {
+    const fontCfg = getXtermFontConfig()
     term = new XTerm({
-      theme: {
-        background: '#0a0a0a',
-        foreground: '#e5e5e5',
-        cursor: '#e5e5e5',
-        selectionBackground: '#2d6e4f80',
-      },
-      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
-      fontSize: 13,
+      theme: getXtermTheme(),
+      fontFamily: fontCfg.fontFamily,
+      fontSize: fontCfg.fontSize,
       lineHeight: 1.4,
       cursorBlink: false,
       disableStdin: true,
@@ -204,10 +201,13 @@ export const Terminal: Component<Props> = (props) => {
     const resizeObserver = new ResizeObserver(() => fitAddon.fit())
     resizeObserver.observe(containerRef)
 
+    const unsubAppearance = subscribeXtermToAppearance(term, () => fitAddon.fit())
+
     onCleanup(() => {
       containerRef.removeEventListener('keydown', handleKeyboard)
       resizeObserver.disconnect()
       resultsDisposable?.dispose()
+      unsubAppearance()
       if (rafId !== null) cancelAnimationFrame(rafId)
       term.dispose()
     })

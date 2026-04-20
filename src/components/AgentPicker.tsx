@@ -66,7 +66,7 @@ export const AgentPicker: Component<Props> = (props) => {
         <SvgIcon svg={currentIcon()} size={14} />
         <span class="flex-1 text-left text-text-primary">{current()?.name ?? props.value}</span>
         <Show when={current() && !current()!.installed}>
-          <span class="text-[10px] text-text-dim ring-1 ring-white/8 px-1.5 py-0.5 rounded">not installed</span>
+          <span class="text-[10px] text-text-dim ring-1 ring-outline/8 px-1.5 py-0.5 rounded">not installed</span>
         </Show>
         <ChevronDown size={12} class={clsx('text-text-dim ml-auto shrink-0 transition-transform', open() && 'rotate-180')} />
       </button>
@@ -81,7 +81,7 @@ export const AgentPicker: Component<Props> = (props) => {
             onContextMenu={(e) => { e.preventDefault(); closeDropdown() }}
           />
           <div
-            class="fixed z-[101] bg-surface-2 ring-1 ring-white/8 rounded-md shadow-xl animate-in py-1 min-w-56"
+            class="fixed z-[101] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl animate-in py-1 min-w-56"
             style={{
               left: `${dropdownRect()?.left ?? 0}px`,
               top: `${dropdownRect()?.top ?? 0}px`,
@@ -114,7 +114,7 @@ export const AgentPicker: Component<Props> = (props) => {
                           <span class="text-[10px] text-text-dim">default</span>
                         </Show>
                         <Show when={!agent.installed}>
-                          <span class="text-[10px] text-text-dim ring-1 ring-white/8 px-1 py-0.5 rounded">not installed</span>
+                          <span class="text-[10px] text-text-dim ring-1 ring-outline/8 px-1 py-0.5 rounded">not installed</span>
                         </Show>
                       </div>
                     </div>
