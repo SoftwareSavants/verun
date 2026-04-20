@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Task naming (Haiku) now runs with `--strict-mcp-config` so large MCP server setups don't bloat context and cause failures
+- Fix Windows build: gate `libc::kill` (SIGTERM) behind `#[cfg(unix)]` - Windows falls through to SIGKILL
 
 ## 0.8.0 — 2026-04-20
 
