@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Sidebar task switching feels instant: output lines are cached per session after the first load so switching away and back no longer re-fetches and re-parses the full NDJSON transcript; steps now load in parallel with the chat view instead of blocking it; file tree skips the worktree walk when the root is already cached
 - Task naming (Haiku) now runs with `--strict-mcp-config` so large MCP server setups don't bloat context and cause failures
 - Fix Windows build: gate `libc::kill` (SIGTERM) behind `#[cfg(unix)]` - Windows falls through to SIGKILL
 

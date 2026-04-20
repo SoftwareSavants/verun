@@ -40,6 +40,15 @@ export async function loadDirectory(taskId: string, relativePath: string) {
   setDirContents(key, entries)
 }
 
+/** Like loadDirectory, but a no-op when the directory is already in the cache.
+ * Use from task-switch effects where we only need to populate the tree once —
+ * the file watcher keeps it fresh after that via invalidateDirectory.
+ */
+export async function loadDirectoryIfMissing(taskId: string, relativePath: string) {
+  if (dirContents[cacheKey(taskId, relativePath)]) return
+  await loadDirectory(taskId, relativePath)
+}
+
 export function invalidateDirectory(taskId: string, relativePath: string) {
   const key = cacheKey(taskId, relativePath)
   if (dirContents[key]) {
