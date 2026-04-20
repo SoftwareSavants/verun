@@ -316,3 +316,18 @@ describe('applyAppearance - code font size unifies code blocks and terminals', (
     expect(document.documentElement.style.getPropertyValue('--font-code-size').trim()).toBe('16px')
   })
 })
+
+describe('DEFAULT_PREFS - normal density matches pre-feature look', () => {
+  // Before the Appearance feature there was no explicit root font-size, so the
+  // browser default (16px) drove all rem-based UnoCSS utilities. Anything lower
+  // as the default ui font size would silently shrink the entire UI at normal
+  // density, which is what 0.7.x users already have muscle memory for.
+  test('uiFontSize default is 16 so rem-based utilities match the browser default', () => {
+    expect(DEFAULT_PREFS.uiFontSize).toBe(16)
+  })
+
+  test('applyAppearance with defaults publishes --font-base-size: 16px', () => {
+    applyAppearance(DEFAULT_PREFS)
+    expect(document.documentElement.style.getPropertyValue('--font-base-size').trim()).toBe('16px')
+  })
+})

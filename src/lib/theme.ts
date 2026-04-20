@@ -101,7 +101,7 @@ export const DEFAULT_PREFS: AppearancePrefs = {
   darkOverrides: {},
   uiFont: 'System',
   codeFont: 'SF Mono',
-  uiFontSize: 13,
+  uiFontSize: 16,
   codeFontSize: 13,
   density: 'normal',
   cursorBlink: false,
