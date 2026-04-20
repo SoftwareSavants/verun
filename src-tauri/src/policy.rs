@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,6 +34,26 @@ impl TrustLevel {
             Self::FullAuto => "full_auto",
             Self::Supervised => "supervised",
         }
+    }
+
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Self::Normal => 0,
+            Self::FullAuto => 1,
+            Self::Supervised => 2,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::FullAuto,
+            2 => Self::Supervised,
+            _ => Self::Normal,
+        }
+    }
+
+    pub fn from_atomic(atom: &AtomicU8) -> Self {
+        Self::from_u8(atom.load(Ordering::Relaxed))
     }
 }
 
@@ -1029,6 +1050,36 @@ mod tests {
         assert_eq!(TrustLevel::from_str("full_auto").as_str(), "full_auto");
         assert_eq!(TrustLevel::from_str("supervised").as_str(), "supervised");
         assert_eq!(TrustLevel::from_str("garbage").as_str(), "normal");
+    }
+
+    // -- TrustLevel <-> u8 for atomic sharing --
+
+    #[test]
+    fn trust_level_u8_roundtrip() {
+        for lvl in [
+            TrustLevel::Normal,
+            TrustLevel::FullAuto,
+            TrustLevel::Supervised,
+        ] {
+            assert_eq!(TrustLevel::from_u8(lvl.to_u8()), lvl);
+        }
+    }
+
+    #[test]
+    fn trust_level_unknown_u8_defaults_to_normal() {
+        assert_eq!(TrustLevel::from_u8(99), TrustLevel::Normal);
+        assert_eq!(TrustLevel::from_u8(u8::MAX), TrustLevel::Normal);
+    }
+
+    #[test]
+    fn trust_level_atomic_load_reflects_latest_store() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let atom = AtomicU8::new(TrustLevel::Normal.to_u8());
+        assert_eq!(TrustLevel::from_atomic(&atom), TrustLevel::Normal);
+        atom.store(TrustLevel::FullAuto.to_u8(), Ordering::SeqCst);
+        assert_eq!(TrustLevel::from_atomic(&atom), TrustLevel::FullAuto);
+        atom.store(TrustLevel::Supervised.to_u8(), Ordering::SeqCst);
+        assert_eq!(TrustLevel::from_atomic(&atom), TrustLevel::Supervised);
     }
 
     // -- Input summarization --
