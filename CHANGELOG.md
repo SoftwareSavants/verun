@@ -8,6 +8,7 @@
 - Fix new session opening twice in the source window: `createSession` now dedups against the cross-window `session-created` broadcast (regression from #143)
 - Branch names replaced from animal-based to programming-humor themed; stack detection merges noun pools for Rust, Go, Python, JS/TS, and Java (monorepo-aware)
 - Fix archive/delete killing running sessions on other tasks - the kill loop now scopes to session ids belonging to the target task instead of iterating every active process (#169)
+- Plan/Think/Fast toggles and plan-review banner now scoped per session instead of per task — entering plan mode in one session no longer leaks into siblings (#155)
 - Plan/Think/Fast toggles no longer disabled while the agent is running, so mode changes can take effect on queued steps and steers
 - Composer model selector no longer disabled while the agent is running; the new selection applies to subsequent sends (manual, armed auto-send, or queued step)
 - Next Steps: click a step to edit inline (textarea + per-step mode toggles + model selector); removed the separate pencil icon and the edit-via-composer round-trip

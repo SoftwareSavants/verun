@@ -1,5 +1,6 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, sessionCosts, sessionTokens, rateLimitInfo, taskPlanMode, setTaskPlanMode, taskThinkingMode, setTaskThinkingMode, taskFastMode, setTaskFastMode, taskPlanFilePath, setTaskPlanFilePath, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
+import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
+import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession } from '../store/sessionContext'
 import { setSelectedSessionId, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
@@ -539,44 +540,44 @@ export const MessageInput: Component<Props> = (props) => {
   const [planFeedback, setPlanFeedback] = createSignal('')
 
   const planMode = () => {
-    const tid = selectedTaskId()
-    return tid ? (taskPlanMode[tid] ?? false) : false
+    const sid = props.sessionId
+    return sid ? planModeForSession(sid) : false
   }
 
   const setPlanMode = (on: boolean) => {
-    const tid = selectedTaskId()
-    if (!tid) return
-    setTaskPlanMode(tid, on)
+    const sid = props.sessionId
+    if (!sid) return
+    setPlanModeForSession(sid, on)
   }
 
   const thinkingMode = () => {
-    const tid = selectedTaskId()
-    return tid ? (taskThinkingMode[tid] ?? true) : true
+    const sid = props.sessionId
+    return sid ? thinkingModeForSession(sid) : true
   }
 
   const setThinking = (on: boolean) => {
-    const tid = selectedTaskId()
-    if (!tid) return
-    setTaskThinkingMode(tid, on)
+    const sid = props.sessionId
+    if (!sid) return
+    setThinkingModeForSession(sid, on)
   }
 
   const fastMode = () => {
-    const tid = selectedTaskId()
-    return tid ? (taskFastMode[tid] ?? false) : false
+    const sid = props.sessionId
+    return sid ? fastModeForSession(sid) : false
   }
 
   const setFast = (on: boolean) => {
-    const tid = selectedTaskId()
-    if (!tid) return
-    setTaskFastMode(tid, on)
+    const sid = props.sessionId
+    if (!sid) return
+    setFastModeForSession(sid, on)
   }
 
   const showPlanResponse = () => {
-    const tid = selectedTaskId()
-    if (!tid || props.isRunning) return false
+    const sid = props.sessionId
+    if (!sid || props.isRunning) return false
     if (showPlanViewer() && planContent()) return false
     if (currentApproval()) return false
-    return !!taskPlanFilePath[tid]
+    return !!planFilePathForSession(sid)
   }
 
   const [planActionPending, setPlanActionPending] = createSignal(false)
@@ -586,8 +587,7 @@ export const MessageInput: Component<Props> = (props) => {
     const sid = props.sessionId
     if (!sid) return
     setPlanActionPending(true)
-    const tid = selectedTaskId()
-    if (tid) setTaskPlanFilePath(tid, null)
+    setPlanFilePathForSession(sid, null)
     setPlanMode(false)
     try {
       await sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
@@ -607,16 +607,15 @@ export const MessageInput: Component<Props> = (props) => {
     if (feedback) {
       // Request changes
       setPlanChanges('')
-      const tid = selectedTaskId()
       try {
         if (approval && isExitPlanMode()) {
           // Forward the feedback as the tool-deny message so Claude sees it as
           // the reason and continues the same turn. No separate sendMessage.
-          if (tid) setTaskPlanFilePath(tid, null)
+          setPlanFilePathForSession(approval.sessionId, null)
           await denyToolUse(approval.requestId, approval.sessionId, feedback)
         } else {
           // Persisted plan viewer — no live approval, send as a new message.
-          if (tid) setTaskPlanFilePath(tid, null)
+          setPlanFilePathForSession(sid, null)
           await sendMessage(sid, feedback, undefined, currentModel(), true)
         }
       } catch (error) {
@@ -626,8 +625,7 @@ export const MessageInput: Component<Props> = (props) => {
     } else {
       // Approve the plan and persist local plan mode/file state.
       setPlanMode(false)
-      const tid = selectedTaskId()
-      if (tid) setTaskPlanFilePath(tid, null)
+      setPlanFilePathForSession(sid, null)
       try {
         if (approval && isExitPlanMode()) {
           await approveToolUse(approval.requestId, approval.sessionId)
@@ -695,26 +693,25 @@ export const MessageInput: Component<Props> = (props) => {
     if (props.isRunning && !isExitPlanMode()) return false
     if (isExitPlanMode()) return true
     // No live approval — show viewer when plan file is pending and content is loaded
-    const tid = selectedTaskId()
-    if (tid && !props.isRunning && taskPlanFilePath[tid] && planFileContent()) return true
+    const sid = props.sessionId
+    if (sid && !props.isRunning && planFilePathForSession(sid) && planFileContent()) return true
     return false
   }
 
   // Load plan file content — from live approval or persisted path
   createEffect(on(
     () => {
-      const tid = selectedTaskId()
-      return [isExitPlanMode(), props.sessionId, tid ? taskPlanFilePath[tid] : null] as const
+      const sid = props.sessionId
+      return [isExitPlanMode(), sid, sid ? planFilePathForSession(sid) : null] as const
     },
-    async ([isExit, _sid]) => {
+    async ([isExit, sid]) => {
       // From live ExitPlanMode approval
       if (isExit) {
         const approval = currentApproval()
         if (!approval) return
         const inlinePlan = approval.toolInput.plan as string | undefined
         const filePath = approval.toolInput.planFilePath as string | undefined
-        const tid = selectedTaskId()
-        if (tid && filePath && !planActionPending()) setTaskPlanFilePath(tid, filePath)
+        if (filePath && !planActionPending()) setPlanFilePathForSession(approval.sessionId, filePath)
         setPlanFilePathSignal(filePath || null)
         if (inlinePlan) {
           setPlanFileContent(inlinePlan)
@@ -729,9 +726,8 @@ export const MessageInput: Component<Props> = (props) => {
         return
       }
       // From persisted plan file path
-      const tid = selectedTaskId()
-      if (tid) {
-        const filePath = taskPlanFilePath[tid]
+      if (sid) {
+        const filePath = planFilePathForSession(sid)
         if (filePath) {
           setPlanFilePathSignal(filePath)
           try {
@@ -904,7 +900,7 @@ export const MessageInput: Component<Props> = (props) => {
     setAttachments([])
     setShowPalette(false)
     // Dismiss any persisted plan panel — the user has moved on from that plan.
-    if (tid && taskPlanFilePath[tid]) setTaskPlanFilePath(tid, null)
+    if (planFilePathForSession(sid)) setPlanFilePathForSession(sid, null)
     try {
       await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
     } catch (e) {
@@ -1485,8 +1481,8 @@ export const MessageInput: Component<Props> = (props) => {
         }
         if (e.key === 'Escape') {
           e.preventDefault()
-          const tid = selectedTaskId()
-          if (tid) setTaskPlanFilePath(tid, null)
+          const sid = props.sessionId
+          if (sid) setPlanFilePathForSession(sid, null)
           return
         }
         return
@@ -1968,7 +1964,7 @@ export const MessageInput: Component<Props> = (props) => {
             <div class="flex items-center gap-1.5">
               <button
                 class="p-1 rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                onClick={() => { const tid = selectedTaskId(); if (tid) setTaskPlanFilePath(tid, null) }}
+                onClick={() => { const sid = props.sessionId; if (sid) setPlanFilePathForSession(sid, null) }}
                 title="Dismiss (Esc)"
               >
                 <X size={14} />
