@@ -194,12 +194,15 @@ export function problemsByFileForTask(taskId: string): Record<string, Problem[]>
 }
 
 export function problemCountForTask(taskId: string): { errors: number; warnings: number; info: number } {
-  const all = problemsForTask(taskId)
+  const byFile = problemMap()[taskId]
   let errors = 0, warnings = 0, info = 0
-  for (const p of all) {
-    if (p.severity === 'error') errors++
-    else if (p.severity === 'warning') warnings++
-    else info++
+  if (!byFile) return { errors, warnings, info }
+  for (const problems of Object.values(byFile)) {
+    for (const p of problems) {
+      if (p.severity === 'error') errors++
+      else if (p.severity === 'warning') warnings++
+      else info++
+    }
   }
   return { errors, warnings, info }
 }

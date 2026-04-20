@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Problems panel virtualizes diagnostics and avoids repeated full-list scans so task switching stays responsive with large error sets
+
 ## 0.8.1 — 2026-04-20
 
 ### Changes
