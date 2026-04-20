@@ -2094,6 +2094,47 @@ pub struct FileEntry {
     pub size: Option<u64>,
 }
 
+/// Build a `FileEntry` for a single path, resolving symlinks so that a link
+/// pointing at a directory is reported as a directory (letting the UI expand it).
+/// Broken symlinks keep `is_symlink = true` and fall back to `is_dir = false`.
+fn build_file_entry(
+    entry_path: &std::path::Path,
+    worktree: &std::path::Path,
+) -> std::io::Result<FileEntry> {
+    let link_meta = std::fs::symlink_metadata(entry_path)?;
+    let is_symlink = link_meta.file_type().is_symlink();
+
+    // For symlinks, resolve to decide whether the target is a directory.
+    let target_meta = if is_symlink {
+        std::fs::metadata(entry_path).ok()
+    } else {
+        Some(link_meta.clone())
+    };
+
+    let is_dir = target_meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+    let size = target_meta
+        .as_ref()
+        .and_then(|m| if m.is_file() { Some(m.len()) } else { None });
+
+    let name = entry_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let relative_path = entry_path
+        .strip_prefix(worktree)
+        .unwrap_or(entry_path)
+        .to_string_lossy()
+        .to_string();
+
+    Ok(FileEntry {
+        name,
+        relative_path,
+        is_dir,
+        is_symlink,
+        size,
+    })
+}
+
 #[tauri::command]
 pub async fn list_directory(
     pool: State<'_, SqlitePool>,
@@ -2113,6 +2154,7 @@ pub async fn list_directory(
                 return Err(format!("Directory not found: {relative_path}"));
             }
 
+            let worktree_path = std::path::Path::new(&t.worktree_path);
             let mut entries = Vec::new();
             for result in WalkBuilder::new(&base)
                 .max_depth(Some(1))
@@ -2127,28 +2169,9 @@ pub async fn list_directory(
                 if entry.path() == base {
                     continue;
                 }
-                let meta = entry
-                    .metadata()
+                let file_entry = build_file_entry(entry.path(), worktree_path)
                     .map_err(|e| format!("Metadata error: {e}"))?;
-                let name = entry.file_name().to_string_lossy().to_string();
-                let rel = entry
-                    .path()
-                    .strip_prefix(&t.worktree_path)
-                    .unwrap_or(entry.path())
-                    .to_string_lossy()
-                    .to_string();
-
-                entries.push(FileEntry {
-                    name,
-                    relative_path: rel,
-                    is_dir: meta.is_dir(),
-                    is_symlink: meta.is_symlink(),
-                    size: if meta.is_file() {
-                        Some(meta.len())
-                    } else {
-                        None
-                    },
-                });
+                entries.push(file_entry);
             }
 
             // Sort: directories first, then alphabetical (case-insensitive)
@@ -2623,4 +2646,51 @@ mod tests {
         assert!(json.get("currentBranch").is_some());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn build_file_entry_treats_symlinked_directory_as_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let target = root.join("real_dir");
+        std::fs::create_dir(&target).unwrap();
+        let link = root.join("linked");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let entry = build_file_entry(&link, root).unwrap();
+        assert_eq!(entry.name, "linked");
+        assert_eq!(entry.relative_path, "linked");
+        assert!(entry.is_symlink, "entry should be flagged as a symlink");
+        assert!(
+            entry.is_dir,
+            "symlinked directory should be reported as a directory so the UI can expand it"
+        );
+        assert!(entry.size.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_file_entry_handles_broken_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let link = root.join("dangling");
+        std::os::unix::fs::symlink(root.join("does_not_exist"), &link).unwrap();
+
+        let entry = build_file_entry(&link, root).unwrap();
+        assert!(entry.is_symlink);
+        assert!(!entry.is_dir, "broken symlink is not a directory");
+        assert!(entry.size.is_none());
+    }
+
+    #[test]
+    fn build_file_entry_reports_regular_file_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let file = root.join("hello.txt");
+        std::fs::write(&file, b"hi").unwrap();
+
+        let entry = build_file_entry(&file, root).unwrap();
+        assert!(!entry.is_dir);
+        assert!(!entry.is_symlink);
+        assert_eq!(entry.size, Some(2));
+    }
 }
