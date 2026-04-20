@@ -515,16 +515,20 @@ pub async fn graceful_shutdown(child: &mut Child, stdin: &Arc<TokioMutex<Option<
     }
 
     // 3. SIGTERM. tokio::process::Child only exposes SIGKILL directly; send SIGTERM via libc.
-    if let Some(pid) = child.id() {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
-    }
-    if tokio::time::timeout(Duration::from_secs(5), child.wait())
-        .await
-        .is_ok()
+    //    libc::kill is Unix-only; on Windows we fall through to SIGKILL.
+    #[cfg(unix)]
     {
-        return;
+        if let Some(pid) = child.id() {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+        if tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .is_ok()
+        {
+            return;
+        }
     }
 
     // 4. SIGKILL as last resort.
