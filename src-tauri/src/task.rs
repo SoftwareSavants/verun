@@ -1792,6 +1792,19 @@ pub async fn get_session_context_usage(
     }
 }
 
+fn title_generation_args(prompt: &str) -> Vec<String> {
+    vec![
+        "-p".into(),
+        prompt.into(),
+        "--output-format".into(),
+        "text".into(),
+        "--no-session-persistence".into(),
+        "--strict-mcp-config".into(),
+        "--model".into(),
+        "haiku".into(),
+    ]
+}
+
 /// Generate a short title using a standalone Haiku call (fast, doesn't affect session).
 /// Uses the Claude CLI regardless of agent type since title generation is a Verun feature.
 async fn generate_session_title(first_message: &str, worktree_path: &str) -> Option<String> {
@@ -1800,15 +1813,7 @@ async fn generate_session_title(first_message: &str, worktree_path: &str) -> Opt
         first_message.chars().take(300).collect::<String>()
     );
     let output = tokio::process::Command::new(AgentKind::Claude.implementation().cli_binary())
-        .args([
-            "-p",
-            &prompt,
-            "--output-format",
-            "text",
-            "--no-session-persistence",
-            "--model",
-            "haiku",
-        ])
+        .args(title_generation_args(&prompt))
         .env_remove("CLAUDECODE")
         .env("CLAUDE_CODE_ENTRYPOINT", "verun")
         .current_dir(worktree_path)
@@ -2432,5 +2437,23 @@ mod tests {
         let mut result = active_session_ids_for_task(active_ids, &task_b_session_ids);
         result.sort();
         assert_eq!(result, vec!["s3".to_string(), "s4".to_string()]);
+    }
+
+    #[test]
+    fn title_generation_args_disables_mcp() {
+        let args = title_generation_args("do something");
+        assert!(
+            args.iter().any(|a| a == "--strict-mcp-config"),
+            "title generation must pass --strict-mcp-config to avoid MCP context inflation"
+        );
+    }
+
+    #[test]
+    fn title_generation_args_includes_required_flags() {
+        let args = title_generation_args("test prompt");
+        assert!(args.iter().any(|a| a == "-p"));
+        assert!(args.iter().any(|a| a == "test prompt"));
+        assert!(args.iter().any(|a| a == "--no-session-persistence"));
+        assert!(args.iter().any(|a| a == "haiku"));
     }
 }
