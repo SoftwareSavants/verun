@@ -24,7 +24,7 @@ import { ContextMenu } from './ContextMenu'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
 import SvgIcon from './SvgIcon'
-import { fileHasErrors, fileHasWarnings } from '../store/problems'
+import { problemSeverityForPath } from '../store/problems'
 import { getLspClient } from '../lib/lsp'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
@@ -599,8 +599,8 @@ export const TaskPanel: Component = () => {
                             <span class={clsx(
                               'truncate max-w-32',
                               tab.preview && 'italic',
-                              !isDiff() && fileHasErrors(t().id, tab.relativePath) && 'text-status-error',
-                              !isDiff() && !fileHasErrors(t().id, tab.relativePath) && fileHasWarnings(t().id, tab.relativePath) && 'text-yellow-500',
+                              !isDiff() && problemSeverityForPath(t().id, tab.relativePath, false) === 'error' && 'text-status-error',
+                              !isDiff() && problemSeverityForPath(t().id, tab.relativePath, false) === 'warning' && 'text-yellow-500',
                             )}>
                               {tab.dirty ? '\u2022 ' : ''}{tab.name}{diffSuffix()}
                             </span>

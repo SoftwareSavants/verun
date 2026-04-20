@@ -223,6 +223,30 @@ export function fileHasWarnings(taskId: string, relativePath: string): boolean {
   return problems.some(p => p.severity === 'warning')
 }
 
+export function problemSeverityForPath(taskId: string, relativePath: string, isDir: boolean): DiagnosticSeverity | null {
+  const byFile = problemMap()[taskId]
+  if (!byFile) return null
+  if (!isDir) {
+    const problems = byFile[relativePath]
+    if (!problems) return null
+    if (problems.some(p => p.severity === 'error')) return 'error'
+    if (problems.some(p => p.severity === 'warning')) return 'warning'
+    return problems.length > 0 ? problems[0].severity : null
+  }
+
+  const prefix = relativePath ? relativePath + '/' : ''
+  let found: DiagnosticSeverity | null = null
+  for (const [filePath, problems] of Object.entries(byFile)) {
+    if (!filePath.startsWith(prefix)) continue
+    for (const p of problems) {
+      if (p.severity === 'error') return 'error'
+      if (p.severity === 'warning') found = 'warning'
+      else if (!found) found = p.severity
+    }
+  }
+  return found
+}
+
 export function pathHasErrors(taskId: string, pathPrefix: string): boolean {
   const byFile = problemMap()[taskId]
   if (!byFile) return false
