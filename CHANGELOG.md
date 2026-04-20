@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-04-20
 
 - Make Verun feel like home: a new Appearance settings tab with light, dark, and system mode; theme presets plus a fully custom palette (HSV picker for accent, surface, and foreground); bundled UI and code fonts (Inter, JetBrains Mono, Fira Code, Cascadia Code) on top of any system font; independent UI and code font sizes; Compact / Normal / Comfortable density that scales the whole UI; terminal cursor blink; and reduced motion. The default accent is a mode-tuned teal, and text on accent backgrounds auto-flips between black and white based on perceived luminance so primary buttons stay readable on any color you pick.
 - Tool policy selector: renamed levels to "Ask every time" / "Auto-approve safe" / "Full auto" with clearer example subtitles; popover gets a section header, check icon on the selected row, and safety-ordered layout; chip label now reads `auto-safe` / `ask` / `full auto` instead of `Normal` / `Supervised` / `Auto`
