@@ -448,7 +448,7 @@ export const Sidebar: Component = () => {
                             >
                               {disabled() ? <Loader2 size={12} class="animate-spin" /> : hasError() ? <AlertCircle size={12} /> : <PhaseIcon phase={phase()} />}
                             </span>
-                            <div class="flex-1 min-w-0">
+                            <div class={clsx("flex-1 min-w-0", bindingIdx() !== null && "pr-7")}>
                               <Show when={renamingTaskId() === task.id} fallback={
                                 <div class={clsx(
                                   "text-xs truncate",

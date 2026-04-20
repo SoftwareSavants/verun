@@ -5,6 +5,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
+/// Returns true when the relative path from the worktree root refers to a git
+/// internal directory (i.e. starts with `.git`). Changes there indicate a
+/// staging, commit, stash, or other git state transition.
+fn is_git_related(rel: &str) -> bool {
+    rel == ".git" || rel.starts_with(".git/")
+}
+
 pub type FileWatcherMap =
     Arc<DashMap<String, notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>;
 
@@ -51,6 +58,15 @@ pub fn start_watching(
                         }
                     }
                 }
+                let git_changed = dirs.iter().any(|d| is_git_related(d));
+                if git_changed {
+                    let _ = app.emit(
+                        "git-status-changed",
+                        crate::stream::GitStatusChangedEvent {
+                            task_id: tid.clone(),
+                        },
+                    );
+                }
                 for dir in dirs {
                     let _ = app.emit(
                         "file-tree-changed",
@@ -73,4 +89,34 @@ pub fn start_watching(
 
     watchers.insert(task_id, debouncer);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_git_related;
+
+    #[test]
+    fn git_dir_itself_is_git_related() {
+        assert!(is_git_related(".git"));
+    }
+
+    #[test]
+    fn git_subdirs_are_git_related() {
+        assert!(is_git_related(".git/refs/heads"));
+        assert!(is_git_related(".git/logs"));
+        assert!(is_git_related(".git/objects"));
+    }
+
+    #[test]
+    fn source_paths_are_not_git_related() {
+        assert!(!is_git_related("src"));
+        assert!(!is_git_related("src-tauri/src"));
+        assert!(!is_git_related(""));
+    }
+
+    #[test]
+    fn partial_git_prefix_is_not_git_related() {
+        assert!(!is_git_related(".gitignore"));
+        assert!(!is_git_related(".github"));
+    }
 }
