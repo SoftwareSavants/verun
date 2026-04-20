@@ -14,7 +14,7 @@ import { ModelRow } from './ModelRow'
 import { UpdateRequiredDialog } from './UpdateRequiredDialog'
 
 const MODEL_SEARCH_THRESHOLD = 10
-const RECENT_SESSIONS_LIMIT = 8
+const RECENT_SEARCH_THRESHOLD = 10
 
 interface Props {
   disabled?: boolean
@@ -55,7 +55,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
     if (tid && props.onReopen) {
       ipc
         .listClosedSessions(tid)
-        .then(list => setRecentSessions(list.slice(0, RECENT_SESSIONS_LIMIT)))
+        .then(list => setRecentSessions(list))
         .catch(() => setRecentSessions([]))
     } else {
       setRecentSessions([])
@@ -93,7 +93,10 @@ export const NewSessionMenu: Component<Props> = (props) => {
   })
 
   const handleAgentHover = (agentId: string, rowEl: HTMLButtonElement | null) => {
-    if (hoveredAgent() !== agentId) setModelQuery('')
+    if (hoveredAgent() !== agentId) {
+      setModelQuery('')
+      setRecentQuery('')
+    }
     setHoveredAgent(agentId)
     if (rowEl) {
       const r = rowEl.getBoundingClientRect()
@@ -112,7 +115,17 @@ export const NewSessionMenu: Component<Props> = (props) => {
   }
 
   const [modelQuery, setModelQuery] = createSignal('')
+  const [recentQuery, setRecentQuery] = createSignal('')
   const [updateModel, setUpdateModel] = createSignal<ModelOption | null>(null)
+
+  const showRecentSearch = () => recentSessions().length > RECENT_SEARCH_THRESHOLD
+
+  const filteredRecentSessions = createMemo(() => {
+    const q = recentQuery().toLowerCase()
+    const list = recentSessions()
+    if (!q) return list
+    return list.filter(s => sessionLabel(s).toLowerCase().includes(q))
+  })
 
   const hoveredAgentInfo = () => {
     const id = hoveredAgent()
@@ -247,8 +260,23 @@ export const NewSessionMenu: Component<Props> = (props) => {
               }}
               onMouseDown={(e) => e.preventDefault()}
             >
+              <Show when={showRecentSearch()}>
+                <div class="px-2 py-1 shrink-0">
+                  <div class="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-1 ring-1 ring-outline/6">
+                    <Search size={10} class="text-text-dim shrink-0" />
+                    <input
+                      type="text"
+                      class="bg-transparent text-[11px] text-text-secondary outline-none w-full placeholder:text-text-dim"
+                      placeholder="Search sessions..."
+                      value={recentQuery()}
+                      onInput={(e) => setRecentQuery(e.currentTarget.value)}
+                      ref={(el) => setTimeout(() => el.focus(), 0)}
+                    />
+                  </div>
+                </div>
+              </Show>
               <div class="overflow-y-auto">
-                <For each={recentSessions()}>
+                <For each={filteredRecentSessions()}>
                   {(session) => (
                     <button
                       class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-3"
@@ -261,6 +289,9 @@ export const NewSessionMenu: Component<Props> = (props) => {
                     </button>
                   )}
                 </For>
+                <Show when={recentQuery() && filteredRecentSessions().length === 0}>
+                  <div class="px-3 py-2 text-[11px] text-text-dim">No matches</div>
+                </Show>
               </div>
             </div>
           </Show>
