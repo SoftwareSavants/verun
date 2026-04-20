@@ -21,13 +21,14 @@ vi.mock('../lib/ipc', () => ({
   getOutputLines: vi.fn().mockResolvedValue([]),
   clearSession: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
+  reopenSession: vi.fn(),
 }))
 
 vi.mock('../lib/notifications', () => ({
   notify: vi.fn(),
 }))
 
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, clearOutputItems, closeSession, createSession, clearSessionContextsForTask } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, clearOutputItems, closeSession, createSession, reopenSession, clearSessionContextsForTask } from './sessions'
 import * as ipc from '../lib/ipc'
 import { setPlanFilePathForSession, planFilePathForSession, sessionContexts, setSessionContexts } from './sessionContext'
 import type { Session, OutputItem } from '../types'
@@ -319,5 +320,34 @@ describe('createSession dedup vs cross-window broadcast', () => {
     // Now the broadcast lands at the source window
     listenCallbacks.get('session-created')!({ payload: s })
     expect(sessions.filter(x => x.id === 's-after').length).toBe(1)
+  })
+})
+
+describe('reopenSession', () => {
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    vi.mocked(ipc.reopenSession).mockReset()
+  })
+
+  test('adds the restored session back into the store', async () => {
+    const s = makeSession({ id: 's-reopen', taskId: 't-001', status: 'idle' })
+    vi.mocked(ipc.reopenSession).mockResolvedValue(s)
+    await reopenSession('s-reopen')
+    expect(sessions.filter(x => x.id === 's-reopen').length).toBe(1)
+  })
+
+  test('does not double-insert when session-created broadcast races the IPC', async () => {
+    const s = makeSession({ id: 's-race-reopen', taskId: 't-001', status: 'idle' })
+    vi.mocked(ipc.reopenSession).mockImplementation(async () => {
+      listenCallbacks.get('session-created')!({ payload: s })
+      return s
+    })
+    await reopenSession('s-race-reopen')
+    expect(sessions.filter(x => x.id === 's-race-reopen').length).toBe(1)
   })
 })

@@ -5,7 +5,7 @@ import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask, restoreTask } from '../store/tasks'
 import { isSetupRunning, setupFailed, setupError } from '../store/setup'
-import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines, sessionCosts } from '../store/sessions'
+import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines, sessionCosts, reopenSession } from '../store/sessions'
 import { loadSteps } from '../store/steps'
 import { StepList } from './StepList'
 import { MessageInput } from './MessageInput'
@@ -227,6 +227,14 @@ export const TaskPanel: Component = () => {
     if (!tid) return
     const session = await createSession(tid, agentType, model)
     setSelectedSessionId(session.id)
+    setMainView(tid, 'session')
+  }
+
+  const handleReopenSession = async (sessionId: string) => {
+    const tid = selectedTaskId()
+    if (!tid) return
+    await reopenSession(sessionId)
+    setSelectedSessionId(sessionId)
     setMainView(tid, 'session')
   }
 
@@ -506,8 +514,10 @@ export const TaskPanel: Component = () => {
                   <div ref={tabBarRef} class="relative z-10 flex items-stretch overflow-x-auto scrollbar-hide tab-bar-bg">
                     {/* New session button */}
                     <NewSessionMenu
+                      taskId={t().id}
                       defaultAgent={projectById(t().projectId)?.defaultAgentType}
                       onCreate={(agentType, model) => handleNewSession(agentType, model)}
+                      onReopen={handleReopenSession}
                     />
                     {/* Session tabs */}
                     <For each={taskSessions()}>

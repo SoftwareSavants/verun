@@ -117,6 +117,12 @@ export const listSessions = (taskId: string): Promise<Session[]> =>
     ? seed().then(d => d.DEMO_SESSIONS.filter(s => s.taskId === taskId))
     : invoke<Session[]>('list_sessions', { taskId })
 
+export const listClosedSessions = (taskId: string): Promise<Session[]> =>
+  DEMO ? Promise.resolve([]) : invoke<Session[]>('list_closed_sessions', { taskId })
+
+export const reopenSession = (sessionId: string) =>
+  invoke<Session>('reopen_session', { sessionId })
+
 export const getSession = (id: string) =>
   invoke<Session | null>('get_session', { id })
 

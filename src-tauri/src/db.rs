@@ -410,6 +410,9 @@ pub enum DbWrite {
     CloseSession {
         id: String,
     },
+    ReopenSession {
+        id: String,
+    },
 
     // Output
     InsertOutputLines {
@@ -780,6 +783,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .await?;
         }
 
+        DbWrite::ReopenSession { id } => {
+            sqlx::query("UPDATE sessions SET status = 'idle' WHERE id = ? AND status = 'closed'")
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+
         DbWrite::DeleteOutputLines { session_id } => {
             sqlx::query("DELETE FROM output_lines WHERE session_id = ?")
                 .bind(&session_id)
@@ -998,6 +1008,20 @@ pub async fn list_sessions_for_task(
 ) -> Result<Vec<Session>, String> {
     sqlx::query_as::<_, Session>(
         "SELECT * FROM sessions WHERE task_id = ? AND status != 'closed' ORDER BY started_at ASC",
+    )
+    .bind(task_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+pub async fn list_closed_sessions_for_task(
+    pool: &SqlitePool,
+    task_id: &str,
+) -> Result<Vec<Session>, String> {
+    sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE task_id = ? AND status = 'closed' \
+         ORDER BY ended_at IS NULL, ended_at DESC, started_at DESC",
     )
     .bind(task_id)
     .fetch_all(pool)
@@ -1656,6 +1680,173 @@ mod tests {
         let sessions = list_sessions_for_task(&pool, "t-001").await.unwrap();
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].id, "s-001"); // oldest first
+    }
+
+    #[tokio::test]
+    async fn list_closed_sessions_returns_only_closed_newest_first() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+
+        // Active session - should not appear
+        let mut active = make_session("t-001");
+        active.id = "s-active".into();
+        active.started_at = 500;
+        process_write(&pool, DbWrite::CreateSession(active))
+            .await
+            .unwrap();
+
+        // Three closed sessions with different ended_at times
+        let mut older = make_session("t-001");
+        older.id = "s-older".into();
+        older.started_at = 1000;
+        let mut newer = make_session("t-001");
+        newer.id = "s-newer".into();
+        newer.started_at = 2000;
+        let mut no_end = make_session("t-001");
+        no_end.id = "s-no-end".into();
+        no_end.started_at = 1500;
+
+        process_write(&pool, DbWrite::CreateSession(older))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(newer))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(no_end))
+            .await
+            .unwrap();
+
+        process_write(
+            &pool,
+            DbWrite::EndSession {
+                id: "s-older".into(),
+                ended_at: 5000,
+            },
+        )
+        .await
+        .unwrap();
+        process_write(
+            &pool,
+            DbWrite::EndSession {
+                id: "s-newer".into(),
+                ended_at: 9000,
+            },
+        )
+        .await
+        .unwrap();
+
+        process_write(
+            &pool,
+            DbWrite::CloseSession {
+                id: "s-older".into(),
+            },
+        )
+        .await
+        .unwrap();
+        process_write(
+            &pool,
+            DbWrite::CloseSession {
+                id: "s-newer".into(),
+            },
+        )
+        .await
+        .unwrap();
+        process_write(
+            &pool,
+            DbWrite::CloseSession {
+                id: "s-no-end".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let closed = list_closed_sessions_for_task(&pool, "t-001").await.unwrap();
+        assert_eq!(closed.len(), 3);
+        // Ordering: ended_at DESC, NULLs last, then started_at DESC as fallback
+        assert_eq!(closed[0].id, "s-newer"); // ended_at 9000
+        assert_eq!(closed[1].id, "s-older"); // ended_at 5000
+        assert_eq!(closed[2].id, "s-no-end"); // ended_at NULL, falls back
+
+        // Active sessions must be excluded
+        assert!(closed.iter().all(|s| s.id != "s-active"));
+    }
+
+    #[tokio::test]
+    async fn reopen_session_flips_status_to_idle() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+
+        process_write(
+            &pool,
+            DbWrite::CloseSession {
+                id: "s-001".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let closed = get_session(&pool, "s-001").await.unwrap().unwrap();
+        assert_eq!(closed.status, "closed");
+
+        process_write(
+            &pool,
+            DbWrite::ReopenSession {
+                id: "s-001".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let reopened = get_session(&pool, "s-001").await.unwrap().unwrap();
+        assert_eq!(reopened.status, "idle");
+
+        // And it appears back in active list, not in closed list
+        let active = list_sessions_for_task(&pool, "t-001").await.unwrap();
+        assert_eq!(active.len(), 1);
+        let closed = list_closed_sessions_for_task(&pool, "t-001").await.unwrap();
+        assert_eq!(closed.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn reopen_session_noop_on_active_session() {
+        // Guard: reopening a non-closed session should not clobber its live status.
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        let mut s = make_session("t-001");
+        s.status = "running".into();
+        process_write(&pool, DbWrite::CreateSession(s))
+            .await
+            .unwrap();
+
+        process_write(
+            &pool,
+            DbWrite::ReopenSession {
+                id: "s-001".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let after = get_session(&pool, "s-001").await.unwrap().unwrap();
+        assert_eq!(after.status, "running");
     }
 
     // -- Output tests --
