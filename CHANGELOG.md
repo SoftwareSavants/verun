@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Task naming (Haiku) now runs with `--strict-mcp-config` so large MCP server setups don't bloat context and cause failures
+
 ## 0.8.0 — 2026-04-20
 
 - Make Verun feel like home: a new Appearance settings tab with light, dark, and system mode; theme presets plus a fully custom palette (HSV picker for accent, surface, and foreground); bundled UI and code fonts (Inter, JetBrains Mono, Fira Code, Cascadia Code) on top of any system font; independent UI and code font sizes; Compact / Normal / Comfortable density that scales the whole UI; terminal cursor blink; and reduced motion. The default accent is a mode-tuned teal, and text on accent backgrounds auto-flips between black and white based on perceived luminance so primary buttons stay readable on any color you pick.
