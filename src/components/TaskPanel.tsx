@@ -176,8 +176,11 @@ export const TaskPanel: Component = () => {
   createEffect(on(selectedSessionId, async (sessionId) => {
     if (sessionId) {
       clearSessionUnread(sessionId)
-      await loadOutputLines(sessionId)
-      await loadSteps(sessionId)
+      // Fire these in parallel — the steps list renders reactively, it
+      // doesn't need to block the chat view from painting.
+      const outputs = loadOutputLines(sessionId)
+      loadSteps(sessionId).catch(() => {})
+      await outputs
       // Best-effort pre-warm so the first message on a Claude session doesn't
       // pay the CLI boot cost. No-op for non-persistent agents (Codex, etc).
       // Skip if the session is already running — it has a live process.

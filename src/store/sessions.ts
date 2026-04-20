@@ -148,12 +148,22 @@ export async function closeSession(sessionId: string) {
   setSessionCosts(produce(store => { delete store[sessionId] }))
   setSessionTokens(produce(store => { delete store[sessionId] }))
   setAbortingSessions(produce(store => { delete store[sessionId] }))
+  loadedSessionOutputs.delete(sessionId)
   // Persist closure to DB (status = 'closed', filtered from future loads)
   await ipc.closeSession(sessionId)
 }
 
+// Sessions whose output_lines have been pulled from SQLite in this window.
+// Live streaming (session-output events) keeps the in-memory store fresh after
+// the first load, so re-fetching on every task/session switch is pure waste —
+// and it's not cheap: every NDJSON line round-trips through JSON.parse.
+// Invalidated on clearOutputItems, closeSession, session-removed.
+const loadedSessionOutputs = new Set<string>()
+
 export async function loadOutputLines(sessionId: string) {
+  if (loadedSessionOutputs.has(sessionId)) return
   const lines = await ipc.getOutputLines(sessionId)
+  loadedSessionOutputs.add(sessionId)
   const items: OutputItem[] = []
   for (const l of lines) {
     const parsed = parseNdjsonLine(l.line, l.emittedAt)
@@ -225,6 +235,7 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
 
 export async function clearOutputItems(sessionId: string) {
   setOutputItems(sessionId, [])
+  loadedSessionOutputs.delete(sessionId)
   // Also clear the Claude session context + persisted output in DB
   await ipc.clearSession(sessionId)
   setSessions(s => s.id === sessionId, 'resumeSessionId', null)
@@ -417,6 +428,7 @@ export async function initSessionListeners() {
     setPendingApprovals(produce(store => { delete store[sessionId] }))
     setSessionCosts(produce(store => { delete store[sessionId] }))
     setSessionTokens(produce(store => { delete store[sessionId] }))
+    loadedSessionOutputs.delete(sessionId)
     clearSteps(sessionId)
   })
 

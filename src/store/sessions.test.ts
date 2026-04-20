@@ -18,13 +18,16 @@ vi.mock('../lib/ipc', () => ({
   listSteps: vi.fn().mockResolvedValue([]),
   syncSessionStatuses: vi.fn().mockResolvedValue(undefined),
   createSession: vi.fn(),
+  getOutputLines: vi.fn().mockResolvedValue([]),
+  clearSession: vi.fn().mockResolvedValue(undefined),
+  closeSession: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../lib/notifications', () => ({
   notify: vi.fn(),
 }))
 
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, createSession, clearSessionContextsForTask } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, clearOutputItems, closeSession, createSession, clearSessionContextsForTask } from './sessions'
 import * as ipc from '../lib/ipc'
 import { setPlanFilePathForSession, planFilePathForSession, sessionContexts, setSessionContexts } from './sessionContext'
 import type { Session, OutputItem } from '../types'
@@ -232,6 +235,53 @@ describe('loadSessions', () => {
     await loadSessions('t-001')
     const ids = sessions.map(s => s.id).sort()
     expect(ids).toEqual(['s-fresh', 's-other'])
+  })
+})
+
+// Task-switch perf: replaying all output_lines through JSON.parse on every
+// session selection is the dominant cost when switching between tasks. Once
+// we've loaded a session from DB, the live session-output listener keeps the
+// store fresh — re-fetching is pure waste.
+describe('loadOutputLines caching', () => {
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    vi.mocked(ipc.getOutputLines).mockReset()
+    vi.mocked(ipc.getOutputLines).mockResolvedValue([])
+  })
+
+  test('does not re-query the DB for an already-loaded session', async () => {
+    await loadOutputLines('s-cache-hit')
+    await loadOutputLines('s-cache-hit')
+    expect(vi.mocked(ipc.getOutputLines)).toHaveBeenCalledTimes(1)
+  })
+
+  test('still re-queries after clearOutputItems invalidates the cache', async () => {
+    await loadOutputLines('s-clear')
+    await clearOutputItems('s-clear')
+    await loadOutputLines('s-clear')
+    expect(vi.mocked(ipc.getOutputLines)).toHaveBeenCalledTimes(2)
+  })
+
+  test('session-removed invalidates the cache so a re-created session reloads', async () => {
+    setSessions([makeSession({ id: 's-gone' })])
+    await loadOutputLines('s-gone')
+    const fire = listenCallbacks.get('session-removed')!
+    fire({ payload: { sessionId: 's-gone', taskId: 't-001' } })
+    await loadOutputLines('s-gone')
+    expect(vi.mocked(ipc.getOutputLines)).toHaveBeenCalledTimes(2)
+  })
+
+  test('closeSession invalidates the cache', async () => {
+    setSessions([makeSession({ id: 's-close' })])
+    await loadOutputLines('s-close')
+    await closeSession('s-close')
+    await loadOutputLines('s-close')
+    expect(vi.mocked(ipc.getOutputLines)).toHaveBeenCalledTimes(2)
   })
 })
 

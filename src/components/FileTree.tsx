@@ -1,11 +1,11 @@
-import { Component, For, Show, createEffect, on, onCleanup, onMount, createSignal } from 'solid-js'
+import { Component, For, Show, createEffect, on, onCleanup, createSignal } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
 import { Folder, FolderOpen, ChevronRight, ChevronDown, ExternalLink, RefreshCw, ClipboardCopy, FileText, Tag } from 'lucide-solid'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { fileHasErrors, fileHasWarnings, pathHasErrors, pathHasWarnings } from '../store/problems'
 import { getFileIcon } from '../lib/fileIcons'
 import {
-  getDirContents, loadDirectory, invalidateDirectory
+  getDirContents, loadDirectory, loadDirectoryIfMissing, invalidateDirectory
 } from '../store/files'
 import { isExpanded, toggleExpanded, expandDir, collapseDir, openFile, openFilePinned, revealRequest, mainView } from '../store/editorView'
 import { taskById } from '../store/tasks'
@@ -35,12 +35,6 @@ export const FileTree: Component<Props> = (props) => {
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null)
   const [selectedIndex, setSelectedIndex] = createSignal(-1)
 
-  // Load root directory on mount
-  onMount(() => {
-    loadDirectory(props.taskId, '')
-    ipc.watchWorktree(props.taskId)
-  })
-
   // Listen for file system changes
   const unlistenPromise = listen<FileTreeChangedEvent>('file-tree-changed', (event) => {
     if (event.payload.taskId === props.taskId) {
@@ -52,9 +46,12 @@ export const FileTree: Component<Props> = (props) => {
     unlistenPromise.then(fn => fn())
   })
 
-  // Reload root when task changes
+  // Load root on first mount and on task change — but skip the IPC when we
+  // already have cached contents. Switching between tasks is the hot path
+  // (1-5s felt delay on big repos) and a worktree WalkBuilder on every visit
+  // is the dominant cost. Watcher keeps the cache fresh after the first load.
   createEffect(on(() => props.taskId, (taskId) => {
-    loadDirectory(taskId, '')
+    loadDirectoryIfMissing(taskId, '')
     ipc.watchWorktree(taskId)
   }))
 
