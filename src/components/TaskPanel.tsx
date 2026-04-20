@@ -212,9 +212,15 @@ export const TaskPanel: Component = () => {
     const tid = selectedTaskId()
     if (!tid || !tabBarRef) return
     const view = mainView(tid)
-    if (!view || view === 'session') return
-    // Find the active tab element by data attribute
-    const el = tabBarRef.querySelector(`[data-tab-path="${CSS.escape(view)}"]`) as HTMLElement | null
+    if (!view) return
+    const selector = view === 'session'
+      ? (() => {
+          const sid = selectedSessionId()
+          return sid ? `[data-session-id="${CSS.escape(sid)}"]` : null
+        })()
+      : `[data-tab-path="${CSS.escape(view)}"]`
+    if (!selector) return
+    const el = tabBarRef.querySelector(selector) as HTMLElement | null
     el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
   })
 
@@ -526,6 +532,7 @@ export const TaskPanel: Component = () => {
                         const hasUnread = () => isSessionUnread(session.id) && session.status !== 'running'
                         return (
                           <div
+                            data-session-id={session.id}
                             class={clsx(
                               'group h-8 flex items-center gap-1.5 px-3 text-[11px] rounded-t-md whitespace-nowrap cursor-pointer',
                               isActive()

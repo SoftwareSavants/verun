@@ -4,7 +4,7 @@ import type { AgentType, ModelOption, Session } from '../types'
 import { AGENT_DISPLAY_NAMES } from '../types'
 import { agents } from '../store/agents'
 import { clsx } from 'clsx'
-import { Plus, ChevronRight, Loader2, Search } from 'lucide-solid'
+import { Plus, ChevronRight, Loader2, Search, History } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
 import { agentIcon, meetsVersionReq } from '../lib/agents'
 import { formatDurationShort } from '../lib/format'
@@ -173,25 +173,29 @@ export const NewSessionMenu: Component<Props> = (props) => {
             onMouseDown={(e) => e.preventDefault()}
           >
             <Show when={recentSessions().length > 0}>
-              <div class="px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-wider text-text-dim">Recent</div>
-              <div class="max-h-48 overflow-y-auto">
-                <For each={recentSessions()}>
-                  {(session) => (
+              {(() => {
+                let recentRowRef: HTMLButtonElement | undefined
+                const isHovered = () => hoveredAgent() === '__recent__'
+                return (
+                  <>
                     <button
-                      class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-3"
-                      onMouseEnter={() => setHoveredAgent(null)}
-                      onClick={() => handleReopen(session)}
-                      title="Reopen session"
+                      ref={recentRowRef}
+                      class={clsx(
+                        'w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors',
+                        isHovered()
+                          ? 'text-text-primary bg-surface-3'
+                          : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
+                      )}
+                      onMouseEnter={() => handleAgentHover('__recent__', recentRowRef ?? null)}
                     >
-                      <SvgIcon svg={agentIcon(session.agentType)} size={13} />
-                      <span class="flex-1 truncate">{sessionLabel(session)}</span>
-                      <span class="text-[10px] text-text-dim shrink-0">{relativeTime(session)}</span>
+                      <History size={13} class="text-text-dim" />
+                      <span class="flex-1 font-medium">Recent</span>
+                      <ChevronRight size={11} class="text-text-dim shrink-0" />
                     </button>
-                  )}
-                </For>
-              </div>
-              <div class="my-1 border-t border-outline/8" />
-              <div class="px-3 pt-0.5 pb-1 text-[10px] uppercase tracking-wider text-text-dim">New session</div>
+                    <div class="my-1 border-t border-outline/8" />
+                  </>
+                )
+              })()}
             </Show>
             <Show
               when={installedAgents().length > 0}
@@ -233,6 +237,33 @@ export const NewSessionMenu: Component<Props> = (props) => {
               </For>
             </Show>
           </div>
+
+          <Show when={hoveredAgent() === '__recent__' && recentSessions().length > 0}>
+            <div
+              class="fixed z-[102] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1 w-56 max-h-80 flex flex-col"
+              style={{
+                left: `${submenuRect()?.left ?? 0}px`,
+                top: `${submenuRect()?.top ?? 0}px`,
+              }}
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              <div class="overflow-y-auto">
+                <For each={recentSessions()}>
+                  {(session) => (
+                    <button
+                      class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-3"
+                      onClick={() => handleReopen(session)}
+                      title="Reopen session"
+                    >
+                      <SvgIcon svg={agentIcon(session.agentType)} size={13} />
+                      <span class="flex-1 truncate">{sessionLabel(session)}</span>
+                      <span class="text-[10px] text-text-dim shrink-0">{relativeTime(session)}</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
+          </Show>
 
           <Show when={hoveredAgentInfo() && hoveredAgentInfo()!.models.length > 0}>
             <div
