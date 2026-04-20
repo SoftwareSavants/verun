@@ -158,7 +158,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
     <>
       <button
         ref={buttonRef}
-        class="sticky left-0 z-20 h-8 w-8 shrink-0 flex items-center justify-center bg-surface-1 text-text-dim hover:text-text-secondary hover:bg-outline/3 transition-colors disabled:opacity-40"
+        class="sticky left-0 z-20 h-8 w-8 shrink-0 flex items-center justify-center bg-surface-1 text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-40"
         onClick={openMenu}
         disabled={props.disabled || creating() || !!reopeningId()}
         title="New Session"
