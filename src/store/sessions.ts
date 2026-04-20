@@ -56,6 +56,14 @@ export async function createSession(taskId: string, agentType: string, model?: s
   return session
 }
 
+export async function reopenSession(sessionId: string): Promise<Session> {
+  const session = await ipc.reopenSession(sessionId)
+  // Rust broadcasts session-created on reopen (mirrors createSession); same
+  // dedup against the broadcast landing before this await resolves.
+  setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
+  return session
+}
+
 export function updateSessionModel(sessionId: string, model: string | null) {
   setSessions(s => s.id === sessionId, 'model', model)
   ipc.updateSessionModel(sessionId, model)

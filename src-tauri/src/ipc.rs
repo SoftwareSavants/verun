@@ -784,6 +784,7 @@ pub async fn close_session(
     db_tx
         .send(db::DbWrite::CloseSession {
             id: session_id.clone(),
+            closed_at: task::epoch_ms(),
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
@@ -903,6 +904,36 @@ pub async fn list_sessions(
     task_id: String,
 ) -> Result<Vec<Session>, String> {
     db::list_sessions_for_task(pool.inner(), &task_id).await
+}
+
+#[tauri::command]
+pub async fn list_closed_sessions(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<Vec<Session>, String> {
+    db::list_closed_sessions_for_task(pool.inner(), &task_id).await
+}
+
+/// Reopen a closed session - flip its status back to 'idle' and broadcast
+/// `session-created` so every window restores the tab.
+#[tauri::command]
+pub async fn reopen_session(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    session_id: String,
+) -> Result<Session, String> {
+    db_tx
+        .send(db::DbWrite::ReopenSession {
+            id: session_id.clone(),
+        })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+    let session = db::get_session(pool.inner(), &session_id)
+        .await?
+        .ok_or_else(|| format!("Session {session_id} not found"))?;
+    let _ = app.emit("session-created", &session);
+    Ok(session)
 }
 
 #[tauri::command]

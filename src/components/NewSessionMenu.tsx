@@ -1,21 +1,27 @@
 import { Component, For, Show, createSignal, createEffect, createMemo, onCleanup } from 'solid-js'
 import { Portal } from 'solid-js/web'
-import type { AgentType, ModelOption } from '../types'
+import type { AgentType, ModelOption, Session } from '../types'
+import { AGENT_DISPLAY_NAMES } from '../types'
 import { agents } from '../store/agents'
 import { clsx } from 'clsx'
-import { Plus, ChevronRight, Loader2, Search } from 'lucide-solid'
+import { Plus, ChevronRight, Loader2, Search, History } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
 import { agentIcon, meetsVersionReq } from '../lib/agents'
+import { formatDurationShort } from '../lib/format'
+import * as ipc from '../lib/ipc'
 import SvgIcon from './SvgIcon'
 import { ModelRow } from './ModelRow'
 import { UpdateRequiredDialog } from './UpdateRequiredDialog'
 
 const MODEL_SEARCH_THRESHOLD = 10
+const RECENT_SEARCH_THRESHOLD = 10
 
 interface Props {
   disabled?: boolean
   defaultAgent?: AgentType
+  taskId?: string
   onCreate: (agentType: AgentType, model?: string) => Promise<void>
+  onReopen?: (sessionId: string) => Promise<void>
 }
 
 export const NewSessionMenu: Component<Props> = (props) => {
@@ -24,6 +30,8 @@ export const NewSessionMenu: Component<Props> = (props) => {
   const [menuRect, setMenuRect] = createSignal<{ left: number; top: number } | null>(null)
   const [hoveredAgent, setHoveredAgent] = createSignal<string | null>(null)
   const [submenuRect, setSubmenuRect] = createSignal<{ left: number; top: number } | null>(null)
+  const [recentSessions, setRecentSessions] = createSignal<Session[]>([])
+  const [reopeningId, setReopeningId] = createSignal<string | null>(null)
   let buttonRef: HTMLButtonElement | undefined
 
   const installedAgents = () => {
@@ -43,11 +51,39 @@ export const NewSessionMenu: Component<Props> = (props) => {
     }
     setHoveredAgent(null)
     setOpen(true)
+    const tid = props.taskId
+    if (tid && props.onReopen) {
+      ipc
+        .listClosedSessions(tid)
+        .then(list => setRecentSessions(list))
+        .catch(() => setRecentSessions([]))
+    } else {
+      setRecentSessions([])
+    }
   }
 
   const closeMenu = () => {
     setOpen(false)
     setHoveredAgent(null)
+  }
+
+  const handleReopen = async (session: Session) => {
+    if (!props.onReopen) return
+    setReopeningId(session.id)
+    closeMenu()
+    try {
+      await props.onReopen(session.id)
+    } finally {
+      setReopeningId(null)
+    }
+  }
+
+  const sessionLabel = (session: Session) =>
+    session.name || AGENT_DISPLAY_NAMES[session.agentType]
+
+  const relativeTime = (session: Session) => {
+    const end = session.closedAt ?? session.endedAt ?? session.startedAt
+    return formatDurationShort(Date.now() - end)
   }
 
   createEffect(() => {
@@ -57,7 +93,10 @@ export const NewSessionMenu: Component<Props> = (props) => {
   })
 
   const handleAgentHover = (agentId: string, rowEl: HTMLButtonElement | null) => {
-    if (hoveredAgent() !== agentId) setModelQuery('')
+    if (hoveredAgent() !== agentId) {
+      setModelQuery('')
+      setRecentQuery('')
+    }
     setHoveredAgent(agentId)
     if (rowEl) {
       const r = rowEl.getBoundingClientRect()
@@ -76,7 +115,17 @@ export const NewSessionMenu: Component<Props> = (props) => {
   }
 
   const [modelQuery, setModelQuery] = createSignal('')
+  const [recentQuery, setRecentQuery] = createSignal('')
   const [updateModel, setUpdateModel] = createSignal<ModelOption | null>(null)
+
+  const showRecentSearch = () => recentSessions().length > RECENT_SEARCH_THRESHOLD
+
+  const filteredRecentSessions = createMemo(() => {
+    const q = recentQuery().toLowerCase()
+    const list = recentSessions()
+    if (!q) return list
+    return list.filter(s => sessionLabel(s).toLowerCase().includes(q))
+  })
 
   const hoveredAgentInfo = () => {
     const id = hoveredAgent()
@@ -109,12 +158,12 @@ export const NewSessionMenu: Component<Props> = (props) => {
     <>
       <button
         ref={buttonRef}
-        class="h-8 w-8 shrink-0 flex items-center justify-center text-text-dim hover:text-text-secondary hover:bg-outline/3 transition-colors disabled:opacity-40"
+        class="sticky left-0 z-20 h-8 w-8 shrink-0 flex items-center justify-center bg-surface-1 text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-40"
         onClick={openMenu}
-        disabled={props.disabled || creating()}
+        disabled={props.disabled || creating() || !!reopeningId()}
         title="New Session"
       >
-        <Show when={creating()} fallback={<Plus size={13} />}>
+        <Show when={creating() || !!reopeningId()} fallback={<Plus size={13} />}>
           <Loader2 size={13} class="animate-spin" />
         </Show>
       </button>
@@ -129,13 +178,38 @@ export const NewSessionMenu: Component<Props> = (props) => {
           />
 
           <div
-            class="fixed z-[101] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1 w-44"
+            class="fixed z-[101] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1 w-52"
             style={{
               left: `${menuRect()?.left ?? 0}px`,
               top: `${menuRect()?.top ?? 0}px`,
             }}
             onMouseDown={(e) => e.preventDefault()}
           >
+            <Show when={recentSessions().length > 0}>
+              {(() => {
+                let recentRowRef: HTMLButtonElement | undefined
+                const isHovered = () => hoveredAgent() === '__recent__'
+                return (
+                  <>
+                    <button
+                      ref={recentRowRef}
+                      class={clsx(
+                        'w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors',
+                        isHovered()
+                          ? 'text-text-primary bg-surface-3'
+                          : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
+                      )}
+                      onMouseEnter={() => handleAgentHover('__recent__', recentRowRef ?? null)}
+                    >
+                      <History size={13} class="text-text-dim" />
+                      <span class="flex-1 font-medium">Recent</span>
+                      <ChevronRight size={11} class="text-text-dim shrink-0" />
+                    </button>
+                    <div class="my-1 border-t border-outline/8" />
+                  </>
+                )
+              })()}
+            </Show>
             <Show
               when={installedAgents().length > 0}
               fallback={
@@ -176,6 +250,51 @@ export const NewSessionMenu: Component<Props> = (props) => {
               </For>
             </Show>
           </div>
+
+          <Show when={hoveredAgent() === '__recent__' && recentSessions().length > 0}>
+            <div
+              class="fixed z-[102] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1 w-56 max-h-80 flex flex-col"
+              style={{
+                left: `${submenuRect()?.left ?? 0}px`,
+                top: `${submenuRect()?.top ?? 0}px`,
+              }}
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              <Show when={showRecentSearch()}>
+                <div class="px-2 py-1 shrink-0">
+                  <div class="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-1 ring-1 ring-outline/6">
+                    <Search size={10} class="text-text-dim shrink-0" />
+                    <input
+                      type="text"
+                      class="bg-transparent text-[11px] text-text-secondary outline-none w-full placeholder:text-text-dim"
+                      placeholder="Search sessions..."
+                      value={recentQuery()}
+                      onInput={(e) => setRecentQuery(e.currentTarget.value)}
+                      ref={(el) => setTimeout(() => el.focus(), 0)}
+                    />
+                  </div>
+                </div>
+              </Show>
+              <div class="overflow-y-auto">
+                <For each={filteredRecentSessions()}>
+                  {(session) => (
+                    <button
+                      class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-3"
+                      onClick={() => handleReopen(session)}
+                      title="Reopen session"
+                    >
+                      <SvgIcon svg={agentIcon(session.agentType)} size={13} />
+                      <span class="flex-1 truncate">{sessionLabel(session)}</span>
+                      <span class="text-[10px] text-text-dim shrink-0">{relativeTime(session)}</span>
+                    </button>
+                  )}
+                </For>
+                <Show when={recentQuery() && filteredRecentSessions().length === 0}>
+                  <div class="px-3 py-2 text-[11px] text-text-dim">No matches</div>
+                </Show>
+              </div>
+            </div>
+          </Show>
 
           <Show when={hoveredAgentInfo() && hoveredAgentInfo()!.models.length > 0}>
             <div

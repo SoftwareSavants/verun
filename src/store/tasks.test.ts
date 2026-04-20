@@ -58,6 +58,7 @@ const makeSession = (): Session => ({
   forkedAtMessageUuid: null,
   agentType: 'claude',
   model: null,
+  closedAt: null,
 })
 
 describe('archiveTask', () => {

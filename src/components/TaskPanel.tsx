@@ -5,7 +5,7 @@ import { projects, addProject, projectById } from '../store/projects'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask, restoreTask } from '../store/tasks'
 import { isSetupRunning, setupFailed, setupError } from '../store/setup'
-import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines, sessionCosts } from '../store/sessions'
+import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines, sessionCosts, reopenSession } from '../store/sessions'
 import { loadSteps } from '../store/steps'
 import { StepList } from './StepList'
 import { MessageInput } from './MessageInput'
@@ -212,9 +212,15 @@ export const TaskPanel: Component = () => {
     const tid = selectedTaskId()
     if (!tid || !tabBarRef) return
     const view = mainView(tid)
-    if (!view || view === 'session') return
-    // Find the active tab element by data attribute
-    const el = tabBarRef.querySelector(`[data-tab-path="${CSS.escape(view)}"]`) as HTMLElement | null
+    if (!view) return
+    const selector = view === 'session'
+      ? (() => {
+          const sid = selectedSessionId()
+          return sid ? `[data-session-id="${CSS.escape(sid)}"]` : null
+        })()
+      : `[data-tab-path="${CSS.escape(view)}"]`
+    if (!selector) return
+    const el = tabBarRef.querySelector(selector) as HTMLElement | null
     el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
   })
 
@@ -227,6 +233,14 @@ export const TaskPanel: Component = () => {
     if (!tid) return
     const session = await createSession(tid, agentType, model)
     setSelectedSessionId(session.id)
+    setMainView(tid, 'session')
+  }
+
+  const handleReopenSession = async (sessionId: string) => {
+    const tid = selectedTaskId()
+    if (!tid) return
+    await reopenSession(sessionId)
+    setSelectedSessionId(sessionId)
     setMainView(tid, 'session')
   }
 
@@ -506,8 +520,10 @@ export const TaskPanel: Component = () => {
                   <div ref={tabBarRef} class="relative z-10 flex items-stretch overflow-x-auto scrollbar-hide tab-bar-bg">
                     {/* New session button */}
                     <NewSessionMenu
+                      taskId={t().id}
                       defaultAgent={projectById(t().projectId)?.defaultAgentType}
                       onCreate={(agentType, model) => handleNewSession(agentType, model)}
+                      onReopen={handleReopenSession}
                     />
                     {/* Session tabs */}
                     <For each={taskSessions()}>
@@ -516,6 +532,7 @@ export const TaskPanel: Component = () => {
                         const hasUnread = () => isSessionUnread(session.id) && session.status !== 'running'
                         return (
                           <div
+                            data-session-id={session.id}
                             class={clsx(
                               'group h-8 flex items-center gap-1.5 px-3 text-[11px] rounded-t-md whitespace-nowrap cursor-pointer',
                               isActive()

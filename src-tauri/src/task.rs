@@ -841,6 +841,7 @@ pub async fn create_session(
         forked_at_message_uuid: None,
         agent_type,
         model,
+        closed_at: None,
     };
 
     db_tx
@@ -1969,6 +1970,7 @@ pub async fn fork_session_in_task(
         forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
         agent_type: parent.agent_type.clone(),
         model: parent.model.clone(),
+        closed_at: None,
     };
 
     // Single transaction: insert session row + copy output_lines up to the
@@ -2057,8 +2059,8 @@ async fn insert_session_row_tx(
     s: &Session,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.task_id)
@@ -2072,6 +2074,7 @@ async fn insert_session_row_tx(
     .bind(&s.forked_at_message_uuid)
     .bind(&s.agent_type)
     .bind(&s.model)
+    .bind(s.closed_at)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert session: {e}"))?;
@@ -2276,6 +2279,7 @@ pub async fn fork_session_to_new_task(
         forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
         agent_type: parent_session.agent_type.clone(),
         model: parent_session.model.clone(),
+        closed_at: None,
     };
 
     // Single transaction: task row + session row + copied output_lines.

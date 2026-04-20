@@ -266,6 +266,8 @@ pub fn run() {
             ipc::respond_to_approval,
             ipc::get_pending_approvals,
             ipc::list_sessions,
+            ipc::list_closed_sessions,
+            ipc::reopen_session,
             ipc::get_session,
             ipc::get_output_lines,
             ipc::fork_session_in_task,
