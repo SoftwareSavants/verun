@@ -96,6 +96,8 @@ interface ErrorBlock {
 }
 type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock | ErrorBlock
 
+const displayBlockCache = new Map<string, { output: OutputItem[]; length: number; blocks: DisplayBlock[] }>()
+
 export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
   const blocks: DisplayBlock[] = []
   let currentText = ''
@@ -920,7 +922,13 @@ export const ChatView: Component<Props> = (props) => {
         return
       }
       if (len !== lastItemCount || sessionChanged) {
-        const newBlocks = rebuildBlocks(props.output)
+        const cached = sid ? displayBlockCache.get(sid) : undefined
+        const newBlocks = cached && cached.output === props.output && cached.length === len
+          ? cached.blocks
+          : rebuildBlocks(props.output)
+        if (sid && (!cached || cached.blocks !== newBlocks)) {
+          displayBlockCache.set(sid, { output: props.output, length: len, blocks: newBlocks })
+        }
         setBlocks(reconcile(newBlocks, { merge: !sessionChanged }))
         lastItemCount = len
         // Re-apply search highlights after block rebuild (preserve position)

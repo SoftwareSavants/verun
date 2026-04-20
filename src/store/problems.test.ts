@@ -36,6 +36,7 @@ import {
   problemsByFileForTask,
   fileHasErrors,
   fileHasWarnings,
+  problemSeverityForPath,
   clearProblemsForTask,
   setProjectErrors,
 } from './problems'
@@ -281,6 +282,18 @@ describe('problems store', () => {
 
     const after = problemsByFileForTask('task-1')
     expect(Object.keys(after)).toEqual(['src/real.ts'])
+  })
+
+  test('problemSeverityForPath summarizes files and directory prefixes', async () => {
+    setProjectErrors('task-1', [
+      { file: 'src/a.ts', line: 1, column: 1, severity: 'warning', message: 'warn' },
+      { file: 'src/deep/b.ts', line: 1, column: 1, severity: 'error', message: 'err' },
+    ])
+
+    expect(problemSeverityForPath('task-1', 'src/a.ts', false)).toBe('warning')
+    expect(problemSeverityForPath('task-1', 'src/deep', true)).toBe('error')
+    expect(problemSeverityForPath('task-1', 'src', true)).toBe('error')
+    expect(problemSeverityForPath('task-1', 'test', true)).toBeNull()
   })
 
   test('clearProblemsForTask removes all problems', () => {

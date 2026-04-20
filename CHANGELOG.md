@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Task switching stays responsive across large workspaces by virtualizing diagnostics and source-control lists, caching chat block rebuilds, and avoiding repeated full-list scans in the file tree, tabs, and sidebar
+
 ## 0.8.1 — 2026-04-20
 
 ### Changes

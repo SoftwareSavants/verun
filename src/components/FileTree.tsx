@@ -1,8 +1,8 @@
-import { Component, For, Show, createEffect, on, onCleanup, createSignal } from 'solid-js'
+import { Component, For, Show, createEffect, on, onCleanup, createSignal, createMemo } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
 import { Folder, FolderOpen, ChevronRight, ChevronDown, ExternalLink, RefreshCw, ClipboardCopy, FileText, Tag } from 'lucide-solid'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { fileHasErrors, fileHasWarnings, pathHasErrors, pathHasWarnings } from '../store/problems'
+import { problemSeverityForPath } from '../store/problems'
 import { getFileIcon } from '../lib/fileIcons'
 import {
   getDirContents, loadDirectory, loadDirectoryIfMissing, invalidateDirectory
@@ -58,7 +58,7 @@ export const FileTree: Component<Props> = (props) => {
   const closeMenu = () => setContextMenu(null)
 
   // Build flattened node list from expanded state
-  const flatNodes = (): FlatNode[] => {
+  const flatNodes = createMemo((): FlatNode[] => {
     const nodes: FlatNode[] = []
     const buildLevel = (relativePath: string, depth: number) => {
       const entries = getDirContents(props.taskId, relativePath)
@@ -72,7 +72,7 @@ export const FileTree: Component<Props> = (props) => {
     }
     buildLevel('', 0)
     return nodes
-  }
+  })
 
   const virtualizer = createVirtualizer({
     get count() { return flatNodes().length },
@@ -314,9 +314,10 @@ export const FileTree: Component<Props> = (props) => {
                   const Icon = () => n().entry.isDir
                     ? (isExpanded(props.taskId, n().entry.relativePath) ? FolderOpen : Folder)
                     : getFileIcon(n().entry.name)
-                  const ChevronIcon = () => n().entry.isDir
-                    ? (isExpanded(props.taskId, n().entry.relativePath) ? ChevronDown : ChevronRight)
-                    : null
+	                  const ChevronIcon = () => n().entry.isDir
+	                    ? (isExpanded(props.taskId, n().entry.relativePath) ? ChevronDown : ChevronRight)
+	                    : null
+	                  const problemSeverity = () => problemSeverityForPath(props.taskId, n().entry.relativePath, n().entry.isDir)
 
                   return (
                     <div
@@ -369,13 +370,11 @@ export const FileTree: Component<Props> = (props) => {
                             />
                           })()}
                         </span>
-                        <span class={`truncate ml-1${
-                          !n().entry.isDir && fileHasErrors(props.taskId, n().entry.relativePath) ? ' text-status-error' :
-                          !n().entry.isDir && fileHasWarnings(props.taskId, n().entry.relativePath) ? ' text-amber-400' :
-                          n().entry.isDir && pathHasErrors(props.taskId, n().entry.relativePath) ? ' text-status-error' :
-                          n().entry.isDir && pathHasWarnings(props.taskId, n().entry.relativePath) ? ' text-amber-400' :
-                          ''
-                        }`}>{n().entry.name}</span>
+	                        <span class={`truncate ml-1${
+	                          problemSeverity() === 'error' ? ' text-status-error' :
+	                          problemSeverity() === 'warning' ? ' text-amber-400' :
+	                          ''
+	                        }`}>{n().entry.name}</span>
                       </button>
                     </div>
                   )

@@ -5,6 +5,7 @@ import {
   Switch,
   Match,
   createSignal,
+  createMemo,
   createEffect,
   on,
   onMount,
@@ -40,7 +41,7 @@ import {
   requestNewTaskForProject,
   focusOrSelectTask,
 } from "../store/ui";
-import { sessionsForTask, loadSessions } from "../store/sessions";
+import { sessions, loadSessions } from "../store/sessions";
 import { isStartCommandRunning } from "../store/terminals";
 import { deleteProject } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -114,15 +115,9 @@ type TaskPhase =
   | "conflicts" // PR has merge conflicts
   | "pr-merged"; // PR merged
 
-function taskPhase(taskId: string): TaskPhase {
-  // Session status takes priority for running/error
-  const taskSessions = sessionsForTask(taskId);
-  const hasRunning = taskSessions.some((s) => s.status === "running");
-  if (hasRunning) return "running";
-
-  const hasError = taskSessions.some((s) => s.status === "error");
-  if (hasError) return "error";
-
+function taskPhase(taskId: string, sessionPhase: Record<string, "running" | "error" | undefined>): TaskPhase {
+  if (sessionPhase[taskId] === "running") return "running";
+  if (sessionPhase[taskId] === "error") return "error";
   // Git/PR state from centralized store
   const git = taskGit(taskId);
   if (git.pr) {
@@ -190,17 +185,40 @@ export const Sidebar: Component = () => {
   const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null);
   const [renamingTaskId, setRenamingTaskId] = createSignal<string | null>(null);
 
+  const activeTasksByProject = createMemo(() => {
+    const byProject: Record<string, typeof tasks> = {}
+    for (const p of projects) byProject[p.id] = activeTasksForProject(p.id)
+    return byProject
+  })
+
+  const taskBindingById = createMemo(() => {
+    const map: Record<string, number | null> = {}
+    let idx = 0
+    for (const p of projects) {
+      for (const t of activeTasksByProject()[p.id] || []) {
+        map[t.id] = idx < 9 ? idx : null
+        idx++
+      }
+    }
+    return map
+  })
+
+  const sessionPhaseByTask = createMemo(() => {
+    const map: Record<string, "running" | "error" | undefined> = {}
+    for (const s of sessions) {
+      if (s.status === "running") {
+        map[s.taskId] = "running"
+      } else if (s.status === "error" && map[s.taskId] !== "running") {
+        map[s.taskId] = "error"
+      }
+    }
+    return map
+  })
+
   // Cmd+1…Cmd+9 selects tasks in sidebar order. Returns 0-8 for keybound tasks,
   // null for tasks beyond the 9th (no shortcut) so we don't show ⌘0 etc.
   const taskBindingIndex = (taskId: string): number | null => {
-    let idx = 0;
-    for (const p of projects) {
-      for (const t of activeTasksForProject(p.id)) {
-        if (t.id === taskId) return idx < 9 ? idx : null;
-        idx++;
-      }
-    }
-    return null;
+    return taskBindingById()[taskId] ?? null;
   };
 
   // Track which tasks have open windows
@@ -376,7 +394,7 @@ export const Sidebar: Component = () => {
                   </button>
                 </div>
 
-                <Show when={activeTasksForProject(project.id).length === 0}>
+                <Show when={(activeTasksByProject()[project.id] || []).length === 0}>
                   <div class="px-2 pt-1">
                     <button
                       class="text-[10px] text-text-dim hover:text-text-muted transition-colors cursor-pointer"
@@ -387,11 +405,11 @@ export const Sidebar: Component = () => {
                   </div>
                 </Show>
 
-                <Show when={activeTasksForProject(project.id).length > 0}>
+                <Show when={(activeTasksByProject()[project.id] || []).length > 0}>
                   <div class="mt-1 flex flex-col gap-0.5">
-                    <For each={activeTasksForProject(project.id)}>
+                    <For each={activeTasksByProject()[project.id] || []}>
                       {(task) => {
-                        const phase = () => taskPhase(task.id);
+                        const phase = () => taskPhase(task.id, sessionPhaseByTask());
                         const config = () => PHASE_CONFIG[phase()];
                         const creating = () => isTaskCreating(task.id);
                         const archiving = () => isTaskArchiving(task.id);

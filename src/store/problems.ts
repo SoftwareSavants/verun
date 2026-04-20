@@ -194,12 +194,15 @@ export function problemsByFileForTask(taskId: string): Record<string, Problem[]>
 }
 
 export function problemCountForTask(taskId: string): { errors: number; warnings: number; info: number } {
-  const all = problemsForTask(taskId)
+  const byFile = problemMap()[taskId]
   let errors = 0, warnings = 0, info = 0
-  for (const p of all) {
-    if (p.severity === 'error') errors++
-    else if (p.severity === 'warning') warnings++
-    else info++
+  if (!byFile) return { errors, warnings, info }
+  for (const problems of Object.values(byFile)) {
+    for (const p of problems) {
+      if (p.severity === 'error') errors++
+      else if (p.severity === 'warning') warnings++
+      else info++
+    }
   }
   return { errors, warnings, info }
 }
@@ -218,6 +221,30 @@ export function fileHasWarnings(taskId: string, relativePath: string): boolean {
   const problems = byFile[relativePath]
   if (!problems) return false
   return problems.some(p => p.severity === 'warning')
+}
+
+export function problemSeverityForPath(taskId: string, relativePath: string, isDir: boolean): DiagnosticSeverity | null {
+  const byFile = problemMap()[taskId]
+  if (!byFile) return null
+  if (!isDir) {
+    const problems = byFile[relativePath]
+    if (!problems) return null
+    if (problems.some(p => p.severity === 'error')) return 'error'
+    if (problems.some(p => p.severity === 'warning')) return 'warning'
+    return problems.length > 0 ? problems[0].severity : null
+  }
+
+  const prefix = relativePath ? relativePath + '/' : ''
+  let found: DiagnosticSeverity | null = null
+  for (const [filePath, problems] of Object.entries(byFile)) {
+    if (!filePath.startsWith(prefix)) continue
+    for (const p of problems) {
+      if (p.severity === 'error') return 'error'
+      if (p.severity === 'warning') found = 'warning'
+      else if (!found) found = p.severity
+    }
+  }
+  return found
 }
 
 export function pathHasErrors(taskId: string, pathPrefix: string): boolean {

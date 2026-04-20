@@ -1,4 +1,5 @@
-import { Component, createSignal, createEffect, on, Show, For } from 'solid-js'
+import { Component, createSignal, createEffect, on, Show, For, createMemo } from 'solid-js'
+import { createVirtualizer } from '@tanstack/solid-virtual'
 import { ChevronDown, ChevronRight, RefreshCw, X, GitCommit, Circle, GitCompare, FileText, ClipboardCopy, FolderOpen, ExternalLink, Tag } from 'lucide-solid'
 import { diffTabKey } from '../store/files'
 import { openDiffTab, openFilePinned, revealFileInTree, mainView, type DiffSource } from '../store/editorView'
@@ -46,6 +47,15 @@ export const CodeChanges: Component<Props> = (props) => {
   const status = () => selectedCommit() ? commitStatus() : taskGit(props.taskId).status
   const commits = () => taskGit(props.taskId).commits
   const uncommittedCount = () => taskGit(props.taskId).status?.files.length ?? 0
+  let fileScrollRef: HTMLDivElement | undefined
+  let commitScrollRef: HTMLDivElement | undefined
+
+  const files = () => status()?.files || []
+  const statsByPath = createMemo(() => {
+    const map = new Map<string, NonNullable<GitStatus['stats'][number]>>()
+    for (const s of status()?.stats || []) map.set(s.path, s)
+    return map
+  })
 
   const refresh = async () => {
     try {
@@ -93,7 +103,51 @@ export const CodeChanges: Component<Props> = (props) => {
   }
 
   const statsForFile = (path: string) => {
-    return status()?.stats.find(s => s.path === path)
+    return statsByPath().get(path)
+  }
+
+  const fileVirtualizer = createVirtualizer({
+    get count() { return files().length },
+    getScrollElement: () => fileScrollRef ?? null,
+    estimateSize: () => 28,
+    overscan: 10,
+    initialRect: { width: 280, height: 360 },
+  })
+
+  const commitVirtualizer = createVirtualizer({
+    get count() { return commits().length },
+    getScrollElement: () => commitScrollRef ?? null,
+    estimateSize: () => 28,
+    overscan: 8,
+    initialRect: { width: 280, height: 192 },
+  })
+
+  const visibleFileRows = () => {
+    const rows = fileVirtualizer.getVirtualItems()
+    if (rows.length > 0 || files().length === 0) return rows
+    const size = 28
+    return Array.from({ length: Math.min(files().length, 20) }, (_, index) => ({
+      key: index,
+      index,
+      start: index * size,
+      end: (index + 1) * size,
+      size,
+      lane: 0,
+    }))
+  }
+
+  const visibleCommitRows = () => {
+    const rows = commitVirtualizer.getVirtualItems()
+    if (rows.length > 0 || commits().length === 0) return rows
+    const size = 28
+    return Array.from({ length: Math.min(commits().length, 10) }, (_, index) => ({
+      key: index,
+      index,
+      start: index * size,
+      end: (index + 1) * size,
+      size,
+      lane: 0,
+    }))
   }
 
   // ── File row context menu ─────────────────────────────────────────────
@@ -187,7 +241,7 @@ export const CodeChanges: Component<Props> = (props) => {
       </Show>
 
       {/* File list + diff */}
-      <div class="flex-1 overflow-auto">
+      <div ref={fileScrollRef} class="flex-1 overflow-auto">
         <Show when={status()?.files.length === 0 && !loading()}>
           <div class="px-4 py-10 text-center">
             <p class="text-sm text-text-muted mb-1">
@@ -199,53 +253,66 @@ export const CodeChanges: Component<Props> = (props) => {
           </div>
         </Show>
 
-        <For each={status()?.files || []}>
-          {(file) => {
-            const fileName = file.path.split('/').pop() || file.path
-            const FileIcon = getFileIcon(fileName)
-            const statusLetter = STATUS_LETTERS[file.status] || '?'
-            const statusColor = STATUS_COLORS[file.status] || 'text-text-muted'
-            const stats = () => statsForFile(file.path)
-            const active = () => isRowActive(file.path)
+        <div style={{ height: `${fileVirtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
+          <For each={visibleFileRows()}>
+            {(vrow) => {
+              const file = () => files()[vrow.index]
+              return (
+                <Show when={file()}>
+                  {(f) => {
+                    const fileName = f().path.split('/').pop() || f().path
+                    const FileIcon = getFileIcon(fileName)
+                    const statusLetter = STATUS_LETTERS[f().status] || '?'
+                    const statusColor = STATUS_COLORS[f().status] || 'text-text-muted'
+                    const stats = () => statsForFile(f().path)
+                    const active = () => isRowActive(f().path)
 
-            return (
-              <div
-                class={`relative flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs ${
-                  active()
-                    ? 'bg-surface-2 text-text-primary'
-                    : 'hover:bg-surface-2 text-text-secondary'
-                }`}
-                style={active() ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
-                onClick={() => openDiff(file.path)}
-                onDblClick={(e) => { e.stopPropagation(); openDiff(file.path, { pinned: true }) }}
-                onContextMenu={(e) => { e.preventDefault(); setFileMenu({ x: e.clientX, y: e.clientY, path: file.path }) }}
-              >
-                <span class="shrink-0 text-text-dim">
-                  <FileIcon size={12} />
-                </span>
+                    return (
+                      <div
+                        class={`absolute left-0 top-0 w-full flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs ${
+                          active()
+                            ? 'bg-surface-2 text-text-primary'
+                            : 'hover:bg-surface-2 text-text-secondary'
+                        }`}
+                        style={{
+                          height: `${vrow.size}px`,
+                          transform: `translateY(${vrow.start}px)`,
+                          'box-shadow': active() ? 'inset 2px 0 0 #2d6e4f' : undefined,
+                        }}
+                        onClick={() => openDiff(f().path)}
+                        onDblClick={(e) => { e.stopPropagation(); openDiff(f().path, { pinned: true }) }}
+                        onContextMenu={(e) => { e.preventDefault(); setFileMenu({ x: e.clientX, y: e.clientY, path: f().path }) }}
+                      >
+                        <span class="shrink-0 text-text-dim">
+                          <FileIcon size={12} />
+                        </span>
 
-                <span class="truncate flex-1">
-                  {file.path}
-                </span>
+                        <span class="truncate flex-1">
+                          {f().path}
+                        </span>
 
-                <Show when={stats()}>
-                  <span class="shrink-0 flex items-center gap-1.5 text-[10px] tabular-nums">
-                    <Show when={stats()!.insertions > 0}>
-                      <span class="text-emerald-400">+{stats()!.insertions}</span>
-                    </Show>
-                    <Show when={stats()!.deletions > 0}>
-                      <span class="text-red-400">-{stats()!.deletions}</span>
-                    </Show>
-                  </span>
+                        <Show when={stats()}>
+                          <span class="shrink-0 flex items-center gap-1.5 text-[10px] tabular-nums">
+                            <Show when={stats()!.insertions > 0}>
+                              <span class="text-emerald-400">+{stats()!.insertions}</span>
+                            </Show>
+                            <Show when={stats()!.deletions > 0}>
+                              <span class="text-red-400">-{stats()!.deletions}</span>
+                            </Show>
+                          </span>
+                        </Show>
+
+                        <span class={`shrink-0 text-[11px] font-medium tabular-nums w-3 text-center ${statusColor}`}>
+                          {statusLetter}
+                        </span>
+                      </div>
+                    )
+                  }}
                 </Show>
-
-                <span class={`shrink-0 text-[11px] font-medium tabular-nums w-3 text-center ${statusColor}`}>
-                  {statusLetter}
-                </span>
-              </div>
-            )
-          }}
-        </For>
+              )
+            }}
+          </For>
+        </div>
       </div>
 
       {/* Branch commits — collapsible, bottom-aligned like VS Code */}
@@ -267,7 +334,7 @@ export const CodeChanges: Component<Props> = (props) => {
 
         {/* Commits list */}
         <Show when={commitsOpen()}>
-          <div class="max-h-48 overflow-auto">
+          <div ref={commitScrollRef} class="max-h-48 overflow-auto">
             {/* Uncommitted changes tile */}
             <button
               class={clsx(
@@ -286,25 +353,38 @@ export const CodeChanges: Component<Props> = (props) => {
               </Show>
             </button>
 
-            <For each={commits()}>
-              {(commit) => {
-                const isSelected = () => selectedCommit() === commit.hash
-                return (
-                  <button
-                    class={clsx(
-                      'relative w-full flex items-center gap-2 px-3 py-1.5 text-xs',
-                      isSelected() ? 'bg-surface-2 text-text-primary' : 'hover:bg-surface-2 text-text-secondary',
-                    )}
-                    style={isSelected() ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
-                    onClick={() => selectCommit(commit.hash)}
-                  >
-                    <span class="font-mono text-text-dim text-[10px] shrink-0">{commit.shortHash}</span>
-                    <span class="truncate flex-1 text-left">{commit.message}</span>
-                    <span class="text-[10px] text-text-dim shrink-0">{formatTime(commit.timestamp)}</span>
-                  </button>
-                )
-              }}
-            </For>
+            <div style={{ height: `${commitVirtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
+              <For each={visibleCommitRows()}>
+                {(vrow) => {
+                  const commit = () => commits()[vrow.index]
+                  return (
+                    <Show when={commit()}>
+                      {(c) => {
+                        const isSelected = () => selectedCommit() === c().hash
+                        return (
+                          <button
+                            class={clsx(
+                              'absolute left-0 top-0 w-full flex items-center gap-2 px-3 py-1.5 text-xs',
+                              isSelected() ? 'bg-surface-2 text-text-primary' : 'hover:bg-surface-2 text-text-secondary',
+                            )}
+                            style={{
+                              height: `${vrow.size}px`,
+                              transform: `translateY(${vrow.start}px)`,
+                              'box-shadow': isSelected() ? 'inset 2px 0 0 #2d6e4f' : undefined,
+                            }}
+                            onClick={() => selectCommit(c().hash)}
+                          >
+                            <span class="font-mono text-text-dim text-[10px] shrink-0">{c().shortHash}</span>
+                            <span class="truncate flex-1 text-left">{c().message}</span>
+                            <span class="text-[10px] text-text-dim shrink-0">{formatTime(c().timestamp)}</span>
+                          </button>
+                        )
+                      }}
+                    </Show>
+                  )
+                }}
+              </For>
+            </div>
 
             <Show when={commits().length === 0 && !loading()}>
               <div class="px-3 py-3 text-[11px] text-text-dim text-center">
