@@ -53,6 +53,7 @@ export interface Session {
   forkedAtMessageUuid: string | null
   agentType: AgentType
   model: string | null
+  closedAt: number | null
 }
 
 export interface OutputLine {

@@ -82,7 +82,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
     session.name || AGENT_DISPLAY_NAMES[session.agentType]
 
   const relativeTime = (session: Session) => {
-    const end = session.endedAt ?? session.startedAt
+    const end = session.closedAt ?? session.endedAt ?? session.startedAt
     return formatDurationShort(Date.now() - end)
   }
 

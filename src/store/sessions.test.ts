@@ -46,6 +46,7 @@ const makeSession = (overrides: Partial<Session> = {}): Session => ({
   forkedAtMessageUuid: null,
   agentType: 'claude' as const,
   model: null,
+  closedAt: null,
   ...overrides,
 })
 

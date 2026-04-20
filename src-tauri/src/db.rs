@@ -208,6 +208,12 @@ pub fn migrations() -> Vec<Migration> {
         description: "add last_pushed_sha to tasks",
         sql: "ALTER TABLE tasks ADD COLUMN last_pushed_sha TEXT;",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 19,
+        description: "add closed_at to sessions",
+        sql: "ALTER TABLE sessions ADD COLUMN closed_at INTEGER;",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -275,6 +281,8 @@ pub struct Session {
     pub agent_type: String,
     #[sqlx(default)]
     pub model: Option<String>,
+    #[sqlx(default)]
+    pub closed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -409,6 +417,7 @@ pub enum DbWrite {
     },
     CloseSession {
         id: String,
+        closed_at: i64,
     },
     ReopenSession {
         id: String,
@@ -696,8 +705,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Sessions --
         DbWrite::CreateSession(s) => {
             sqlx::query(
-                "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(&s.task_id)
@@ -711,6 +720,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(&s.forked_at_message_uuid)
             .bind(&s.agent_type)
             .bind(&s.model)
+            .bind(s.closed_at)
             .execute(pool)
             .await?;
         }
@@ -776,18 +786,22 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             tx.commit().await?;
         }
 
-        DbWrite::CloseSession { id } => {
-            sqlx::query("UPDATE sessions SET status = 'closed' WHERE id = ?")
+        DbWrite::CloseSession { id, closed_at } => {
+            sqlx::query("UPDATE sessions SET status = 'closed', closed_at = ? WHERE id = ?")
+                .bind(closed_at)
                 .bind(&id)
                 .execute(pool)
                 .await?;
         }
 
         DbWrite::ReopenSession { id } => {
-            sqlx::query("UPDATE sessions SET status = 'idle' WHERE id = ? AND status = 'closed'")
-                .bind(&id)
-                .execute(pool)
-                .await?;
+            sqlx::query(
+                "UPDATE sessions SET status = 'idle', closed_at = NULL \
+                 WHERE id = ? AND status = 'closed'",
+            )
+            .bind(&id)
+            .execute(pool)
+            .await?;
         }
 
         DbWrite::DeleteOutputLines { session_id } => {
@@ -1021,7 +1035,7 @@ pub async fn list_closed_sessions_for_task(
 ) -> Result<Vec<Session>, String> {
     sqlx::query_as::<_, Session>(
         "SELECT * FROM sessions WHERE task_id = ? AND status = 'closed' \
-         ORDER BY ended_at IS NULL, ended_at DESC, started_at DESC",
+         ORDER BY closed_at IS NULL, closed_at DESC, started_at DESC",
     )
     .bind(task_id)
     .fetch_all(pool)
@@ -1158,7 +1172,7 @@ mod tests {
     #[test]
     fn has_twelve_migrations() {
         let m = migrations();
-        assert_eq!(m.len(), 18);
+        assert_eq!(m.len(), 19);
         assert_eq!(m[0].version, 1);
         assert_eq!(m[1].version, 2);
         assert_eq!(m[2].version, 3);
@@ -1240,6 +1254,7 @@ mod tests {
             forked_at_message_uuid: None,
             agent_type: "claude".into(),
             model: None,
+            closed_at: None,
         }
     }
 
@@ -1740,18 +1755,13 @@ mod tests {
         .await
         .unwrap();
 
-        process_write(
-            &pool,
-            DbWrite::CloseSession {
-                id: "s-older".into(),
-            },
-        )
-        .await
-        .unwrap();
+        // Close order is the opposite of end order to prove we sort by closed_at,
+        // not started_at or ended_at.
         process_write(
             &pool,
             DbWrite::CloseSession {
                 id: "s-newer".into(),
+                closed_at: 10_000,
             },
         )
         .await
@@ -1760,6 +1770,16 @@ mod tests {
             &pool,
             DbWrite::CloseSession {
                 id: "s-no-end".into(),
+                closed_at: 20_000,
+            },
+        )
+        .await
+        .unwrap();
+        process_write(
+            &pool,
+            DbWrite::CloseSession {
+                id: "s-older".into(),
+                closed_at: 30_000,
             },
         )
         .await
@@ -1767,10 +1787,10 @@ mod tests {
 
         let closed = list_closed_sessions_for_task(&pool, "t-001").await.unwrap();
         assert_eq!(closed.len(), 3);
-        // Ordering: ended_at DESC, NULLs last, then started_at DESC as fallback
-        assert_eq!(closed[0].id, "s-newer"); // ended_at 9000
-        assert_eq!(closed[1].id, "s-older"); // ended_at 5000
-        assert_eq!(closed[2].id, "s-no-end"); // ended_at NULL, falls back
+        // Ordering: closed_at DESC (most recently closed first)
+        assert_eq!(closed[0].id, "s-older"); // closed_at 30000
+        assert_eq!(closed[1].id, "s-no-end"); // closed_at 20000
+        assert_eq!(closed[2].id, "s-newer"); // closed_at 10000
 
         // Active sessions must be excluded
         assert!(closed.iter().all(|s| s.id != "s-active"));
@@ -1793,6 +1813,7 @@ mod tests {
             &pool,
             DbWrite::CloseSession {
                 id: "s-001".into(),
+                closed_at: 7_000,
             },
         )
         .await
@@ -1800,6 +1821,7 @@ mod tests {
 
         let closed = get_session(&pool, "s-001").await.unwrap().unwrap();
         assert_eq!(closed.status, "closed");
+        assert_eq!(closed.closed_at, Some(7_000));
 
         process_write(
             &pool,
@@ -1812,6 +1834,7 @@ mod tests {
 
         let reopened = get_session(&pool, "s-001").await.unwrap().unwrap();
         assert_eq!(reopened.status, "idle");
+        assert_eq!(reopened.closed_at, None);
 
         // And it appears back in active list, not in closed list
         let active = list_sessions_for_task(&pool, "t-001").await.unwrap();
@@ -1847,6 +1870,7 @@ mod tests {
 
         let after = get_session(&pool, "s-001").await.unwrap().unwrap();
         assert_eq!(after.status, "running");
+        assert_eq!(after.closed_at, None);
     }
 
     // -- Output tests --

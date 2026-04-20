@@ -784,6 +784,7 @@ pub async fn close_session(
     db_tx
         .send(db::DbWrite::CloseSession {
             id: session_id.clone(),
+            closed_at: task::epoch_ms(),
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
