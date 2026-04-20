@@ -274,6 +274,19 @@ describe('appearance persistence', () => {
     expect(loadAppearance().codeFontSize).toBe(17)
   })
 
+  test('strips the pre-release uiFontSize=13 default so the new 16 default takes over', () => {
+    // 0.8.0 dev builds saved uiFontSize: 13. Without a schema marker we can't
+    // distinguish an explicit choice from the bad default; treat a bare 13 as
+    // the default and let DEFAULT_PREFS.uiFontSize win on load.
+    localStorage.setItem('verun:appearance', JSON.stringify({ uiFontSize: 13 }))
+    expect(loadAppearance().uiFontSize).toBe(16)
+  })
+
+  test('preserves uiFontSize once the user has bumped the schema version', () => {
+    localStorage.setItem('verun:appearance', JSON.stringify({ uiFontSize: 13, schemaVersion: 1 }))
+    expect(loadAppearance().uiFontSize).toBe(13)
+  })
+
   test('migrates legacy custom accent into per-mode overrides', () => {
     localStorage.setItem('verun:appearance', JSON.stringify({
       accent: { kind: 'custom', hex: '#abcdef' },
@@ -314,5 +327,20 @@ describe('applyAppearance - code font size unifies code blocks and terminals', (
   test('publishes --font-code-size from prefs.codeFontSize', () => {
     applyAppearance({ ...DEFAULT_PREFS, codeFontSize: 16 })
     expect(document.documentElement.style.getPropertyValue('--font-code-size').trim()).toBe('16px')
+  })
+})
+
+describe('DEFAULT_PREFS - normal density matches pre-feature look', () => {
+  // Before the Appearance feature there was no explicit root font-size, so the
+  // browser default (16px) drove all rem-based UnoCSS utilities. Anything lower
+  // as the default ui font size would silently shrink the entire UI at normal
+  // density, which is what 0.7.x users already have muscle memory for.
+  test('uiFontSize default is 16 so rem-based utilities match the browser default', () => {
+    expect(DEFAULT_PREFS.uiFontSize).toBe(16)
+  })
+
+  test('applyAppearance with defaults publishes --font-base-size: 16px', () => {
+    applyAppearance(DEFAULT_PREFS)
+    expect(document.documentElement.style.getPropertyValue('--font-base-size').trim()).toBe('16px')
   })
 })

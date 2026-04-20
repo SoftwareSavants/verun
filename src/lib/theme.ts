@@ -33,7 +33,10 @@ export interface AppearancePrefs {
   density: Density
   cursorBlink: boolean
   reducedMotion: boolean
+  schemaVersion: number
 }
+
+const CURRENT_SCHEMA_VERSION = 1
 
 export const THEME_PRESETS: ThemePreset[] = [
   {
@@ -101,11 +104,12 @@ export const DEFAULT_PREFS: AppearancePrefs = {
   darkOverrides: {},
   uiFont: 'System',
   codeFont: 'SF Mono',
-  uiFontSize: 13,
+  uiFontSize: 16,
   codeFontSize: 13,
   density: 'normal',
   cursorBlink: false,
   reducedMotion: false,
+  schemaVersion: CURRENT_SCHEMA_VERSION,
 }
 
 const STORAGE_KEY = 'verun:appearance'
@@ -301,6 +305,14 @@ function migrate(parsed: Partial<AppearancePrefs> & LegacyPrefs): Partial<Appear
   if (parsed.accent?.kind === 'custom' && parsed.customAccent) {
     out.lightOverrides = { ...(out.lightOverrides ?? {}), accent: parsed.customAccent }
     out.darkOverrides  = { ...(out.darkOverrides  ?? {}), accent: parsed.customAccent }
+  }
+  // Pre-release 0.8.0 defaulted uiFontSize to 13, which shrank every rem-based
+  // utility to ~0.81x. Drop a stored 13 from the schemaless era so the new
+  // default (16) takes over on load - users who had explicitly chosen 13 get
+  // their choice back once they bump the stepper, and all saves from here on
+  // carry schemaVersion so this only runs once.
+  if (parsed.schemaVersion === undefined && parsed.uiFontSize === 13) {
+    delete out.uiFontSize
   }
   // Drop legacy fields so they don't linger in storage after the next save.
   delete (out as LegacyPrefs).accent
