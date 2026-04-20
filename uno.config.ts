@@ -119,7 +119,7 @@ export default defineConfig({
 
           --font-ui:   -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', sans-serif;
           --font-code: 'SF Mono', 'Menlo', monospace;
-          --font-base-size:     13px;
+          --font-base-size: 16px;
           --font-code-size: 13px;
 
           /* Syntax highlighting (mode-aware fixed palette - applyAppearance overrides these) */
