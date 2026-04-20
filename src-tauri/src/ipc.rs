@@ -1936,6 +1936,29 @@ pub fn new_agent_cache() -> AgentCache {
     std::sync::Arc::new(std::sync::RwLock::new(Vec::new()))
 }
 
+/// Reload the user's shell PATH, then detect installed agents and store
+/// the result in the cache. The ordering is load-bearing: GUI-launched
+/// apps on macOS start with a stripped PATH, so running detection first
+/// would mark agents installed in nvm/homebrew/~/.local/bin as missing.
+pub async fn init_agents_cache<R, D>(
+    cache: AgentCache,
+    reload_path: R,
+    detect: D,
+) -> Vec<AgentInfo>
+where
+    R: FnOnce() + Send + 'static,
+    D: FnOnce() -> Vec<AgentInfo> + Send + 'static,
+{
+    let agents = tokio::task::spawn_blocking(move || {
+        reload_path();
+        detect()
+    })
+    .await
+    .unwrap_or_default();
+    *cache.write().unwrap() = agents.clone();
+    agents
+}
+
 /// Blocking detection of all agents — run via spawn_blocking at startup.
 pub fn detect_all_agents() -> Vec<AgentInfo> {
     crate::agent::AgentKind::all()
@@ -1997,10 +2020,8 @@ pub async fn refresh_agents(
 ) -> Result<(), String> {
     let cache = std::sync::Arc::clone(&*cache);
     tauri::async_runtime::spawn(async move {
-        let agents = tokio::task::spawn_blocking(detect_all_agents)
-            .await
-            .unwrap_or_default();
-        *cache.write().unwrap() = agents.clone();
+        let agents =
+            init_agents_cache(cache, crate::env_path::reload_now, detect_all_agents).await;
         let _ = app.emit("agents-updated", agents);
     });
     Ok(())
@@ -2772,5 +2793,70 @@ mod tests {
         assert!(!entry.is_dir);
         assert!(!entry.is_symlink);
         assert_eq!(entry.size, Some(2));
+    }
+
+    /// Regression: GUI-launched apps on macOS inherit a stripped PATH.
+    /// If agent detection ran before env_path::reload_now finished, every
+    /// installed agent looked missing and the startup toast lied. Ordering
+    /// must be: reload PATH, then detect.
+    #[tokio::test]
+    async fn init_agents_cache_reloads_path_before_detecting() {
+        use std::sync::{Arc, Mutex};
+
+        let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let o_reload = Arc::clone(&order);
+        let o_detect = Arc::clone(&order);
+
+        let cache = new_agent_cache();
+
+        init_agents_cache(
+            Arc::clone(&cache),
+            move || {
+                o_reload.lock().unwrap().push("reload");
+            },
+            move || {
+                o_detect.lock().unwrap().push("detect");
+                Vec::new()
+            },
+        )
+        .await;
+
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["reload", "detect"],
+            "PATH reload must complete before agent detection runs"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_agents_cache_stores_detected_agents() {
+        use std::sync::Arc;
+        let cache = new_agent_cache();
+        let sample = vec![AgentInfo {
+            id: "claude".into(),
+            name: "Claude".into(),
+            install_hint: "".into(),
+            update_hint: "".into(),
+            docs_url: "".into(),
+            models: Vec::new(),
+            installed: true,
+            cli_version: Some("1.0.0".into()),
+            supports_streaming: true,
+            supports_resume: true,
+            supports_plan_mode: true,
+            supports_model_selection: true,
+            supports_effort: false,
+            supports_skills: false,
+            supports_attachments: true,
+            supports_fork: true,
+        }];
+        let sample_clone = sample.clone();
+
+        let returned =
+            init_agents_cache(Arc::clone(&cache), || {}, move || sample_clone.clone()).await;
+
+        assert_eq!(returned.len(), 1);
+        assert_eq!(cache.read().unwrap().len(), 1);
+        assert_eq!(cache.read().unwrap()[0].id, "claude");
     }
 }
