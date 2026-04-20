@@ -77,11 +77,13 @@ export const Layout: Component = () => {
         const idx = parseInt(e.key) - 1
         if (showSettings()) {
           // In settings: CMD+Number switches between sections
-          // 1 = General, 2+ = projects by order
+          // 1 = General, 2 = Appearance, 3+ = projects by order
           if (idx === 0) {
             selectSettingsSection('general')
-          } else if (idx - 1 < projects.length) {
-            selectSettingsSection(projects[idx - 1].id)
+          } else if (idx === 1) {
+            selectSettingsSection('appearance')
+          } else if (idx - 2 < projects.length) {
+            selectSettingsSection(projects[idx - 2].id)
           }
         } else {
           // Match sidebar ordering: iterate projects, then tasks within each project

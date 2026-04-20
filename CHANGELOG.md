@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Make Verun feel like home: a new Appearance settings tab with light, dark, and system mode; theme presets plus a fully custom palette (HSV picker for accent, surface, and foreground); bundled UI and code fonts (Inter, JetBrains Mono, Fira Code, Cascadia Code) on top of any system font; independent UI and code font sizes; Compact / Normal / Comfortable density that scales the whole UI; terminal cursor blink; and reduced motion. The default accent is a mode-tuned teal, and text on accent backgrounds auto-flips between black and white based on perceived luminance so primary buttons stay readable on any color you pick.
 - Tool policy selector: renamed levels to "Ask every time" / "Auto-approve safe" / "Full auto" with clearer example subtitles; popover gets a section header, check icon on the selected row, and safety-ordered layout; chip label now reads `auto-safe` / `ask` / `full auto` instead of `Normal` / `Supervised` / `Auto`
 - Usage popover redesigned: prominent cost header, grouped rate-limit cards (active overage highlighted in red), aligned token grid with split cached-read/cached-write rows, and M/B token formatting past 1M (e.g. `24.7M` instead of `24657.1k`)
 - Shared `formatCost` / `formatTokens` helpers extracted to `src/lib/format.ts` and reused across `ChatView` + `MessageInput`

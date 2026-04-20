@@ -3,30 +3,55 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
     <title>Verun</title>
+    <script>
+      // FOUC prevention — apply saved theme/density before stylesheets load
+      (function () {
+        try {
+          var raw = localStorage.getItem('verun:appearance')
+          var prefs = raw ? JSON.parse(raw) : {}
+          var mode = prefs.mode || 'system'
+          if (mode === 'system') {
+            mode = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          }
+          document.documentElement.dataset.theme = mode
+          if (prefs.density) document.documentElement.dataset.density = prefs.density
+          if (prefs.reducedMotion) document.documentElement.dataset.reducedMotion = 'true'
+          // Inline body bg so the splash doesn't flash the wrong color
+          document.documentElement.style.background = mode === 'light' ? '#fafafa' : '#09090b'
+        } catch (e) { /* ignore */ }
+      })()
+    </script>
     <style>
       html, body, #root {
         margin: 0;
         padding: 0;
         height: 100%;
-        background: #0a0a0a;
-        color: #e5e5e5;
-        font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', 'Ubuntu', 'Cantarell', sans-serif;
+        background: var(--surface-0, #0a0a0a);
+        color: var(--text-primary, #e5e5e5);
+        font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', sans-serif);
         overflow: hidden;
         -webkit-font-smoothing: antialiased;
       }
       /* xterm.js: use default cursor instead of text cursor */
       .shell-terminal .xterm { cursor: default; }
       .shell-terminal .xterm-helper-textarea { cursor: default !important; }
+      /* Splash colors swap by data-theme */
+      #splash {
+        background: var(--surface-0, #09090b);
+      }
+      #splash-title { color: var(--text-primary, #e4e4e7); }
+      #splash-sub   { color: var(--text-dim, #52525b); }
     </style>
   </head>
 
   <body>
-    <div id="splash" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0a0a0a;z-index:99999;transition:opacity 0.3s ease">
+    <div id="splash" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:99999;transition:opacity 0.3s ease">
       <div style="text-align:center">
-        <div style="font-size:28px;font-weight:700;letter-spacing:-0.5px;color:#e4e4e7">Verun</div>
-        <div style="margin-top:8px;font-size:12px;color:#52525b">Loading...</div>
+        <div id="splash-title" style="font-size:28px;font-weight:700;letter-spacing:-0.5px">Verun</div>
+        <div id="splash-sub" style="margin-top:8px;font-size:12px">Loading...</div>
       </div>
     </div>
     <div id="root" style="opacity:0;transition:opacity 0.3s ease"></div>

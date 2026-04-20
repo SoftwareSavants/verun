@@ -339,7 +339,7 @@ export const GitActions: Component<Props> = (props) => {
             </span>
           </button>
           <Show when={secondaryActions().length > 0}>
-            <span class={`w-px self-stretch ${confirming() === primaryAction().label ? 'bg-amber-500/40' : 'bg-white/8'}`} />
+            <span class={`w-px self-stretch ${confirming() === primaryAction().label ? 'bg-amber-500/40' : 'bg-outline/8'}`} />
             <button
               class={`flex items-center px-1.5 transition-colors disabled:opacity-40 disabled:pointer-events-none ${
                 confirming() === primaryAction().label ? 'hover:bg-amber-500/10' : 'hover:bg-surface-2'

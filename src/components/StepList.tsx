@@ -242,7 +242,7 @@ export const StepList: Component<Props> = (props) => {
                           class={clsx(
                             'flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors',
                             step.planMode
-                              ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                              ? 'text-accent'
                               : 'text-text-muted hover:bg-surface-3',
                           )}
                           onClick={() => updateStep(props.sessionId!, step.id, { planMode: !step.planMode })}
@@ -257,7 +257,7 @@ export const StepList: Component<Props> = (props) => {
                           class={clsx(
                             'flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors',
                             step.thinkingMode
-                              ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                              ? 'text-accent'
                               : 'text-text-muted hover:bg-surface-3',
                           )}
                           onClick={() => updateStep(props.sessionId!, step.id, { thinkingMode: !step.thinkingMode })}
@@ -270,7 +270,7 @@ export const StepList: Component<Props> = (props) => {
                           class={clsx(
                             'flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors',
                             step.fastMode
-                              ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                              ? 'text-accent'
                               : 'text-text-muted hover:bg-surface-3',
                           )}
                           onClick={() => updateStep(props.sessionId!, step.id, { fastMode: !step.fastMode })}

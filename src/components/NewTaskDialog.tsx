@@ -117,12 +117,12 @@ export const NewTaskDialog: Component<Props> = (props) => {
           defaultAgent={project()?.defaultAgentType ?? 'claude'}
         />
         <Show when={agentNotInstalled()}>
-          <div class="mt-2 px-3 py-2.5 rounded-lg bg-surface-3 ring-1 ring-white/6">
+          <div class="mt-2 px-3 py-2.5 rounded-lg bg-surface-3 ring-1 ring-outline/6">
             <p class="text-xs text-text-secondary mb-2">
               {selectedAgent()?.name} is not installed. Run this command to install it:
             </p>
             <button
-              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded bg-surface-1 ring-1 ring-white/8 hover:ring-white/14 transition-colors group text-left"
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded bg-surface-1 ring-1 ring-outline/8 hover:ring-outline/14 transition-colors group text-left"
               onClick={copyInstallHint}
               title="Click to copy"
             >

@@ -1682,7 +1682,7 @@ export const MessageInput: Component<Props> = (props) => {
                               >
                                 <span class={clsx(
                                   'w-4 h-4 rounded flex items-center justify-center text-[10px] font-medium shrink-0 mt-0.5',
-                                  selected() ? 'bg-accent text-white' : 'bg-surface-3 text-text-dim'
+                                  selected() ? 'bg-accent text-accent-foreground' : 'bg-surface-3 text-text-dim'
                                 )}>
                                   {i() + 1}
                                 </span>
@@ -1712,7 +1712,7 @@ export const MessageInput: Component<Props> = (props) => {
                         >
                           <span class={clsx(
                             'w-4 h-4 rounded flex items-center justify-center text-[10px] font-medium shrink-0 mt-0.5',
-                            customActive() ? 'bg-accent text-white' : 'bg-surface-3 text-text-dim'
+                            customActive() ? 'bg-accent text-accent-foreground' : 'bg-surface-3 text-text-dim'
                           )}>
                             {(question().options?.length ?? 0) + 1}
                           </span>
@@ -1806,7 +1806,7 @@ export const MessageInput: Component<Props> = (props) => {
               right: planExpanded() ? '0' : '16px',
               'max-height': planExpanded() ? '100%' : '50vh',
               'border-radius': planExpanded() ? '0' : '12px 12px 0 0',
-              'box-shadow': planExpanded() ? 'none' : 'inset 0 0 0 1px rgba(255,255,255,0.08)',
+              'box-shadow': planExpanded() ? 'none' : 'inset 0 0 0 1px rgb(var(--outline-rgb) / 0.08)',
               transition: 'left 150ms cubic-bezier(0.4, 0, 0.2, 1), right 150ms cubic-bezier(0.4, 0, 0.2, 1), max-height 150ms cubic-bezier(0.4, 0, 0.2, 1), border-radius 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms cubic-bezier(0.4, 0, 0.2, 1)',
             }}
           >
@@ -2198,7 +2198,7 @@ export const MessageInput: Component<Props> = (props) => {
                 class={clsx(
                   'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
                   planMode()
-                    ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                    ? 'text-accent'
                     : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
                   'disabled:opacity-30'
                 )}
@@ -2216,7 +2216,7 @@ export const MessageInput: Component<Props> = (props) => {
                 class={clsx(
                   'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
                   thinkingMode()
-                    ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                    ? 'text-accent'
                     : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
                   'disabled:opacity-30'
                 )}
@@ -2234,7 +2234,7 @@ export const MessageInput: Component<Props> = (props) => {
                 class={clsx(
                   'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors',
                   fastMode()
-                    ? 'text-accent bg-accent-muted hover:bg-accent-muted/80'
+                    ? 'text-accent'
                     : 'text-text-muted hover:text-text-secondary hover:bg-surface-2',
                   'disabled:opacity-30'
                 )}

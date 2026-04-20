@@ -9,30 +9,8 @@ import { registerXterm, getXtermEntry } from '../store/terminals'
 import type { XtermEntry } from '../store/terminals'
 import * as ipc from '../lib/ipc'
 import { isMac, modPressed } from '../lib/platform'
+import { getXtermTheme, getXtermFontConfig, subscribeXtermToAppearance } from '../lib/terminalTheme'
 import '@xterm/xterm/css/xterm.css'
-
-const THEME = {
-  background: '#0a0a0a',
-  foreground: '#e5e5e5',
-  cursor: '#e5e5e5',
-  selectionBackground: '#2d6e4f80',
-  black: '#0a0a0a',
-  red: '#ef4444',
-  green: '#22c55e',
-  yellow: '#eab308',
-  blue: '#3b82f6',
-  magenta: '#a855f7',
-  cyan: '#06b6d4',
-  white: '#e5e5e5',
-  brightBlack: '#525252',
-  brightRed: '#f87171',
-  brightGreen: '#4ade80',
-  brightYellow: '#facc15',
-  brightBlue: '#60a5fa',
-  brightMagenta: '#c084fc',
-  brightCyan: '#22d3ee',
-  brightWhite: '#fafafa',
-}
 
 /** Capture-phase keydown on the container — fires before xterm's textarea gets it */
 function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>, onToggleSearch?: () => void) {
@@ -132,6 +110,7 @@ export const ShellTerminal: Component<Props> = (props) => {
   let resizeObserver: ResizeObserver | undefined
   let searchAddonRef: SearchAddon | undefined
   let resultsDisposable: { dispose(): void } | undefined
+  let unsubAppearance: (() => void) | undefined
 
   const [showSearch, setShowSearch] = createSignal(false)
   const [searchQuery, setSearchQuery] = createSignal('')
@@ -201,17 +180,17 @@ export const ShellTerminal: Component<Props> = (props) => {
       setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped, toggleSearch)
       initialFit(existing, props.terminalId)
       resizeObserver = attachResizeObserver(terminalRef, existing, props.terminalId)
+      unsubAppearance = subscribeXtermToAppearance(existing.term, () => existing.fitAddon.fit())
       return
     }
 
+    const fontCfg = getXtermFontConfig()
     const term = new XTerm({
-      theme: THEME,
-      fontFamily: isMac
-        ? "'SF Mono', Menlo, Monaco, 'Courier New', monospace, 'Apple Color Emoji', 'Segoe UI Emoji'"
-        : "'Cascadia Code', 'Consolas', 'Courier New', monospace, 'Segoe UI Emoji'",
-      fontSize: 13,
+      theme: getXtermTheme(),
+      fontFamily: fontCfg.fontFamily,
+      fontSize: fontCfg.fontSize,
       lineHeight: 1.0,
-      cursorBlink: true,
+      cursorBlink: fontCfg.cursorBlink,
       cursorStyle: 'block',
       scrollback: 10000,
       allowProposedApi: true,
@@ -250,11 +229,13 @@ export const ShellTerminal: Component<Props> = (props) => {
     const entry = { term, fitAddon, searchAddon }
     initialFit(entry, props.terminalId)
     resizeObserver = attachResizeObserver(terminalRef, entry, props.terminalId)
+    unsubAppearance = subscribeXtermToAppearance(term, () => fitAddon.fit())
   })
 
   onCleanup(() => {
     resizeObserver?.disconnect()
     resultsDisposable?.dispose()
+    unsubAppearance?.()
   })
 
   return (
@@ -305,7 +286,7 @@ export const ShellTerminal: Component<Props> = (props) => {
       <div
         ref={terminalRef}
         class="w-full h-full shell-terminal"
-        style={{ "background-color": "#0a0a0a", cursor: "default" }}
+        style={{ "background-color": "var(--surface-0)", cursor: "default" }}
       />
     </div>
   )
