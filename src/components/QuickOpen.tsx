@@ -241,16 +241,13 @@ export const QuickOpen: Component = () => {
         class="quick-open-backdrop fixed inset-0 z-200 bg-black/50 flex items-start justify-center pt-[15vh]"
         onClick={handleBackdropClick}
       >
-        <div
-          class="w-[520px] max-h-[400px] bg-[#21252b] border border-[#181a1f] rounded-lg overflow-hidden flex flex-col"
-          style={{ 'box-shadow': '0 8px 32px rgba(0,0,0,0.6)' }}
-        >
+        <div class="w-[520px] max-h-[400px] bg-surface-2 ring-1 ring-outline/8 rounded-lg shadow-2xl overflow-hidden flex flex-col">
           {/* Search input */}
-          <div class="flex items-center gap-2 px-3 py-2.5 border-b border-[#181a1f]">
-            <Search size={14} class="text-[#5c6370] shrink-0" />
+          <div class="flex items-center gap-2 px-3 py-2.5 border-b border-border">
+            <Search size={14} class="text-text-muted shrink-0" />
             <input
               ref={inputRef}
-              class="flex-1 bg-transparent text-[#abb2bf] text-[13px] outline-none placeholder-[#5c6370]"
+              class="flex-1 bg-transparent text-text-primary text-[13px] outline-none placeholder-text-dim"
               placeholder="Search files by name..."
               value={query()}
               onInput={(e) => setQuery(e.currentTarget.value)}
@@ -267,7 +264,7 @@ export const QuickOpen: Component = () => {
             <Show
               when={filtered().length > 0}
               fallback={
-                <div class="px-4 py-8 text-center text-[#5c6370] text-xs">
+                <div class="px-4 py-8 text-center text-text-dim text-xs">
                   {query() ? 'No files match your search' : 'No files found'}
                 </div>
               }
@@ -305,8 +302,8 @@ export const QuickOpen: Component = () => {
                         <div
                           class={`w-full flex items-center gap-2 px-3 py-1 transition-colors ${
                             isSelected()
-                              ? 'bg-[#2c313a] text-[#abb2bf]'
-                              : 'text-[#7f848e] hover:bg-[#2c313a]/50'
+                              ? 'bg-surface-3 text-text-primary'
+                              : 'text-text-secondary hover:bg-surface-3/50'
                           }`}
                           onMouseEnter={() => setSelectedIndex(virtualRow.index)}
                         >
@@ -319,15 +316,15 @@ export const QuickOpen: Component = () => {
                           >
                             {(() => { const I = getFileIcon(name()); return <I size={14} class="shrink-0" /> })()}
                             <span class="text-[12px] truncate">
-                              <span class={isSelected() ? 'text-[#abb2bf]' : 'text-[#abb2bf]/80'}>{name()}</span>
+                              <span class={isSelected() ? 'text-text-primary' : 'text-text-secondary'}>{name()}</span>
                               <Show when={dir()}>
-                                <span class="text-[#5c6370] ml-2">{dir()}</span>
+                                <span class="text-text-dim ml-2">{dir()}</span>
                               </Show>
                             </span>
                           </button>
                           <Show when={result()?.isRecent}>
                             <button
-                              class="shrink-0 p-1 rounded text-[#5c6370] hover:text-[#abb2bf] hover:bg-[#3a404b]"
+                              class="shrink-0 p-1 rounded text-text-dim hover:text-text-primary hover:bg-surface-3"
                               onClick={(e) => handleRemoveRecent(path(), e)}
                               aria-label={`Remove ${path()} from recent files`}
                               title="Remove from recent files"
