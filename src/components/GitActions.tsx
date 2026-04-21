@@ -299,8 +299,9 @@ export const GitActions: Component<Props> = (props) => {
   })
 
   const hasOpenPr = () => pr()?.state === 'OPEN'
-  const prDone = () => pr() && !hasOpenPr()
-  const hasAnything = () => hasOpenPr() || prMerged() || (!prDone() && (commitCount() > 0 || isBehind())) || fileCount() > 0
+  const prClosed = () => pr()?.state === 'CLOSED'
+  const prDone = () => prMerged()
+  const hasAnything = () => hasOpenPr() || prMerged() || prClosed() || (!prDone() && (commitCount() > 0 || isBehind())) || fileCount() > 0
 
   const PrimaryIcon = () => {
     return <Dynamic component={primaryAction().icon} size={12} />
