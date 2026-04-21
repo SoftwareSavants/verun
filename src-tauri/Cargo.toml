@@ -19,7 +19,7 @@ tauri-plugin-shell = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
-tauri-plugin-notifications = { version = "0.4", default-features = false, features = ["notify-rust"] }
+tauri-plugin-notifications = { version = "0.4", default-features = false }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tokio = { version = "1", features = ["full"] }
@@ -42,6 +42,14 @@ yash-syntax = "0.19"
 rstest = "0.18"
 insta = { version = "1", features = ["json", "toml"] }
 tempfile = "3"
+
+# Dev builds run unbundled, so the native macOS notifications backend can't
+# initialize (UNUserNotificationCenter requires a .app). Enable this feature
+# via `pnpm tauri dev` / `make dev`, which pulls in the notify-rust fallback.
+# Release builds omit it and get the native backend with click routing +
+# Notification Center clearing.
+[features]
+dev-notifications = ["tauri-plugin-notifications/notify-rust"]
 
 [profile.dev]
 opt-level = 0
