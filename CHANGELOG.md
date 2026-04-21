@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Trust level changes apply mid-run: editing the policy during an in-flight turn now takes effect on the next tool-approval check instead of waiting for the next send_message
 - Task switching stays responsive across large workspaces by virtualizing diagnostics and source-control lists, caching chat block rebuilds, and avoiding repeated full-list scans in the file tree, tabs, and sidebar
 - `+` menu now surfaces closed sessions for the task under a "Recent" section - click one to restore it as a tab with full transcript replay; `+` button sticks to the left edge while the tab bar scrolls horizontally (#100)
 - File tree treats symlinked directories as directories so they expand on click instead of appearing as dead entries (broken symlinks stay non-expandable)

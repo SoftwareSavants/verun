@@ -959,6 +959,7 @@ pub async fn get_output_lines(
 #[tauri::command]
 pub async fn set_trust_level(
     db_tx: State<'_, DbWriteTx>,
+    active: State<'_, ActiveMap>,
     task_id: String,
     trust_level: String,
 ) -> Result<(), String> {
@@ -969,6 +970,18 @@ pub async fn set_trust_level(
             return Err(format!(
                 "Invalid trust level: {trust_level}. Must be normal, full_auto, or supervised"
             ))
+        }
+    }
+
+    // Push into live sessions so in-flight turns see the new value on the
+    // next tool-approval check — no need to wait for the next send_message.
+    let parsed = crate::policy::TrustLevel::from_str(&trust_level);
+    for entry in active.iter() {
+        if entry.value().task_id == task_id {
+            entry
+                .value()
+                .trust_level
+                .store(parsed.to_u8(), std::sync::atomic::Ordering::Relaxed);
         }
     }
 

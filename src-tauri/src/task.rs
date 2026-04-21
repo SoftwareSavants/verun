@@ -6,7 +6,7 @@ use crate::worktree;
 use dashmap::DashMap;
 use serde::Deserialize;
 use sqlx::SqlitePool;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -177,6 +177,9 @@ pub fn generate_branch_name(repo_path: &str) -> String {
 
 pub struct ActiveProcess {
     pub child: Child,
+    /// Task this session belongs to. Lets `set_trust_level` find the right
+    /// active processes to notify without a DB roundtrip.
+    pub task_id: String,
     /// Kept alive so `stream_and_capture` can write control_response messages via the Arc clone.
     /// For persistent agents this stays Some across turns; for one-shot agents it's
     /// `take()`n on `turn_end` to close the fd and let the process exit.
@@ -185,6 +188,10 @@ pub struct ActiveProcess {
     /// flips this to false on `turn_end` so the next `send_message` can take
     /// the fast path instead of erroring as "already processing".
     pub busy: Arc<AtomicBool>,
+    /// Live trust level for this task. Shared with the stream loop so policy
+    /// evaluation re-reads it on every tool call — IPC edits mid-run take
+    /// effect on the next `can_use_tool` check instead of the next spawn.
+    pub trust_level: Arc<AtomicU8>,
     /// Which agent owns this process. Lets `abort_message` /
     /// `close_session` / app-exit dispatch on the trait without a DB read.
     pub kind: AgentKind,
@@ -1440,12 +1447,15 @@ pub async fn spawn_session_process(
 
     // Track the active process
     let kind = AgentKind::parse(&agent_type);
+    let trust_level_atom = Arc::new(AtomicU8::new(trust_level.to_u8()));
     active.insert(
         session_id.clone(),
         ActiveProcess {
             child,
+            task_id: task_id.clone(),
             stdin: stdin.clone(),
             busy: busy.clone(),
+            trust_level: trust_level_atom.clone(),
             kind,
             current_permission_mode: if plan_mode { "plan" } else { "default" }.to_string(),
             current_model: model.clone(),
@@ -1466,7 +1476,7 @@ pub async fn spawn_session_process(
     let monitor_pending_ctrl = pending_control_responses.clone();
     let monitor_wt = worktree_path.clone();
     let monitor_repo = repo_path;
-    let monitor_trust = trust_level;
+    let monitor_trust = trust_level_atom.clone();
     let monitor_agent = AgentKind::parse(&agent_type).implementation();
     let monitor_busy = busy.clone();
     tokio::spawn(async move {

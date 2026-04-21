@@ -8,7 +8,7 @@ use crate::task::{
 };
 use serde::Serialize;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -1088,7 +1088,7 @@ pub async fn stream_and_capture(
     db_tx: DbWriteTx,
     worktree_path: String,
     repo_path: String,
-    trust_level: TrustLevel,
+    trust_level: Arc<AtomicU8>,
     agent: Box<dyn crate::agent::Agent>,
 ) -> StreamResult {
     let mut reader = BufReader::new(stdout).lines();
@@ -1169,7 +1169,7 @@ pub async fn stream_and_capture(
                             &app, &session_id, &task_id, &v, &stdin,
                             &pending_approvals, &pending_approval_meta,
                             &worktree_path, &repo_path,
-                            trust_level, &db_tx,
+                            &trust_level, &db_tx,
                         ).await {
                             if cr.handled {
                                 if let Some(tool_start) = cr.tool_start {
@@ -1364,7 +1364,7 @@ async fn handle_control_request(
     pending_meta: &PendingApprovalMeta,
     worktree_path: &str,
     repo_path: &str,
-    trust_level: TrustLevel,
+    trust_level: &Arc<AtomicU8>,
     db_tx: &DbWriteTx,
 ) -> Option<ControlRequestResult> {
     if v.get("type").and_then(|t| t.as_str()) != Some("control_request") {
@@ -1410,13 +1410,13 @@ async fn handle_control_request(
         input: input_str,
     };
 
-    // Evaluate policy
+    // Evaluate policy — load trust level fresh so mid-run IPC edits apply.
     let result = policy::evaluate(
         &tool_name,
         &tool_input,
         worktree_path,
         repo_path,
-        trust_level,
+        TrustLevel::from_atomic(trust_level),
     );
     let input_summary = policy::summarize_input(&tool_name, &tool_input);
 
