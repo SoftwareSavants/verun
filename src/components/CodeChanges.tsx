@@ -85,6 +85,7 @@ export const CodeChanges: Component<Props> = (props) => {
     setSelectedCommit(null)
     setCommitStatus(null)
     refreshTaskGit(props.taskId)
+    ipc.watchWorktree(props.taskId)
   }))
 
   const sourceForRow = (): DiffSource => {

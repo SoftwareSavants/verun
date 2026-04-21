@@ -256,6 +256,7 @@ export const Sidebar: Component = () => {
         for (const t of tasks) {
           loadSessions(t.id);
           refreshTaskGit(t.id);
+          ipc.watchWorktree(t.id);
         }
       },
     ),
