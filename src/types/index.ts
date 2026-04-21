@@ -285,6 +285,9 @@ export interface TerminalInstance {
   name: string
   hookType?: 'setup' | 'destroy'
   isStartCommand?: boolean
+  /** Scrollback to replay into xterm on first mount (from Rust ring buffer).
+   *  Consumed and cleared by ShellTerminal. */
+  initialReplay?: { data: string; seq: number }
 }
 
 export interface PtySpawnResult {
@@ -295,11 +298,24 @@ export interface PtySpawnResult {
 export interface PtyOutputEvent {
   terminalId: string
   data: string
+  /** Total bytes written to the PTY including this chunk. Used to dedupe live
+   *  events against the snapshot returned by pty_list_for_task. */
+  seq: number
 }
 
 export interface PtyExitedEvent {
   terminalId: string
   exitCode?: number
+}
+
+export interface PtyListEntry {
+  terminalId: string
+  taskId: string
+  name: string
+  isStartCommand: boolean
+  hookType?: string | null
+  bufferedOutput: string
+  seq: number
 }
 
 // File tree types

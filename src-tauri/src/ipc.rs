@@ -1659,6 +1659,7 @@ pub async fn pty_spawn(
     cols: u16,
     initial_command: Option<String>,
     direct_command: Option<bool>,
+    is_start_command: Option<bool>,
 ) -> Result<pty::SpawnResult, String> {
     let t = db::get_task(pool.inner(), &task_id)
         .await?
@@ -1668,6 +1669,14 @@ pub async fn pty_spawn(
     let env_vars = worktree::verun_env_vars(t.port_offset, &repo_path);
     let map = pty_map.inner().clone();
     let direct = direct_command.unwrap_or(false);
+    // Frontend sends is_start_command explicitly when spawning the project start
+    // command. Fall back to `direct` for older callers that conflated the two.
+    let start_cmd = is_start_command.unwrap_or(direct);
+    let name_override = if start_cmd {
+        Some("Dev Server".to_string())
+    } else {
+        None
+    };
     flatten_join(
         tokio::task::spawn_blocking(move || {
             pty::spawn_pty(
@@ -1680,6 +1689,9 @@ pub async fn pty_spawn(
                 initial_command,
                 env_vars,
                 direct,
+                name_override,
+                start_cmd,
+                None,
             )
         })
         .await,
@@ -1719,6 +1731,19 @@ pub async fn pty_close(
 ) -> Result<(), String> {
     let map = pty_map.inner().clone();
     flatten_join(tokio::task::spawn_blocking(move || pty::close_pty(&map, &terminal_id)).await)
+}
+
+/// Return all PTYs currently alive for a task, along with their replay buffers.
+/// Called by a freshly-opened task window to hydrate its local terminal store
+/// so the user sees existing shells (and their scrollback) instead of a new one
+/// being spawned.
+#[tauri::command]
+pub async fn pty_list_for_task(
+    pty_map: State<'_, ActivePtyMap>,
+    task_id: String,
+) -> Result<Vec<pty::PtyListEntry>, String> {
+    let map = pty_map.inner().clone();
+    flatten_join(tokio::task::spawn_blocking(move || Ok(pty::list_for_task(&map, &task_id))).await)
 }
 
 // ---------------------------------------------------------------------------

@@ -101,6 +101,7 @@ export function terminalOpenForTask(taskId: string): boolean {
 export function setTerminalOpenForTask(taskId: string, open: boolean) {
   ensureTaskContext(taskId)
   setTaskContexts(taskId, 'terminalOpen', open)
+  persistTaskContext(taskId, taskContexts[taskId]!)
 }
 
 export function activeTerminalForTask(taskId: string): string | null {

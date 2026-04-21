@@ -1,7 +1,7 @@
-import { Component, For, Show, createSignal } from 'solid-js'
+import { Component, For, Show, createSignal, createEffect } from 'solid-js'
 import { Plus, X, Square, Loader2, Check, AlertCircle, RotateCcw } from 'lucide-solid'
 import { clsx } from 'clsx'
-import { terminalsForTask, activeTerminalId, setActiveTerminalForTask, spawnTerminal, closeTerminal, focusActiveTerminal, terminalExitCodes, isTerminalStopped, spawnStartCommand } from '../store/terminals'
+import { terminalsForTask, activeTerminalId, setActiveTerminalForTask, spawnTerminal, closeTerminal, focusActiveTerminal, terminalExitCodes, isTerminalStopped, spawnStartCommand, isTaskHydrated } from '../store/terminals'
 import { isSetupRunning } from '../store/setup'
 import { ShellTerminal } from './ShellTerminal'
 import * as ipc from '../lib/ipc'
@@ -61,16 +61,21 @@ export const TerminalPanel: Component<Props> = (props) => {
     }
   }
 
-  // Auto-spawn first terminal if none exist
-  // If auto-start enabled and start command exists, run it; otherwise open a plain shell
-  if (taskTerminals().length === 0 && !isSetupRunning(props.taskId)) {
+  // Auto-spawn first terminal if none exist. Wait for hydration first so we
+  // don't spawn a fresh shell on top of PTYs the Rust side already has running
+  // (e.g. opened from another window or surviving a window reload).
+  createEffect(() => {
+    if (!isTaskHydrated(props.taskId)) return
+    if (taskTerminals().length > 0) return
+    if (isSetupRunning(props.taskId)) return
+    if (spawning()) return
     if (props.autoStart && props.startCommand) {
       setSpawning(true)
       spawnStartCommand(props.taskId, props.startCommand).finally(() => setSpawning(false))
     } else {
       handleNew()
     }
-  }
+  })
 
   return (
     <div class="flex flex-col h-full bg-[#0a0a0a]">

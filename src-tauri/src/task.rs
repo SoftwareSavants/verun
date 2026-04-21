@@ -296,6 +296,10 @@ pub fn spawn_hook_pty(
 
     let env_vars = worktree::verun_env_vars(port_offset, repo_path);
 
+    let display_name = match hook_type {
+        HookType::Setup => "Setup",
+        HookType::Destroy => "Destroy",
+    };
     let result = crate::pty::spawn_pty(
         app.clone(),
         pty_map.clone(),
@@ -306,6 +310,9 @@ pub fn spawn_hook_pty(
         Some(hook_command.to_string()),
         env_vars,
         true, // direct_command — PTY exits when hook exits
+        Some(display_name.to_string()),
+        false,
+        Some(hook_type.as_str().to_string()),
     )?;
 
     hook_pty_map.insert(

@@ -11,7 +11,7 @@ import { loadAgents } from '../store/agents'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId } from '../store/ui'
 import { modPressed } from '../lib/platform'
 import { toggleTerminal, showTerminal, setShowTerminal } from '../store/ui'
-import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
+import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
 import { projectById } from '../store/projects'
 import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView } from '../store/editorView'
 import { rightPanelTab, setRightPanelTab, setShowQuickOpen, setFocusSearchRequest } from '../store/ui'
@@ -41,6 +41,14 @@ export const TaskWindowShell: Component = () => {
   createEffect(on(selectedTaskId, (taskId) => {
     if (taskId) emit('task-window-changed', { taskId, open: true })
   }))
+
+  // Hydrate terminals from the Rust ring buffer whenever the selected task
+  // changes. Runs on every change (not just first mount) so re-syncing picks
+  // up PTYs spawned in the main window since we last looked.
+  createEffect(() => {
+    const taskId = selectedTaskId()
+    if (taskId) hydrateTerminalsForTask(taskId)
+  })
 
 
   // --- Initialization ---
