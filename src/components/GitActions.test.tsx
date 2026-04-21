@@ -136,4 +136,42 @@ describe('buildPrMessage', () => {
     expect(msg).not.toContain('if there are any uncommitted changes')
     expect(msg).not.toContain('check')
   })
+
+  test('unpushed commits with clean tree - tells claude to push first', () => {
+    const git = makeGit({
+      branchStatus: { ahead: 2, behind: 0, unpushed: 2 },
+      commits: [
+        { hash: 'abc1234', shortHash: 'abc1234', message: 'feat: add foo', author: 'A', timestamp: 0, filesChanged: 1, insertions: 5, deletions: 0 },
+      ],
+    })
+    const msg = buildPrMessage(git, 'main', false)
+    expect(msg).toContain('push to remote')
+    expect(msg).not.toContain('commit all changes')
+    expect(msg).toContain('create a pull request targeting main')
+  })
+
+  test('dirty tree - tells claude to commit and push', () => {
+    const git = makeGit({
+      status: {
+        files: [{ path: 'src/foo.ts', status: 'M', staging: 'unstaged', oldPath: undefined }],
+        stats: [],
+        totalInsertions: 5,
+        totalDeletions: 1,
+      },
+    })
+    const msg = buildPrMessage(git, 'main', false)
+    expect(msg).toContain('commit all changes')
+    expect(msg).toContain('push to remote')
+  })
+
+  test('all pushed and clean tree - no push instruction', () => {
+    const git = makeGit({
+      branchStatus: { ahead: 0, behind: 0, unpushed: 0 },
+      commits: [
+        { hash: 'abc1234', shortHash: 'abc1234', message: 'feat: add foo', author: 'A', timestamp: 0, filesChanged: 1, insertions: 5, deletions: 0 },
+      ],
+    })
+    const msg = buildPrMessage(git, 'main', false)
+    expect(msg).not.toContain('push to remote')
+  })
 })

@@ -37,9 +37,12 @@ export function buildPrMessage(git: TaskGitState, base: string, isDraft: boolean
   }
 
   const context = parts.length > 0 ? `\n\n${parts.join('\n\n')}` : ''
+  const unpushed = git.branchStatus.unpushed
   const action = uncommitted.length > 0
-    ? `commit all changes and then create a ${draftPart}pull request targeting ${base} with an appropriate title and description`
-    : `create a ${draftPart}pull request targeting ${base} with an appropriate title and description`
+    ? `commit all changes, push to remote, and then create a ${draftPart}pull request targeting ${base} with an appropriate title and description`
+    : unpushed > 0
+      ? `push to remote and then create a ${draftPart}pull request targeting ${base} with an appropriate title and description`
+      : `create a ${draftPart}pull request targeting ${base} with an appropriate title and description`
 
   return `${action}${context}`
 }

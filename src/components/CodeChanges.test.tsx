@@ -64,7 +64,7 @@ vi.mock('../store/editorView', () => ({
 }))
 
 vi.mock('../lib/fileIcons', () => ({
-  getFileIcon: vi.fn(() => null),
+  getFileIcon: vi.fn(() => () => null),
 }))
 
 vi.mock('./ContextMenu', () => ({
