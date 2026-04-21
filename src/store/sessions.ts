@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo } from '../types'
 import { setTasks, taskById } from './tasks'
 import { markTaskUnread, markTaskAttention, clearTaskAttention, markSessionUnread } from './ui'
-import { dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
+import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
 import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
 import { deserializeAttachments } from '../lib/binary'
@@ -108,6 +108,23 @@ export async function abortMessage(sessionId: string) {
     setSessions(s => s.id === sessionId, 'status', 'running')
     throw e
   }
+}
+
+/// Steer: queue the new message as an armed step, then abort the current turn.
+/// session-aborted fires once graceful shutdown is done, and its listener
+/// drains the armed step. Sending inline races the interrupt and hits Rust's
+/// busy guard, which silently fails and leaves the UI desynced.
+export async function steerSession(
+  sessionId: string,
+  message: string,
+  attachments: Attachment[] | undefined,
+  model: string | undefined,
+  planMode: boolean | undefined,
+  thinkingMode: boolean | undefined,
+  fastMode: boolean | undefined,
+) {
+  addStep({ sessionId, message, attachments, armed: true, model, planMode, thinkingMode, fastMode })
+  await abortMessage(sessionId)
 }
 
 export async function approveToolUse(requestId: string, sessionId: string) {

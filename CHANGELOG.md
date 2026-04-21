@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix steer (cmd+enter while busy) silently failing: the inline abort+send raced the in-flight interrupt and hit Rust's busy guard, leaving Claude running while the UI flipped to idle; steer now queues the new message as an armed step and lets the `session-aborted` listener dispatch it after graceful shutdown
 - Import/Export `.verun.json` now let you pick the location: the main repo or any task's worktree (previously import always read from main repo and export always wrote to the first task)
 - Fix light-mode regressions: hook textareas (Settings + Add Project dialog), Cmd+P file picker, `>` command palette, and breadcrumb dropdown no longer bake in dark-theme hex colors - they now follow the active theme palette
 - Trust level changes apply mid-run: editing the policy during an in-flight turn now takes effect on the next tool-approval check instead of waiting for the next send_message

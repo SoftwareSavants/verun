@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
+import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
 import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession } from '../store/sessionContext'
 import { setSelectedSessionId, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
@@ -947,8 +947,7 @@ export const MessageInput: Component<Props> = (props) => {
     setShowPalette(false)
     setSending(true)
     try {
-      await abortMessage(sid)
-      await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
+      await steerSession(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
     } catch (e) {
       console.error('Failed to steer:', e)
     } finally {
