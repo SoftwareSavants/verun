@@ -10,7 +10,7 @@ import {
 import { setShowSettings, setSelectedTaskId, setSelectedSessionId, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist, sidebarWidth } from '../store/ui'
 import { notificationsEnabled, setNotificationsEnabledAndPersist } from '../lib/notifications'
 import { projects, updateHooks, updateStoreHooks, updateBaseBranch } from '../store/projects'
-import { createTask, tasksForProject } from '../store/tasks'
+import { createTask, activeTasksForProject } from '../store/tasks'
 import { sendMessage, setSessions, setOutputItems } from '../store/sessions'
 import * as ipc from '../lib/ipc'
 import { Popover } from './Popover'
@@ -55,6 +55,8 @@ export const SettingsPage: Component = () => {
   const [codeFontDropdownOpen, setCodeFontDropdownOpen] = createSignal(false)
   const [uiFontCustom, setUiFontCustom] = createSignal('')
   const [codeFontCustom, setCodeFontCustom] = createSignal('')
+  const [importDropdownOpen, setImportDropdownOpen] = createSignal(false)
+  const [exportDropdownOpen, setExportDropdownOpen] = createSignal(false)
 
   // Populate edit fields from active project on mount
   const section = activeSection()
@@ -129,32 +131,29 @@ export const SettingsPage: Component = () => {
     }
   }
 
-  const handleExport = async () => {
+  const handleExport = async (taskId?: string) => {
     const p = selectedProject()
     if (!p) return
-    const projectTasks = tasksForProject(p.id)
-    if (projectTasks.length === 0) {
-      addToast('Create a task first to export config into its worktree', 'error')
-      return
-    }
     try {
-      await ipc.exportProjectConfig(p.id, projectTasks[0].id)
-      addToast('Exported .verun.json to worktree — commit it to share', 'success')
+      await ipc.exportProjectConfig(p.id, taskId)
+      const source = taskId ? 'task worktree' : 'main repo'
+      addToast(`Exported .verun.json (${source}) - commit it to share`, 'success')
     } catch (e) {
       addToast(String(e), 'error')
     }
   }
 
-  const handleImport = async () => {
+  const handleImport = async (taskId?: string) => {
     const p = selectedProject()
     if (!p) return
     try {
-      const hooks = await ipc.importProjectConfig(p.id)
+      const hooks = await ipc.importProjectConfig(p.id, taskId)
       updateStoreHooks(p.id, hooks.setupHook, hooks.destroyHook, hooks.startCommand)
       setEditSetupHook(hooks.setupHook)
       setEditDestroyHook(hooks.destroyHook)
       setEditStartCommand(hooks.startCommand)
-      addToast('Imported config from .verun.json', 'success')
+      const source = taskId ? 'task worktree' : 'main repo'
+      addToast(`Imported config from .verun.json (${source})`, 'success')
     } catch (e) {
       addToast(String(e), 'error')
     }
@@ -434,22 +433,96 @@ export const SettingsPage: Component = () => {
                 </button>
 
                 <div class="flex items-center gap-2">
-                  <button
-                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-surface-2 border border-border hover:border-border-active text-text-muted hover:text-text-secondary transition-colors"
-                    onClick={handleImport}
-                    title="Import from .verun.json in repo"
-                  >
-                    <Download size={12} />
-                    Import
-                  </button>
-                  <button
-                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-surface-2 border border-border hover:border-border-active text-text-muted hover:text-text-secondary transition-colors"
-                    onClick={handleExport}
-                    title="Export to .verun.json in a task worktree"
-                  >
-                    <Upload size={12} />
-                    Export
-                  </button>
+                  <div class="relative">
+                    <button
+                      class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-surface-2 border border-border hover:border-border-active text-text-muted hover:text-text-secondary transition-colors"
+                      onClick={() => setImportDropdownOpen(!importDropdownOpen())}
+                      title="Import from .verun.json in the main repo or a task worktree"
+                    >
+                      <Download size={12} />
+                      Import
+                      <ChevronDown size={12} class="text-text-dim" />
+                    </button>
+                    <Popover
+                      open={importDropdownOpen()}
+                      onClose={() => setImportDropdownOpen(false)}
+                      class="py-1 max-h-64 overflow-y-auto w-56 absolute right-0 bottom-full mb-1 bg-surface-2 border-border-active"
+                    >
+                      <button
+                        class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 transition-colors"
+                        onClick={() => {
+                          setImportDropdownOpen(false)
+                          handleImport()
+                        }}
+                      >
+                        <FolderGit2 size={13} class="shrink-0" />
+                        <span class="truncate" title={selectedProject()?.repoPath}>Main repo</span>
+                      </button>
+                      <Show when={activeTasksForProject(selectedProject()?.id ?? '').length > 0}>
+                        <div class="border-t border-border-subtle my-1" />
+                        <div class="px-3 py-1 text-[10px] uppercase tracking-wider text-text-dim">Tasks</div>
+                        <For each={activeTasksForProject(selectedProject()?.id ?? '')}>
+                          {(t) => (
+                            <button
+                              class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 transition-colors"
+                              onClick={() => {
+                                setImportDropdownOpen(false)
+                                handleImport(t.id)
+                              }}
+                            >
+                              <GitBranch size={13} class="shrink-0" />
+                              <span class="truncate" title={t.worktreePath}>{t.name ?? t.branch}</span>
+                            </button>
+                          )}
+                        </For>
+                      </Show>
+                    </Popover>
+                  </div>
+                  <div class="relative">
+                    <button
+                      class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-surface-2 border border-border hover:border-border-active text-text-muted hover:text-text-secondary transition-colors"
+                      onClick={() => setExportDropdownOpen(!exportDropdownOpen())}
+                      title="Export to .verun.json in the main repo or a task worktree"
+                    >
+                      <Upload size={12} />
+                      Export
+                      <ChevronDown size={12} class="text-text-dim" />
+                    </button>
+                    <Popover
+                      open={exportDropdownOpen()}
+                      onClose={() => setExportDropdownOpen(false)}
+                      class="py-1 max-h-64 overflow-y-auto w-56 absolute right-0 bottom-full mb-1 bg-surface-2 border-border-active"
+                    >
+                      <button
+                        class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 transition-colors"
+                        onClick={() => {
+                          setExportDropdownOpen(false)
+                          handleExport()
+                        }}
+                      >
+                        <FolderGit2 size={13} class="shrink-0" />
+                        <span class="truncate" title={selectedProject()?.repoPath}>Main repo</span>
+                      </button>
+                      <Show when={activeTasksForProject(selectedProject()?.id ?? '').length > 0}>
+                        <div class="border-t border-border-subtle my-1" />
+                        <div class="px-3 py-1 text-[10px] uppercase tracking-wider text-text-dim">Tasks</div>
+                        <For each={activeTasksForProject(selectedProject()?.id ?? '')}>
+                          {(t) => (
+                            <button
+                              class="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 transition-colors"
+                              onClick={() => {
+                                setExportDropdownOpen(false)
+                                handleExport(t.id)
+                              }}
+                            >
+                              <GitBranch size={13} class="shrink-0" />
+                              <span class="truncate" title={t.worktreePath}>{t.name ?? t.branch}</span>
+                            </button>
+                          )}
+                        </For>
+                      </Show>
+                    </Popover>
+                  </div>
                 </div>
               </div>
             </div>

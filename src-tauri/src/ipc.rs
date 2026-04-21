@@ -191,19 +191,26 @@ pub async fn update_project_default_agent(
         .map_err(|e| format!("DB write failed: {e}"))
 }
 
-/// Export current DB hooks to .verun.json in a task's worktree
+/// Export current DB hooks to .verun.json. Writes to `task_id`'s worktree when
+/// provided, otherwise to the project repo root.
 #[tauri::command]
 pub async fn export_project_config(
     pool: State<'_, SqlitePool>,
     project_id: String,
-    task_id: String,
+    task_id: Option<String>,
 ) -> Result<(), String> {
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or_else(|| format!("Project {project_id} not found"))?;
-    let t = db::get_task(pool.inner(), &task_id)
-        .await?
-        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    let task = match task_id.as_deref() {
+        Some(tid) => Some(
+            db::get_task(pool.inner(), tid)
+                .await?
+                .ok_or_else(|| format!("Task {tid} not found"))?,
+        ),
+        None => None,
+    };
 
     let config = serde_json::json!({
         "hooks": {
@@ -213,23 +220,43 @@ pub async fn export_project_config(
         "startCommand": &project.start_command,
     });
     let pretty = serde_json::to_string_pretty(&config).unwrap_or_default();
-    let config_path = format!("{}/.verun.json", t.worktree_path);
+    let config_path =
+        resolve_config_path(&project.repo_path, task.as_ref().map(|t| t.worktree_path.as_str()));
     std::fs::write(&config_path, format!("{pretty}\n"))
         .map_err(|e| format!("Failed to write .verun.json: {e}"))
 }
 
-/// Import .verun.json from the repo root into DB. Returns the imported hooks.
+/// Resolve which `.verun.json` to read/write: a task's worktree when
+/// `task_worktree_path` is `Some`, otherwise the project's repo root.
+fn resolve_config_path(repo_path: &str, task_worktree_path: Option<&str>) -> String {
+    let base = task_worktree_path.unwrap_or(repo_path);
+    format!("{base}/.verun.json")
+}
+
+/// Import .verun.json into DB. Reads from `task_id`'s worktree when provided,
+/// otherwise from the project repo root. Returns the imported hooks.
 #[tauri::command]
 pub async fn import_project_config(
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     project_id: String,
+    task_id: Option<String>,
 ) -> Result<ImportedHooks, String> {
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or_else(|| format!("Project {project_id} not found"))?;
 
-    let config_path = format!("{}/.verun.json", project.repo_path);
+    let task = match task_id.as_deref() {
+        Some(tid) => Some(
+            db::get_task(pool.inner(), tid)
+                .await?
+                .ok_or_else(|| format!("Task {tid} not found"))?,
+        ),
+        None => None,
+    };
+
+    let config_path =
+        resolve_config_path(&project.repo_path, task.as_ref().map(|t| t.worktree_path.as_str()));
     let (setup, destroy, start) = task::parse_verun_config_file(&config_path)
         .ok_or_else(|| "No .verun.json found or file is empty".to_string())?;
 
@@ -2717,6 +2744,21 @@ mod tests {
         assert!(entry.is_symlink);
         assert!(!entry.is_dir, "broken symlink is not a directory");
         assert!(entry.size.is_none());
+    }
+
+    #[test]
+    fn resolve_config_path_uses_repo_root_when_no_task() {
+        let p = resolve_config_path("/tmp/repo", None);
+        assert_eq!(p, "/tmp/repo/.verun.json");
+    }
+
+    #[test]
+    fn resolve_config_path_uses_worktree_when_task_given() {
+        let p = resolve_config_path(
+            "/tmp/repo",
+            Some("/tmp/repo/.verun/worktrees/silly-penguin"),
+        );
+        assert_eq!(p, "/tmp/repo/.verun/worktrees/silly-penguin/.verun.json");
     }
 
     #[test]

@@ -24,11 +24,11 @@ export const updateProjectHooks = (id: string, setupHook: string, destroyHook: s
 export const updateProjectDefaultAgent = (id: string, defaultAgentType: string) =>
   invoke<void>('update_project_default_agent', { id, defaultAgentType })
 
-export const exportProjectConfig = (projectId: string, taskId: string) =>
-  invoke<void>('export_project_config', { projectId, taskId })
+export const exportProjectConfig = (projectId: string, taskId?: string) =>
+  invoke<void>('export_project_config', { projectId, taskId: taskId ?? null })
 
-export const importProjectConfig = (projectId: string) =>
-  invoke<{ setupHook: string; destroyHook: string; startCommand: string }>('import_project_config', { projectId })
+export const importProjectConfig = (projectId: string, taskId?: string) =>
+  invoke<{ setupHook: string; destroyHook: string; startCommand: string }>('import_project_config', { projectId, taskId: taskId ?? null })
 
 // Tasks
 export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType) =>
