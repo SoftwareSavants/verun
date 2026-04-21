@@ -45,7 +45,7 @@ src/components/— UI components
 
 ## Commands
 
-pnpm tauri dev --config src-tauri/tauri.dev.conf.json   # run dev (separate bundle id + app data dir from release)
+pnpm tauri dev --config src-tauri/tauri.dev.conf.json --features dev-notifications   # run dev (separate bundle id + app data dir; --features enables notify-rust fallback since dev is unbundled)
 pnpm tauri build        # production build
 pnpm check              # typecheck frontend
 cargo check             # check Rust

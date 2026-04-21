@@ -6,6 +6,7 @@
 - Task switching stays responsive across large workspaces by virtualizing diagnostics and source-control lists, caching chat block rebuilds, and avoiding repeated full-list scans in the file tree, tabs, and sidebar
 - `+` menu now surfaces closed sessions for the task under a "Recent" section - click one to restore it as a tab with full transcript replay; `+` button sticks to the left edge while the tab bar scrolls horizontally (#100)
 - File tree treats symlinked directories as directories so they expand on click instead of appearing as dead entries (broken symlinks stay non-expandable)
+- Notifications: clicking a banner now navigates to the source task/session, and the Notification Center is cleared when the app regains focus - dropped the `notify-rust` fallback so the native macOS `UNUserNotificationCenter` backend is used in release builds (dev builds no longer emit notifications, which matches expectations - they previously appeared as Terminal.app and swallowed click data anyway)
 
 ## 0.8.1 — 2026-04-20
 

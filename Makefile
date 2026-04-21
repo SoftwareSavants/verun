@@ -1,7 +1,7 @@
 .PHONY: dev build check test test-rust test-frontend lint setup clean
 
 dev:
-	pnpm tauri dev --config src-tauri/tauri.dev.conf.json
+	pnpm tauri dev --config src-tauri/tauri.dev.conf.json --features dev-notifications
 
 build:
 	pnpm tauri build
