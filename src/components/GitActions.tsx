@@ -8,10 +8,41 @@ import { sessionById } from '../store/sessions'
 import { sendMessage } from '../store/sessions'
 import { archiveTask } from '../store/tasks'
 import { addToast } from '../store/ui'
-import { taskGit, refreshTaskGit, invalidateRemote } from '../store/git'
+import { taskGit, refreshTaskGit, invalidateRemote, type TaskGitState } from '../store/git'
 import { taskById } from '../store/tasks'
 import { projectById } from '../store/projects'
 import { registerDismissable } from '../lib/dismissable'
+
+export function buildPrMessage(git: TaskGitState, base: string, isDraft: boolean): string {
+  const draftPart = isDraft ? 'draft ' : ''
+  const parts: string[] = []
+
+  const uncommitted = git.status?.files ?? []
+  if (uncommitted.length > 0) {
+    const fileList = uncommitted
+      .slice(0, 15)
+      .map(f => `  ${f.status} ${f.path}`)
+      .join('\n')
+    const more = uncommitted.length > 15 ? `\n  ...and ${uncommitted.length - 15} more` : ''
+    parts.push(`${uncommitted.length} uncommitted file${uncommitted.length === 1 ? '' : 's'}:\n${fileList}${more}`)
+  }
+
+  if (git.commits.length > 0) {
+    const commitList = git.commits
+      .slice(0, 10)
+      .map(c => `  ${c.shortHash} ${c.message}`)
+      .join('\n')
+    const more = git.commits.length > 10 ? `\n  ...and ${git.commits.length - 10} more` : ''
+    parts.push(`${git.commits.length} commit${git.commits.length === 1 ? '' : 's'} on this branch:\n${commitList}${more}`)
+  }
+
+  const context = parts.length > 0 ? `\n\n${parts.join('\n\n')}` : ''
+  const action = uncommitted.length > 0
+    ? `commit all changes and then create a ${draftPart}pull request targeting ${base} with an appropriate title and description`
+    : `create a ${draftPart}pull request targeting ${base} with an appropriate title and description`
+
+  return `${action}${context}`
+}
 
 interface GitAction {
   icon: Component<{ size: number }>
@@ -193,8 +224,8 @@ export const GitActions: Component<Props> = (props) => {
     fileCount() > 0
       ? { icon: ArrowUpFromLine, label: 'Commit & Push', message: 'commit all changes and push to remote' }
       : { icon: ArrowUpFromLine, label: 'Push', action: doPush }
-  const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: `if there are any uncommitted changes, commit them first. then create a pull request targeting ${baseBranch()} with an appropriate title and description` })
-  const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: `if there are any uncommitted changes, commit them first. then create a draft pull request targeting ${baseBranch()} with an appropriate title and description` })
+  const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: buildPrMessage(git(), baseBranch(), false) })
+  const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: buildPrMessage(git(), baseBranch(), true) })
   const pullAction = (): GitAction => ({ icon: Download, label: 'Update Branch', message: `this branch is behind ${baseBranch()}. rebase onto ${baseBranch()} to bring it up to date. Use git rebase, not merge.` })
   const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: `rebase this branch onto ${baseBranch()} and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue` })
   const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: async () => openMergePanel() })
