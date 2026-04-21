@@ -39,7 +39,7 @@ export const CodeTextarea: Component<Props> = (props) => {
   return (
     <textarea
       ref={textareaRef}
-      class="w-full px-3 py-2 rounded-lg bg-[#0d1117] border border-[#30363d] text-[13px] text-[#c9d1d9] placeholder:text-[#484f58] focus:outline-none focus:border-[#58a6ff] resize-none font-mono leading-5"
+      class="w-full px-3 py-2 rounded-lg bg-surface-1 ring-1 ring-outline/8 text-[13px] text-text-secondary placeholder:text-text-dim focus:outline-none focus:ring-accent/40 resize-none font-mono leading-5"
       placeholder={props.placeholder}
       value={props.value}
       onInput={(e) => {

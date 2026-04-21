@@ -114,15 +114,12 @@ export const GlobalCommandPalette: Component = () => {
         class="fixed inset-0 z-200 bg-black/50 flex items-start justify-center pt-[15vh]"
         onClick={(e) => { if (e.target === e.currentTarget) close() }}
       >
-        <div
-          class="w-[520px] max-h-[340px] bg-[#21252b] border border-[#181a1f] rounded-lg overflow-hidden flex flex-col"
-          style={{ 'box-shadow': '0 8px 32px rgba(0,0,0,0.6)' }}
-        >
-          <div class="flex items-center gap-2 px-3 py-2.5 border-b border-[#181a1f]">
-            <span class="text-[#5c6370] text-[13px] shrink-0">&gt;</span>
+        <div class="w-[520px] max-h-[340px] bg-surface-2 ring-1 ring-outline/8 rounded-lg shadow-2xl overflow-hidden flex flex-col">
+          <div class="flex items-center gap-2 px-3 py-2.5 border-b border-border">
+            <span class="text-text-muted text-[13px] shrink-0">&gt;</span>
             <input
               ref={inputRef}
-              class="flex-1 bg-transparent text-[#abb2bf] text-[13px] outline-none placeholder-[#5c6370]"
+              class="flex-1 bg-transparent text-text-primary text-[13px] outline-none placeholder-text-dim"
               placeholder="Type a command..."
               value={query()}
               onInput={(e) => setQuery(e.currentTarget.value)}
@@ -138,7 +135,7 @@ export const GlobalCommandPalette: Component = () => {
             <Show
               when={filtered().length > 0}
               fallback={
-                <div class="px-4 py-8 text-center text-[#5c6370] text-xs">
+                <div class="px-4 py-8 text-center text-text-dim text-xs">
                   No commands match
                 </div>
               }
@@ -148,8 +145,8 @@ export const GlobalCommandPalette: Component = () => {
                   <button
                     class={`w-full flex items-center justify-between px-3 py-2 text-left transition-colors ${
                       i() === selectedIndex()
-                        ? 'bg-[#2c313a] text-[#abb2bf]'
-                        : 'text-[#7f848e] hover:bg-[#2c313a]/50'
+                        ? 'bg-surface-3 text-text-primary'
+                        : 'text-text-secondary hover:bg-surface-3/50'
                     }`}
                     onClick={() => {
                       setSelectedIndex(i())
@@ -159,7 +156,7 @@ export const GlobalCommandPalette: Component = () => {
                   >
                     <span class="text-[12px]">{cmd.label}</span>
                     <Show when={cmd.detail}>
-                      <span class="text-[11px] text-[#5c6370] ml-4 shrink-0">{cmd.detail}</span>
+                      <span class="text-[11px] text-text-dim ml-4 shrink-0">{cmd.detail}</span>
                     </Show>
                   </button>
                 )}

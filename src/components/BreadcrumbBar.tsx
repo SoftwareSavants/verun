@@ -68,8 +68,8 @@ function TreeNode(props: {
         data-current={isCurrent()}
         class="w-full flex items-center gap-1 py-0.5 text-[12px] text-left transition-colors"
         classList={{
-          'bg-[#2c313a] text-text-secondary': isCurrent(),
-          'text-[#abb2bf] hover:bg-[#2c313a]': !isCurrent(),
+          'bg-surface-3 text-text-primary': isCurrent(),
+          'text-text-secondary hover:bg-surface-3': !isCurrent(),
         }}
         style={{ 'padding-left': `${props.depth * 16 + 8}px`, 'padding-right': '12px' }}
         onClick={handleClick}
@@ -211,7 +211,7 @@ export const BreadcrumbBar: Component<{
               class="bc-seg shrink-0 hover:text-text-secondary cursor-pointer rounded px-0.5 transition-colors"
               classList={{
                 'text-text-secondary': i() === parts().length - 1,
-                'bg-[#2c313a]': openIdx() === i(),
+                'bg-surface-3': openIdx() === i(),
               }}
               onClick={(e) => openDropdown(i(), e.currentTarget)}
             >
@@ -224,11 +224,10 @@ export const BreadcrumbBar: Component<{
       <Show when={openIdx() >= 0}>
         <div
           ref={(el) => { dropRef = el; scrollToCurrent(el) }}
-          class="fixed z-100 bg-[#21252b] border border-[#181a1f] rounded-lg py-1 min-w-56 max-h-80 overflow-y-auto"
+          class="fixed z-100 bg-surface-2 ring-1 ring-outline/8 shadow-2xl rounded-lg py-1 min-w-56 max-h-80 overflow-y-auto"
           style={{
             left: `${dropPos().left}px`,
             top: `${dropPos().top}px`,
-            'box-shadow': '0 6px 24px rgba(0,0,0,0.5)',
           }}
         >
           <For each={entries()}>
