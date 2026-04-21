@@ -56,26 +56,25 @@ pub fn run() {
         .manage(file_search::new_search_map())
         .manage(WindowTaskMap::new())
         .setup(|app| {
-            // Capture the user's full PATH from their interactive shell so
-            // children (agents, lsp, git, gh, ...) inherit nvm/homebrew/etc.
-            // Then start the background watcher that re-captures whenever
-            // the integrated terminal looks idle after a user command.
-            std::thread::spawn(|| {
-                env_path::reload_now();
-                env_path::start_idle_watcher();
-            });
-
-            // Detect installed agents in the background so list_available_agents
-            // returns instantly once the cache is warm.
+            // Capture the user's full PATH from their interactive shell and
+            // detect installed agents. Ordering matters: GUI apps on macOS
+            // inherit a stripped PATH, so agent detection must run *after*
+            // reload_now or every installed agent looks missing.
             let agent_detect_handle = app.handle().clone();
             let agent_cache = std::sync::Arc::clone(&*app.state::<ipc::AgentCache>());
             tauri::async_runtime::spawn(async move {
-                let agents = tokio::task::spawn_blocking(ipc::detect_all_agents)
-                    .await
-                    .unwrap_or_default();
-                *agent_cache.write().unwrap() = agents.clone();
+                let agents = ipc::init_agents_cache(
+                    agent_cache,
+                    env_path::reload_now,
+                    ipc::detect_all_agents,
+                )
+                .await;
                 let _ = agent_detect_handle.emit("agents-updated", agents);
             });
+
+            // Re-capture PATH when the user commits a command in the integrated
+            // terminal (e.g. installs a new node/agent) and the PTY goes idle.
+            std::thread::spawn(env_path::start_idle_watcher);
 
             // Menu setup
             #[cfg(target_os = "macos")]

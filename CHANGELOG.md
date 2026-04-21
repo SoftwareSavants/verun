@@ -12,6 +12,7 @@
 - Fix terminals vanishing when opening a task in a detached window: Rust now keeps a per-PTY 256KB ring buffer and exposes `pty_list_for_task`, so a new window discovers existing PTYs, replays scrollback into xterm (TUIs like vim and Claude Code redraw correctly), and dedupes live events against the snapshot by seq number
 - Terminal panel open/closed state now persists per task, so a detached window inherits the same visibility the main window had
 - Closing a detached task window re-syncs the main window's terminal list against Rust, so PTYs spawned or closed in the other window reappear / disappear correctly when the task comes back
+- Fix "No coding agent CLIs found" toast firing at startup on macOS when agents are installed in nvm/homebrew/~/.local/bin: PATH reload now completes before agent detection runs (was racing in parallel threads, so detection often saw the stripped GUI PATH)
 
 ## 0.8.1 — 2026-04-20
 
