@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, FileEntry, Step } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step } from '../types'
 import { bytesToBase64 } from './binary'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
@@ -303,8 +303,11 @@ export const openInApp = (path: string, app: string) =>
   invoke<void>('open_in_app', { path, app })
 
 // PTY / Terminal
-export const ptySpawn = (taskId: string, rows: number, cols: number, initialCommand?: string, directCommand?: boolean) =>
-  invoke<PtySpawnResult>('pty_spawn', { taskId, rows, cols, initialCommand, directCommand })
+export const ptySpawn = (taskId: string, rows: number, cols: number, initialCommand?: string, directCommand?: boolean, isStartCommand?: boolean) =>
+  invoke<PtySpawnResult>('pty_spawn', { taskId, rows, cols, initialCommand, directCommand, isStartCommand })
+
+export const ptyListForTask = (taskId: string) =>
+  invoke<PtyListEntry[]>('pty_list_for_task', { taskId })
 
 export const ptyWrite = (terminalId: string, data: string) =>
   invoke<void>('pty_write', { terminalId, data })

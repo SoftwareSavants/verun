@@ -7,6 +7,9 @@
 - `+` menu now surfaces closed sessions for the task under a "Recent" section - click one to restore it as a tab with full transcript replay; `+` button sticks to the left edge while the tab bar scrolls horizontally (#100)
 - File tree treats symlinked directories as directories so they expand on click instead of appearing as dead entries (broken symlinks stay non-expandable)
 - Notifications: clicking a banner now navigates to the source task/session, and the Notification Center is cleared when the app regains focus - dropped the `notify-rust` fallback so the native macOS `UNUserNotificationCenter` backend is used in release builds (dev builds no longer emit notifications, which matches expectations - they previously appeared as Terminal.app and swallowed click data anyway)
+- Fix terminals vanishing when opening a task in a detached window: Rust now keeps a per-PTY 256KB ring buffer and exposes `pty_list_for_task`, so a new window discovers existing PTYs, replays scrollback into xterm (TUIs like vim and Claude Code redraw correctly), and dedupes live events against the snapshot by seq number
+- Terminal panel open/closed state now persists per task, so a detached window inherits the same visibility the main window had
+- Closing a detached task window re-syncs the main window's terminal list against Rust, so PTYs spawned or closed in the other window reappear / disappear correctly when the task comes back
 
 ## 0.8.1 — 2026-04-20
 

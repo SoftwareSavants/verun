@@ -2,20 +2,83 @@ use crate::env_path;
 use dashmap::DashMap;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+/// Maximum bytes of raw PTY output retained per terminal for scrollback replay
+/// on attach (e.g. when a task is opened in a new window). 256 KB holds ~2500
+/// lines of typical text at 100 chars/line - more than enough for a typical
+/// terminal viewport.
+pub const REPLAY_BUFFER_CAP: usize = 256 * 1024;
+
 // ---------------------------------------------------------------------------
 // PTY handle & map
 // ---------------------------------------------------------------------------
 
+/// Bounded chunk-keyed ring buffer of raw PTY output. Chunks are preserved
+/// whole (never split in the middle of a multibyte char) so `snapshot` always
+/// returns valid UTF-8. The newest chunk is never evicted, so a single chunk
+/// larger than `cap` is still surfaced on snapshot.
+pub struct PtyBuffer {
+    chunks: VecDeque<String>,
+    byte_len: usize,
+    cap: usize,
+    /// Monotonically increasing count of total bytes ever written, regardless
+    /// of what's still in the buffer. Used as a sequence number so clients can
+    /// dedupe live events against a snapshot.
+    total_written: u64,
+}
+
+impl PtyBuffer {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            chunks: VecDeque::new(),
+            byte_len: 0,
+            cap,
+            total_written: 0,
+        }
+    }
+
+    pub fn append(&mut self, chunk: &str) {
+        self.total_written = self.total_written.saturating_add(chunk.len() as u64);
+        self.byte_len += chunk.len();
+        self.chunks.push_back(chunk.to_string());
+        while self.byte_len > self.cap && self.chunks.len() > 1 {
+            if let Some(front) = self.chunks.pop_front() {
+                self.byte_len -= front.len();
+            }
+        }
+    }
+
+    /// Returns (concatenated contents, total bytes ever written).
+    pub fn snapshot(&self) -> (String, u64) {
+        let mut out = String::with_capacity(self.byte_len);
+        for c in &self.chunks {
+            out.push_str(c);
+        }
+        (out, self.total_written)
+    }
+
+    pub fn total_written(&self) -> u64 {
+        self.total_written
+    }
+}
+
 pub struct PtyHandle {
     pub task_id: String,
+    /// Display name shown in terminal tab (shell name, "Dev Server", "Setup", etc.)
+    pub name: String,
+    /// True when spawned as a project start command (auto-exits on completion).
+    pub is_start_command: bool,
+    /// "setup" or "destroy" when spawned as a lifecycle hook, else None.
+    pub hook_type: Option<String>,
     pub master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     pub writer: Mutex<Box<dyn Write + Send>>,
     pub child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    pub buffer: Arc<Mutex<PtyBuffer>>,
 }
 
 /// terminal_id → active PTY handle
@@ -34,6 +97,23 @@ pub fn new_active_pty_map() -> ActivePtyMap {
 pub struct PtyOutputEvent {
     pub terminal_id: String,
     pub data: String,
+    /// Total bytes ever written to this PTY (including this chunk). Clients use
+    /// this to dedupe against an initial snapshot returned from `pty_list_for_task`.
+    pub seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyListEntry {
+    pub terminal_id: String,
+    pub task_id: String,
+    pub name: String,
+    pub is_start_command: bool,
+    pub hook_type: Option<String>,
+    /// Everything still in the replay buffer - typically the last ~256 KB of output.
+    pub buffered_output: String,
+    /// Seq (total bytes ever written) at the moment the snapshot was taken.
+    pub seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,6 +138,11 @@ pub struct SpawnResult {
 /// If `initial_command` is provided, it will be written to the PTY immediately after spawn.
 /// If `direct_command` is true, the command is run directly via `sh -c` instead of inside
 /// a login shell — the PTY exits when the command exits (good for dev servers / start commands).
+///
+/// `name_override` sets the display name shown in the terminal tab. When `None`,
+/// the shell's basename is used (e.g. "zsh"). `is_start_command` and `hook_type`
+/// are persisted on the handle so `pty_list_for_task` can surface them when a
+/// new window attaches.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_pty(
     app: AppHandle,
@@ -69,6 +154,9 @@ pub fn spawn_pty(
     initial_command: Option<String>,
     env_vars: Vec<(String, String)>,
     direct_command: bool,
+    name_override: Option<String>,
+    is_start_command: bool,
+    hook_type: Option<String>,
 ) -> Result<SpawnResult, String> {
     let terminal_id = Uuid::new_v4().to_string();
     let pty_system = native_pty_system();
@@ -154,14 +242,21 @@ pub fn spawn_pty(
         .take_writer()
         .map_err(|e| format!("Failed to take PTY writer: {e}"))?;
 
+    let display_name = name_override.unwrap_or_else(|| shell_name.clone());
+    let buffer = Arc::new(Mutex::new(PtyBuffer::new(REPLAY_BUFFER_CAP)));
+
     // Store the handle (master kept for resize)
     map.insert(
         terminal_id.clone(),
         PtyHandle {
             task_id,
+            name: display_name,
+            is_start_command,
+            hook_type,
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
             child: Mutex::new(child),
+            buffer: buffer.clone(),
         },
     );
 
@@ -182,6 +277,7 @@ pub fn spawn_pty(
     // Spawn a dedicated OS thread for blocking read
     let tid = terminal_id.clone();
     let exit_map = map.clone();
+    let reader_buffer = buffer;
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -190,11 +286,19 @@ pub fn spawn_pty(
                 Ok(n) => {
                     env_path::record_pty_output();
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let seq = match reader_buffer.lock() {
+                        Ok(mut b) => {
+                            b.append(&data);
+                            b.total_written()
+                        }
+                        Err(_) => 0,
+                    };
                     let _ = app.emit(
                         "pty-output",
                         PtyOutputEvent {
                             terminal_id: tid.clone(),
                             data,
+                            seq,
                         },
                     );
                 }
@@ -301,5 +405,98 @@ pub fn close_all_for_task(map: &ActivePtyMap, task_id: &str) {
         if let Some((_, handle)) = map.remove(&id) {
             kill_handle(handle);
         }
+    }
+}
+
+/// Return metadata + replay buffer for every PTY currently running for a given task.
+/// Callers on a freshly-opened window use this to rebuild their terminal list and
+/// replay scrollback into their xterm instances.
+pub fn list_for_task(map: &ActivePtyMap, task_id: &str) -> Vec<PtyListEntry> {
+    let mut entries: Vec<PtyListEntry> = map
+        .iter()
+        .filter(|e| e.value().task_id == task_id)
+        .map(|e| {
+            let handle = e.value();
+            let (buffered_output, seq) = handle
+                .buffer
+                .lock()
+                .map(|b| b.snapshot())
+                .unwrap_or_else(|_| (String::new(), 0));
+            PtyListEntry {
+                terminal_id: e.key().clone(),
+                task_id: handle.task_id.clone(),
+                name: handle.name.clone(),
+                is_start_command: handle.is_start_command,
+                hook_type: handle.hook_type.clone(),
+                buffered_output,
+                seq,
+            }
+        })
+        .collect();
+    // Stable ordering: hooks first (setup then destroy), then start command, then shells.
+    // Within each group, keep DashMap's iteration order (arbitrary but consistent per run).
+    entries.sort_by_key(|e| match (e.hook_type.as_deref(), e.is_start_command) {
+        (Some("setup"), _) => 0,
+        (Some(_), _) => 2,
+        (None, true) => 1,
+        (None, false) => 3,
+    });
+    entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_retains_full_content_below_cap() {
+        let mut buf = PtyBuffer::new(1024);
+        buf.append("hello ");
+        buf.append("world");
+        let (snap, seq) = buf.snapshot();
+        assert_eq!(snap, "hello world");
+        assert_eq!(seq, 11);
+    }
+
+    #[test]
+    fn buffer_evicts_oldest_chunks_when_over_cap() {
+        let mut buf = PtyBuffer::new(10);
+        buf.append("aaaa"); // 4
+        buf.append("bbbb"); // 8
+        buf.append("cccc"); // over cap -> evict "aaaa"
+        let (snap, seq) = buf.snapshot();
+        assert_eq!(snap, "bbbbcccc");
+        assert_eq!(seq, 12, "seq counts total bytes ever written");
+    }
+
+    #[test]
+    fn buffer_preserves_single_oversize_chunk() {
+        // Eviction should never drop the newest chunk, even if it alone exceeds cap,
+        // so clients always see the latest output.
+        let mut buf = PtyBuffer::new(4);
+        buf.append("ab");
+        buf.append("cdefghij");
+        let (snap, _) = buf.snapshot();
+        assert_eq!(snap, "cdefghij");
+    }
+
+    #[test]
+    fn buffer_preserves_multibyte_utf8() {
+        // Chunks are kept whole, so a multibyte char can never be split at the
+        // eviction boundary.
+        let mut buf = PtyBuffer::new(6);
+        buf.append("日本"); // 6 bytes
+        buf.append("語"); // 3 bytes -> over cap, evict 日本
+        let (snap, _) = buf.snapshot();
+        assert_eq!(snap, "語");
+    }
+
+    #[test]
+    fn total_written_advances_past_evicted_bytes() {
+        let mut buf = PtyBuffer::new(4);
+        buf.append("aa"); // 2
+        buf.append("bb"); // 4
+        buf.append("cc"); // 6 → evict "aa"
+        assert_eq!(buf.total_written(), 6);
     }
 }

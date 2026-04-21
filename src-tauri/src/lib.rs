@@ -312,6 +312,7 @@ pub fn run() {
             ipc::pty_write,
             ipc::pty_resize,
             ipc::pty_close,
+            ipc::pty_list_for_task,
             // Clipboard
             ipc::read_clipboard,
             ipc::copy_image_to_clipboard,

@@ -1,4 +1,4 @@
-import { Component, Show, onMount, onCleanup, createSignal } from 'solid-js'
+import { Component, Show, onMount, onCleanup, createSignal, createEffect } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Sidebar } from './Sidebar'
@@ -8,7 +8,7 @@ import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, setAddProjectPath, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask } from '../store/ui'
 import * as ipc from '../lib/ipc'
-import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
+import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
 import { activeTasksForProject, taskById } from '../store/tasks'
 import { projects, projectById } from '../store/projects'
 import { selectedProjectId, selectedTaskId } from '../store/ui'
@@ -30,6 +30,26 @@ export const Layout: Component = () => {
   onMount(() => {
     const saved = localStorage.getItem('verun:sidebarWidth')
     if (saved) setSidebarWidth(parseInt(saved, 10))
+  })
+
+  // Hydrate terminals from the Rust ring buffer whenever a task becomes
+  // selected. Runs on every selection change (not just the first) so that
+  // switching back to a task re-syncs against the backend — picks up PTYs
+  // spawned in another window and prunes ones closed elsewhere.
+  createEffect(() => {
+    const tid = selectedTaskId()
+    if (tid) hydrateTerminalsForTask(tid)
+  })
+
+  // When a detached task window closes, the main window's terminal store for
+  // that task is potentially stale (PTYs spawned or closed while we weren't
+  // looking). Re-hydrate so the content reappears when the user views the task
+  // again in this window.
+  onMount(() => {
+    const unlisten = listen<{ taskId: string; open: boolean }>('task-window-changed', (event) => {
+      if (!event.payload.open) hydrateTerminalsForTask(event.payload.taskId)
+    })
+    onCleanup(() => { unlisten.then(fn => fn()) })
   })
 
   const startResize = (e: MouseEvent) => {

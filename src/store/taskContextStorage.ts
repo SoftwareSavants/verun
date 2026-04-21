@@ -4,6 +4,7 @@ import type { DiffSource, EditorTab } from './editorTypes'
 interface PersistedTaskContext {
   selectedSessionId?: string | null
   mainView?: string
+  terminalOpen?: boolean
   editor?: PersistedEditorState
 }
 
@@ -61,6 +62,7 @@ export function loadInitialTaskContext(taskId: string): Partial<TaskContextState
   return {
     selectedSessionId: persisted?.selectedSessionId ?? localStorage.getItem(`verun:lastSession:${taskId}`),
     mainView: persisted?.mainView ?? persisted?.editor?.mainView ?? legacyMainView ?? 'session',
+    terminalOpen: persisted?.terminalOpen ?? false,
   }
 }
 
@@ -72,6 +74,7 @@ export function persistTaskContext(taskId: string, ctx: TaskContextState) {
     ...previous,
     selectedSessionId: ctx.selectedSessionId,
     mainView: ctx.mainView,
+    terminalOpen: ctx.terminalOpen,
   }
 
   try {

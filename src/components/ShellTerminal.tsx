@@ -5,7 +5,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebglAddon } from '@xterm/addon-webgl'
-import { registerXterm, getXtermEntry } from '../store/terminals'
+import { registerXterm, getXtermEntry, consumeInitialReplay, markSeqWritten } from '../store/terminals'
 import type { XtermEntry } from '../store/terminals'
 import * as ipc from '../lib/ipc'
 import { isMac, modPressed } from '../lib/platform'
@@ -216,9 +216,18 @@ export const ShellTerminal: Component<Props> = (props) => {
       if (props.isStopped?.()) return
       ipc.ptyWrite(props.terminalId, data)
     })
-    registerXterm(props.terminalId, term, fitAddon, searchAddon)
 
     term.open(terminalRef)
+
+    // Replay any buffered scrollback BEFORE registering xterm. registerXterm
+    // flushes pending live chunks; by replaying first and marking seq, those
+    // flushed chunks are correctly deduped against the snapshot.
+    const replay = consumeInitialReplay(props.terminalId)
+    if (replay) {
+      term.write(replay.data)
+      markSeqWritten(props.terminalId, replay.seq)
+    }
+    registerXterm(props.terminalId, term, fitAddon, searchAddon)
 
     try {
       term.loadAddon(new WebglAddon())
