@@ -63,6 +63,10 @@ const REMOTE_TTL = 30_000
 
 const inflightLocal = new Map<string, Promise<void>>()
 const inflightRemote = new Map<string, Promise<void>>()
+const localDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const localDebounceResolvers = new Map<string, Array<() => void>>()
+
+const LOCAL_DEBOUNCE_MS = 150
 
 function ensureKey(taskId: string) {
   if (!gitStates[taskId]) {
@@ -124,12 +128,37 @@ export async function refreshTaskGit(
   const promises: Promise<void>[] = []
 
   if (local) {
-    const existing = inflightLocal.get(taskId)
-    if (existing) {
-      promises.push(existing)
+    if (force) {
+      const existing = inflightLocal.get(taskId)
+      if (existing) {
+        promises.push(existing)
+      } else {
+        const p = refreshLocal(taskId).finally(() => inflightLocal.delete(taskId))
+        inflightLocal.set(taskId, p)
+        promises.push(p)
+      }
     } else {
-      const p = refreshLocal(taskId).finally(() => inflightLocal.delete(taskId))
-      inflightLocal.set(taskId, p)
+      const p = new Promise<void>((resolve) => {
+        const existing = localDebounceTimers.get(taskId)
+        if (existing) clearTimeout(existing)
+        if (!localDebounceResolvers.has(taskId)) localDebounceResolvers.set(taskId, [])
+        localDebounceResolvers.get(taskId)!.push(resolve)
+        const timer = setTimeout(async () => {
+          localDebounceTimers.delete(taskId)
+          const resolvers = localDebounceResolvers.get(taskId) ?? []
+          localDebounceResolvers.delete(taskId)
+          const inflight = inflightLocal.get(taskId)
+          if (inflight) {
+            await inflight
+          } else {
+            const fetch = refreshLocal(taskId).finally(() => inflightLocal.delete(taskId))
+            inflightLocal.set(taskId, fetch)
+            await fetch
+          }
+          resolvers.forEach(r => r())
+        }, LOCAL_DEBOUNCE_MS)
+        localDebounceTimers.set(taskId, timer)
+      })
       promises.push(p)
     }
   }
