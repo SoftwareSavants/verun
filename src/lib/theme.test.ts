@@ -321,6 +321,17 @@ describe('applyAppearance - syntax tokens', () => {
     expect(lightKw).toMatch(/^#[0-9a-f]{6}$/i)
     expect(lightKw).not.toBe(darkKw)
   })
+
+  test('publishes --syntax-variable that flips with mode (editor identifiers)', () => {
+    applyAppearance({ ...DEFAULT_PREFS, mode: 'dark' })
+    const darkVar = document.documentElement.style.getPropertyValue('--syntax-variable').trim()
+    expect(darkVar).toMatch(/^#[0-9a-f]{6}$/i)
+
+    applyAppearance({ ...DEFAULT_PREFS, mode: 'light' })
+    const lightVar = document.documentElement.style.getPropertyValue('--syntax-variable').trim()
+    expect(lightVar).toMatch(/^#[0-9a-f]{6}$/i)
+    expect(lightVar).not.toBe(darkVar)
+  })
 })
 
 describe('applyAppearance - code font size unifies code blocks and terminals', () => {

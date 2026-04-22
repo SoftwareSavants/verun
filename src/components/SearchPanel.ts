@@ -220,15 +220,15 @@ export const searchPanelTheme = EditorView.theme({
     right: '16px',
     top: '0px',
     zIndex: '20',
-    backgroundColor: '#252526',
-    border: '1px solid #454545',
+    backgroundColor: 'var(--surface-2)',
+    border: '1px solid var(--border-default)',
     borderTop: 'none',
     borderRadius: '0 0 6px 6px',
     padding: '6px 6px',
-    boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    boxShadow: '0 4px 12px rgb(0 0 0 / 0.25)',
+    fontFamily: 'var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif)',
     fontSize: '12px',
-    color: '#cccccc',
+    color: 'var(--text-primary)',
     display: 'flex',
     flexDirection: 'column',
     gap: '4px',
@@ -251,7 +251,7 @@ export const searchPanelTheme = EditorView.theme({
   '.vsc-toggle': {
     background: 'none',
     border: 'none',
-    color: '#cccccc',
+    color: 'var(--text-secondary)',
     fontSize: '12px',
     cursor: 'pointer',
     padding: '0 4px',
@@ -266,7 +266,7 @@ export const searchPanelTheme = EditorView.theme({
     flexShrink: '0',
   },
   '.vsc-toggle:hover': {
-    backgroundColor: '#3e3e42',
+    backgroundColor: 'var(--surface-3)',
   },
   '.vsc-toggle.open': {
     transform: 'rotate(90deg)',
@@ -274,13 +274,13 @@ export const searchPanelTheme = EditorView.theme({
 
   // Text inputs
   '.vsc-input': {
-    backgroundColor: '#3c3c3c',
-    color: '#cccccc',
-    border: '1px solid #3c3c3c',
+    backgroundColor: 'var(--surface-1)',
+    color: 'var(--text-primary)',
+    border: '1px solid var(--border-default)',
     borderRadius: '3px',
     padding: '3px 6px',
     fontSize: '12px',
-    fontFamily: '"SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace',
+    fontFamily: 'var(--font-code, "SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace)',
     outline: 'none',
     height: '24px',
     boxSizing: 'border-box',
@@ -288,7 +288,7 @@ export const searchPanelTheme = EditorView.theme({
     flexShrink: '0',
   },
   '.vsc-input:focus': {
-    borderColor: '#007fd4',
+    borderColor: 'var(--accent)',
   },
   '.vsc-replace-input': {
     width: '180px',
@@ -299,9 +299,9 @@ export const searchPanelTheme = EditorView.theme({
     background: 'none',
     border: '1px solid transparent',
     borderRadius: '3px',
-    color: '#999999',
+    color: 'var(--text-muted)',
     fontSize: '11px',
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    fontFamily: 'var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif)',
     cursor: 'pointer',
     padding: '1px 4px',
     height: '22px',
@@ -312,13 +312,13 @@ export const searchPanelTheme = EditorView.theme({
     flexShrink: '0',
   },
   '.vsc-toggle-btn:hover': {
-    backgroundColor: '#3e3e42',
-    color: '#cccccc',
+    backgroundColor: 'var(--surface-3)',
+    color: 'var(--text-primary)',
   },
   '.vsc-toggle-btn.active': {
-    backgroundColor: '#264f78',
-    border: '1px solid #007fd4',
-    color: '#ffffff',
+    backgroundColor: 'rgb(var(--accent-rgb) / 0.2)',
+    border: '1px solid var(--accent)',
+    color: 'var(--text-primary)',
   },
 
   // Icon buttons (↑ ↓ × ⎘)
@@ -326,7 +326,7 @@ export const searchPanelTheme = EditorView.theme({
     background: 'none',
     border: 'none',
     borderRadius: '3px',
-    color: '#999999',
+    color: 'var(--text-muted)',
     fontSize: '13px',
     cursor: 'pointer',
     padding: '1px 4px',
@@ -338,8 +338,8 @@ export const searchPanelTheme = EditorView.theme({
     flexShrink: '0',
   },
   '.vsc-icon-btn:hover': {
-    backgroundColor: '#3e3e42',
-    color: '#cccccc',
+    backgroundColor: 'var(--surface-3)',
+    color: 'var(--text-primary)',
   },
 
   // Close button
@@ -349,7 +349,7 @@ export const searchPanelTheme = EditorView.theme({
 
   // Match info
   '.vsc-match-info': {
-    color: '#999999',
+    color: 'var(--text-muted)',
     fontSize: '11px',
     padding: '0 6px',
     whiteSpace: 'nowrap',
@@ -358,14 +358,14 @@ export const searchPanelTheme = EditorView.theme({
     flexShrink: '0',
   },
 
-  // Search match highlighting
+  // Search match highlighting — amber tint reads on both light and dark surfaces
   '.cm-searchMatch': {
-    backgroundColor: 'rgba(234, 179, 8, 0.25)',
+    backgroundColor: 'rgb(234 179 8 / 0.25)',
     borderRadius: '2px',
-    outline: '1px solid rgba(234, 179, 8, 0.4)',
+    outline: '1px solid rgb(234 179 8 / 0.45)',
   },
   '.cm-searchMatch.cm-searchMatch-selected': {
-    backgroundColor: 'rgba(234, 179, 8, 0.5)',
-    outline: '1px solid rgba(234, 179, 8, 0.8)',
+    backgroundColor: 'rgb(234 179 8 / 0.5)',
+    outline: '1px solid rgb(234 179 8 / 0.8)',
   },
-}, { dark: true })
+})

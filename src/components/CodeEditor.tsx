@@ -1,18 +1,17 @@
 import { Component, createEffect, on, createSignal, Show, onCleanup, onMount } from 'solid-js'
 import { EditorView, keymap, lineNumbers, ViewPlugin, GutterMarker, gutterLineClass, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, hoverTooltip, tooltips, Decoration, type DecorationSet, type Tooltip } from '@codemirror/view'
 import { linter, forEachDiagnostic, type Diagnostic } from '@codemirror/lint'
-import { EditorState, StateField, StateEffect, RangeSet, Facet, type Extension } from '@codemirror/state'
+import { EditorState, StateField, StateEffect, RangeSet, Facet, Text, type Extension } from '@codemirror/state'
 import { setChatPrefillRequest } from '../store/ui'
 import { mainView, setMainView } from '../store/editorView'
 import { ContextMenu } from './ContextMenu'
 import { defaultKeymap, history, historyField, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentUnit } from '@codemirror/language'
+import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, indentUnit } from '@codemirror/language'
+import { verunHighlightStyle } from './verunHighlightStyle'
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search'
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from '@codemirror/autocomplete'
-import { jumpToDefinition, jumpToDefinitionKeymap, findReferencesKeymap, formatKeymap, LSPPlugin } from '@codemirror/lsp-client'
-import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark'
+import { jumpToDefinition, jumpToDefinitionKeymap, formatKeymap, LSPPlugin } from '@codemirror/lsp-client'
 import { createSearchPanel, searchPanelTheme } from './SearchPanel'
-import { tags } from '@lezer/highlight'
 import { javascript } from '@codemirror/lang-javascript'
 import { python } from '@codemirror/lang-python'
 import { rust } from '@codemirror/lang-rust'
@@ -30,7 +29,7 @@ import { yaml } from '@codemirror/lang-yaml'
 import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
 import { getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal } from '../store/files'
-import { setTabDirty, pendingGoToLine, consumeGoToLine, onBeforeActiveEditorChange, onTabClose, onTaskCleanup } from '../store/editorView'
+import { setTabDirty, pendingGoToLine, consumeGoToLine, setPendingGoToLine, openFilePinned, onBeforeActiveEditorChange, onTabClose, onTaskCleanup } from '../store/editorView'
 import { reloadNonce, checkBeforeSave } from '../store/fileSync'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 
@@ -93,66 +92,44 @@ interface Props {
   relativePath: string
 }
 
-// ── Syntax highlighting — VS Code One Dark colors ──────────────────────
-export const verunHighlightStyle = HighlightStyle.define([
-  { tag: tags.keyword, color: '#c678dd' },
-  { tag: [tags.name, tags.deleted, tags.character, tags.macroName], color: '#e06c75' },
-  { tag: [tags.function(tags.variableName), tags.labelName], color: '#61afef' },
-  { tag: [tags.color, tags.constant(tags.name), tags.standard(tags.name)], color: '#d19a66' },
-  { tag: [tags.definition(tags.name), tags.separator], color: '#abb2bf' },
-  { tag: [tags.typeName, tags.className, tags.number, tags.changed, tags.annotation, tags.modifier, tags.self, tags.namespace], color: '#e5c07b' },
-  { tag: [tags.operator, tags.operatorKeyword, tags.url, tags.escape, tags.regexp, tags.link, tags.special(tags.string)], color: '#56b6c2' },
-  { tag: [tags.meta, tags.comment], color: '#7f848e', fontStyle: 'italic' },
-  { tag: tags.strong, fontWeight: 'bold' },
-  { tag: tags.emphasis, fontStyle: 'italic' },
-  { tag: tags.strikethrough, textDecoration: 'line-through' },
-  { tag: tags.link, color: '#61afef', textDecoration: 'underline' },
-  { tag: tags.heading, fontWeight: 'bold', color: '#e06c75' },
-  { tag: [tags.atom, tags.bool, tags.special(tags.variableName)], color: '#d19a66' },
-  { tag: [tags.processingInstruction, tags.string, tags.inserted], color: '#98c379' },
-  { tag: tags.invalid, color: '#ffffff', backgroundColor: '#e06c75' },
-  { tag: tags.propertyName, color: '#e06c75' },
-  { tag: tags.variableName, color: '#e06c75' },
-  { tag: tags.definition(tags.variableName), color: '#61afef' },
-  { tag: tags.definition(tags.propertyName), color: '#61afef' },
-  { tag: tags.definition(tags.typeName), color: '#e5c07b' },
-])
-
 // ── Editor chrome — backgrounds, gutters, cursors ─────────────────────
+// Colors route through CSS variables so light / dark modes both look right.
+// The `{ dark: true }` flag is intentionally omitted — CodeMirror's built-in
+// dark compensation would otherwise fight our light-mode palette.
 export const verunTheme = EditorView.theme({
   '&': {
     backgroundColor: 'var(--surface-0)',
-    color: '#abb2bf',
-    fontSize: '13px',
+    color: 'var(--text-primary)',
+    fontSize: 'var(--font-code-size, 13px)',
     height: '100%',
   },
   '.cm-scroller': {
-    fontFamily: '"SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", "Menlo", monospace',
+    fontFamily: 'var(--font-code, "SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", "Menlo", monospace)',
     lineHeight: '1.6',
     overflow: 'auto',
     scrollbarWidth: 'thin',
-    scrollbarColor: '#3e4452 transparent',
+    scrollbarColor: 'var(--surface-3) transparent',
   },
   '.cm-content': {
-    caretColor: '#528bff',
+    caretColor: 'var(--accent)',
     padding: '4px 0',
   },
   '.cm-cursor, .cm-dropCursor': {
-    borderLeftColor: '#528bff',
+    borderLeftColor: 'var(--accent)',
     borderLeftWidth: '2px',
   },
   '.cm-activeLine': {
-    backgroundColor: '#2c313a',
+    backgroundColor: 'var(--surface-1)',
   },
   '.cm-activeLineGutter': {
-    backgroundColor: '#2c313a',
-    color: '#abb2bf',
+    backgroundColor: 'var(--surface-1)',
+    color: 'var(--text-primary)',
   },
   '.cm-gutters': {
     backgroundColor: 'var(--surface-0)',
-    color: '#495162',
+    color: 'var(--text-dim)',
     border: 'none',
-    borderRight: '1px solid #2c313a',
+    borderRight: '1px solid var(--border-subtle)',
     minWidth: '48px',
   },
   '.cm-lineNumbers .cm-gutterElement': {
@@ -162,61 +139,62 @@ export const verunTheme = EditorView.theme({
     textAlign: 'right',
   },
   '.cm-foldPlaceholder': {
-    backgroundColor: '#3e4452',
+    backgroundColor: 'var(--surface-2)',
     border: 'none',
-    color: '#7f848e',
+    color: 'var(--text-muted)',
     padding: '0 8px',
     borderRadius: '3px',
     margin: '0 4px',
   },
   '.cm-selectionBackground': {
-    backgroundColor: '#3e4452 !important',
+    backgroundColor: 'rgb(var(--outline-rgb) / 0.10) !important',
   },
   '&.cm-focused .cm-selectionBackground': {
-    backgroundColor: '#264f78 !important',
+    backgroundColor: 'rgb(var(--accent-rgb) / 0.25) !important',
   },
   '.cm-selectionMatch': {
-    backgroundColor: '#3a3d41',
+    backgroundColor: 'rgb(var(--outline-rgb) / 0.08)',
     borderRadius: '2px',
   },
   '.cm-matchingBracket': {
-    backgroundColor: '#3e4452',
-    outline: '1px solid #528bff',
-    color: '#abb2bf !important',
+    backgroundColor: 'var(--surface-2)',
+    outline: '1px solid var(--accent)',
+    color: 'var(--text-primary) !important',
   },
   '.cm-nonmatchingBracket': {
-    color: '#e06c75 !important',
+    color: 'var(--status-error) !important',
   },
   // Search match highlighting (panel CSS is in SearchPanel.ts)
   '.cm-tooltip': {
-    backgroundColor: '#21252b',
-    border: '1px solid #181a1f',
+    backgroundColor: 'var(--surface-2)',
+    border: '1px solid var(--border-default)',
     borderRadius: '6px',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+    boxShadow: '0 4px 16px rgb(0 0 0 / 0.25)',
   },
   '.cm-tooltip-autocomplete': {
     '& > ul > li': {
       padding: '4px 8px',
       fontSize: '12px',
+      color: 'var(--text-primary)',
     },
     '& > ul > li[aria-selected]': {
-      backgroundColor: '#2c313a',
-      color: '#abb2bf',
+      backgroundColor: 'rgb(var(--accent-rgb) / 0.2)',
+      color: 'var(--text-primary)',
     },
   },
   '.cm-foldGutter': {
     width: '14px',
   },
   '.cm-foldGutter .cm-gutterElement': {
-    color: '#495162',
+    color: 'var(--text-dim)',
     fontSize: '12px',
     padding: '0 2px',
     cursor: 'pointer',
   },
   '.cm-foldGutter .cm-gutterElement:hover': {
-    color: '#abb2bf',
+    color: 'var(--text-primary)',
   },
-}, { dark: true })
+})
 
 // ── Inline rename widget (VS Code style) ──────────────────────────────
 const showRenameTooltip = StateEffect.define<Tooltip | null>()
@@ -308,33 +286,413 @@ function inlineRename(view: EditorView): boolean {
 
 const renameWidgetTheme = EditorView.theme({
   '.cm-rename-widget': {
-    backgroundColor: '#252526',
-    border: '1px solid #454545',
+    backgroundColor: 'var(--surface-2)',
+    border: '1px solid var(--border-default)',
     borderRadius: '4px',
     padding: '4px',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+    boxShadow: '0 2px 8px rgb(0 0 0 / 0.25)',
   },
   '.cm-rename-input': {
-    backgroundColor: '#3c3c3c',
-    color: '#cccccc',
-    border: '1px solid #3c3c3c',
+    backgroundColor: 'var(--surface-1)',
+    color: 'var(--text-primary)',
+    border: '1px solid var(--border-default)',
     borderRadius: '3px',
     padding: '3px 6px',
     fontSize: '13px',
-    fontFamily: '"SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace',
+    fontFamily: 'var(--font-code, "SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace)',
     outline: 'none',
     width: '200px',
     height: '24px',
     boxSizing: 'border-box',
   },
   '.cm-rename-input:focus': {
-    borderColor: '#007fd4',
+    borderColor: 'var(--accent)',
   },
   // Position the tooltip properly
   '.cm-tooltip.cm-tooltip-above': {
     borderRadius: '4px',
   },
-}, { dark: true })
+})
+
+// ── Inline Find References (VS Code peek style) ────────────────────────
+// The stock @codemirror/lsp-client panel renders unstyled HTML at the bottom
+// of the editor. We replace it with a floating, theme-aware peek anchored at
+// the cursor.
+
+export interface ResolvedRef {
+  fileName: string
+  fileUri: string
+  relativePath: string
+  line: number
+  lineText: string
+  matchStart: number
+  matchEnd: number
+  rangeStart: { line: number; character: number }
+}
+
+export function stripCommonPrefix(uris: string[]): number {
+  if (uris.length === 0) return 0
+  const first = uris[0]
+  let prefix = first.length
+  for (let i = 1; i < uris.length; i++) {
+    const uri = uris[i]
+    let j = 0
+    const e = Math.min(prefix, uri.length)
+    while (j < e && first[j] === uri[j]) j++
+    prefix = j
+  }
+  while (prefix > 0 && first[prefix - 1] !== '/') prefix--
+  return prefix
+}
+
+export function groupReferencesByFile(refs: ResolvedRef[]): Array<{ fileName: string; fileUri: string; entries: ResolvedRef[] }> {
+  const groups = new Map<string, { fileName: string; fileUri: string; entries: ResolvedRef[] }>()
+  for (const ref of refs) {
+    const existing = groups.get(ref.fileUri)
+    if (existing) existing.entries.push(ref)
+    else groups.set(ref.fileUri, { fileName: ref.fileName, fileUri: ref.fileUri, entries: [ref] })
+  }
+  return Array.from(groups.values())
+}
+
+const showReferencesTooltip = StateEffect.define<Tooltip | null>()
+
+const referencesTooltipField = StateField.define<Tooltip | null>({
+  create: () => null,
+  update(tooltip, tr) {
+    for (const e of tr.effects) {
+      if (e.is(showReferencesTooltip)) return e.value
+    }
+    return tooltip
+  },
+  provide: f => showTooltip.from(f),
+})
+
+function closeReferencesPeek(view: EditorView): boolean {
+  if (!view.state.field(referencesTooltipField, false)) return false
+  view.dispatch({ effects: showReferencesTooltip.of(null) })
+  return true
+}
+
+function inlineFindReferences(view: EditorView): boolean {
+  const plugin = LSPPlugin.get(view)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (!plugin || (plugin.client as any).hasCapability?.('referencesProvider') === false) return false
+
+  const ctx = view.state.facet(editorContextFacet)
+  if (!ctx) return false
+  // workspace URI prefix ("file:///abs/path/to/worktree/") — everything in
+  // plugin.uri up to the current file's relative path.
+  const uriPrefix = plugin.uri.endsWith(ctx.relativePath)
+    ? plugin.uri.slice(0, plugin.uri.length - ctx.relativePath.length)
+    : ''
+
+  plugin.client.sync()
+  const cursorPos = view.state.selection.main.head
+  const mapping = plugin.client.workspaceMapping()
+  let tooltipStaged = false
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  plugin.client.request<any, any[] | null>('textDocument/references', {
+    textDocument: { uri: plugin.uri },
+    position: plugin.toPosition(cursorPos),
+    context: { includeDeclaration: true },
+  }).then(async (response) => {
+    if (!response?.length) return
+
+    // Cache line lookups per-file so N references in one file only fetch once.
+    const docCache = new Map<string, Text>()
+    const getDoc = async (uri: string): Promise<Text | null> => {
+      const cached = docCache.get(uri)
+      if (cached) return cached
+      const file = await plugin.client.workspace.requestFile(uri)
+      if (file) {
+        const v = file.getView()
+        const doc = v ? v.state.doc : file.doc
+        docCache.set(uri, doc)
+        return doc
+      }
+      // Fall back to disk for files not open in the workspace.
+      if (!uriPrefix || !uri.startsWith(uriPrefix)) return null
+      const rel = decodeURIComponent(uri.slice(uriPrefix.length))
+      try {
+        const text = await ipc.readWorktreeFile(ctx.taskId, rel)
+        const doc = Text.of(text.split(/\r?\n/))
+        docCache.set(uri, doc)
+        return doc
+      } catch {
+        return null
+      }
+    }
+
+    const resolved: ResolvedRef[] = []
+    const prefixLen = stripCommonPrefix(response.map(l => l.uri))
+    for (const loc of response) {
+      const doc = await getDoc(loc.uri)
+      if (!doc) continue
+      const startLine = loc.range.start.line + 1
+      if (startLine < 1 || startLine > doc.lines) continue
+      const line = doc.line(startLine)
+      const sameLine = loc.range.end.line === loc.range.start.line
+      const matchStart = Math.max(0, Math.min(line.length, loc.range.start.character))
+      const matchEnd = sameLine
+        ? Math.max(matchStart, Math.min(line.length, loc.range.end.character))
+        : line.length
+      const relativePath = uriPrefix && loc.uri.startsWith(uriPrefix)
+        ? decodeURIComponent(loc.uri.slice(uriPrefix.length))
+        : loc.uri
+      resolved.push({
+        fileName: loc.uri.slice(prefixLen),
+        fileUri: loc.uri,
+        relativePath,
+        line: line.number,
+        lineText: line.text,
+        matchStart,
+        matchEnd,
+        rangeStart: loc.range.start,
+      })
+    }
+    if (!resolved.length) return
+    view.dispatch({
+      effects: showReferencesTooltip.of({
+        pos: cursorPos,
+        above: true,
+        strictSide: false,
+        create: () => buildReferencesPeek(view, resolved, mapping, ctx.taskId),
+      }),
+    })
+    tooltipStaged = true
+  }).catch((err) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(plugin as any).reportError?.('Finding references failed', err)
+  }).finally(() => { if (!tooltipStaged) mapping.destroy() })
+
+  return true
+}
+
+function buildReferencesPeek(
+  view: EditorView,
+  refs: ResolvedRef[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mapping: any,
+  taskId: string,
+) {
+  const container = document.createElement('div')
+  container.className = 'cm-references-peek'
+
+  const groups = groupReferencesByFile(refs)
+  const header = document.createElement('div')
+  header.className = 'cm-references-peek-header'
+  const refLabel = refs.length === 1 ? 'reference' : 'references'
+  const fileLabel = groups.length === 1 ? 'file' : 'files'
+  const title = document.createElement('span')
+  title.textContent = `${refs.length} ${refLabel} in ${groups.length} ${fileLabel}`
+  header.appendChild(title)
+  const closeBtn = document.createElement('button')
+  closeBtn.className = 'cm-references-peek-close'
+  closeBtn.setAttribute('aria-label', 'Close')
+  closeBtn.innerHTML = '&times;'
+  closeBtn.addEventListener('click', () => dismiss())
+  header.appendChild(closeBtn)
+  container.appendChild(header)
+
+  const list = document.createElement('div')
+  list.className = 'cm-references-peek-list'
+  list.setAttribute('role', 'listbox')
+  list.tabIndex = 0
+
+  const rowItems: Array<{ el: HTMLElement; ref: ResolvedRef }> = []
+
+  for (const group of groups) {
+    const fileHeader = document.createElement('div')
+    fileHeader.className = 'cm-references-peek-file'
+    fileHeader.textContent = group.fileName
+    fileHeader.title = group.fileName
+    list.appendChild(fileHeader)
+
+    for (const ref of group.entries) {
+      const row = document.createElement('div')
+      row.className = 'cm-references-peek-row'
+      row.setAttribute('role', 'option')
+
+      const lineNo = document.createElement('span')
+      lineNo.className = 'cm-references-peek-line'
+      lineNo.textContent = String(ref.line)
+      row.appendChild(lineNo)
+
+      const snippet = document.createElement('span')
+      snippet.className = 'cm-references-peek-snippet'
+      const maxBefore = 40
+      const maxAfter = 100
+      const beforeStart = Math.max(0, ref.matchStart - maxBefore)
+      const before = ref.lineText.slice(beforeStart, ref.matchStart)
+      const match = ref.lineText.slice(ref.matchStart, ref.matchEnd)
+      const after = ref.lineText.slice(ref.matchEnd, Math.min(ref.lineText.length, ref.matchEnd + maxAfter))
+      if (beforeStart > 0) snippet.appendChild(document.createTextNode('…'))
+      if (before) snippet.appendChild(document.createTextNode(before))
+      const strong = document.createElement('strong')
+      strong.textContent = match
+      snippet.appendChild(strong)
+      if (after) snippet.appendChild(document.createTextNode(after))
+      row.appendChild(snippet)
+
+      row.addEventListener('click', () => navigateTo(ref))
+      rowItems.push({ el: row, ref })
+      list.appendChild(row)
+    }
+  }
+
+  let selected = 0
+  const setSelection = (i: number) => {
+    if (rowItems.length === 0) return
+    selected = ((i % rowItems.length) + rowItems.length) % rowItems.length
+    rowItems.forEach((it, idx) => {
+      if (idx === selected) {
+        it.el.setAttribute('aria-selected', 'true')
+        it.el.scrollIntoView({ block: 'nearest' })
+      } else {
+        it.el.removeAttribute('aria-selected')
+      }
+    })
+  }
+  if (rowItems[0]) rowItems[0].el.setAttribute('aria-selected', 'true')
+
+  const dismiss = () => {
+    view.dispatch({ effects: showReferencesTooltip.of(null) })
+    view.focus()
+  }
+
+  const navigateTo = (ref: ResolvedRef) => {
+    // Open the file as a pinned tab and queue a go-to-line request — the
+    // CodeEditor drains this on mount/effect, which handles the async tab
+    // open + initial content load without racing our selection dispatch.
+    const name = ref.relativePath.split('/').pop() || ref.relativePath
+    openFilePinned(taskId, ref.relativePath, name)
+    setPendingGoToLine({
+      taskId,
+      relativePath: ref.relativePath,
+      line: ref.rangeStart.line + 1,
+      column: ref.rangeStart.character + 1,
+    })
+    view.dispatch({ effects: showReferencesTooltip.of(null) })
+  }
+
+  list.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Escape') { e.preventDefault(); dismiss() }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); setSelection(selected + 1) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setSelection(selected - 1) }
+    else if (e.key === 'Home') { e.preventDefault(); setSelection(0) }
+    else if (e.key === 'End') { e.preventDefault(); setSelection(rowItems.length - 1) }
+    else if (e.key === 'Enter') {
+      e.preventDefault()
+      const sel = rowItems[selected]
+      if (sel) navigateTo(sel.ref)
+    }
+    else return
+    e.stopPropagation()
+  })
+
+  container.appendChild(list)
+  requestAnimationFrame(() => list.focus())
+
+  return { dom: container, destroy: () => mapping.destroy() }
+}
+
+const referencesPeekTheme = EditorView.theme({
+  '.cm-references-peek': {
+    minWidth: '360px',
+    maxWidth: '560px',
+    maxHeight: '340px',
+    display: 'flex',
+    flexDirection: 'column',
+    backgroundColor: 'var(--surface-2)',
+    border: '1px solid var(--border-default)',
+    borderRadius: '6px',
+    boxShadow: '0 6px 24px rgb(0 0 0 / 0.25)',
+    overflow: 'hidden',
+    fontFamily: 'var(--font-ui)',
+  },
+  '.cm-references-peek-header': {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '8px',
+    padding: '6px 8px 6px 10px',
+    fontSize: '11px',
+    fontWeight: '600',
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+    borderBottom: '1px solid var(--border-subtle)',
+    backgroundColor: 'var(--surface-1)',
+  },
+  '.cm-references-peek-close': {
+    background: 'transparent',
+    border: 'none',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    fontSize: '16px',
+    lineHeight: '1',
+    padding: '2px 6px',
+    borderRadius: '3px',
+  },
+  '.cm-references-peek-close:hover': {
+    backgroundColor: 'rgb(var(--outline-rgb) / 0.08)',
+    color: 'var(--text-primary)',
+  },
+  '.cm-references-peek-list': {
+    overflow: 'auto',
+    padding: '4px 0',
+    outline: 'none',
+  },
+  '.cm-references-peek-file': {
+    padding: '6px 10px 2px 10px',
+    fontSize: '11px',
+    fontWeight: '500',
+    color: 'var(--text-secondary)',
+    fontFamily: 'var(--font-code)',
+    opacity: '0.85',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  '.cm-references-peek-row': {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '10px',
+    padding: '3px 10px 3px 20px',
+    cursor: 'pointer',
+    fontFamily: 'var(--font-code)',
+    fontSize: '12px',
+    color: 'var(--text-primary)',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+  },
+  '.cm-references-peek-row:hover': {
+    backgroundColor: 'rgb(var(--outline-rgb) / 0.06)',
+  },
+  '.cm-references-peek-row[aria-selected="true"]': {
+    backgroundColor: 'rgb(var(--accent-rgb) / 0.22)',
+  },
+  '.cm-references-peek-line': {
+    minWidth: '30px',
+    textAlign: 'right',
+    color: 'var(--text-muted)',
+    flexShrink: '0',
+  },
+  '.cm-references-peek-snippet': {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    color: 'var(--text-secondary)',
+  },
+  '.cm-references-peek-snippet strong': {
+    color: 'var(--accent)',
+    fontWeight: '600',
+    backgroundColor: 'rgb(var(--accent-rgb) / 0.15)',
+    padding: '0 2px',
+    borderRadius: '2px',
+  },
+})
 
 // ── Cmd+hover underline (VS Code style) ─────────────────────────────
 const setHoverRange = StateEffect.define<{ from: number; to: number } | null>()
@@ -360,7 +718,7 @@ const hoverUnderlineTheme = EditorView.theme({
     textDecoration: 'underline',
     cursor: 'pointer',
   },
-}, { dark: true })
+})
 
 // ── Editor context facet — carries taskId + relativePath to module-level
 // extensions (the merged hover tooltip needs these for the "Ask agent to
@@ -517,7 +875,7 @@ const mergedHoverTheme = EditorView.theme({
     flexDirection: 'column',
     fontSize: '12.5px',
     lineHeight: '1.5',
-    color: '#abb2bf',
+    color: 'var(--text-primary)',
     userSelect: 'text',
     WebkitUserSelect: 'text',
     cursor: 'text',
@@ -550,19 +908,19 @@ const mergedHoverTheme = EditorView.theme({
     marginTop: '6px',
     flexShrink: '0',
   },
-  '.cm-merged-hover-error .cm-merged-hover-dot': { backgroundColor: '#f87171' },
-  '.cm-merged-hover-warning .cm-merged-hover-dot': { backgroundColor: '#fbbf24' },
-  '.cm-merged-hover-info .cm-merged-hover-dot': { backgroundColor: '#60a5fa' },
-  '.cm-merged-hover-hint .cm-merged-hover-dot': { backgroundColor: '#6b7280' },
+  '.cm-merged-hover-error .cm-merged-hover-dot': { backgroundColor: 'var(--status-error)' },
+  '.cm-merged-hover-warning .cm-merged-hover-dot': { backgroundColor: '#f59e0b' },
+  '.cm-merged-hover-info .cm-merged-hover-dot': { backgroundColor: 'var(--status-done)' },
+  '.cm-merged-hover-hint .cm-merged-hover-dot': { backgroundColor: 'var(--text-dim)' },
   '.cm-merged-hover-message': {
     flex: '1',
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
   },
-  '.cm-merged-hover-error .cm-merged-hover-message': { color: '#fca5a5' },
-  '.cm-merged-hover-warning .cm-merged-hover-message': { color: '#fcd34d' },
+  '.cm-merged-hover-error .cm-merged-hover-message': { color: 'var(--status-error)' },
+  '.cm-merged-hover-warning .cm-merged-hover-message': { color: '#b45309' },
   '.cm-merged-hover-meta': {
-    color: '#6b7280',
+    color: 'var(--text-muted)',
     fontSize: '11px',
     marginLeft: '4px',
     flexShrink: '0',
@@ -573,27 +931,27 @@ const mergedHoverTheme = EditorView.theme({
     display: 'flex',
     justifyContent: 'flex-end',
     gap: '6px',
-    borderTop: '1px solid #181a1f',
-    backgroundColor: '#21252b',
+    borderTop: '1px solid var(--border-default)',
+    backgroundColor: 'var(--surface-1)',
   },
   '.cm-merged-hover-ask': {
     fontSize: '11.5px',
     padding: '3px 8px',
     borderRadius: '4px',
-    border: '1px solid #3e4452',
-    backgroundColor: '#2c313a',
-    color: '#abb2bf',
+    border: '1px solid var(--border-default)',
+    backgroundColor: 'var(--surface-3)',
+    color: 'var(--text-primary)',
     cursor: 'pointer',
     fontFamily: 'inherit',
   },
   '.cm-merged-hover-ask:hover': {
-    backgroundColor: '#3a3f4b',
-    borderColor: '#528bff',
-    color: '#e6e6e6',
+    backgroundColor: 'var(--surface-4)',
+    borderColor: 'var(--accent)',
+    color: 'var(--text-primary)',
   },
   '.cm-merged-hover-divider': {
     height: '1px',
-    backgroundColor: '#3e4452',
+    backgroundColor: 'var(--border-default)',
     margin: '4px 0',
   },
   '.cm-merged-hover-type': {
@@ -603,15 +961,15 @@ const mergedHoverTheme = EditorView.theme({
   '.cm-merged-hover-type pre': {
     margin: '4px 0',
     padding: '6px 8px',
-    backgroundColor: '#1e1e1e',
+    backgroundColor: 'var(--surface-0)',
     borderRadius: '4px',
     overflow: 'auto',
   },
   '.cm-merged-hover-type code': {
-    fontFamily: '"SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace',
+    fontFamily: 'var(--font-code, "SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace)',
     fontSize: '12px',
   },
-}, { dark: true })
+})
 
 // ── Language detection ─────────────────────────────────────────────────
 export function langFromExt(path: string): Extension | null {
@@ -674,6 +1032,8 @@ function buildExtensions(taskId: string, path: string, onDocChange: (content: st
     searchPanelTheme,
     renameWidgetTheme,
     renameTooltipField,
+    referencesPeekTheme,
+    referencesTooltipField,
     hoverUnderlineTheme,
     hoverUnderlineField,
     mergedHoverTheme,
@@ -691,7 +1051,6 @@ function buildExtensions(taskId: string, path: string, onDocChange: (content: st
     // doesn't stack on top of our merged tooltip. Squigglies still render.
     linter(null, { tooltipFilter: () => [] }),
     syntaxHighlighting(verunHighlightStyle),
-    syntaxHighlighting(oneDarkHighlightStyle, { fallback: true }),
 
     // Core editor features
     lineNumbers(),
@@ -727,8 +1086,9 @@ function buildExtensions(taskId: string, path: string, onDocChange: (content: st
       ...foldKeymap,
       ...completionKeymap,
       ...jumpToDefinitionKeymap,
-      ...findReferencesKeymap,
       ...formatKeymap,
+      { key: 'Shift-F12', run: inlineFindReferences, preventDefault: true },
+      { key: 'Escape', run: closeReferencesPeek },
       { key: 'F2', run: inlineRename, preventDefault: true },
       indentWithTab,
       { key: 'Mod-s', run: () => { onSave(); return true } },
@@ -1153,9 +1513,7 @@ export const CodeEditor: Component<Props> = (props) => {
   }
 
   const handleFindReferences = () => {
-    runAtContextCursor('FindReferences', (view) => {
-      import('@codemirror/lsp-client').then(({ findReferences }) => findReferences(view))
-    })
+    runAtContextCursor('FindReferences', (view) => inlineFindReferences(view))
   }
 
   const handleRenameSymbol = () => {
