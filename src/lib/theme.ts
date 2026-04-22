@@ -124,6 +124,7 @@ const SYNTAX_DARK = {
   number:   '#79c0ff',
   type:     '#ffa657',
   comment:  '#7d8590',
+  variable: '#e06c75',
 }
 const SYNTAX_LIGHT = {
   keyword:  '#cf222e',
@@ -132,6 +133,7 @@ const SYNTAX_LIGHT = {
   number:   '#0550ae',
   type:     '#953800',
   comment:  '#6e7781',
+  variable: '#001080',
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +427,7 @@ export function applyAppearance(prefs: AppearancePrefs) {
   root.style.setProperty('--syntax-number',   syntax.number)
   root.style.setProperty('--syntax-type',     syntax.type)
   root.style.setProperty('--syntax-comment',  syntax.comment)
+  root.style.setProperty('--syntax-variable', syntax.variable)
 
   // Fonts + sizes (code font drives both code blocks and terminals)
   root.style.setProperty('--font-ui',   fontStack(prefs.uiFont,   UI_FONT_PRESETS))

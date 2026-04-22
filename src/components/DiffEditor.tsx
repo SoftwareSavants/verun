@@ -5,12 +5,12 @@ import { EditorView, lineNumbers, drawSelection, highlightSpecialChars, keymap }
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { syntaxHighlighting, foldGutter, bracketMatching, indentOnInput } from '@codemirror/language'
 import { search, searchKeymap } from '@codemirror/search'
-import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark'
 import { Loader2, AlertCircle, Columns2, Rows2, FileText } from 'lucide-solid'
 import * as ipc from '../lib/ipc'
 import type { DiffContents } from '../types'
 import { openFilePinned, type DiffSource } from '../store/editorView'
-import { langFromExt, verunTheme, verunHighlightStyle, selectionAwareActiveLine } from './CodeEditor'
+import { langFromExt, verunTheme, selectionAwareActiveLine } from './CodeEditor'
+import { verunHighlightStyle } from './verunHighlightStyle'
 import { BreadcrumbBar } from './BreadcrumbBar'
 import { createSearchPanel, searchPanelTheme } from './SearchPanel'
 
@@ -31,7 +31,10 @@ const STATUS_COLORS: Record<string, string> = {
 // Override @codemirror/merge's default change indicators (a 2px bottom
 // gradient that reads as a wavy underline) with solid GitHub/VS Code-style
 // background fills on changed lines and per-character changes.
-const mergeOverrideTheme = EditorView.theme({
+// Exported for unit tests — @codemirror/merge's default `&light`/`&dark`
+// selectors are gated on `.cm-dark` which verunTheme intentionally doesn't
+// add, so the collapsed-lines override must use theme-aware CSS vars.
+export const MERGE_OVERRIDE_SPEC: Record<string, Record<string, string>> = {
   // Per-character changes — solid background, no underline gradient
   '&.cm-merge-a .cm-changedText, &.cm-merge-a .cm-deletedChunk .cm-deletedText, & .cm-deletedChunk .cm-deletedText': {
     background: 'rgba(248, 81, 73, 0.4)',
@@ -59,7 +62,15 @@ const mergeOverrideTheme = EditorView.theme({
   '&.cm-merge-b .cm-changedLineGutter': {
     background: 'rgba(63, 185, 80, 0.6)',
   },
-})
+  // "X unchanged lines" collapsed pill — replace @codemirror/merge's default
+  // gradient (scoped to `&light`/`&dark` via `.cm-dark`, which we don't set)
+  // with theme-aware vars so it flips correctly with `[data-theme]`.
+  '.cm-collapsedLines': {
+    color: 'var(--text-muted)',
+    background: 'linear-gradient(to bottom, transparent 0, var(--surface-2) 30%, var(--surface-2) 70%, transparent 100%)',
+  },
+}
+const mergeOverrideTheme = EditorView.theme(MERGE_OVERRIDE_SPEC)
 
 function buildSideExtensions(path: string, readOnly: boolean): Extension[] {
   const lang = langFromExt(path)
@@ -68,7 +79,6 @@ function buildSideExtensions(path: string, readOnly: boolean): Extension[] {
     mergeOverrideTheme,
     searchPanelTheme,
     syntaxHighlighting(verunHighlightStyle),
-    syntaxHighlighting(oneDarkHighlightStyle, { fallback: true }),
     lineNumbers(),
     selectionAwareActiveLine(),
     highlightSpecialChars(),

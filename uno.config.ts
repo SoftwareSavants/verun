@@ -61,6 +61,7 @@ export default defineConfig({
         number:   'var(--syntax-number)',
         type:     'var(--syntax-type)',
         comment:  'var(--syntax-comment)',
+        variable: 'var(--syntax-variable)',
       },
     },
   },
@@ -129,6 +130,7 @@ export default defineConfig({
           --syntax-number:   #79c0ff;
           --syntax-type:     #ffa657;
           --syntax-comment:  #7d8590;
+          --syntax-variable: #e06c75;
 
           /* Root font-size drives every rem-based UnoCSS utility (text-, p-,
              m-, gap-, w-, h-, ...). Density scales it via --density-scale so a

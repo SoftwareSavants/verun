@@ -353,8 +353,52 @@ let revealCounter = 0
 const [_revealRequest, _setRevealRequest] = createSignal<{ taskId: string; relativePath: string; seq: number } | null>(null)
 export const revealRequest = _revealRequest
 
+// Per-task cache of gitignore status so each reveal doesn't re-shell-out to
+// `git check-ignore`. Populated by `isPathIgnoredForReveal` below.
+const ignoredPathCache = new Map<string, Set<string>>()
+const checkedPathCache = new Map<string, Set<string>>()
+
+export function _clearIgnoreCacheForTests() {
+  ignoredPathCache.clear()
+  checkedPathCache.clear()
+}
+
+/** Return true when `relativePath` (or any ancestor) is gitignored — we want
+ *  to skip auto-revealing files that live in generated/vendored folders like
+ *  `node_modules`, `dist`, `.next`, etc. Any ancestor hit short-circuits. */
+async function isPathIgnoredForReveal(taskId: string, relativePath: string): Promise<boolean> {
+  const parts = relativePath.split('/')
+  const paths: string[] = []
+  for (let i = 1; i <= parts.length; i++) paths.push(parts.slice(0, i).join('/'))
+
+  const known = ignoredPathCache.get(taskId)
+  if (known) {
+    for (const p of paths) if (known.has(p)) return true
+  }
+
+  const checked = checkedPathCache.get(taskId) ?? new Set<string>()
+  const toCheck = paths.filter(p => !checked.has(p))
+  if (toCheck.length === 0) return false
+
+  try {
+    const { checkGitignored } = await import('../lib/ipc')
+    const results = await checkGitignored(taskId, toCheck)
+    let c = checkedPathCache.get(taskId)
+    if (!c) { c = new Set(); checkedPathCache.set(taskId, c) }
+    for (const p of toCheck) c.add(p)
+    if (results.length > 0) {
+      let s = ignoredPathCache.get(taskId)
+      if (!s) { s = new Set(); ignoredPathCache.set(taskId, s) }
+      for (const p of results) s.add(p)
+      return true
+    }
+  } catch { /* fall through — don't block reveal on IPC errors */ }
+  return false
+}
+
 export async function revealFileInTree(taskId: string, relativePath: string) {
   if (isDiffKey(relativePath)) return
+  if (await isPathIgnoredForReveal(taskId, relativePath)) return
 
   const parts = relativePath.split('/')
   const ancestors: string[] = []
