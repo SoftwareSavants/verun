@@ -94,7 +94,16 @@ interface ErrorBlock {
   /** Turn marker so retry picks the right user message. */
   turnIndex: number
 }
-type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock | ErrorBlock
+interface PlanBlock {
+  type: 'plan'
+  items: Array<{ status: string; step: string }>
+  explanation?: string
+}
+interface DiffBlock {
+  type: 'diff'
+  diff: string
+}
+type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock | ErrorBlock | PlanBlock | DiffBlock
 
 const displayBlockCache = new Map<string, { output: OutputItem[]; length: number; blocks: DisplayBlock[] }>()
 
@@ -232,6 +241,27 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
             break
           }
           if (b.type === 'user') break
+        }
+        break
+      }
+      case 'planUpdate': {
+        flushText(); flushThinking()
+        const existing = blocks.find(b => b.type === 'plan') as PlanBlock | undefined
+        if (existing) {
+          existing.items = item.items
+          if (item.explanation) existing.explanation = item.explanation
+        } else {
+          blocks.push({ type: 'plan', items: item.items, explanation: item.explanation })
+        }
+        break
+      }
+      case 'diffUpdate': {
+        flushText(); flushThinking()
+        const existing = blocks.find(b => b.type === 'diff') as DiffBlock | undefined
+        if (existing) {
+          existing.diff = item.diff
+        } else {
+          blocks.push({ type: 'diff', diff: item.diff })
         }
         break
       }
@@ -1159,6 +1189,50 @@ export const ChatView: Component<Props> = (props) => {
                       agentType={props.agentType}
                       model={props.model}
                     />
+                  )
+                })()}
+              </Match>
+              <Match when={block.type === 'plan'}>
+                {(() => {
+                  const b = block as PlanBlock
+                  return (
+                    <div class="px-5 py-1">
+                      <div class="max-w-full rounded-xl ring-1 ring-accent/30 bg-accent/5 px-3 py-2">
+                        <div class="flex items-center justify-between mb-2">
+                          <span class="text-[11px] uppercase tracking-wide text-accent font-medium">Proposed plan</span>
+                        </div>
+                        <Show when={b.explanation}>
+                          <p class="text-xs text-text-secondary mb-2 whitespace-pre-wrap">{b.explanation}</p>
+                        </Show>
+                        <ul class="flex flex-col gap-1">
+                          <For each={b.items}>
+                            {(step) => (
+                              <li class="flex items-start gap-2 text-xs text-text-primary leading-relaxed">
+                                <span class="mt-0.5 shrink-0 inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] text-text-dim ring-1 ring-border">
+                                  {step.status === 'completed' ? '✓' : step.status === 'in_progress' ? '·' : ' '}
+                                </span>
+                                <span class={step.status === 'completed' ? 'line-through text-text-dim' : ''}>{step.step}</span>
+                              </li>
+                            )}
+                          </For>
+                        </ul>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </Match>
+              <Match when={block.type === 'diff'}>
+                {(() => {
+                  const b = block as DiffBlock
+                  return (
+                    <div class="px-5 py-1">
+                      <details class="max-w-full rounded-xl ring-1 ring-border bg-surface-2 overflow-hidden">
+                        <summary class="cursor-pointer px-3 py-1.5 text-[11px] uppercase tracking-wide text-text-dim select-none">
+                          Turn diff
+                        </summary>
+                        <pre class="text-xs text-text-primary whitespace-pre overflow-x-auto px-3 py-2 leading-snug select-text">{b.diff}</pre>
+                      </details>
+                    </div>
                   )
                 })()}
               </Match>

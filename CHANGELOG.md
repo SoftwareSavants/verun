@@ -18,6 +18,11 @@
 - Terminal panel open/closed state now persists per task, so a detached window inherits the same visibility the main window had
 - Closing a detached task window re-syncs the main window's terminal list against Rust, so PTYs spawned or closed in the other window reappear / disappear correctly when the task comes back
 - Fix "No coding agent CLIs found" toast firing at startup on macOS when agents are installed in nvm/homebrew/~/.local/bin: PATH reload now completes before agent detection runs (was racing in parallel threads, so detection often saw the stripped GUI PATH)
+- Codex now runs against a persistent `codex app-server` JSON-RPC process instead of respawning `codex exec --json` per turn - the CLI stays alive across turns and the resume id is persisted as soon as `thread/started` arrives
+- Codex Plan Mode: the plan toggle is enabled for Codex sessions and sends `collaborationMode: "plan"` on `turn/start`; `<proposed_plan>` blocks and `turn/plan/updated` events render as a Proposed plan card with per-step status
+- Codex structured approvals: patch, exec, file-change, command-execution, and permission prompts from `codex app-server` are routed through the same approval UI Claude uses (allow/deny mapped to JSON-RPC responses)
+- Codex turn interrupts now send `turn/interrupt` over RPC so the process stays alive across aborts and the next send reuses it instead of respawning
+- Codex turn diffs render as a collapsible diff block driven by `turn/diff/updated`
 
 ## 0.8.1 — 2026-04-20
 

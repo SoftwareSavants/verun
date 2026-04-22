@@ -1,4 +1,4 @@
-import { describe, test, expect, vi } from 'vitest'
+import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { render, cleanup } from '@solidjs/testing-library'
 import { buildPrMessage } from './GitActions'
 import type { TaskGitState } from '../store/git'

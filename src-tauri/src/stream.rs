@@ -82,9 +82,31 @@ pub enum OutputItem {
     #[serde(rename_all = "camelCase")]
     TurnSnapshot { message_uuid: String },
 
+    /// Codex plan-mode update. Carries the current checklist and an optional
+    /// explanation string. Emitted from `turn/plan/updated` notifications;
+    /// the frontend renders this as a plan card distinct from assistant text.
+    #[serde(rename_all = "camelCase")]
+    PlanUpdate {
+        items: Vec<PlanStep>,
+        explanation: Option<String>,
+    },
+
+    /// Per-turn unified diff update. Emitted from `turn/diff/updated`; the
+    /// frontend renders a diff badge that expands to show the patch.
+    #[serde(rename_all = "camelCase")]
+    DiffUpdate { diff: String },
+
     /// Raw line (fallback for unrecognized events)
     #[serde(rename_all = "camelCase")]
     Raw { text: String },
+}
+
+/// One row in a Codex plan-mode checklist.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanStep {
+    pub status: String,
+    pub step: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -632,6 +654,238 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
             }]
         }
 
+        _ => vec![],
+    }
+}
+
+/// Map a single `codex app-server` JSON-RPC **notification** to UI output
+/// items. The legacy `exec --json` path in `parse_sdk_event_value` maps
+/// top-level `type` strings; this one maps RPC `method` strings.
+///
+/// Wire ref: t3code `packages/effect-codex-app-server/src/_generated/meta.gen.ts`.
+pub fn process_codex_rpc_notification(
+    method: &str,
+    params: &serde_json::Value,
+) -> Vec<OutputItem> {
+    match method {
+        // -- Token deltas (streamed into the current assistant / thinking block) --
+        "item/agentMessage/delta" => params
+            .get("delta")
+            .and_then(|d| d.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|text| {
+                vec![OutputItem::Text {
+                    text: text.to_string(),
+                }]
+            })
+            .unwrap_or_default(),
+        "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => params
+            .get("delta")
+            .and_then(|d| d.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|text| {
+                vec![OutputItem::Thinking {
+                    text: text.to_string(),
+                }]
+            })
+            .unwrap_or_default(),
+
+        // -- Item lifecycle (command / tool / file change / file read) --
+        "item/started" => {
+            let Some(item) = params.get("item") else {
+                return vec![];
+            };
+            match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                "command_execution" => vec![OutputItem::ToolStart {
+                    tool: "shell".to_string(),
+                    input: item
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                }],
+                "tool_call" => {
+                    let name = item
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("tool")
+                        .to_string();
+                    let args = item
+                        .get("arguments")
+                        .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
+                        .unwrap_or_default();
+                    vec![OutputItem::ToolStart {
+                        tool: name,
+                        input: args,
+                    }]
+                }
+                _ => vec![],
+            }
+        }
+        "item/completed" => {
+            let Some(item) = params.get("item") else {
+                return vec![];
+            };
+            match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                "agent_message" => item
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|text| {
+                        vec![OutputItem::Text {
+                            text: text.to_string(),
+                        }]
+                    })
+                    .unwrap_or_default(),
+                "command_execution" => {
+                    let output = item
+                        .get("aggregated_output")
+                        .and_then(|o| o.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let is_error = item
+                        .get("exit_code")
+                        .and_then(|c| c.as_i64())
+                        .map(|c| c != 0)
+                        .unwrap_or(false);
+                    vec![OutputItem::ToolResult {
+                        text: output,
+                        is_error,
+                    }]
+                }
+                "tool_call" => {
+                    let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                    let args = item
+                        .get("arguments")
+                        .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
+                        .unwrap_or_default();
+                    vec![OutputItem::ToolStart {
+                        tool: name.to_string(),
+                        input: args,
+                    }]
+                }
+                "tool_result" => {
+                    let output = item
+                        .get("output")
+                        .and_then(|o| o.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let is_error = item
+                        .get("is_error")
+                        .and_then(|e| e.as_bool())
+                        .unwrap_or(false);
+                    vec![OutputItem::ToolResult {
+                        text: output,
+                        is_error,
+                    }]
+                }
+                "file_change" => format_codex_file_change(item),
+                "file_read" => {
+                    let path = item
+                        .get("path")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("(unknown)")
+                        .to_string();
+                    vec![
+                        OutputItem::ToolStart {
+                            tool: "Read".to_string(),
+                            input: path.clone(),
+                        },
+                        OutputItem::ToolResult {
+                            text: path,
+                            is_error: false,
+                        },
+                    ]
+                }
+                _ => vec![],
+            }
+        }
+
+        // -- Plan-mode and diff updates --
+        "turn/plan/updated" => {
+            let plan = params
+                .get("plan")
+                .and_then(|p| p.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let items = plan
+                .into_iter()
+                .map(|step| PlanStep {
+                    status: step
+                        .get("status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("pending")
+                        .to_string(),
+                    step: step
+                        .get("step")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                })
+                .collect();
+            let explanation = params
+                .get("explanation")
+                .and_then(|e| e.as_str())
+                .map(|s| s.to_string());
+            vec![OutputItem::PlanUpdate { items, explanation }]
+        }
+        "turn/diff/updated" => {
+            let diff = params
+                .get("diff")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .to_string();
+            if diff.is_empty() {
+                vec![]
+            } else {
+                vec![OutputItem::DiffUpdate { diff }]
+            }
+        }
+
+        // -- Turn completion --
+        "turn/completed" => {
+            let turn = params.get("turn").cloned().unwrap_or(serde_json::Value::Null);
+            let status_str = turn
+                .get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("completed");
+            let error_msg = turn
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .map(|s| s.to_string());
+            let status = match status_str {
+                "completed" => "completed",
+                "failed" => "error",
+                "cancelled" | "canceled" | "interrupted" => "interrupted",
+                _ => "completed",
+            };
+            vec![OutputItem::TurnEnd {
+                status: status.to_string(),
+                cost: None,
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                error: error_msg,
+            }]
+        }
+
+        // -- Provider-level error outside a turn --
+        "error" => {
+            let message = params
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("Codex error")
+                .to_string();
+            vec![OutputItem::ErrorMessage {
+                message,
+                raw: Some(params.to_string()),
+            }]
+        }
+
+        // Lifecycle / deltas we don't surface yet — swallow silently, the
+        // same way the legacy `exec --json` path drops lifecycle frames.
         _ => vec![],
     }
 }
@@ -1342,6 +1596,197 @@ pub async fn stream_and_capture(
     }
 }
 
+/// JSON-RPC streaming loop for Codex `app-server`. Mirrors the legacy
+/// `stream_and_capture` but consumes `CodexRpcEvent`s instead of parsing
+/// NDJSON from stdout. Server-originated approval requests are routed
+/// through `pending_approvals` the same way Claude's `control_request`
+/// tool approvals are.
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_and_capture_rpc(
+    app: AppHandle,
+    session_id: String,
+    task_id: String,
+    mut events_rx: tokio::sync::mpsc::UnboundedReceiver<
+        crate::agent::codex_rpc::CodexRpcEvent,
+    >,
+    stdin: Arc<TokioMutex<Option<ChildStdin>>>,
+    busy: Arc<AtomicBool>,
+    _pending_approvals: PendingApprovals,
+    _pending_approval_meta: PendingApprovalMeta,
+    db_tx: DbWriteTx,
+    agent: &dyn crate::agent::Agent,
+) -> StreamResult {
+    let mut buffer: Vec<OutputItem> = Vec::new();
+    let mut last_flush = Instant::now();
+    let mut total_persisted: usize = 0;
+    let mut last_error: Option<String> = None;
+    let _ = task_id; // reserved for snapshot hook parity with legacy path
+
+    loop {
+        let deadline = tokio::time::sleep(FLUSH_INTERVAL);
+        tokio::pin!(deadline);
+
+        tokio::select! {
+            ev = events_rx.recv() => {
+                let Some(ev) = ev else { break };
+                match ev {
+                    crate::agent::codex_rpc::CodexRpcEvent::Notification { method, params } => {
+                        eprintln!("[verun][codex-rpc][{session_id}] <- {method}");
+
+                        let items = process_codex_rpc_notification(&method, &params);
+                        let mut has_immediate = false;
+                        let mut is_turn_end = false;
+
+                        for item in &items {
+                            match item {
+                                OutputItem::Text { .. } | OutputItem::Thinking { .. } => {
+                                    if !buffer.is_empty() {
+                                        flush_buffer(&app, &session_id, &mut buffer);
+                                    }
+                                    emit_item(&app, &session_id, item.clone());
+                                    has_immediate = true;
+                                }
+                                OutputItem::TurnEnd { error: ref err, .. } => {
+                                    is_turn_end = true;
+                                    if err.is_some() {
+                                        last_error.clone_from(err);
+                                    }
+                                    buffer.push(item.clone());
+                                }
+                                _ => buffer.push(item.clone()),
+                            }
+                        }
+
+                        persist_items(&db_tx, &session_id, &items, &mut total_persisted);
+
+                        if is_turn_end {
+                            let (status, error) = turn_end_session_status(&last_error);
+                            let _ = db_tx.send(DbWrite::UpdateSessionStatus {
+                                id: session_id.clone(),
+                                status: status.to_string(),
+                            }).await;
+                            let _ = app.emit(
+                                "session-status",
+                                SessionStatusEvent {
+                                    session_id: session_id.clone(),
+                                    status: status.to_string(),
+                                    error,
+                                },
+                            );
+                            last_error = None;
+                            busy.store(false, Ordering::SeqCst);
+                        }
+
+                        if !buffer.is_empty()
+                            && (has_immediate
+                                || is_turn_end
+                                || last_flush.elapsed() >= FLUSH_INTERVAL)
+                        {
+                            flush_buffer(&app, &session_id, &mut buffer);
+                            last_flush = Instant::now();
+                        }
+                    }
+                    crate::agent::codex_rpc::CodexRpcEvent::ServerRequest {
+                        id,
+                        method,
+                        params,
+                    } => {
+                        eprintln!(
+                            "[verun][codex-rpc][{session_id}] <- req {method} id={id}"
+                        );
+                        if !is_codex_approval_method(&method) {
+                            // Unknown server request — auto-deny with a
+                            // best-effort response so the CLI isn't blocked.
+                            eprintln!(
+                                "[verun][codex-rpc][{session_id}] unhandled server request method: {method}"
+                            );
+                            continue;
+                        }
+
+                        let request_id = uuid::Uuid::new_v4().to_string();
+                        let entry = build_codex_approval_entry(
+                            &session_id,
+                            &request_id,
+                            &method,
+                            &params,
+                        );
+                        let _ = app.emit("tool-approval-request", ToolApprovalEvent {
+                            request_id: request_id.clone(),
+                            session_id: session_id.clone(),
+                            tool_name: entry.tool_name.clone(),
+                            tool_input: entry.tool_input.clone(),
+                        });
+
+                        let (tx, rx) = tokio::sync::oneshot::channel::<ApprovalResponse>();
+                        _pending_approvals.insert(request_id.clone(), tx);
+                        _pending_approval_meta.insert(request_id.clone(), entry);
+
+                        let responder_stdin = stdin.clone();
+                        let responder_pending = _pending_approvals.clone();
+                        let responder_meta = _pending_approval_meta.clone();
+                        let responder_sid = session_id.clone();
+                        let responder_agent_kind =
+                            crate::agent::AgentKind::parse(
+                                agent.kind().as_str(),
+                            );
+                        let responder_method = method.clone();
+                        let responder_id = id.clone();
+                        let responder_request_id = request_id.clone();
+                        tokio::spawn(async move {
+                            let behavior = match rx.await {
+                                Ok(resp) => resp.behavior,
+                                Err(_) => "deny".to_string(),
+                            };
+                            responder_pending.remove(&responder_request_id);
+                            responder_meta.remove(&responder_request_id);
+                            let responder_agent = responder_agent_kind.implementation();
+                            if let Some(Ok(bytes)) = encode_codex_approval_response(
+                                &*responder_agent,
+                                &responder_method,
+                                &responder_id,
+                                &behavior,
+                            ) {
+                                let mut guard = responder_stdin.lock().await;
+                                if let Some(writer) = guard.as_mut() {
+                                    let _ = writer.write_all(&bytes).await;
+                                    let _ = writer.flush().await;
+                                }
+                            } else {
+                                eprintln!(
+                                    "[verun][codex-rpc][{responder_sid}] failed to encode approval response for {responder_method}"
+                                );
+                            }
+                        });
+                    }
+                    crate::agent::codex_rpc::CodexRpcEvent::ReaderClosed { reason } => {
+                        if let Some(r) = reason {
+                            last_error = Some(r);
+                        }
+                        break;
+                    }
+                    crate::agent::codex_rpc::CodexRpcEvent::ParseError { line, detail } => {
+                        eprintln!(
+                            "[verun][codex-rpc][{session_id}] parse error {detail}: {line}"
+                        );
+                    }
+                }
+            }
+            _ = &mut deadline => {
+                if !buffer.is_empty() {
+                    flush_buffer(&app, &session_id, &mut buffer);
+                    last_flush = Instant::now();
+                }
+            }
+        }
+    }
+
+    flush_buffer(&app, &session_id, &mut buffer);
+    StreamResult {
+        total_cost: 0.0,
+        error: last_error,
+    }
+}
+
 /// Check if a line is a `control_request` for tool approval.
 /// Evaluates the policy engine first — auto-approves safe actions, only prompts
 /// the user for actions that require approval.
@@ -1628,6 +2073,77 @@ fn epoch_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
+}
+
+/// True when a Codex JSON-RPC server-originated request is one of the
+/// approval prompts Verun routes through `PendingApprovals`.
+pub fn is_codex_approval_method(method: &str) -> bool {
+    matches!(
+        method,
+        "applyPatchApproval"
+            | "execCommandApproval"
+            | "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    )
+}
+
+/// Build the `PendingApprovalEntry` for a Codex JSON-RPC server-originated
+/// approval request. Maps the method name onto Verun's canonical tool names
+/// so the existing frontend approval UI can render exec / patch / permission
+/// prompts without a special-case branch.
+pub fn build_codex_approval_entry(
+    session_id: &str,
+    request_id: &str,
+    method: &str,
+    params: &serde_json::Value,
+) -> PendingApprovalEntry {
+    let tool_name = match method {
+        "applyPatchApproval" | "item/fileChange/requestApproval" => "Edit",
+        "execCommandApproval" | "item/commandExecution/requestApproval" => "Bash",
+        "item/permissions/requestApproval" => "Permission",
+        _ => "Unknown",
+    }
+    .to_string();
+    PendingApprovalEntry {
+        request_id: request_id.to_string(),
+        session_id: session_id.to_string(),
+        tool_name,
+        tool_input: params.clone(),
+    }
+}
+
+/// Encode the JSON-RPC response frame for a Codex server-originated approval.
+/// Returns `None` if `method` is not a recognised approval request; the outer
+/// `Result` surfaces encoder serialization failures.
+pub fn encode_codex_approval_response(
+    agent: &dyn crate::agent::Agent,
+    method: &str,
+    server_req_id: &serde_json::Value,
+    behavior: &str,
+) -> Option<Result<Vec<u8>, String>> {
+    let allow = behavior == "allow";
+    match method {
+        "applyPatchApproval" | "execCommandApproval" => {
+            let decision = if allow {
+                crate::agent::CodexRpcDecision::Approved
+            } else {
+                crate::agent::CodexRpcDecision::Denied
+            };
+            Some(agent.encode_rpc_review_decision_response(server_req_id, decision))
+        }
+        "item/commandExecution/requestApproval"
+        | "item/fileChange/requestApproval"
+        | "item/permissions/requestApproval" => {
+            let decision = if allow {
+                crate::agent::CodexRpcItemDecision::Accept
+            } else {
+                crate::agent::CodexRpcItemDecision::Decline
+            };
+            Some(agent.encode_rpc_item_approval_response(server_req_id, decision))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1976,5 +2492,373 @@ mod tests {
     #[test]
     fn map_exit_status_signal_is_error() {
         assert_eq!(map_exit_status(None), "error");
+    }
+
+    // ── Codex app-server JSON-RPC notification mapping ────────────────
+
+    #[test]
+    fn rpc_agent_message_delta_becomes_text() {
+        let params = serde_json::json!({
+            "delta": "Hello ",
+            "itemId": "item_1",
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/agentMessage/delta", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::Text { text } => assert_eq!(text, "Hello "),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_reasoning_text_delta_becomes_thinking() {
+        let params = serde_json::json!({
+            "delta": "Let me think",
+            "itemId": "item_r",
+            "contentIndex": 0,
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/reasoning/textDelta", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::Thinking { text } => assert_eq!(text, "Let me think"),
+            other => panic!("expected Thinking, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_reasoning_summary_text_delta_becomes_thinking() {
+        let params = serde_json::json!({
+            "delta": "Summary bits",
+            "itemId": "item_r",
+            "summaryIndex": 0,
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/reasoning/summaryTextDelta", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::Thinking { text } => assert_eq!(text, "Summary bits"),
+            other => panic!("expected Thinking, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_item_started_command_execution_becomes_toolstart() {
+        let params = serde_json::json!({
+            "item": {
+                "id": "i1",
+                "type": "command_execution",
+                "command": "ls -la",
+            },
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/started", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::ToolStart { tool, input } => {
+                assert_eq!(tool, "shell");
+                assert_eq!(input, "ls -la");
+            }
+            other => panic!("expected ToolStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_item_completed_agent_message_becomes_text() {
+        let params = serde_json::json!({
+            "item": {
+                "id": "i2",
+                "type": "agent_message",
+                "text": "All done.",
+            },
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/completed", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::Text { text } => assert_eq!(text, "All done."),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_item_completed_command_execution_with_exit_code_is_error() {
+        let params = serde_json::json!({
+            "item": {
+                "id": "i3",
+                "type": "command_execution",
+                "aggregated_output": "bash: bad\n",
+                "exit_code": 1,
+            },
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/completed", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::ToolResult { text, is_error } => {
+                assert!(is_error);
+                assert!(text.contains("bash"));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_item_completed_file_change_formats_changes() {
+        let params = serde_json::json!({
+            "item": {
+                "id": "i4",
+                "type": "file_change",
+                "changes": [{"path": "/tmp/x.rs", "kind": "add"}],
+                "status": "completed",
+            },
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/completed", &params);
+        assert_eq!(items.len(), 2);
+        match &items[0] {
+            OutputItem::ToolStart { tool, .. } => assert_eq!(tool, "Write"),
+            other => panic!("expected ToolStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_turn_plan_updated_becomes_plan_update() {
+        let params = serde_json::json!({
+            "explanation": "Proposed plan",
+            "plan": [
+                {"status": "pending", "step": "Read files"},
+                {"status": "in_progress", "step": "Write tests"},
+            ],
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("turn/plan/updated", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::PlanUpdate { items, explanation } => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].status, "pending");
+                assert_eq!(items[0].step, "Read files");
+                assert_eq!(explanation.as_deref(), Some("Proposed plan"));
+            }
+            other => panic!("expected PlanUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_turn_diff_updated_becomes_diff_update() {
+        let params = serde_json::json!({
+            "diff": "--- a\n+++ b\n@@\n-x\n+y\n",
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("turn/diff/updated", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::DiffUpdate { diff } => assert!(diff.contains("+y")),
+            other => panic!("expected DiffUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_turn_completed_becomes_turn_end_with_usage() {
+        let params = serde_json::json!({
+            "threadId": "t",
+            "turn": {
+                "id": "u",
+                "status": "completed",
+                "items": [],
+            },
+        });
+        let items = process_codex_rpc_notification("turn/completed", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::TurnEnd { status, .. } => assert_eq!(status, "completed"),
+            other => panic!("expected TurnEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_turn_completed_failed_becomes_error_status() {
+        let params = serde_json::json!({
+            "threadId": "t",
+            "turn": {
+                "id": "u",
+                "status": "failed",
+                "items": [],
+                "error": {"message": "overloaded"},
+            },
+        });
+        let items = process_codex_rpc_notification("turn/completed", &params);
+        match &items[0] {
+            OutputItem::TurnEnd { status, error, .. } => {
+                assert_eq!(status, "error");
+                assert_eq!(error.as_deref(), Some("overloaded"));
+            }
+            other => panic!("expected TurnEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_error_notification_becomes_error_message() {
+        let params = serde_json::json!({
+            "threadId": "t",
+            "turnId": "u",
+            "willRetry": false,
+            "error": {"message": "unauthorized"},
+        });
+        let items = process_codex_rpc_notification("error", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::ErrorMessage { message, .. } => assert!(message.contains("unauthorized")),
+            other => panic!("expected ErrorMessage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_lifecycle_notifications_are_ignored() {
+        for m in [
+            "thread/started",
+            "turn/started",
+            "thread/status/changed",
+            "thread/closed",
+            "thread/tokenUsage/updated",
+            "item/commandExecution/outputDelta",
+        ] {
+            let items = process_codex_rpc_notification(m, &serde_json::json!({}));
+            assert!(items.is_empty(), "{m} should be swallowed");
+        }
+    }
+
+    #[test]
+    fn codex_approval_entry_maps_exec_to_bash_tool() {
+        let entry = build_codex_approval_entry(
+            "session-1",
+            "req-123",
+            "execCommandApproval",
+            &serde_json::json!({"command": ["rm", "-rf", "node_modules"]}),
+        );
+        assert_eq!(entry.request_id, "req-123");
+        assert_eq!(entry.session_id, "session-1");
+        assert_eq!(entry.tool_name, "Bash");
+        assert_eq!(
+            entry.tool_input,
+            serde_json::json!({"command": ["rm", "-rf", "node_modules"]})
+        );
+    }
+
+    #[test]
+    fn codex_approval_entry_maps_patch_to_edit_tool() {
+        let entry = build_codex_approval_entry(
+            "s",
+            "r",
+            "applyPatchApproval",
+            &serde_json::json!({"changes": {}}),
+        );
+        assert_eq!(entry.tool_name, "Edit");
+    }
+
+    #[test]
+    fn codex_approval_entry_maps_item_command_execution_to_bash() {
+        let entry = build_codex_approval_entry(
+            "s",
+            "r",
+            "item/commandExecution/requestApproval",
+            &serde_json::json!({}),
+        );
+        assert_eq!(entry.tool_name, "Bash");
+    }
+
+    #[test]
+    fn codex_approval_entry_maps_item_file_change_to_edit() {
+        let entry = build_codex_approval_entry(
+            "s",
+            "r",
+            "item/fileChange/requestApproval",
+            &serde_json::json!({}),
+        );
+        assert_eq!(entry.tool_name, "Edit");
+    }
+
+    #[test]
+    fn encode_codex_approval_allow_maps_to_approved_for_exec() {
+        let agent = crate::agent::AgentKind::Codex.implementation();
+        let bytes = encode_codex_approval_response(
+            &*agent,
+            "execCommandApproval",
+            &serde_json::json!("srv-1"),
+            "allow",
+        )
+        .expect("method recognised")
+        .expect("encoder ok");
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.contains("\"decision\":\"approved\""), "{s}");
+        assert!(s.contains("\"id\":\"srv-1\""));
+    }
+
+    #[test]
+    fn encode_codex_approval_deny_maps_to_denied_for_exec() {
+        let agent = crate::agent::AgentKind::Codex.implementation();
+        let bytes = encode_codex_approval_response(
+            &*agent,
+            "applyPatchApproval",
+            &serde_json::json!(42),
+            "deny",
+        )
+        .expect("method recognised")
+        .expect("encoder ok");
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.contains("\"decision\":\"denied\""), "{s}");
+    }
+
+    #[test]
+    fn encode_codex_approval_allow_maps_to_accept_for_item_method() {
+        let agent = crate::agent::AgentKind::Codex.implementation();
+        let bytes = encode_codex_approval_response(
+            &*agent,
+            "item/fileChange/requestApproval",
+            &serde_json::json!("x"),
+            "allow",
+        )
+        .expect("method recognised")
+        .expect("encoder ok");
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.contains("\"decision\":\"accept\""), "{s}");
+    }
+
+    #[test]
+    fn encode_codex_approval_deny_maps_to_decline_for_item_method() {
+        let agent = crate::agent::AgentKind::Codex.implementation();
+        let bytes = encode_codex_approval_response(
+            &*agent,
+            "item/permissions/requestApproval",
+            &serde_json::json!("y"),
+            "deny",
+        )
+        .expect("method recognised")
+        .expect("encoder ok");
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.contains("\"decision\":\"decline\""), "{s}");
+    }
+
+    #[test]
+    fn encode_codex_approval_unknown_method_returns_none() {
+        let agent = crate::agent::AgentKind::Codex.implementation();
+        let out = encode_codex_approval_response(
+            &*agent,
+            "not/an/approval",
+            &serde_json::json!(1),
+            "allow",
+        );
+        assert!(out.is_none());
     }
 }
