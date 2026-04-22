@@ -217,6 +217,12 @@ pub struct ActiveProcess {
     pub codex_pending: Option<crate::agent::codex_rpc::PendingRpcResponses>,
     /// Monotonic request-id source for RPC calls. `None` for non-RPC agents.
     pub codex_next_id: Option<Arc<AtomicI64>>,
+    /// Codex app-server turn id for the currently-in-flight turn. `None` when
+    /// no turn is running (idle, pre-warm, or after `turn/completed`). Set
+    /// from the `turn/start` response (`result.turn.id`) and cleared on
+    /// `turn/completed`. `turn/interrupt` requires this — sending just the
+    /// thread id fails with `Invalid request: missing field turnId`.
+    pub codex_current_turn_id: Option<Arc<TokioMutex<Option<String>>>>,
 }
 
 /// session_id → currently running claude process (only while processing a message)
@@ -968,6 +974,7 @@ pub async fn send_message(
                 thread_id: String,
                 pending: crate::agent::codex_rpc::PendingRpcResponses,
                 next_id: Arc<AtomicI64>,
+                current_turn_id: Arc<TokioMutex<Option<String>>>,
             },
             Respawn,
             Spawn,
@@ -999,6 +1006,11 @@ pub async fn send_message(
                         "Codex RPC session missing request id counter — cannot reuse process"
                             .to_string()
                     })?;
+                    let current_turn_id =
+                        entry.codex_current_turn_id.clone().ok_or_else(|| {
+                            "Codex RPC session missing current-turn slot — cannot reuse process"
+                                .to_string()
+                        })?;
                     entry.current_permission_mode = want_permission_mode.to_string();
                     entry.current_model.clone_from(&model);
                     FastPath::GoRpc {
@@ -1007,6 +1019,7 @@ pub async fn send_message(
                         thread_id,
                         pending,
                         next_id,
+                        current_turn_id,
                     }
                 } else {
                     let send_set_permission_mode =
@@ -1111,6 +1124,7 @@ pub async fn send_message(
                 thread_id,
                 pending,
                 next_id,
+                current_turn_id,
             } => {
                 use crate::agent::codex_rpc;
                 persist_verun_user_message(
@@ -1158,9 +1172,17 @@ pub async fn send_message(
                         plan_mode,
                     },
                 )?;
-                std::mem::drop(codex_rpc::register_pending(&pending, turn_id));
+                let turn_rx = codex_rpc::register_pending(&pending, turn_id);
                 codex_rpc::write_frame(&stdin, &turn_bytes).await?;
                 busy.store(true, Ordering::SeqCst);
+                spawn_turn_start_response_watcher(
+                    app.clone(),
+                    db_tx.clone(),
+                    session_id.clone(),
+                    busy.clone(),
+                    current_turn_id.clone(),
+                    turn_rx,
+                );
                 let _ = db_tx
                     .send(db::DbWrite::UpdateSessionStatus {
                         id: session_id.clone(),
@@ -1560,6 +1582,9 @@ async fn spawn_codex_app_server_session(
         })
         .await;
 
+    let busy = Arc::new(AtomicBool::new(!prewarm));
+    let current_turn_id: Arc<TokioMutex<Option<String>>> = Arc::new(TokioMutex::new(None));
+
     // -- 3. turn/start (unless prewarming) --
     if !prewarm {
         let effort = effort_from_flags(thinking_mode, fast_mode);
@@ -1586,14 +1611,23 @@ async fn spawn_codex_app_server_session(
                 plan_mode,
             },
         )?;
-        // Fire the request but don't await it — the response only resolves
-        // when the entire turn completes, which may take minutes. The reader
-        // task logs the eventual response; progress arrives via notifications.
-        std::mem::drop(codex_rpc::register_pending(&pending, turn_id));
+        // Register a pending slot and keep the receiver — codex app-server
+        // resolves `turn/start` synchronously with the Codex turn id
+        // (`result.turn.id`), so the watcher populates
+        // `codex_current_turn_id` (needed for `turn/interrupt`) on success
+        // and surfaces any JSON-RPC error (e.g. missing `experimentalApi`
+        // capability) on failure.
+        let turn_rx = codex_rpc::register_pending(&pending, turn_id);
         codex_rpc::write_frame(&stdin, &turn_bytes).await?;
+        spawn_turn_start_response_watcher(
+            app.clone(),
+            db_tx.clone(),
+            session_id.clone(),
+            busy.clone(),
+            current_turn_id.clone(),
+            turn_rx,
+        );
     }
-
-    let busy = Arc::new(AtomicBool::new(!prewarm));
 
     if !prewarm {
         let _ = db_tx
@@ -1630,6 +1664,7 @@ async fn spawn_codex_app_server_session(
             codex_thread_id: Some(thread_id),
             codex_pending: Some(pending),
             codex_next_id: Some(next_id),
+            codex_current_turn_id: Some(current_turn_id),
         },
     );
 
@@ -1794,6 +1829,74 @@ fn effort_from_flags(thinking_mode: bool, fast_mode: bool) -> Option<String> {
         (_, true) => Some("low".to_string()),
         _ => None,
     }
+}
+
+/// Watch the JSON-RPC response for a `turn/start`.
+///
+/// codex app-server resolves `turn/start` synchronously (not at
+/// `turn/completed`): the response body is `{turn: {id, status:"inProgress", …}}`.
+/// We extract `turn.id` into `current_turn_id` so a subsequent
+/// `turn/interrupt` can carry the required `turnId`. On a JSON-RPC error
+/// (e.g. a protocol-level rejection like missing `experimentalApi`
+/// capability), we flip busy + session-status here so the UI is not stuck in
+/// `running` — the monitor would otherwise never see a `turn/completed`.
+fn spawn_turn_start_response_watcher(
+    app: AppHandle,
+    db_tx: DbWriteTx,
+    session_id: String,
+    busy: Arc<AtomicBool>,
+    current_turn_id: Arc<TokioMutex<Option<String>>>,
+    rx: tokio::sync::oneshot::Receiver<
+        Result<serde_json::Value, crate::agent::codex_rpc::JsonRpcError>,
+    >,
+) {
+    tokio::spawn(async move {
+        let err_msg = match rx.await {
+            Ok(Ok(val)) => {
+                if let Some(tid) = val
+                    .pointer("/turn/id")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string())
+                {
+                    *current_turn_id.lock().await = Some(tid);
+                }
+                return;
+            }
+            Ok(Err(err)) => err.message,
+            Err(_) => return,
+        };
+        if !busy.load(Ordering::SeqCst) {
+            return;
+        }
+        eprintln!(
+            "[verun][codex-rpc][{session_id}] turn/start failed: {err_msg}"
+        );
+        busy.store(false, Ordering::SeqCst);
+        let _ = app.emit(
+            "session-output",
+            stream::SessionOutputEvent {
+                session_id: session_id.clone(),
+                items: vec![stream::OutputItem::ErrorMessage {
+                    message: err_msg.clone(),
+                    raw: None,
+                }],
+            },
+        );
+        let _ = db_tx
+            .send(db::DbWrite::UpdateSessionStatus {
+                id: session_id.clone(),
+                status: "error".to_string(),
+            })
+            .await;
+        let _ = app.emit(
+            "session-status",
+            stream::SessionStatusEvent {
+                session_id,
+                status: "error".to_string(),
+                error: Some(err_msg),
+            },
+        );
+    });
 }
 
 /// Spawn a new CLI process for this session and start the stream monitor.
@@ -2003,6 +2106,7 @@ pub async fn spawn_session_process(
             codex_thread_id: None,
             codex_pending: None,
             codex_next_id: None,
+            codex_current_turn_id: None,
         },
     );
 
@@ -2166,35 +2270,62 @@ pub async fn abort_message(
 
     match agent.abort_strategy() {
         crate::agent::AbortStrategy::Interrupt => {
-            let (stdin, rpc_state) = match active.get(session_id) {
+            let (stdin, rpc_state, busy) = match active.get(session_id) {
                 Some(entry) => {
                     let rpc = if agent.uses_app_server() {
                         match (
                             entry.codex_thread_id.clone(),
                             entry.codex_pending.clone(),
                             entry.codex_next_id.clone(),
+                            entry.codex_current_turn_id.clone(),
                         ) {
-                            (Some(tid), Some(pending), Some(next_id)) => {
-                                Some((tid, pending, next_id))
+                            (Some(tid), Some(pending), Some(next_id), Some(current_turn)) => {
+                                Some((tid, pending, next_id, current_turn))
                             }
                             _ => None,
                         }
                     } else {
                         None
                     };
-                    (entry.stdin.clone(), rpc)
+                    (entry.stdin.clone(), rpc, entry.busy.clone())
                 }
                 None => return Ok(()),
             };
-            let bytes = if let Some((ref thread_id, ref _pending, ref next_id)) = rpc_state {
-                let req_id = crate::agent::codex_rpc::next_request_id(next_id);
-                agent.encode_rpc_turn_interrupt(req_id, thread_id)?
+            let maybe_bytes = if let Some((ref thread_id, ref _pending, ref next_id, ref current_turn_id)) =
+                rpc_state
+            {
+                // codex app-server requires both threadId AND turnId on
+                // `turn/interrupt`. If no turn is currently in flight (e.g.
+                // turn/start hasn't resolved yet, or a previous turn already
+                // completed), skip the interrupt entirely — there is
+                // nothing to cancel.
+                let turn_id_opt = current_turn_id.lock().await.clone();
+                match turn_id_opt {
+                    Some(turn_id) => {
+                        let req_id = crate::agent::codex_rpc::next_request_id(next_id);
+                        Some(agent.encode_rpc_turn_interrupt(req_id, thread_id, &turn_id)?)
+                    }
+                    None => {
+                        eprintln!(
+                            "[verun][codex-rpc][{session_id}] abort requested with no in-flight turn — skipping turn/interrupt"
+                        );
+                        None
+                    }
+                }
             } else {
-                agent.encode_stream_interrupt(&new_control_request_id())?
+                Some(agent.encode_stream_interrupt(&new_control_request_id())?)
             };
-            // Best-effort: if stdin is already closed we fall through (session will
-            // hit the regular exit path).
-            let _ = write_to_stdin(&stdin, &bytes).await;
+            if let Some(bytes) = maybe_bytes {
+                // Best-effort: if stdin is already closed we fall through
+                // (session will hit the regular exit path).
+                let _ = write_to_stdin(&stdin, &bytes).await;
+            }
+
+            // Clear busy so the next send_message doesn't bounce with
+            // "already processing". The stream monitor will later see
+            // `turn/completed { status: "interrupted" }` and clear again —
+            // idempotent.
+            busy.store(false, Ordering::SeqCst);
 
             let _ = db_tx
                 .send(db::DbWrite::UpdateSessionStatus {

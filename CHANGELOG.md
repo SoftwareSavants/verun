@@ -23,6 +23,12 @@
 - Codex structured approvals: patch, exec, file-change, command-execution, and permission prompts from `codex app-server` are routed through the same approval UI Claude uses (allow/deny mapped to JSON-RPC responses)
 - Codex turn interrupts now send `turn/interrupt` over RPC so the process stays alive across aborts and the next send reuses it instead of respawning
 - Codex turn diffs render as a collapsible diff block driven by `turn/diff/updated`
+- Fix Codex `turn/interrupt` being silently rejected by `codex app-server` 0.120+ — Verun now tracks the in-flight `turnId` from the `turn/start` response and includes it on interrupt (required field per live schema)
+- Fix Codex abort leaving the session stuck on "busy" so the next send bounced with "already processing"; aborting now flips the busy atomic synchronously
+- Fix Codex assistant replies rendering twice when the `item/agentMessage` completion frame arrived on top of the streamed deltas
+- Fix Codex file-change tool badges showing "Edit" for every operation — `PatchChangeKind` is an object discriminated by `type` ("add"/"delete"/"update"), not a bare string
+- Codex `TurnEnd` now carries the per-turn token breakdown (`input/output/cache-read`) captured from `thread/tokenUsage/updated`, so the usage badge stops reading zero for every Codex turn
+- Codex `item/permissions/requestApproval` is answered with the `{permissions, scope}` shape required by the live schema instead of a `{decision}` field that the server silently ignored
 
 ## 0.8.1 — 2026-04-20
 

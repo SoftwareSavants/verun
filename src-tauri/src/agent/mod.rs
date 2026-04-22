@@ -339,6 +339,20 @@ impl CodexRpcItemDecision {
     }
 }
 
+/// Decision shape for `item/permissions/requestApproval`. Unlike the other
+/// approval methods, this one does **not** carry a `decision` enum — the
+/// response is `{permissions, scope}` where `permissions` is a
+/// `GrantedPermissionProfile` object.
+///
+/// Verun only ever declines permission elevation today, which maps to an
+/// empty `permissions` object at `scope = "turn"`. We model it as a dedicated
+/// enum so future affordances (granting filesystem / network access) can
+/// extend this without reshaping every callsite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexRpcPermissionsDecision {
+    Deny,
+}
+
 // ---------------------------------------------------------------------------
 // The trait
 // ---------------------------------------------------------------------------
@@ -564,6 +578,7 @@ pub trait Agent: Send + Sync {
         &self,
         _request_id: i64,
         _thread_id: &str,
+        _turn_id: &str,
     ) -> Result<Vec<u8>, String> {
         Err("agent does not speak Codex app-server JSON-RPC".into())
     }
@@ -584,6 +599,17 @@ pub trait Agent: Send + Sync {
         &self,
         _server_request_id: &serde_json::Value,
         _decision: CodexRpcItemDecision,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent does not speak Codex app-server JSON-RPC".into())
+    }
+
+    /// Reply to `item/permissions/requestApproval`. The response shape is
+    /// `{permissions, scope}` — the "deny" path is an empty permissions
+    /// object, which is what Verun always sends today.
+    fn encode_rpc_permissions_response(
+        &self,
+        _server_request_id: &serde_json::Value,
+        _decision: CodexRpcPermissionsDecision,
     ) -> Result<Vec<u8>, String> {
         Err("agent does not speak Codex app-server JSON-RPC".into())
     }
@@ -916,12 +942,15 @@ mod tests {
                 plan_mode: false,
             };
             assert!(agent.encode_rpc_turn_start(1, &turn).is_err());
-            assert!(agent.encode_rpc_turn_interrupt(1, "t").is_err());
+            assert!(agent.encode_rpc_turn_interrupt(1, "t", "turn-1").is_err());
             assert!(agent
                 .encode_rpc_review_decision_response(&json!(1), CodexRpcDecision::Approved)
                 .is_err());
             assert!(agent
                 .encode_rpc_item_approval_response(&json!(1), CodexRpcItemDecision::Accept)
+                .is_err());
+            assert!(agent
+                .encode_rpc_permissions_response(&json!(1), CodexRpcPermissionsDecision::Deny)
                 .is_err());
         }
     }
@@ -1037,6 +1066,24 @@ mod tests {
         assert_eq!(v["method"], "initialize");
         assert_eq!(v["params"]["clientInfo"]["name"], "verun");
         assert_eq!(v["params"]["clientInfo"]["version"], "0.9.0");
+    }
+
+    #[test]
+    fn codex_encode_initialize_requests_experimental_api_capability() {
+        // codex app-server >= 0.120 rejects `turn/start.collaborationMode`
+        // unless the client negotiated `capabilities.experimentalApi = true`
+        // during `initialize`.
+        let bytes = Codex
+            .encode_rpc_initialize(
+                1,
+                &CodexRpcClientInfo {
+                    name: "verun",
+                    version: "0.9.0",
+                },
+            )
+            .expect("encode initialize");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["params"]["capabilities"]["experimentalApi"], true);
     }
 
     #[test]
@@ -1263,14 +1310,33 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_interrupt_has_thread_id() {
+    fn codex_encode_turn_interrupt_has_thread_and_turn_id() {
+        // Live `codex app-server` rejects `turn/interrupt` without `turnId`
+        // with "Invalid request: missing field turnId". Both ids must be
+        // emitted.
         let bytes = Codex
-            .encode_rpc_turn_interrupt(15, "t-xyz")
+            .encode_rpc_turn_interrupt(15, "t-xyz", "turn-7")
             .expect("encode interrupt");
         let v = parse_rpc_frame(&bytes);
         assert_eq!(v["id"], 15);
         assert_eq!(v["method"], "turn/interrupt");
         assert_eq!(v["params"]["threadId"], "t-xyz");
+        assert_eq!(v["params"]["turnId"], "turn-7");
+    }
+
+    #[test]
+    fn codex_encode_permissions_response_deny_is_empty_permissions() {
+        // Schema says the response wants
+        // `{permissions: GrantedPermissionProfile, scope}`, NOT `{decision}`.
+        // Deny path sends an empty permissions object with `scope: "turn"`.
+        let bytes = Codex
+            .encode_rpc_permissions_response(&json!(42), CodexRpcPermissionsDecision::Deny)
+            .expect("encode permissions");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 42);
+        assert!(v["result"]["decision"].is_null());
+        assert_eq!(v["result"]["permissions"], json!({}));
+        assert_eq!(v["result"]["scope"], "turn");
     }
 
     #[test]

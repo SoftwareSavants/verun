@@ -3,8 +3,8 @@ use super::codex_developer_instructions::{
 };
 use super::{
     Agent, AgentKind, CodexRpcClientInfo, CodexRpcDecision, CodexRpcItemDecision,
-    CodexRpcThreadResumeParams, CodexRpcThreadStartParams, CodexRpcTurnStartParams, InputMode,
-    SessionArgs,
+    CodexRpcPermissionsDecision, CodexRpcThreadResumeParams, CodexRpcThreadStartParams,
+    CodexRpcTurnStartParams, InputMode, SessionArgs,
 };
 use crate::policy::TrustLevel;
 use serde_json::{json, Value};
@@ -169,6 +169,10 @@ impl Agent for Codex {
         request_id: i64,
         client_info: &CodexRpcClientInfo<'_>,
     ) -> Result<Vec<u8>, String> {
+        // `experimentalApi` is required by codex app-server >= 0.120 to
+        // accept `collaborationMode` on `turn/start`. Without it the server
+        // rejects turn/start with:
+        //   "turn/start.collaborationMode requires experimentalApi capability"
         let frame = json!({
             "id": request_id,
             "method": "initialize",
@@ -176,6 +180,9 @@ impl Agent for Codex {
                 "clientInfo": {
                     "name": client_info.name,
                     "version": client_info.version,
+                },
+                "capabilities": {
+                    "experimentalApi": true,
                 },
             },
         });
@@ -290,11 +297,18 @@ impl Agent for Codex {
         &self,
         request_id: i64,
         thread_id: &str,
+        turn_id: &str,
     ) -> Result<Vec<u8>, String> {
+        // codex app-server rejects `turn/interrupt` unless BOTH `threadId` and
+        // `turnId` are present — sending just the thread id returns
+        // `Invalid request: missing field turnId`.
         let frame = json!({
             "id": request_id,
             "method": "turn/interrupt",
-            "params": { "threadId": thread_id },
+            "params": {
+                "threadId": thread_id,
+                "turnId": turn_id,
+            },
         });
         encode_rpc_frame(&frame)
     }
@@ -319,6 +333,27 @@ impl Agent for Codex {
         let frame = json!({
             "id": server_request_id,
             "result": { "decision": decision.as_str() },
+        });
+        encode_rpc_frame(&frame)
+    }
+
+    fn encode_rpc_permissions_response(
+        &self,
+        server_request_id: &Value,
+        decision: CodexRpcPermissionsDecision,
+    ) -> Result<Vec<u8>, String> {
+        // `item/permissions/requestApproval` expects
+        // `{permissions: GrantedPermissionProfile, scope}` — NOT `{decision}`.
+        // The deny path is an empty permissions object.
+        let result = match decision {
+            CodexRpcPermissionsDecision::Deny => json!({
+                "permissions": {},
+                "scope": "turn",
+            }),
+        };
+        let frame = json!({
+            "id": server_request_id,
+            "result": result,
         });
         encode_rpc_frame(&frame)
     }

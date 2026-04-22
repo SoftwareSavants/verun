@@ -691,12 +691,18 @@ pub fn process_codex_rpc_notification(
             .unwrap_or_default(),
 
         // -- Item lifecycle (command / tool / file change / file read) --
+        // Live `codex app-server` (>= 0.120) emits camelCase item types
+        // (`commandExecution`, `agentMessage`, `fileChange`, `fileRead`,
+        // `toolCall`, `toolResult`) and camelCase fields (`aggregatedOutput`,
+        // `exitCode`, `isError`). The snake_case variants are kept as a
+        // transitional alias so replayed transcripts from older CLIs still
+        // render.
         "item/started" => {
             let Some(item) = params.get("item") else {
                 return vec![];
             };
             match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                "command_execution" => vec![OutputItem::ToolStart {
+                "commandExecution" | "command_execution" => vec![OutputItem::ToolStart {
                     tool: "shell".to_string(),
                     input: item
                         .get("command")
@@ -704,7 +710,7 @@ pub fn process_codex_rpc_notification(
                         .unwrap_or("")
                         .to_string(),
                 }],
-                "tool_call" => {
+                "toolCall" | "tool_call" => {
                     let name = item
                         .get("name")
                         .and_then(|n| n.as_str())
@@ -727,23 +733,20 @@ pub fn process_codex_rpc_notification(
                 return vec![];
             };
             match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                "agent_message" => item
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .map(|text| {
-                        vec![OutputItem::Text {
-                            text: text.to_string(),
-                        }]
-                    })
-                    .unwrap_or_default(),
-                "command_execution" => {
+                // `agentMessage` already streams via `item/agentMessage/delta`;
+                // re-emitting the final text here would render the assistant
+                // reply twice. Swallow the completion frame.
+                "agentMessage" | "agent_message" => vec![],
+                "commandExecution" | "command_execution" => {
                     let output = item
-                        .get("aggregated_output")
+                        .get("aggregatedOutput")
+                        .or_else(|| item.get("aggregated_output"))
                         .and_then(|o| o.as_str())
                         .unwrap_or("")
                         .to_string();
                     let is_error = item
-                        .get("exit_code")
+                        .get("exitCode")
+                        .or_else(|| item.get("exit_code"))
                         .and_then(|c| c.as_i64())
                         .map(|c| c != 0)
                         .unwrap_or(false);
@@ -752,7 +755,7 @@ pub fn process_codex_rpc_notification(
                         is_error,
                     }]
                 }
-                "tool_call" => {
+                "toolCall" | "tool_call" => {
                     let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
                     let args = item
                         .get("arguments")
@@ -763,14 +766,15 @@ pub fn process_codex_rpc_notification(
                         input: args,
                     }]
                 }
-                "tool_result" => {
+                "toolResult" | "tool_result" => {
                     let output = item
                         .get("output")
                         .and_then(|o| o.as_str())
                         .unwrap_or("")
                         .to_string();
                     let is_error = item
-                        .get("is_error")
+                        .get("isError")
+                        .or_else(|| item.get("is_error"))
                         .and_then(|e| e.as_bool())
                         .unwrap_or(false);
                     vec![OutputItem::ToolResult {
@@ -778,8 +782,8 @@ pub fn process_codex_rpc_notification(
                         is_error,
                     }]
                 }
-                "file_change" => format_codex_file_change(item),
-                "file_read" => {
+                "fileChange" | "file_change" => format_codex_file_change(item),
+                "fileRead" | "file_read" => {
                     let path = item
                         .get("path")
                         .and_then(|p| p.as_str())
@@ -904,7 +908,13 @@ fn format_codex_file_change(item: &serde_json::Value) -> Vec<OutputItem> {
             .and_then(|p| p.as_str())
             .unwrap_or("(unknown)")
             .to_string();
-        let kind = change.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        // `PatchChangeKind` is an object discriminated by `type`
+        // (`{"type":"add"}` / `{"type":"delete"}` / `{"type":"update", move_path?}`),
+        // not a bare string. Older CLIs emitted a string; accept both.
+        let kind = change
+            .get("kind")
+            .and_then(|k| k.get("type").and_then(|t| t.as_str()).or_else(|| k.as_str()))
+            .unwrap_or("");
         let tool = match kind {
             "add" => "Write",
             "delete" => "Delete",
@@ -1620,6 +1630,11 @@ pub async fn stream_and_capture_rpc(
     let mut last_flush = Instant::now();
     let mut total_persisted: usize = 0;
     let mut last_error: Option<String> = None;
+    // `turn/completed` from `codex app-server` does not carry token usage —
+    // usage arrives via the separate `thread/tokenUsage/updated` notification
+    // that fires throughout the turn. Cache the most recent breakdown so we
+    // can populate the next `TurnEnd` before emitting it to the UI / db.
+    let mut last_token_usage: Option<CodexTokenUsage> = None;
     let _ = task_id; // reserved for snapshot hook parity with legacy path
 
     loop {
@@ -1633,7 +1648,22 @@ pub async fn stream_and_capture_rpc(
                     crate::agent::codex_rpc::CodexRpcEvent::Notification { method, params } => {
                         eprintln!("[verun][codex-rpc][{session_id}] <- {method}");
 
-                        let items = process_codex_rpc_notification(&method, &params);
+                        // Cache the most recent per-turn token breakdown so
+                        // the next `turn/completed` can stamp the values onto
+                        // the emitted `TurnEnd`. `last` is the current turn's
+                        // usage — `total` is the whole thread.
+                        if method == "thread/tokenUsage/updated" {
+                            if let Some(usage) = extract_codex_token_usage(&params) {
+                                last_token_usage = Some(usage);
+                            }
+                            continue;
+                        }
+
+                        let raw_items = process_codex_rpc_notification(&method, &params);
+                        let items: Vec<OutputItem> = raw_items
+                            .into_iter()
+                            .map(|it| patch_turn_end_with_usage(it, &last_token_usage))
+                            .collect();
                         let mut has_immediate = false;
                         let mut is_turn_end = false;
 
@@ -1674,6 +1704,9 @@ pub async fn stream_and_capture_rpc(
                                 },
                             );
                             last_error = None;
+                            // Reset cached usage so the next turn's
+                            // `TurnEnd` reflects that turn only.
+                            last_token_usage = None;
                             busy.store(false, Ordering::SeqCst);
                         }
 
@@ -2075,6 +2108,75 @@ fn epoch_ms() -> i64 {
         .as_millis() as i64
 }
 
+/// Per-turn token accounting captured from `thread/tokenUsage/updated`.
+/// `cached_input_tokens` is the "cache read" count reported by the upstream
+/// model — Codex does not currently report a separate "cache write" number,
+/// so that field stays `None` on emitted `TurnEnd` items.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CodexTokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
+}
+
+/// Pull the per-turn usage (`tokenUsage.last`) out of a
+/// `thread/tokenUsage/updated` params object. Returns `None` if the shape is
+/// unrecognised so the caller can simply skip the frame.
+pub fn extract_codex_token_usage(params: &serde_json::Value) -> Option<CodexTokenUsage> {
+    let last = params.pointer("/tokenUsage/last")?;
+    let input_tokens = last
+        .get("inputTokens")
+        .or_else(|| last.get("input_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output_tokens = last
+        .get("outputTokens")
+        .or_else(|| last.get("output_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cached_input_tokens = last
+        .get("cachedInputTokens")
+        .or_else(|| last.get("cached_input_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    Some(CodexTokenUsage {
+        input_tokens,
+        output_tokens,
+        cached_input_tokens,
+    })
+}
+
+/// Stamp the most recent `thread/tokenUsage/updated` breakdown onto a
+/// `TurnEnd` item. Leaves non-`TurnEnd` items untouched.
+pub fn patch_turn_end_with_usage(
+    item: OutputItem,
+    usage: &Option<CodexTokenUsage>,
+) -> OutputItem {
+    match (item, usage) {
+        (
+            OutputItem::TurnEnd {
+                status,
+                cost,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                error,
+            },
+            Some(u),
+        ) => OutputItem::TurnEnd {
+            status,
+            cost,
+            input_tokens: input_tokens.or(Some(u.input_tokens)),
+            output_tokens: output_tokens.or(Some(u.output_tokens)),
+            cache_read_tokens: cache_read_tokens.or(Some(u.cached_input_tokens)),
+            cache_write_tokens,
+            error,
+        },
+        (item, _) => item,
+    }
+}
+
 /// True when a Codex JSON-RPC server-originated request is one of the
 /// approval prompts Verun routes through `PendingApprovals`.
 pub fn is_codex_approval_method(method: &str) -> bool {
@@ -2132,15 +2234,25 @@ pub fn encode_codex_approval_response(
             };
             Some(agent.encode_rpc_review_decision_response(server_req_id, decision))
         }
-        "item/commandExecution/requestApproval"
-        | "item/fileChange/requestApproval"
-        | "item/permissions/requestApproval" => {
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
             let decision = if allow {
                 crate::agent::CodexRpcItemDecision::Accept
             } else {
                 crate::agent::CodexRpcItemDecision::Decline
             };
             Some(agent.encode_rpc_item_approval_response(server_req_id, decision))
+        }
+        "item/permissions/requestApproval" => {
+            // Live schema says this response wants
+            // `{permissions: GrantedPermissionProfile, scope}` — NOT
+            // `{decision: "accept"|"decline"}`. Verun has no UI for granting
+            // scoped paths / network yet, so only the deny path is wired up:
+            // "allow" falls through to deny so the request does not hang.
+            let _ = allow; // granted-permission UI not wired yet
+            Some(agent.encode_rpc_permissions_response(
+                server_req_id,
+                crate::agent::CodexRpcPermissionsDecision::Deny,
+            ))
         }
         _ => None,
     }
@@ -2548,10 +2660,11 @@ mod tests {
 
     #[test]
     fn rpc_item_started_command_execution_becomes_toolstart() {
+        // Live app-server emits camelCase item types.
         let params = serde_json::json!({
             "item": {
                 "id": "i1",
-                "type": "command_execution",
+                "type": "commandExecution",
                 "command": "ls -la",
             },
             "threadId": "t",
@@ -2569,22 +2682,12 @@ mod tests {
     }
 
     #[test]
-    fn rpc_item_completed_agent_message_becomes_text() {
+    fn rpc_item_started_command_execution_snake_case_alias_still_works() {
         let params = serde_json::json!({
-            "item": {
-                "id": "i2",
-                "type": "agent_message",
-                "text": "All done.",
-            },
-            "threadId": "t",
-            "turnId": "u",
+            "item": { "id": "i1", "type": "command_execution", "command": "ls" },
         });
-        let items = process_codex_rpc_notification("item/completed", &params);
+        let items = process_codex_rpc_notification("item/started", &params);
         assert_eq!(items.len(), 1);
-        match &items[0] {
-            OutputItem::Text { text } => assert_eq!(text, "All done."),
-            other => panic!("expected Text, got {other:?}"),
-        }
     }
 
     #[test]
@@ -2592,9 +2695,9 @@ mod tests {
         let params = serde_json::json!({
             "item": {
                 "id": "i3",
-                "type": "command_execution",
-                "aggregated_output": "bash: bad\n",
-                "exit_code": 1,
+                "type": "commandExecution",
+                "aggregatedOutput": "bash: bad\n",
+                "exitCode": 1,
             },
             "threadId": "t",
             "turnId": "u",
@@ -2612,11 +2715,15 @@ mod tests {
 
     #[test]
     fn rpc_item_completed_file_change_formats_changes() {
+        // Live schema: `kind` is `PatchChangeKind`, an object discriminated
+        // by `type`. The older string form is still accepted as a
+        // transitional alias; the object form must also produce the right
+        // tool (`Write` for "add", `Edit` for "update", `Delete`).
         let params = serde_json::json!({
             "item": {
                 "id": "i4",
-                "type": "file_change",
-                "changes": [{"path": "/tmp/x.rs", "kind": "add"}],
+                "type": "fileChange",
+                "changes": [{"path": "/tmp/x.rs", "kind": {"type": "add"}}],
                 "status": "completed",
             },
             "threadId": "t",
@@ -2627,6 +2734,125 @@ mod tests {
         match &items[0] {
             OutputItem::ToolStart { tool, .. } => assert_eq!(tool, "Write"),
             other => panic!("expected ToolStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_item_completed_file_change_kind_update_object_is_edit() {
+        let params = serde_json::json!({
+            "item": {
+                "id": "i5",
+                "type": "fileChange",
+                "changes": [{"path": "/tmp/y.rs", "kind": {"type": "update"}}],
+                "status": "completed",
+            },
+        });
+        let items = process_codex_rpc_notification("item/completed", &params);
+        match &items[0] {
+            OutputItem::ToolStart { tool, .. } => assert_eq!(tool, "Edit"),
+            other => panic!("expected ToolStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_item_completed_file_change_kind_delete_object_is_delete() {
+        let params = serde_json::json!({
+            "item": {
+                "id": "i6",
+                "type": "fileChange",
+                "changes": [{"path": "/tmp/z.rs", "kind": {"type": "delete"}}],
+                "status": "completed",
+            },
+        });
+        let items = process_codex_rpc_notification("item/completed", &params);
+        match &items[0] {
+            OutputItem::ToolStart { tool, .. } => assert_eq!(tool, "Delete"),
+            other => panic!("expected ToolStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_item_completed_agent_message_is_swallowed() {
+        // `item/agentMessage/delta` already streams this text; re-emitting on
+        // completion would render the same assistant reply twice.
+        let params = serde_json::json!({
+            "item": {
+                "id": "a1",
+                "type": "agentMessage",
+                "text": "Hello world",
+            },
+        });
+        let items = process_codex_rpc_notification("item/completed", &params);
+        assert!(items.is_empty(), "agentMessage must not double-emit");
+    }
+
+    #[test]
+    fn extract_codex_token_usage_reads_last_breakdown() {
+        let params = serde_json::json!({
+            "threadId": "t",
+            "turnId": "u",
+            "tokenUsage": {
+                "last": {
+                    "inputTokens": 120,
+                    "outputTokens": 45,
+                    "cachedInputTokens": 10,
+                    "reasoningOutputTokens": 0,
+                    "totalTokens": 165,
+                },
+                "total": {
+                    "inputTokens": 999,
+                    "outputTokens": 999,
+                    "cachedInputTokens": 999,
+                    "reasoningOutputTokens": 999,
+                    "totalTokens": 999,
+                },
+            },
+        });
+        let u = extract_codex_token_usage(&params).expect("usage");
+        assert_eq!(u.input_tokens, 120);
+        assert_eq!(u.output_tokens, 45);
+        assert_eq!(u.cached_input_tokens, 10);
+    }
+
+    #[test]
+    fn patch_turn_end_with_usage_fills_in_missing_fields() {
+        let usage = Some(CodexTokenUsage {
+            input_tokens: 120,
+            output_tokens: 45,
+            cached_input_tokens: 10,
+        });
+        let base = OutputItem::TurnEnd {
+            status: "completed".into(),
+            cost: None,
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            error: None,
+        };
+        match patch_turn_end_with_usage(base, &usage) {
+            OutputItem::TurnEnd {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                ..
+            } => {
+                assert_eq!(input_tokens, Some(120));
+                assert_eq!(output_tokens, Some(45));
+                assert_eq!(cache_read_tokens, Some(10));
+            }
+            other => panic!("expected TurnEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn patch_turn_end_preserves_non_turn_end_items() {
+        let item = OutputItem::Text {
+            text: "hi".into(),
+        };
+        match patch_turn_end_with_usage(item, &None) {
+            OutputItem::Text { text } => assert_eq!(text, "hi"),
+            other => panic!("expected Text, got {other:?}"),
         }
     }
 
@@ -2836,7 +3062,9 @@ mod tests {
     }
 
     #[test]
-    fn encode_codex_approval_deny_maps_to_decline_for_item_method() {
+    fn encode_codex_approval_permissions_deny_sends_empty_permissions() {
+        // `item/permissions/requestApproval` expects `{permissions, scope}`,
+        // not `{decision}`. Deny = empty permissions at turn scope.
         let agent = crate::agent::AgentKind::Codex.implementation();
         let bytes = encode_codex_approval_response(
             &*agent,
@@ -2847,7 +3075,24 @@ mod tests {
         .expect("method recognised")
         .expect("encoder ok");
         let s = String::from_utf8(bytes).unwrap();
-        assert!(s.contains("\"decision\":\"decline\""), "{s}");
+        assert!(!s.contains("\"decision\""), "{s}");
+        assert!(s.contains("\"permissions\":{}"), "{s}");
+        assert!(s.contains("\"scope\":\"turn\""), "{s}");
+    }
+
+    #[test]
+    fn encode_codex_approval_item_command_allow_maps_to_accept() {
+        let agent = crate::agent::AgentKind::Codex.implementation();
+        let bytes = encode_codex_approval_response(
+            &*agent,
+            "item/commandExecution/requestApproval",
+            &serde_json::json!("z"),
+            "allow",
+        )
+        .expect("method recognised")
+        .expect("encoder ok");
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.contains("\"decision\":\"accept\""), "{s}");
     }
 
     #[test]
