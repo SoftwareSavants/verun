@@ -1,12 +1,11 @@
 import { Component, Show, onMount, onCleanup, createSignal, createEffect } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
-import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, setAddProjectPath, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
 import { activeTasksForProject, taskById } from '../store/tasks'
@@ -17,11 +16,6 @@ import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, main
 import { rightPanelTab, setRightPanelTab, setShowQuickOpen, setFocusSearchRequest } from '../store/ui'
 import { seedSearchQuery } from '../store/workspaceSearch'
 import { GlobalCommandPalette, setShowGlobalPalette } from './GlobalCommandPalette'
-
-async function pickAndAddProject() {
-  const selected = await openDialog({ directory: true, multiple: false })
-  if (selected) setAddProjectPath(selected as string)
-}
 
 export const Layout: Component = () => {
   const [dragging, setDragging] = createSignal(false)

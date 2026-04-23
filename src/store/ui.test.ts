@@ -4,6 +4,11 @@ vi.mock('../lib/ipc', () => ({
   openTaskWindow: vi.fn(),
 }))
 
+const openDialogMock = vi.hoisted(() => vi.fn())
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  open: openDialogMock,
+}))
+
 import {
   newTaskProjectId,
   setNewTaskProjectId,
@@ -14,6 +19,9 @@ import {
   setSelectedTaskId,
   selectedProjectId,
   setSelectedProjectId,
+  addProjectPath,
+  setAddProjectPath,
+  pickAndAddProject,
 } from './ui'
 import * as ipc from '../lib/ipc'
 
@@ -61,5 +69,25 @@ describe('focusOrSelectTask', () => {
     expect(ipc.openTaskWindow).not.toHaveBeenCalled()
     expect(selectedTaskId()).toBe('t-002')
     expect(selectedProjectId()).toBe('p-002')
+  })
+})
+
+describe('pickAndAddProject', () => {
+  beforeEach(() => {
+    openDialogMock.mockReset()
+    setAddProjectPath(null)
+  })
+
+  test('sets addProjectPath with the picked directory so AddProjectDialog opens', async () => {
+    openDialogMock.mockResolvedValueOnce('/tmp/my-repo')
+    await pickAndAddProject()
+    expect(openDialogMock).toHaveBeenCalledWith({ directory: true, multiple: false })
+    expect(addProjectPath()).toBe('/tmp/my-repo')
+  })
+
+  test('does nothing when the user cancels the native picker', async () => {
+    openDialogMock.mockResolvedValueOnce(null)
+    await pickAndAddProject()
+    expect(addProjectPath()).toBeNull()
   })
 })
