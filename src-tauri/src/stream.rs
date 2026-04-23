@@ -1810,44 +1810,19 @@ pub async fn stream_and_capture_rpc(
                             "[verun][codex-rpc][{session_id}] <- req {method} id={id}"
                         );
                         if !is_codex_approval_method(&method) {
-                            // Unknown server-originated request Verun has no
-                            // UI for. Send back a shape the CLI treats as
-                            // "user declined to answer" rather than a
-                            // protocol error, so the turn proceeds cleanly:
-                            //   - `item/tool/requestUserInput` wants
-                            //     `{answers: []}` (phase 1 auto-deny until
-                            //     Verun grows a multi-question UI).
-                            //   - Anything else falls back to JSON-RPC
-                            //     method-not-found (-32601).
-                            let (frame, reason) = if method == "item/tool/requestUserInput" {
-                                // `ToolRequestUserInputResponse.answers` is a
-                                // `Record<questionId, {answers: string[]}>`,
-                                // not an array. Auto-deny is an empty map
-                                // (matches t3code's
-                                // `CodexSessionRuntime.ts`:`toCodexUserInputAnswers`
-                                // for zero questions).
-                                (
-                                    serde_json::json!({
-                                        "id": id,
-                                        "result": { "answers": {} },
-                                    }),
-                                    "auto-deny with empty answers map",
-                                )
-                            } else {
-                                (
-                                    serde_json::json!({
-                                        "id": id,
-                                        "error": {
-                                            "code": -32601,
-                                            "message": format!("Method not supported: {method}"),
-                                        },
-                                    }),
-                                    "method-not-found",
-                                )
-                            };
+                            // Truly unknown server-originated request: reply
+                            // JSON-RPC method-not-found so the CLI doesn't
+                            // sit blocked on a response that never arrives.
                             eprintln!(
-                                "[verun][codex-rpc][{session_id}] unhandled server request method: {method} — replying {reason}"
+                                "[verun][codex-rpc][{session_id}] unhandled server request method: {method} — replying method-not-found"
                             );
+                            let frame = serde_json::json!({
+                                "id": id,
+                                "error": {
+                                    "code": -32601,
+                                    "message": format!("Method not supported: {method}"),
+                                },
+                            });
                             if let Ok(mut bytes) = serde_json::to_vec(&frame) {
                                 bytes.push(b'\n');
                                 let mut guard = stdin.lock().await;
@@ -1889,10 +1864,11 @@ pub async fn stream_and_capture_rpc(
                         let responder_id = id.clone();
                         let responder_request_id = request_id.clone();
                         tokio::spawn(async move {
-                            let behavior = match rx.await {
-                                Ok(resp) => resp.behavior,
-                                Err(_) => "deny".to_string(),
-                            };
+                            let response = rx.await.unwrap_or_else(|_| ApprovalResponse {
+                                behavior: "deny".to_string(),
+                                updated_input: None,
+                                message: None,
+                            });
                             responder_pending.remove(&responder_request_id);
                             responder_meta.remove(&responder_request_id);
                             let responder_agent = responder_agent_kind.implementation();
@@ -1900,7 +1876,7 @@ pub async fn stream_and_capture_rpc(
                                 &*responder_agent,
                                 &responder_method,
                                 &responder_id,
-                                &behavior,
+                                &response,
                             ) {
                                 let mut guard = responder_stdin.lock().await;
                                 if let Some(writer) = guard.as_mut() {
@@ -2377,6 +2353,7 @@ pub fn is_codex_approval_method(method: &str) -> bool {
             | "item/commandExecution/requestApproval"
             | "item/fileChange/requestApproval"
             | "item/permissions/requestApproval"
+            | "item/tool/requestUserInput"
     )
 }
 
@@ -2394,15 +2371,79 @@ pub fn build_codex_approval_entry(
         "applyPatchApproval" | "item/fileChange/requestApproval" => "Edit",
         "execCommandApproval" | "item/commandExecution/requestApproval" => "Bash",
         "item/permissions/requestApproval" => "Permission",
+        "item/tool/requestUserInput" => "AskUserQuestion",
         _ => "Unknown",
     }
     .to_string();
+    let tool_input = if method == "item/tool/requestUserInput" {
+        build_codex_user_input_tool_input(params)
+    } else {
+        params.clone()
+    };
     PendingApprovalEntry {
         request_id: request_id.to_string(),
         session_id: session_id.to_string(),
         tool_name,
-        tool_input: params.clone(),
+        tool_input,
     }
+}
+
+/// Translate `item/tool/requestUserInput` params into the Claude
+/// `AskUserQuestion` `tool_input` shape so the existing UI can render it
+/// verbatim: `{ questions: [{ question, header?, options?: [{label, description?}], multiSelect: false }] }`.
+/// Preserves the Codex question id per question under `_codexQuestionIds`
+/// (keyed by question text) so the responder can build the
+/// `Record<questionId, {answers: string[]}>` payload without a second lookup.
+fn build_codex_user_input_tool_input(params: &serde_json::Value) -> serde_json::Value {
+    let questions_in = params
+        .get("questions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut questions_out: Vec<serde_json::Value> = Vec::with_capacity(questions_in.len());
+    let mut ids: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    for q in &questions_in {
+        let question = q.get("question").and_then(|v| v.as_str()).unwrap_or("");
+        if question.is_empty() {
+            continue;
+        }
+        let header = q.get("header").and_then(|v| v.as_str());
+        let id = q.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let options_out = q
+            .get("options")
+            .and_then(|v| v.as_array())
+            .map(|opts| {
+                opts.iter()
+                    .filter_map(|o| {
+                        let label = o.get("label").and_then(|v| v.as_str())?;
+                        let description = o.get("description").and_then(|v| v.as_str());
+                        let mut m = serde_json::Map::new();
+                        m.insert("label".into(), serde_json::Value::String(label.into()));
+                        if let Some(d) = description {
+                            m.insert("description".into(), serde_json::Value::String(d.into()));
+                        }
+                        Some(serde_json::Value::Object(m))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut qm = serde_json::Map::new();
+        qm.insert(
+            "question".into(),
+            serde_json::Value::String(question.to_string()),
+        );
+        if let Some(h) = header {
+            qm.insert("header".into(), serde_json::Value::String(h.to_string()));
+        }
+        qm.insert("options".into(), serde_json::Value::Array(options_out));
+        qm.insert("multiSelect".into(), serde_json::Value::Bool(false));
+        questions_out.push(serde_json::Value::Object(qm));
+        ids.insert(question.to_string(), serde_json::Value::String(id.into()));
+    }
+    serde_json::json!({
+        "questions": questions_out,
+        "_codexQuestionIds": serde_json::Value::Object(ids),
+    })
 }
 
 /// Encode the JSON-RPC response frame for a Codex server-originated approval.
@@ -2412,8 +2453,9 @@ pub fn encode_codex_approval_response(
     agent: &dyn crate::agent::Agent,
     method: &str,
     server_req_id: &serde_json::Value,
-    behavior: &str,
+    response: &ApprovalResponse,
 ) -> Option<Result<Vec<u8>, String>> {
+    let behavior = response.behavior.as_str();
     let allow = behavior == "allow";
     match method {
         "applyPatchApproval" | "execCommandApproval" => {
@@ -2444,8 +2486,47 @@ pub fn encode_codex_approval_response(
                 crate::agent::CodexRpcPermissionsDecision::Deny,
             ))
         }
+        "item/tool/requestUserInput" => Some(encode_codex_user_input_response(
+            server_req_id,
+            response.updated_input.as_ref(),
+        )),
         _ => None,
     }
+}
+
+/// Translate the frontend's `answerQuestion` payload (question-text keyed)
+/// back into Codex's `ToolRequestUserInputResponse` shape
+/// (question-id keyed, `{answers: string[]}` per entry). The question id
+/// side-channel is `updated_input._codexQuestionIds` inserted by
+/// `build_codex_user_input_tool_input`.
+fn encode_codex_user_input_response(
+    server_req_id: &serde_json::Value,
+    updated_input: Option<&serde_json::Value>,
+) -> Result<Vec<u8>, String> {
+    let mut out: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    if let Some(input) = updated_input {
+        let answers = input.get("answers").and_then(|v| v.as_object());
+        let ids = input.get("_codexQuestionIds").and_then(|v| v.as_object());
+        if let (Some(answers), Some(ids)) = (answers, ids) {
+            for (question_text, answer_val) in answers {
+                let Some(answer_text) = answer_val.as_str() else { continue };
+                let Some(id_val) = ids.get(question_text) else { continue };
+                let Some(id) = id_val.as_str() else { continue };
+                out.insert(
+                    id.to_string(),
+                    serde_json::json!({ "answers": [answer_text] }),
+                );
+            }
+        }
+    }
+    let frame = serde_json::json!({
+        "id": server_req_id,
+        "result": { "answers": serde_json::Value::Object(out) },
+    });
+    let mut bytes = serde_json::to_vec(&frame)
+        .map_err(|e| format!("serialize user input response: {e}"))?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -3328,7 +3409,7 @@ mod tests {
             &*agent,
             "execCommandApproval",
             &serde_json::json!("srv-1"),
-            "allow",
+            &approval_response("allow"),
         )
         .expect("method recognised")
         .expect("encoder ok");
@@ -3344,7 +3425,7 @@ mod tests {
             &*agent,
             "applyPatchApproval",
             &serde_json::json!(42),
-            "deny",
+            &approval_response("deny"),
         )
         .expect("method recognised")
         .expect("encoder ok");
@@ -3359,7 +3440,7 @@ mod tests {
             &*agent,
             "item/fileChange/requestApproval",
             &serde_json::json!("x"),
-            "allow",
+            &approval_response("allow"),
         )
         .expect("method recognised")
         .expect("encoder ok");
@@ -3376,7 +3457,7 @@ mod tests {
             &*agent,
             "item/permissions/requestApproval",
             &serde_json::json!("y"),
-            "deny",
+            &approval_response("deny"),
         )
         .expect("method recognised")
         .expect("encoder ok");
@@ -3393,7 +3474,7 @@ mod tests {
             &*agent,
             "item/commandExecution/requestApproval",
             &serde_json::json!("z"),
-            "allow",
+            &approval_response("allow"),
         )
         .expect("method recognised")
         .expect("encoder ok");
@@ -3408,8 +3489,107 @@ mod tests {
             &*agent,
             "not/an/approval",
             &serde_json::json!(1),
-            "allow",
+            &approval_response("allow"),
         );
         assert!(out.is_none());
+    }
+
+    fn approval_response(behavior: &str) -> ApprovalResponse {
+        ApprovalResponse {
+            behavior: behavior.to_string(),
+            updated_input: None,
+            message: None,
+        }
+    }
+
+    #[test]
+    fn codex_approval_entry_maps_request_user_input_to_ask_user_question() {
+        let entry = build_codex_approval_entry(
+            "session-1",
+            "req-42",
+            "item/tool/requestUserInput",
+            &serde_json::json!({
+                "itemId": "it-1",
+                "threadId": "t-1",
+                "turnId": "tr-1",
+                "questions": [
+                    {
+                        "id": "q1",
+                        "question": "Pick a framework",
+                        "header": "Frontend",
+                        "options": [
+                            { "label": "Solid", "description": "Fine-grained reactive" },
+                            { "label": "React" },
+                        ],
+                    }
+                ],
+            }),
+        );
+        assert_eq!(entry.tool_name, "AskUserQuestion");
+        let qs = entry
+            .tool_input
+            .get("questions")
+            .and_then(|v| v.as_array())
+            .expect("questions array");
+        assert_eq!(qs.len(), 1);
+        assert_eq!(qs[0].get("question").and_then(|v| v.as_str()), Some("Pick a framework"));
+        assert_eq!(qs[0].get("header").and_then(|v| v.as_str()), Some("Frontend"));
+        assert_eq!(qs[0].get("multiSelect").and_then(|v| v.as_bool()), Some(false));
+        let opts = qs[0].get("options").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(opts.len(), 2);
+        assert_eq!(opts[0].get("label").and_then(|v| v.as_str()), Some("Solid"));
+        assert_eq!(
+            opts[0].get("description").and_then(|v| v.as_str()),
+            Some("Fine-grained reactive"),
+        );
+        let ids = entry
+            .tool_input
+            .get("_codexQuestionIds")
+            .and_then(|v| v.as_object())
+            .unwrap();
+        assert_eq!(
+            ids.get("Pick a framework").and_then(|v| v.as_str()),
+            Some("q1"),
+        );
+    }
+
+    #[test]
+    fn encode_codex_user_input_response_maps_answers_back_to_question_ids() {
+        let agent = crate::agent::AgentKind::Codex.implementation();
+        let response = ApprovalResponse {
+            behavior: "allow".to_string(),
+            updated_input: Some(serde_json::json!({
+                "answers": { "Pick a framework": "Solid" },
+                "_codexQuestionIds": { "Pick a framework": "q1" },
+            })),
+            message: None,
+        };
+        let bytes = encode_codex_approval_response(
+            &*agent,
+            "item/tool/requestUserInput",
+            &serde_json::json!(7),
+            &response,
+        )
+        .expect("method recognised")
+        .expect("encoder ok");
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.contains("\"id\":7"), "{s}");
+        assert!(s.contains("\"q1\":{\"answers\":[\"Solid\"]}"), "{s}");
+    }
+
+    #[test]
+    fn encode_codex_user_input_response_empty_when_no_answers() {
+        let agent = crate::agent::AgentKind::Codex.implementation();
+        let bytes = encode_codex_approval_response(
+            &*agent,
+            "item/tool/requestUserInput",
+            &serde_json::json!("s"),
+            &approval_response("deny"),
+        )
+        .expect("method recognised")
+        .expect("encoder ok");
+        let s = String::from_utf8(bytes).unwrap();
+        // Empty map, not array — matches `Record<questionId, {answers}>` schema
+        assert!(s.contains("\"answers\":{}"), "{s}");
     }
 }
