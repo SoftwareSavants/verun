@@ -1,41 +1,67 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 - 2026-04-23
 
-- Codex `item/tool/requestUserInput` now routes through the same `AskUserQuestion` approval UI Claude uses — each question renders with its header, pick list, and optional description, and submitting answers maps back onto Codex's `Record<questionId, {answers: string[]}>` response shape so the turn proceeds with the user's choices instead of being auto-denied; other unrecognized server-originated JSON-RPC requests still get a `-32601` method-not-found response so the process doesn't sit blocked
-- Codex plans no longer render as raw chat text — deltas stream live into the same Claude-style Plan Review overlay (approve / request changes), and on completion the plan is persisted to `<worktree>/.verun/plans/plan-<ts>-<id>.md` so reopening the session restores the viewer via the existing `planFilePath` flow
-- Fix steer (cmd+enter while busy) silently failing: the inline abort+send raced the in-flight interrupt and hit Rust's busy guard, leaving Claude running while the UI flipped to idle; steer now queues the new message as an armed step and lets the `session-aborted` listener dispatch it after graceful shutdown
-- Hook and start-command inputs (Settings and Add Project dialog) now autocomplete `$VERUN_*` env vars - typing `$` surfaces `$VERUN_REPO_PATH` and `$VERUN_PORT_0..9` with descriptions so you don't have to remember the exact names
-- Opening a file in a gitignored folder (e.g. `node_modules`, `dist`, `.next`) no longer auto-expands and reveals it in the file tree sidebar — reveal is gated on a cached `git check-ignore` lookup per task, so auto-open flows (Find References, Go to Definition, tab switching, global search) stay focused on source files while manual reveals still work
-- Find References (Shift+F12 / context menu) now opens a VS Code-style peek overlay anchored at the cursor instead of a bare unstyled panel at the bottom of the editor - references are grouped by file, highlight the matched identifier, keyboard-navigate with Arrow/Home/End/Enter, Escape to close
-- Code editor, diff editor, search panel, rename widget, and hover tooltip now follow the active theme in light mode instead of baking in One Dark colors - active line, gutter, selection, tooltips, and syntax highlighting switch palettes with `[data-theme]` via new `--syntax-variable` token; diff editor's collapsed "X unchanged lines" pill now also flips with the theme instead of showing the `@codemirror/merge` light-mode gradient in dark mode
-- Fix "Add Project" button in the empty TaskPanel skipping the Add Project dialog: the onboarding button now routes through the shared picker (like Sidebar and Cmd+O), so hooks/start-command config is shown before the New Task dialog opens
-- Cmd+T on a selected task opens a centered model picker to start a new session with a chosen agent + model (arrow keys + Enter, type to filter); models within each provider are ordered by most-recently-used across all sessions, capped at 4 visible with a "Show N more" expander, and the currently active model is pinned to the top with a "Current" badge; the "Current" label and default model resolve from the selected session (not the task's original agent), and "Fix in new session" in the Actions tab uses the same picker so you pick the model before the fix prompt is sent
-- New Actions tab in the right sidebar shows live GitHub Actions runs for the current branch: per-workflow grouping, expandable jobs, status icons (queued / running / success / failure / cancelled / skipped), 10s polling while any run is active, one-click "Fix in this session" or "Fix in new session" that sends a structured failure summary (failing step + annotated errors with file:line:col) plus a `gh run view --log-failed --job <id>` command the agent can run for full logs, plus re-run and cancel from the UI; the existing toolbar CI chip now opens the tab instead of a dropdown. Expanded job logs render as a flat, timestamp-prefixed list that auto-scrolls to the first error on open; the "N err" counter in the toolbar is itself the scroll-to-first-error trigger. Toolbar adds line wrap, copy, and fullscreen.
-- Import/Export `.verun.json` now let you pick the location: the main repo or any task's worktree (previously import always read from main repo and export always wrote to the first task)
-- Fix light-mode regressions: hook textareas (Settings + Add Project dialog), Cmd+P file picker, `>` command palette, and breadcrumb dropdown no longer bake in dark-theme hex colors - they now follow the active theme palette
-- Trust level changes apply mid-run: editing the policy during an in-flight turn now takes effect on the next tool-approval check instead of waiting for the next send_message
-- Task switching stays responsive across large workspaces by virtualizing diagnostics and source-control lists, caching chat block rebuilds, and avoiding repeated full-list scans in the file tree, tabs, and sidebar
-- `+` menu now surfaces closed sessions for the task under a "Recent" section - click one to restore it as a tab with full transcript replay; `+` button sticks to the left edge while the tab bar scrolls horizontally (#100)
-- File tree treats symlinked directories as directories so they expand on click instead of appearing as dead entries (broken symlinks stay non-expandable)
-- Notifications: clicking a banner now navigates to the source task/session, and the Notification Center is cleared when the app regains focus - dropped the `notify-rust` fallback so the native macOS `UNUserNotificationCenter` backend is used in release builds (dev builds no longer emit notifications, which matches expectations - they previously appeared as Terminal.app and swallowed click data anyway)
-- Fix terminals vanishing when opening a task in a detached window: Rust now keeps a per-PTY 256KB ring buffer and exposes `pty_list_for_task`, so a new window discovers existing PTYs, replays scrollback into xterm (TUIs like vim and Claude Code redraw correctly), and dedupes live events against the snapshot by seq number
-- Terminal panel open/closed state now persists per task, so a detached window inherits the same visibility the main window had
-- Closing a detached task window re-syncs the main window's terminal list against Rust, so PTYs spawned or closed in the other window reappear / disappear correctly when the task comes back
-- Fix "No coding agent CLIs found" toast firing at startup on macOS when agents are installed in nvm/homebrew/~/.local/bin: PATH reload now completes before agent detection runs (was racing in parallel threads, so detection often saw the stripped GUI PATH)
-- Codex now runs against a persistent `codex app-server` JSON-RPC process instead of respawning `codex exec --json` per turn - the CLI stays alive across turns and the resume id is persisted as soon as `thread/started` arrives
-- Codex Plan Mode: the plan toggle is enabled for Codex sessions and sends `collaborationMode: "plan"` on `turn/start`; `<proposed_plan>` blocks and `turn/plan/updated` events render as a Proposed plan card with per-step status
-- Codex structured approvals: patch, exec, file-change, command-execution, and permission prompts from `codex app-server` are routed through the same approval UI Claude uses (allow/deny mapped to JSON-RPC responses)
-- Codex turn interrupts now send `turn/interrupt` over RPC so the process stays alive across aborts and the next send reuses it instead of respawning
-- Codex turn diffs render as a collapsible diff block driven by `turn/diff/updated`
-- Fix Codex `turn/interrupt` being silently rejected by `codex app-server` 0.120+ — Verun now tracks the in-flight `turnId` from the `turn/start` response and includes it on interrupt (required field per live schema)
-- Fix Codex abort leaving the session stuck on "busy" so the next send bounced with "already processing"; aborting now flips the busy atomic synchronously
-- Fix Codex assistant replies rendering twice when the `item/agentMessage` completion frame arrived on top of the streamed deltas
-- Fix Codex file-change tool badges showing "Edit" for every operation — `PatchChangeKind` is an object discriminated by `type` ("add"/"delete"/"update"), not a bare string
-- Codex `TurnEnd` now carries the per-turn token breakdown (`input/output/cache-read`) captured from `thread/tokenUsage/updated`, so the usage badge stops reading zero for every Codex turn
-- Codex `item/permissions/requestApproval` is answered with the `{permissions, scope}` shape required by the live schema instead of a `{decision}` field that the server silently ignored
-- Fix Codex abort targeting the previous turn's id: the `current_turn_id` slot is now cleared before dispatching `turn/start` and again on `turn/completed`, and aborting before the slot is populated no longer flips the session to idle (the real in-flight turn would have kept running under a UI that said it stopped)
-- Fix Codex plan mode rendering nothing: `codex app-server` 0.120 streams plan-mode output through its own `item/plan/delta` / `plan` ThreadItem channel rather than `item/agentMessage/*`; Verun was silently swallowing both, so the `<proposed_plan>` body never reached the UI. Deltas now stream as assistant text and the authoritative completion frame is deduplicated.
+### Codex (OpenAI) support lands
+
+- First-class Codex sessions with live plan mode, structured approvals, and token usage parity with Claude
+- Codex plans stream into the same Plan Review overlay (approve / request changes) and persist to `.verun/plans/` so reopening the session restores them
+- Questions from Codex (`requestUserInput`) now render in the same Ask-a-Question UI Claude uses, with a pick list and optional description, instead of being auto-denied
+- Patch, exec, file-change, command-execution, and permission prompts are routed through the same approval UI as Claude (allow / deny)
+- Turn diffs render as a collapsible diff block that updates live as Codex edits files
+- Interrupts keep the underlying process alive across aborts, so the next send reuses it instead of respawning
+- Per-turn token breakdown (input / output / cache-read) now shows on the usage badge instead of reading zero
+- Fixes: file-change badges show the correct Add / Update / Delete label; assistant replies no longer double-render at end of turn; aborts no longer leave the session wedged on "busy"; plan mode no longer renders nothing; aborts before the turn has started no longer flip the UI to idle while the real turn keeps running
+
+### GitHub Actions tab
+
+- New Actions tab in the right sidebar shows live Actions runs for the current branch: per-workflow grouping, expandable jobs, queued / running / success / failure / cancelled / skipped status icons, and 10s polling while any run is active
+- One-click "Fix in this session" or "Fix in new session" sends the agent a structured failure summary (failing step + annotated errors with file:line:col) and the `gh run view --log-failed` command it can run for full logs
+- Re-run and cancel workflows from the UI; the toolbar CI chip now opens the tab instead of a dropdown
+- Expanded job logs render as a flat timestamp-prefixed list that auto-scrolls to the first error; the "N err" counter is itself the scroll-to-first-error trigger. Toolbar adds line wrap, copy, and fullscreen
+
+### Light mode polish
+
+- Code editor, diff editor, search panel, rename widget, and hover tooltips now follow the active theme in light mode instead of baking in One Dark colors (active line, gutter, selection, tooltips, syntax highlighting)
+- Diff editor's collapsed "X unchanged lines" pill flips with the theme
+- Hook textareas (Settings and Add Project), Cmd+P file picker, `>` command palette, and breadcrumb dropdown now match the active theme palette
+
+### Model picker (Cmd+T)
+
+- Cmd+T on a selected task opens a centered picker to start a new session with a chosen agent and model (arrow keys + Enter, type to filter)
+- Models within each provider are ordered by most-recently-used across all sessions, capped at 4 with a "Show N more" expander; the active model is pinned to the top with a "Current" badge
+- "Fix in new session" in the Actions tab uses the same picker so you pick the model before the fix prompt is sent
+
+### Editor & navigation
+
+- Find References (Shift+F12 / context menu) now opens a VS Code-style peek overlay anchored at the cursor - references grouped by file, keyboard-navigate with Arrow / Home / End / Enter, Escape to close
+- Opening a file in a gitignored folder (`node_modules`, `dist`, `.next`, etc.) no longer auto-reveals it in the file tree - auto-open flows (Find References, Go to Definition, tab switching, global search) stay focused on source files; manual reveal still works
+- File tree treats symlinked directories as directories so they expand on click (broken symlinks stay non-expandable)
+
+### Terminals in detached windows
+
+- Opening a task in a detached window no longer loses its running terminals: a per-PTY 256KB ring buffer replays scrollback into xterm so TUIs like vim and Claude Code redraw correctly
+- Terminal panel open/closed state persists per task, so detached windows inherit the same visibility
+- Closing a detached window re-syncs terminals in the main window, so PTYs spawned or closed in the other window reflect correctly
+
+### Sessions & tabs
+
+- `+` menu now surfaces closed sessions under a "Recent" section - click one to restore it as a tab with full transcript replay (#100)
+- `+` button sticks to the left edge while the tab bar scrolls horizontally (#100)
+- Cmd+Enter while the agent is running (steer) now reliably sends your new message after the abort completes, instead of silently being dropped
+
+### Performance
+
+- Task switching stays responsive across large workspaces: diagnostics and source-control lists are virtualized, chat block rebuilds are cached, and full-list scans in the file tree, tabs, and sidebar are avoided
+
+### Smaller changes
+
+- Hook and start-command inputs autocomplete `$VERUN_*` env vars - typing `$` surfaces `$VERUN_REPO_PATH` and `$VERUN_PORT_0..9` with descriptions
+- Import/Export `.verun.json` now lets you pick the location: the main repo or any task's worktree
+- Trust level changes apply mid-run: editing the policy during an in-flight turn takes effect on the next tool-approval check
+- "Add Project" from the empty TaskPanel now opens the Add Project dialog (hooks + start command) like Sidebar and Cmd+O, instead of jumping straight to New Task
+- Notifications: clicking a banner navigates to the source task/session; the Notification Center clears when the app regains focus; dev builds no longer emit notifications (they were appearing as Terminal.app and swallowing click data)
+- Fix "No coding agent CLIs found" toast firing at startup on macOS when agents are installed via nvm / homebrew / `~/.local/bin` - PATH reload now completes before agent detection runs
 
 ## 0.8.1 — 2026-04-20
 
