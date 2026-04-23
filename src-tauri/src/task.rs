@@ -1172,6 +1172,12 @@ pub async fn send_message(
                         plan_mode,
                     },
                 )?;
+                // Clear the stale turn id from the previous turn before we
+                // dispatch the new one — otherwise `abort_message` racing
+                // ahead of `turn/start`'s response would send `turn/interrupt`
+                // targeting the *previous* turn, leaving the real in-flight
+                // turn running while the UI flipped to idle.
+                *current_turn_id.lock().await = None;
                 let turn_rx = codex_rpc::register_pending(&pending, turn_id);
                 codex_rpc::write_frame(&stdin, &turn_bytes).await?;
                 busy.store(true, Ordering::SeqCst);
@@ -1664,7 +1670,7 @@ async fn spawn_codex_app_server_session(
             codex_thread_id: Some(thread_id),
             codex_pending: Some(pending),
             codex_next_id: Some(next_id),
-            codex_current_turn_id: Some(current_turn_id),
+            codex_current_turn_id: Some(current_turn_id.clone()),
         },
     );
 
@@ -1681,6 +1687,7 @@ async fn spawn_codex_app_server_session(
     let monitor_agent = AgentKind::parse(&agent_type).implementation();
     let monitor_busy = busy.clone();
     let monitor_stdin = stdin;
+    let monitor_current_turn_id = current_turn_id;
     tokio::spawn(async move {
         let wt_for_hooks = monitor_wt.clone();
         let stream_result = stream::stream_and_capture_rpc(
@@ -1694,6 +1701,7 @@ async fn spawn_codex_app_server_session(
             monitor_pending_meta,
             monitor_db_tx.clone(),
             &*monitor_agent,
+            monitor_current_turn_id,
         )
         .await;
 
@@ -2291,29 +2299,41 @@ pub async fn abort_message(
                 }
                 None => return Ok(()),
             };
-            let maybe_bytes = if let Some((ref thread_id, ref _pending, ref next_id, ref current_turn_id)) =
-                rpc_state
+            let (maybe_bytes, sent_rpc_interrupt) = if let Some((
+                ref thread_id,
+                ref _pending,
+                ref next_id,
+                ref current_turn_id,
+            )) = rpc_state
             {
                 // codex app-server requires both threadId AND turnId on
-                // `turn/interrupt`. If no turn is currently in flight (e.g.
-                // turn/start hasn't resolved yet, or a previous turn already
-                // completed), skip the interrupt entirely — there is
-                // nothing to cancel.
+                // `turn/interrupt`. If `turn/start`'s response hasn't yet
+                // populated the slot — either because we're mid-dispatch or
+                // because the server is still processing the first frame —
+                // we do NOT know which turn to cancel. Silently dropping the
+                // interrupt *and* flipping the session to idle would leave
+                // the real turn running under a UI that says it stopped.
+                // Instead, treat a missing turn id as "abort is in-flight,
+                // bail out and let the stream loop clear state on the real
+                // `turn/completed { status: "interrupted" }` frame".
                 let turn_id_opt = current_turn_id.lock().await.clone();
                 match turn_id_opt {
                     Some(turn_id) => {
                         let req_id = crate::agent::codex_rpc::next_request_id(next_id);
-                        Some(agent.encode_rpc_turn_interrupt(req_id, thread_id, &turn_id)?)
+                        (
+                            Some(agent.encode_rpc_turn_interrupt(req_id, thread_id, &turn_id)?),
+                            true,
+                        )
                     }
                     None => {
                         eprintln!(
-                            "[verun][codex-rpc][{session_id}] abort requested with no in-flight turn — skipping turn/interrupt"
+                            "[verun][codex-rpc][{session_id}] abort requested before turn/start resolved — skipping interrupt and leaving busy flag set so the stream loop can clear it on turn/completed"
                         );
-                        None
+                        (None, false)
                     }
                 }
             } else {
-                Some(agent.encode_stream_interrupt(&new_control_request_id())?)
+                (Some(agent.encode_stream_interrupt(&new_control_request_id())?), false)
             };
             if let Some(bytes) = maybe_bytes {
                 // Best-effort: if stdin is already closed we fall through
@@ -2321,29 +2341,37 @@ pub async fn abort_message(
                 let _ = write_to_stdin(&stdin, &bytes).await;
             }
 
-            // Clear busy so the next send_message doesn't bounce with
-            // "already processing". The stream monitor will later see
-            // `turn/completed { status: "interrupted" }` and clear again —
-            // idempotent.
-            busy.store(false, Ordering::SeqCst);
+            // Only flip the session to idle when we actually sent an RPC
+            // interrupt (or we're on the legacy kill path, handled below).
+            // If we skipped the interrupt because the turn id was not yet
+            // known, the real turn is still running — leave busy set and
+            // let `turn/completed` drive the status.
+            if sent_rpc_interrupt || rpc_state.is_none() {
+                // Clear busy so the next send_message doesn't bounce with
+                // "already processing". The stream monitor will later see
+                // `turn/completed { status: "interrupted" }` and clear
+                // again — idempotent.
+                busy.store(false, Ordering::SeqCst);
 
-            let _ = db_tx
-                .send(db::DbWrite::UpdateSessionStatus {
-                    id: session_id.to_string(),
-                    status: "idle".to_string(),
-                })
-                .await;
-            let _ = app.emit(
-                "session-status",
-                stream::SessionStatusEvent {
-                    session_id: session_id.to_string(),
-                    status: "idle".to_string(),
-                    error: None,
-                },
-            );
-            // Interrupt completes on a single stdin write; no background wait.
-            // Emit session-aborted right away so the frontend drains armed steps.
-            let _ = app.emit("session-aborted", session_id.to_string());
+                let _ = db_tx
+                    .send(db::DbWrite::UpdateSessionStatus {
+                        id: session_id.to_string(),
+                        status: "idle".to_string(),
+                    })
+                    .await;
+                let _ = app.emit(
+                    "session-status",
+                    stream::SessionStatusEvent {
+                        session_id: session_id.to_string(),
+                        status: "idle".to_string(),
+                        error: None,
+                    },
+                );
+                // Interrupt completes on a single stdin write; no background
+                // wait. Emit session-aborted right away so the frontend
+                // drains armed steps.
+                let _ = app.emit("session-aborted", session_id.to_string());
+            }
         }
         crate::agent::AbortStrategy::Kill => {
             let Some((_, mut proc)) = active.remove(session_id) else {

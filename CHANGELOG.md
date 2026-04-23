@@ -29,6 +29,7 @@
 - Fix Codex file-change tool badges showing "Edit" for every operation — `PatchChangeKind` is an object discriminated by `type` ("add"/"delete"/"update"), not a bare string
 - Codex `TurnEnd` now carries the per-turn token breakdown (`input/output/cache-read`) captured from `thread/tokenUsage/updated`, so the usage badge stops reading zero for every Codex turn
 - Codex `item/permissions/requestApproval` is answered with the `{permissions, scope}` shape required by the live schema instead of a `{decision}` field that the server silently ignored
+- Fix Codex abort targeting the previous turn's id: the `current_turn_id` slot is now cleared before dispatching `turn/start` and again on `turn/completed`, and aborting before the slot is populated no longer flips the session to idle (the real in-flight turn would have kept running under a UI that said it stopped)
 
 ## 0.8.1 — 2026-04-20
 

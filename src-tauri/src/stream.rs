@@ -1625,6 +1625,10 @@ pub async fn stream_and_capture_rpc(
     _pending_approval_meta: PendingApprovalMeta,
     db_tx: DbWriteTx,
     agent: &dyn crate::agent::Agent,
+    // Slot populated by the `turn/start` response watcher and read by
+    // `abort_message`. The stream loop clears it on `turn/completed` so the
+    // next abort cannot target a stale (already-finished) turn id.
+    current_turn_id: Arc<TokioMutex<Option<String>>>,
 ) -> StreamResult {
     let mut buffer: Vec<OutputItem> = Vec::new();
     let mut last_flush = Instant::now();
@@ -1707,6 +1711,9 @@ pub async fn stream_and_capture_rpc(
                             // Reset cached usage so the next turn's
                             // `TurnEnd` reflects that turn only.
                             last_token_usage = None;
+                            // Clear the in-flight turn id so a subsequent
+                            // abort cannot target this already-finished turn.
+                            *current_turn_id.lock().await = None;
                             busy.store(false, Ordering::SeqCst);
                         }
 
