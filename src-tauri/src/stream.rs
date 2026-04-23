@@ -1810,22 +1810,38 @@ pub async fn stream_and_capture_rpc(
                             "[verun][codex-rpc][{session_id}] <- req {method} id={id}"
                         );
                         if !is_codex_approval_method(&method) {
-                            // Unknown server-originated request (e.g.
-                            // `item/tool/requestUserInput` for which Verun has
-                            // no UI). Send back a JSON-RPC method-not-found
-                            // error so the CLI doesn't sit waiting on the
-                            // response forever — silently continuing here
-                            // previously left turns stuck.
+                            // Unknown server-originated request Verun has no
+                            // UI for. Send back a shape the CLI treats as
+                            // "user declined to answer" rather than a
+                            // protocol error, so the turn proceeds cleanly:
+                            //   - `item/tool/requestUserInput` wants
+                            //     `{answers: []}` (phase 1 auto-deny until
+                            //     Verun grows a multi-question UI).
+                            //   - Anything else falls back to JSON-RPC
+                            //     method-not-found (-32601).
+                            let (frame, reason) = if method == "item/tool/requestUserInput" {
+                                (
+                                    serde_json::json!({
+                                        "id": id,
+                                        "result": { "answers": [] },
+                                    }),
+                                    "auto-deny with empty answers",
+                                )
+                            } else {
+                                (
+                                    serde_json::json!({
+                                        "id": id,
+                                        "error": {
+                                            "code": -32601,
+                                            "message": format!("Method not supported: {method}"),
+                                        },
+                                    }),
+                                    "method-not-found",
+                                )
+                            };
                             eprintln!(
-                                "[verun][codex-rpc][{session_id}] unhandled server request method: {method} — replying method-not-found"
+                                "[verun][codex-rpc][{session_id}] unhandled server request method: {method} — replying {reason}"
                             );
-                            let frame = serde_json::json!({
-                                "id": id,
-                                "error": {
-                                    "code": -32601,
-                                    "message": format!("Method not supported: {method}"),
-                                },
-                            });
                             if let Ok(mut bytes) = serde_json::to_vec(&frame) {
                                 bytes.push(b'\n');
                                 let mut guard = stdin.lock().await;
