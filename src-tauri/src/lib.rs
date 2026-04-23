@@ -306,6 +306,13 @@ pub fn run() {
             ipc::get_ci_checks,
             ipc::get_branch_url,
             ipc::has_conflicts,
+            // GitHub Actions
+            ipc::list_workflow_runs,
+            ipc::list_workflow_jobs,
+            ipc::get_workflow_failed_logs,
+            ipc::rerun_workflow_run,
+            ipc::rerun_workflow_job,
+            ipc::cancel_workflow_run,
             // PTY / Terminal
             ipc::pty_spawn,
             ipc::pty_write,

@@ -1,13 +1,13 @@
 import { Component, createSignal, createEffect, createMemo, on, Show, For, onCleanup } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
-import { ArrowUpFromLine, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, Circle, ChevronDown, Loader2, Eye, Archive } from 'lucide-solid'
+import { ArrowUpFromLine, Download, GitPullRequest, GitMerge, Swords, Wrench, Search, ExternalLink, CircleCheck, CircleX, Clock, ChevronDown, Loader2, Eye, Archive } from 'lucide-solid'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import * as ipc from '../lib/ipc'
 import { hasSkill, primeSkills, type SkillContext } from '../store/commands'
 import { sessionById } from '../store/sessions'
 import { sendMessage } from '../store/sessions'
 import { archiveTask } from '../store/tasks'
-import { addToast } from '../store/ui'
+import { addToast, setRightPanelTab } from '../store/ui'
 import { taskGit, refreshTaskGit, invalidateRemote, type TaskGitState } from '../store/git'
 import { taskById } from '../store/tasks'
 import { projectById } from '../store/projects'
@@ -335,10 +335,14 @@ export const GitActions: Component<Props> = (props) => {
               {(summary) => {
                 const Icon = summary().icon
                 return (
-                  <span class={`flex items-center gap-0.5 text-[10px] ${summary().color}`} title={summary().label}>
+                  <button
+                    class={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] hover:bg-surface-3 transition-colors ${summary().color}`}
+                    title={`${summary().label} - view Actions`}
+                    onClick={() => setRightPanelTab('actions')}
+                  >
                     <Icon size={11} />
                     <span>{summary().label}</span>
-                  </span>
+                  </button>
                 )
               }}
             </Show>
@@ -429,31 +433,6 @@ export const GitActions: Component<Props> = (props) => {
             </button>
           </Show>
 
-          {/* CI check details */}
-          <Show when={checks().length > 0}>
-            <div class="border-t border-border-subtle my-1" />
-            <div class="px-3 py-1 text-[10px] text-text-dim font-medium">CI Checks</div>
-            <For each={checks()}>
-              {(check) => (
-                <button
-                  class="w-full flex items-center gap-2 px-3 py-1 text-[11px] text-text-secondary hover:bg-surface-3 transition-colors"
-                  onClick={() => { if (check.url) openUrl(check.url); setOpen(false) }}
-                >
-                  <span class={
-                    check.status === 'SUCCESS' ? 'text-emerald-400'
-                      : check.status === 'FAILURE' || check.status === 'ERROR' ? 'text-red-400'
-                      : 'text-amber-400'
-                  }>
-                    {check.status === 'SUCCESS' ? <CircleCheck size={11} />
-                      : check.status === 'FAILURE' || check.status === 'ERROR' ? <CircleX size={11} />
-                      : <Circle size={11} />
-                    }
-                  </span>
-                  <span class="truncate">{check.name}</span>
-                </button>
-              )}
-            </For>
-          </Show>
         </div>
       </Show>
       </Show>

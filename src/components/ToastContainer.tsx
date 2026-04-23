@@ -1,7 +1,7 @@
 import { Component, For, Show } from 'solid-js'
 import { toasts, dismissToast, type ToastAction } from '../store/ui'
 import { clsx } from 'clsx'
-import { CheckCircle, AlertCircle, Info, X } from 'lucide-solid'
+import { CheckCircle, AlertCircle, Info, Loader2, X } from 'lucide-solid'
 import { UpdateToast } from './UpdateBanner'
 
 const icons = {
@@ -35,7 +35,7 @@ export const ToastContainer: Component = () => {
     <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
       <For each={toasts()}>
         {(toast) => {
-          const Icon = icons[toast.type]
+          const Icon = toast.loading ? Loader2 : icons[toast.type]
           const hasActions = () => (toast.actions?.length ?? 0) > 0
           return (
             <div
@@ -47,7 +47,7 @@ export const ToastContainer: Component = () => {
               )}
             >
               <div class="flex items-start gap-2.5">
-                <Icon size={15} class={clsx(iconColors[toast.type], 'mt-0.5 shrink-0')} />
+                <Icon size={15} class={clsx(iconColors[toast.type], 'mt-0.5 shrink-0', toast.loading && 'animate-spin')} />
                 <span class="text-sm text-text-primary flex-1">{toast.message}</span>
                 <button
                   class="p-0.5 rounded text-text-dim hover:text-text-muted transition-colors shrink-0"

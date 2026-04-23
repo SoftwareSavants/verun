@@ -1672,6 +1672,129 @@ pub async fn has_conflicts(pool: State<'_, SqlitePool>, task_id: String) -> Resu
 }
 
 // ---------------------------------------------------------------------------
+// GitHub Actions (workflow runs)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn list_workflow_runs(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<github::WorkflowRun>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    let limit = limit.unwrap_or(25);
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            github::list_workflow_runs_for_branch(&t.worktree_path, limit)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn list_workflow_jobs(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    run_id: u64,
+) -> Result<Vec<github::WorkflowJob>, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::list_jobs_for_run(&t.worktree_path, run_id))
+            .await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_workflow_failed_logs(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    run_id: u64,
+    job_id: u64,
+    max_bytes: Option<u32>,
+) -> Result<String, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    // Default 0 = "no truncation" (full log). Callers that need a tail (e.g. the
+    // fix-prompt flow, which stuffs logs into a chat message) pass an explicit cap.
+    let max_bytes = max_bytes.unwrap_or(0) as usize;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            github::get_failed_step_logs(&t.worktree_path, run_id, job_id, max_bytes)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn rerun_workflow_run(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    run_id: u64,
+    failed_only: Option<bool>,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    let failed_only = failed_only.unwrap_or(false);
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            github::rerun_workflow(&t.worktree_path, run_id, failed_only)
+        })
+        .await,
+    )?;
+    emit_git_status_changed(&app, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rerun_workflow_job(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    job_id: u64,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::rerun_workflow_job(&t.worktree_path, job_id))
+            .await,
+    )?;
+    emit_git_status_changed(&app, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cancel_workflow_run(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    run_id: u64,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::cancel_workflow(&t.worktree_path, run_id))
+            .await,
+    )?;
+    emit_git_status_changed(&app, &task_id);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // PTY / Terminal
 // ---------------------------------------------------------------------------
 

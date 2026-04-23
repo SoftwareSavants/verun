@@ -113,7 +113,7 @@ export const [sidebarWidth, setSidebarWidth] = createSignal(280)
 const savedRightPanelWidth = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:rightPanelWidth') : null
 export const [rightPanelWidth, setRightPanelWidth] = createSignal(savedRightPanelWidth ? parseInt(savedRightPanelWidth, 10) : 280)
 
-export type RightPanelTab = 'changes' | 'files' | 'search'
+export type RightPanelTab = 'changes' | 'files' | 'search' | 'actions'
 
 const savedRightTab = typeof localStorage !== 'undefined' ? localStorage.getItem('verun:rightPanelTab') : null
 const [_rightPanelTab, _setRightPanelTab] = createSignal<RightPanelTab>(
@@ -214,6 +214,7 @@ export interface Toast {
   message: string
   type: 'info' | 'error' | 'success'
   persistent?: boolean
+  loading?: boolean
   actions?: ToastAction[]
   onDismiss?: () => void
 }
@@ -222,6 +223,7 @@ export interface AddToastOptions {
   id?: string
   persistent?: boolean
   duration?: number
+  loading?: boolean
   actions?: ToastAction[]
   onDismiss?: () => void
 }
@@ -235,7 +237,7 @@ export function addToast(
   opts: AddToastOptions = {},
 ): string {
   const id = opts.id ?? crypto.randomUUID()
-  const toast: Toast = { id, message, type, persistent: opts.persistent, actions: opts.actions, onDismiss: opts.onDismiss }
+  const toast: Toast = { id, message, type, persistent: opts.persistent, loading: opts.loading, actions: opts.actions, onDismiss: opts.onDismiss }
   setToasts(prev => {
     const existing = prev.findIndex(t => t.id === id)
     if (existing >= 0) {

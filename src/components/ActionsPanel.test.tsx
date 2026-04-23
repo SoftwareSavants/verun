@@ -1,0 +1,183 @@
+import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { render, cleanup, fireEvent } from '@solidjs/testing-library'
+import type { WorkflowRun } from '../types'
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+  emit: vi.fn(),
+}))
+vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
+
+const ipcMocks = vi.hoisted(() => ({
+  listWorkflowRuns: vi.fn(),
+  listWorkflowJobs: vi.fn(),
+  getWorkflowFailedLogs: vi.fn(),
+  rerunWorkflowRun: vi.fn(),
+  cancelWorkflowRun: vi.fn(),
+  createSession: vi.fn(),
+}))
+vi.mock('../lib/ipc', () => ipcMocks)
+
+vi.mock('../store/tasks', () => ({
+  taskById: vi.fn(() => ({
+    id: 't1',
+    name: 'demo',
+    projectId: 'p1',
+    worktreePath: '/wt',
+    branch: 'feat/x',
+    agentType: 'claude',
+  })),
+}))
+vi.mock('../store/sessions', () => ({
+  sessionsForTask: vi.fn(() => []),
+  sendMessage: vi.fn(),
+}))
+vi.mock('../store/taskContext', () => ({
+  selectedSessionForTask: vi.fn(() => null),
+}))
+vi.mock('../store/ui', () => ({
+  addToast: vi.fn(),
+}))
+
+const gitMocks = vi.hoisted(() => ({
+  taskGit: vi.fn(() => ({
+    status: null,
+    commits: [],
+    branchStatus: { ahead: 0, behind: 0, unpushed: 0 },
+    pr: null,
+    checks: [],
+    branchUrl: null,
+    github: { owner: 'x', name: 'y', url: 'https://github.com/x/y' },
+    lastLocalRefresh: 0,
+    lastRemoteRefresh: 0,
+  })),
+}))
+vi.mock('../store/git', () => gitMocks)
+
+import { ActionsPanel } from './ActionsPanel'
+import { clearActionsState, stopPolling } from '../store/actions'
+
+function run(partial: Partial<WorkflowRun> = {}): WorkflowRun {
+  return {
+    databaseId: 1,
+    number: 1,
+    workflowName: 'CI',
+    state: 'success',
+    url: 'https://github.com/x/y/actions/runs/1',
+    createdAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+    headSha: 'abc',
+    headBranch: 'feat/x',
+    event: 'push',
+    ...partial,
+  }
+}
+
+async function flush() {
+  await Promise.resolve()
+  await Promise.resolve()
+  await new Promise(r => setTimeout(r, 0))
+}
+
+describe('<ActionsPanel /> layout', () => {
+  beforeEach(() => {
+    cleanup()
+    stopPolling('t1')
+    clearActionsState('t1')
+    ipcMocks.listWorkflowRuns.mockReset()
+    ipcMocks.listWorkflowJobs.mockReset()
+    ipcMocks.rerunWorkflowRun.mockReset()
+  })
+
+  test('relative time is rendered after the hover action cluster on both failed and success rows', async () => {
+    ipcMocks.listWorkflowRuns.mockResolvedValue([
+      run({ databaseId: 1, state: 'failure', workflowName: 'CI' }),
+      run({ databaseId: 2, state: 'success', workflowName: 'Release' }),
+    ])
+    ipcMocks.listWorkflowJobs.mockResolvedValue([])
+
+    const { container } = render(() => <ActionsPanel taskId="t1" />)
+    await flush()
+    await flush()
+
+    // Each run's row button has: workflow name, #num, action cluster, then time.
+    // The time span must be the LAST child (far right, stable across row states).
+    const rowButtons = container.querySelectorAll('button.group.w-full')
+    expect(rowButtons.length).toBe(2)
+
+    for (const btn of rowButtons) {
+      const children = Array.from(btn.children)
+      const last = children[children.length - 1]
+      // Last element must be the time span (has tabular-nums + title attr == createdAt iso)
+      expect(last?.getAttribute('title')).toMatch(/T\d{2}:\d{2}:\d{2}/)
+    }
+  })
+
+  test('clicking a failed job expands an inline panel with logs and action buttons', async () => {
+    ipcMocks.listWorkflowRuns.mockResolvedValue([
+      run({ databaseId: 1, state: 'failure', workflowName: 'CI' }),
+    ])
+    ipcMocks.listWorkflowJobs.mockResolvedValue([
+      { databaseId: 10, name: 'Type Check', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:12Z', url: 'https://github.com/x/y/runs/10' },
+    ])
+    ipcMocks.getWorkflowFailedLogs.mockResolvedValue('error TS2322: Type mismatch at foo.ts:17')
+
+    const { container } = render(() => <ActionsPanel taskId="t1" />)
+    await flush()
+    await flush()
+
+    // Failed run auto-expands; find the job row button by its label text
+    const jobBtn = Array.from(container.querySelectorAll('button')).find(
+      b => b.textContent?.includes('Type Check') && !b.textContent.includes('CI'),
+    ) as HTMLElement
+    expect(jobBtn).toBeTruthy()
+
+    // Before clicking: no logs panel visible
+    expect(container.textContent).not.toContain('error TS2322')
+
+    fireEvent.click(jobBtn)
+    await flush()
+    await flush()
+
+    // Logs panel appears with the log text
+    expect(container.textContent).toContain('error TS2322')
+    expect(ipcMocks.getWorkflowFailedLogs).toHaveBeenCalledWith('t1', 1, 10)
+
+    // Action buttons are in the expanded panel
+    expect(container.querySelector('[title="Re-run this job"]')).not.toBeNull()
+    expect(container.querySelector('[title="Fix with Claude"]')).not.toBeNull()
+    expect(container.querySelector('[title="Open on GitHub"]')).not.toBeNull()
+  })
+
+  test('rerunning a failing run optimistically renders the running (spinner) icon', async () => {
+    ipcMocks.listWorkflowRuns.mockResolvedValue([
+      run({ databaseId: 42, state: 'failure', workflowName: 'CI' }),
+    ])
+    ipcMocks.listWorkflowJobs.mockResolvedValue([
+      { databaseId: 10, name: 'test', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:00Z', url: 'u' },
+    ])
+    ipcMocks.rerunWorkflowRun.mockResolvedValue(undefined)
+
+    const { container } = render(() => <ActionsPanel taskId="t1" />)
+    await flush()
+    await flush()
+
+    // Before: no spinning loader in the run row (failure icon is static)
+    const rowBtn = container.querySelector('button.group.w-full') as HTMLElement
+    expect(rowBtn).toBeTruthy()
+    expect(rowBtn.querySelector('.animate-spin')).toBeNull()
+
+    // Click the inline "Re-run failed jobs" action (role=button title="Re-run failed jobs")
+    const rerunBtn = rowBtn.querySelector('[title="Re-run failed jobs"]') as HTMLElement
+    expect(rerunBtn).toBeTruthy()
+    fireEvent.click(rerunBtn)
+    await flush()
+    await flush()
+    await flush()
+
+    // After: the run's StateIcon reflects queued/running (amber, spinning)
+    expect(ipcMocks.rerunWorkflowRun).toHaveBeenCalledWith('t1', 42, true)
+    // Run row should no longer show the red failure X
+    const redIcon = rowBtn.querySelector('.text-red-400')
+    expect(redIcon).toBeNull()
+  })
+})

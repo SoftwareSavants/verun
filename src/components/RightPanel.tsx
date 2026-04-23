@@ -1,22 +1,30 @@
-import { Component, Show, createSignal } from 'solid-js'
+import { Component, Show, createSignal, createMemo } from 'solid-js'
 import { clsx } from 'clsx'
-import { ChevronDown, ChevronRight, Loader2, AlertCircle, Files, Search, GitBranch } from 'lucide-solid'
+import { ChevronDown, ChevronRight, Loader2, AlertCircle, Files, Search, GitBranch, PlayCircle } from 'lucide-solid'
 import { CodeChanges } from './CodeChanges'
 import { FilesPanel } from './FilesPanel'
 import { GlobalSearchPanel } from './GlobalSearchPanel'
 import { ProblemsPanel } from './ProblemsPanel'
-import { rightPanelTab, setRightPanelTab } from '../store/ui'
+import { ActionsPanel } from './ActionsPanel'
+import { rightPanelTab, setRightPanelTab, type RightPanelTab } from '../store/ui'
 import { problemCountForTask, isProblemsLoading } from '../store/problems'
 import { problemsHeight, setProblemsHeightAndPersist } from '../store/ui'
+import { taskGit } from '../store/git'
 
 interface Props {
   taskId: string
 }
 
-const TABS = [
-  { id: 'files' as const, label: 'Files', icon: Files },
-  { id: 'search' as const, label: 'Search', icon: Search },
-  { id: 'changes' as const, label: 'Source Control', icon: GitBranch },
+interface TabDef {
+  id: RightPanelTab
+  label: string
+  icon: typeof Files
+}
+
+const BASE_TABS: TabDef[] = [
+  { id: 'files', label: 'Files', icon: Files },
+  { id: 'search', label: 'Search', icon: Search },
+  { id: 'changes', label: 'Source Control', icon: GitBranch },
 ]
 
 export const RightPanel: Component<Props> = (props) => {
@@ -31,11 +39,19 @@ export const RightPanel: Component<Props> = (props) => {
 
   const counts = () => problemCountForTask(props.taskId)
 
+  const tabs = createMemo<TabDef[]>(() => {
+    const list = [...BASE_TABS]
+    if (taskGit(props.taskId).github) {
+      list.push({ id: 'actions', label: 'Actions', icon: PlayCircle })
+    }
+    return list
+  })
+
   return (
     <div class="flex flex-col h-full bg-surface-1">
       {/* Tab bar — icon-only (Cursor/VS Code style) */}
       <div class="flex items-center gap-0.5 px-2 pt-10 pb-1.5 bg-surface-1 shrink-0 drag-region" data-tauri-drag-region>
-        {TABS.map(tab => (
+        {tabs().map(tab => (
           <button
             class={clsx(
               'h-7 w-7 flex items-center justify-center rounded-md transition-colors no-drag',
@@ -61,6 +77,9 @@ export const RightPanel: Component<Props> = (props) => {
         </Show>
         <Show when={rightPanelTab() === 'search'}>
           <GlobalSearchPanel taskId={props.taskId} />
+        </Show>
+        <Show when={rightPanelTab() === 'actions' && !!taskGit(props.taskId).github}>
+          <ActionsPanel taskId={props.taskId} />
         </Show>
       </div>
 

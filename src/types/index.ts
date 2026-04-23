@@ -269,11 +269,35 @@ export interface PrInfo {
   title: string
   mergeable: string
   isDraft: boolean
+  body?: string
 }
 
 export interface CiCheck {
   name: string
   status: string
+  url: string
+}
+
+export type WorkflowRunState = 'queued' | 'running' | 'success' | 'failure' | 'cancelled' | 'skipped'
+
+export interface WorkflowRun {
+  databaseId: number
+  number: number
+  workflowName: string
+  state: WorkflowRunState
+  url: string
+  createdAt: string
+  headSha: string
+  headBranch: string
+  event: string
+}
+
+export interface WorkflowJob {
+  databaseId: number
+  name: string
+  state: WorkflowRunState
+  startedAt: string | null
+  completedAt: string | null
   url: string
 }
 
