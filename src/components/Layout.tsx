@@ -16,6 +16,12 @@ import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, main
 import { rightPanelTab, setRightPanelTab, setShowQuickOpen, setFocusSearchRequest } from '../store/ui'
 import { seedSearchQuery } from '../store/workspaceSearch'
 import { GlobalCommandPalette, setShowGlobalPalette } from './GlobalCommandPalette'
+import { ModelPicker } from './ModelPicker'
+import { modelPickerRequest, openModelPicker, closeModelPicker } from '../store/modelPicker'
+import { createSession, sessionsForTask } from '../store/sessions'
+import { selectedSessionForTask } from '../store/taskContext'
+import { setSelectedSessionId } from '../store/ui'
+import { setMainView } from '../store/editorView'
 
 export const Layout: Component = () => {
   const [dragging, setDragging] = createSignal(false)
@@ -172,6 +178,31 @@ export const Layout: Component = () => {
           reopenClosedTab(tid)
         }
       }
+      // Cmd+T — open model picker to start a new session on the current task.
+      // "Current" defaults to the *selected session*'s agent (falling back to the
+      // first session, then the task's original agentType) so switching sessions
+      // re-anchors the picker.
+      if (modPressed(e) && !e.shiftKey && !e.altKey && e.key === 't') {
+        const tid = selectedTaskId()
+        if (tid) {
+          e.preventDefault()
+          const task = taskById(tid)
+          const list = sessionsForTask(tid)
+          const pickedId = selectedSessionForTask(tid)
+          const current = list.find(s => s.id === pickedId) ?? list[0]
+          openModelPicker({
+            title: 'New session',
+            placeholder: 'Select agent and model for new session...',
+            defaultAgent: current?.agentType ?? task?.agentType,
+            defaultModel: current?.model ?? undefined,
+            onPick: async (agentType, model) => {
+              const session = await createSession(tid, agentType, model)
+              setSelectedSessionId(session.id)
+              setMainView(tid, 'session')
+            },
+          })
+        }
+      }
       // Cmd+Alt+Right / Cmd+Alt+Left — switch editor tabs
       if (modPressed(e) && e.altKey && e.key === 'ArrowRight') {
         const tid = selectedTaskId()
@@ -311,6 +342,18 @@ export const Layout: Component = () => {
         onClose={() => setNewTaskProjectId(null)}
       />
       <GlobalCommandPalette />
+      <ModelPicker
+        open={!!modelPickerRequest()}
+        title={modelPickerRequest()?.title}
+        placeholder={modelPickerRequest()?.placeholder}
+        defaultAgent={modelPickerRequest()?.defaultAgent}
+        defaultModel={modelPickerRequest()?.defaultModel}
+        onClose={closeModelPicker}
+        onPick={(agentType, model) => {
+          const req = modelPickerRequest()
+          if (req) return req.onPick(agentType, model)
+        }}
+      />
     </div>
   )
 }

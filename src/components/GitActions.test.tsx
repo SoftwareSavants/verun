@@ -1,4 +1,4 @@
-import { describe, test, expect, vi } from 'vitest'
+import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { render, cleanup } from '@solidjs/testing-library'
 import { buildPrMessage } from './GitActions'
 import type { TaskGitState } from '../store/git'
@@ -25,7 +25,7 @@ vi.mock('../store/projects', () => ({
   projectById: vi.fn(() => ({ id: 'p-001', repoPath: '/repo', baseBranch: 'main' })),
 }))
 vi.mock('../store/commands', () => ({ hasSkill: vi.fn(() => false), primeSkills: vi.fn() }))
-vi.mock('../store/ui', () => ({ addToast: vi.fn() }))
+vi.mock('../store/ui', () => ({ addToast: vi.fn(), setRightPanelTab: vi.fn() }))
 
 const { taskGitMock, refreshTaskGitMock, invalidateRemoteMock } = vi.hoisted(() => ({
   taskGitMock: vi.fn(),

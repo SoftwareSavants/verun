@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step } from '../types'
 import { bytesToBase64 } from './binary'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
@@ -254,6 +254,25 @@ export const hasConflicts = (taskId: string): Promise<boolean> =>
   DEMO
     ? seed().then(d => d.DEMO_GIT_DATA[taskId]?.pr?.mergeable === 'CONFLICTING')
     : invoke<boolean>('has_conflicts', { taskId })
+
+// GitHub Actions
+export const listWorkflowRuns = (taskId: string, limit?: number): Promise<WorkflowRun[]> =>
+  DEMO ? Promise.resolve([]) : invoke<WorkflowRun[]>('list_workflow_runs', { taskId, limit })
+
+export const listWorkflowJobs = (taskId: string, runId: number): Promise<WorkflowJob[]> =>
+  DEMO ? Promise.resolve([]) : invoke<WorkflowJob[]>('list_workflow_jobs', { taskId, runId })
+
+export const getWorkflowFailedLogs = (taskId: string, runId: number, jobId: number, maxBytes?: number): Promise<string> =>
+  invoke<string>('get_workflow_failed_logs', { taskId, runId, jobId, maxBytes })
+
+export const rerunWorkflowRun = (taskId: string, runId: number, failedOnly?: boolean): Promise<void> =>
+  invoke<void>('rerun_workflow_run', { taskId, runId, failedOnly })
+
+export const rerunWorkflowJob = (taskId: string, jobId: number): Promise<void> =>
+  invoke<void>('rerun_workflow_job', { taskId, jobId })
+
+export const cancelWorkflowRun = (taskId: string, runId: number): Promise<void> =>
+  invoke<void>('cancel_workflow_run', { taskId, runId })
 
 // File listing
 export const listWorktreeFiles = (taskId: string) =>
