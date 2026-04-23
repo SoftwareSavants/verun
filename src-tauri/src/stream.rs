@@ -1820,12 +1820,18 @@ pub async fn stream_and_capture_rpc(
                             //   - Anything else falls back to JSON-RPC
                             //     method-not-found (-32601).
                             let (frame, reason) = if method == "item/tool/requestUserInput" {
+                                // `ToolRequestUserInputResponse.answers` is a
+                                // `Record<questionId, {answers: string[]}>`,
+                                // not an array. Auto-deny is an empty map
+                                // (matches t3code's
+                                // `CodexSessionRuntime.ts`:`toCodexUserInputAnswers`
+                                // for zero questions).
                                 (
                                     serde_json::json!({
                                         "id": id,
-                                        "result": { "answers": [] },
+                                        "result": { "answers": {} },
                                     }),
-                                    "auto-deny with empty answers",
+                                    "auto-deny with empty answers map",
                                 )
                             } else {
                                 (
