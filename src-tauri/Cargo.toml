@@ -19,7 +19,6 @@ tauri-plugin-shell = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
-tauri-plugin-notifications = { version = "0.4", default-features = false }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tokio = { version = "1", features = ["full"] }
@@ -37,6 +36,18 @@ grep-matcher = "0.1"
 notify = "7"
 notify-debouncer-mini = "0.5"
 yash-syntax = "0.19"
+
+# macOS: native UNUserNotificationCenter (click routing + Notification Center clearing).
+# The plugin's build.rs invokes `swift build` with no --arch flag, so Swift compiles for the
+# host CPU only — the Intel build therefore has to run on an actual Intel runner
+# (`macos-15-intel`) rather than cross-compiling from `macos-26` (arm).
+#
+# Linux / Windows: the plugin has no native branch without `notify-rust`, so we enable it.
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-plugin-notifications = { version = "0.4", default-features = false }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tauri-plugin-notifications = { version = "0.4", default-features = false, features = ["notify-rust"] }
 
 [dev-dependencies]
 rstest = "0.18"

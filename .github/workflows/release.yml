@@ -112,7 +112,7 @@ jobs:
   build-macos-intel:
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
-    runs-on: macos-26
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
