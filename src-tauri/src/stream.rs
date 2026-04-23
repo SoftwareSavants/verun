@@ -1810,11 +1810,30 @@ pub async fn stream_and_capture_rpc(
                             "[verun][codex-rpc][{session_id}] <- req {method} id={id}"
                         );
                         if !is_codex_approval_method(&method) {
-                            // Unknown server request — auto-deny with a
-                            // best-effort response so the CLI isn't blocked.
+                            // Unknown server-originated request (e.g.
+                            // `item/tool/requestUserInput` for which Verun has
+                            // no UI). Send back a JSON-RPC method-not-found
+                            // error so the CLI doesn't sit waiting on the
+                            // response forever — silently continuing here
+                            // previously left turns stuck.
                             eprintln!(
-                                "[verun][codex-rpc][{session_id}] unhandled server request method: {method}"
+                                "[verun][codex-rpc][{session_id}] unhandled server request method: {method} — replying method-not-found"
                             );
+                            let frame = serde_json::json!({
+                                "id": id,
+                                "error": {
+                                    "code": -32601,
+                                    "message": format!("Method not supported: {method}"),
+                                },
+                            });
+                            if let Ok(mut bytes) = serde_json::to_vec(&frame) {
+                                bytes.push(b'\n');
+                                let mut guard = stdin.lock().await;
+                                if let Some(writer) = guard.as_mut() {
+                                    let _ = writer.write_all(&bytes).await;
+                                    let _ = writer.flush().await;
+                                }
+                            }
                             continue;
                         }
 

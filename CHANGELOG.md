@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix Codex turns stalling after `item/tool/requestUserInput` — unrecognized server-originated JSON-RPC requests now get a `-32601` method-not-found response instead of silently being ignored, so `codex app-server` stops waiting and the turn completes (Verun still lacks UI for the multi-question user-input flow; this is the phase-1 deny)
 - Codex plans no longer render as raw chat text — deltas stream live into the same Claude-style Plan Review overlay (approve / request changes), and on completion the plan is persisted to `<worktree>/.verun/plans/plan-<ts>-<id>.md` so reopening the session restores the viewer via the existing `planFilePath` flow
 - Fix steer (cmd+enter while busy) silently failing: the inline abort+send raced the in-flight interrupt and hit Rust's busy guard, leaving Claude running while the UI flipped to idle; steer now queues the new message as an armed step and lets the `session-aborted` listener dispatch it after graceful shutdown
 - Hook and start-command inputs (Settings and Add Project dialog) now autocomplete `$VERUN_*` env vars - typing `$` surfaces `$VERUN_REPO_PATH` and `$VERUN_PORT_0..9` with descriptions so you don't have to remember the exact names
