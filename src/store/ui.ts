@@ -1,4 +1,5 @@
 import { createSignal } from 'solid-js'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { registerWindowedTaskChecker } from '../lib/windowContext'
 import { pendingSessionNavForTask, selectedSessionForTask, setPendingSessionNavForTask, setSelectedSessionForTask, setTerminalOpenForTask, terminalOpenForTask } from './taskContext'
 import { openTaskWindow } from '../lib/ipc'
@@ -140,6 +141,16 @@ export function requestNewTaskForProject(projectId: string) {
 }
 
 export const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null)
+
+// Open the native directory picker and route the selected path through the
+// AddProjectDialog (by setting addProjectPath). Every "add project" entry point
+// must go through this so users always see the hooks / start-command dialog
+// before the New Task dialog opens on success.
+export async function pickAndAddProject() {
+  const selected = await openDialog({ directory: true, multiple: false })
+  if (selected) setAddProjectPath(selected as string)
+}
+
 export const [showSettings, setShowSettings] = createSignal(false)
 export const [showArchived, setShowArchived] = createSignal(false)
 export const [showQuickOpen, setShowQuickOpen] = createSignal(false)

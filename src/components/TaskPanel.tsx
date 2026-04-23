@@ -1,8 +1,7 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionId, setSelectedProjectId, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth, consumePendingSessionNav, getLastSessionForTask, requestNewTaskForProject } from '../store/ui'
+import { selectedTaskId, selectedSessionId, setSelectedSessionId, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth, consumePendingSessionNav, getLastSessionForTask, pickAndAddProject } from '../store/ui'
 import { refitActiveTerminal, setActiveTerminalForTask, startCommandTerminalId, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
-import { projects, addProject, projectById } from '../store/projects'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { projects, projectById } from '../store/projects'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask, restoreTask } from '../store/tasks'
 import { isSetupRunning, setupFailed, setupError } from '../store/setup'
 import { sessionsForTask, outputItems, sessionById, createSession, abortMessage, closeSession, loadSessions, loadOutputLines, sessionCosts, reopenSession } from '../store/sessions'
@@ -292,18 +291,7 @@ export const TaskPanel: Component = () => {
                     </p>
                     <button
                       class="btn-primary text-xs"
-                      onClick={async () => {
-                        const selected = await openDialog({ directory: true, multiple: false })
-                        if (!selected) return
-                        try {
-                          const project = await addProject(selected as string)
-                          setSelectedProjectId(project.id)
-                          addToast(`Added ${project.name}`, 'success')
-                          requestNewTaskForProject(project.id)
-                        } catch (e) {
-                          addToast(String(e), 'error')
-                        }
-                      }}
+                      onClick={pickAndAddProject}
                     >
                       Add Project <kbd class="ml-1.5 px-1 py-0.5 rounded bg-outline/8 text-[10px] font-mono">{'\u2318'}O</kbd>
                     </button>
