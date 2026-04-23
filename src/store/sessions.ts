@@ -8,7 +8,12 @@ import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
 import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
 import { deserializeAttachments } from '../lib/binary'
-import { clearSessionContext } from './sessionContext'
+import {
+  appendCodexLivePlanDelta,
+  clearCodexLivePlan,
+  clearSessionContext,
+  setPlanFilePathForSession,
+} from './sessionContext'
 
 const MAX_ITEMS_IN_MEMORY = 50_000
 
@@ -345,6 +350,19 @@ export async function initSessionListeners() {
             }
           }))
         }
+      } else if (item.kind === 'codexPlanDelta') {
+        appendCodexLivePlanDelta(sessionId, item.itemId, item.delta)
+      } else if (item.kind === 'codexPlanReady') {
+        // Flip from live streaming → file-backed viewer. MessageInput's
+        // existing effect watches `planFilePathForSession` and reads the
+        // markdown off disk so it restores on session reopen for free.
+        clearCodexLivePlan(sessionId)
+        if (item.filePath) {
+          setPlanFilePathForSession(sessionId, item.filePath)
+        }
+      } else if (item.kind === 'userMessage') {
+        // A new user turn invalidates any unresolved plan buffer.
+        clearCodexLivePlan(sessionId)
       }
     }
   })

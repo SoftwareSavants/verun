@@ -96,6 +96,25 @@ pub enum OutputItem {
     #[serde(rename_all = "camelCase")]
     DiffUpdate { diff: String },
 
+    /// Live-streaming chunk of a Codex plan-mode `<proposed_plan>` body.
+    /// Emitted from `item/plan/delta`; the frontend accumulates these into a
+    /// plan viewer that pops open on first delta. Deltas are NOT written to
+    /// the chat transcript (the authoritative text arrives via
+    /// `CodexPlanReady`).
+    #[serde(rename_all = "camelCase")]
+    CodexPlanDelta { item_id: String, delta: String },
+
+    /// Authoritative completion of a Codex plan item. Emitted from
+    /// `item/completed` with `type: "plan"`. `filePath` points at the
+    /// persisted `.md` file (written under `<worktree>/.verun/plans/`) that
+    /// the frontend can re-read on session restore.
+    #[serde(rename_all = "camelCase")]
+    CodexPlanReady {
+        item_id: String,
+        text: String,
+        file_path: Option<String>,
+    },
+
     /// Raw line (fallback for unrecognized events)
     #[serde(rename_all = "camelCase")]
     Raw { text: String },
@@ -689,20 +708,28 @@ pub fn process_codex_rpc_notification(
                 }]
             })
             .unwrap_or_default(),
-        // Plan-mode streams the `<proposed_plan>...</proposed_plan>` body as a
-        // dedicated `plan` ThreadItem with its own delta channel. Stream those
-        // deltas as assistant Text so they render inline; the terminal
-        // `item/completed` frame is swallowed below.
-        "item/plan/delta" => params
-            .get("delta")
-            .and_then(|d| d.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|text| {
-                vec![OutputItem::Text {
-                    text: text.to_string(),
-                }]
-            })
-            .unwrap_or_default(),
+        // Plan-mode streams the `<proposed_plan>...</proposed_plan>` body
+        // through a dedicated `plan` ThreadItem. Emit deltas as a distinct
+        // variant so the frontend can accumulate them into a live plan
+        // viewer overlay instead of the chat transcript.
+        "item/plan/delta" => {
+            let item_id = params
+                .get("itemId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            params
+                .get("delta")
+                .and_then(|d| d.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|text| {
+                    vec![OutputItem::CodexPlanDelta {
+                        item_id: item_id.clone(),
+                        delta: text.to_string(),
+                    }]
+                })
+                .unwrap_or_default()
+        }
 
         // -- Item lifecycle (command / tool / file change / file read) --
         // Live `codex app-server` (>= 0.120) emits camelCase item types
@@ -751,12 +778,33 @@ pub fn process_codex_rpc_notification(
                 // re-emitting the final text here would render the assistant
                 // reply twice. Swallow the completion frame.
                 "agentMessage" | "agent_message" => vec![],
-                // `plan` items stream via `item/plan/delta` (see above). The
-                // completion frame carries the authoritative text but the
-                // schema warns concatenated deltas may not match exactly;
-                // swallowing it avoids a duplicate render and keeps parity
-                // with `agentMessage`.
-                "plan" => vec![],
+                // `plan` items stream via `item/plan/delta`; the completion
+                // frame carries the authoritative text. Emit it as
+                // `CodexPlanReady` so the caller (which has worktree context)
+                // can persist the markdown and the frontend can flip the
+                // live plan viewer into the "approve / request changes"
+                // resolution state.
+                "plan" => {
+                    let item_id = item
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let text = item
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if text.is_empty() {
+                        vec![]
+                    } else {
+                        vec![OutputItem::CodexPlanReady {
+                            item_id,
+                            text,
+                            file_path: None,
+                        }]
+                    }
+                }
                 "commandExecution" | "command_execution" => {
                     let output = item
                         .get("aggregatedOutput")
@@ -1649,6 +1697,10 @@ pub async fn stream_and_capture_rpc(
     // `abort_message`. The stream loop clears it on `turn/completed` so the
     // next abort cannot target a stale (already-finished) turn id.
     current_turn_id: Arc<TokioMutex<Option<String>>>,
+    // Worktree path — used to persist Codex plan-mode proposals as markdown
+    // under `<worktree>/.verun/plans/` so restoring the session can re-open
+    // them via the existing `planFilePathForSession` flow.
+    worktree_path: std::path::PathBuf,
 ) -> StreamResult {
     let mut buffer: Vec<OutputItem> = Vec::new();
     let mut last_flush = Instant::now();
@@ -1687,13 +1739,16 @@ pub async fn stream_and_capture_rpc(
                         let items: Vec<OutputItem> = raw_items
                             .into_iter()
                             .map(|it| patch_turn_end_with_usage(it, &last_token_usage))
+                            .map(|it| persist_codex_plan_if_ready(it, &worktree_path))
                             .collect();
                         let mut has_immediate = false;
                         let mut is_turn_end = false;
 
                         for item in &items {
                             match item {
-                                OutputItem::Text { .. } | OutputItem::Thinking { .. } => {
+                                OutputItem::Text { .. }
+                                | OutputItem::Thinking { .. }
+                                | OutputItem::CodexPlanDelta { .. } => {
                                     if !buffer.is_empty() {
                                         flush_buffer(&app, &session_id, &mut buffer);
                                     }
@@ -2201,6 +2256,73 @@ pub fn patch_turn_end_with_usage(
             error,
         },
         (item, _) => item,
+    }
+}
+
+/// Persist a finalized Codex plan-mode proposal to
+/// `<worktree>/.verun/plans/plan-<YYYYMMDD-HHmmss>.md`. Returns the absolute
+/// path on success. Errors are non-fatal — the caller surfaces the plan in
+/// the viewer either way, the file is just for restore / user reference.
+pub fn persist_codex_plan_markdown(
+    worktree_path: &Path,
+    item_id: &str,
+    text: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    let dir = worktree_path.join(".verun").join("plans");
+    std::fs::create_dir_all(&dir)?;
+    // Use Unix epoch seconds for a stable, sortable, dependency-free stamp;
+    // the frontend formats it for display.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // itemId tail keeps colliding timestamps separable while staying
+    // readable; Codex item ids look like `item_...` (~20+ chars).
+    let suffix: String = item_id
+        .chars()
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let filename = if suffix.is_empty() {
+        format!("plan-{ts}.md")
+    } else {
+        format!("plan-{ts}-{suffix}.md")
+    };
+    let path = dir.join(filename);
+    std::fs::write(&path, text)?;
+    Ok(path)
+}
+
+/// Fill in `file_path` on a `CodexPlanReady` item by writing the plan
+/// markdown under the worktree. Leaves non-`CodexPlanReady` items untouched.
+pub fn persist_codex_plan_if_ready(item: OutputItem, worktree_path: &Path) -> OutputItem {
+    match item {
+        OutputItem::CodexPlanReady {
+            item_id,
+            text,
+            file_path,
+        } => {
+            let resolved = file_path.or_else(|| {
+                match persist_codex_plan_markdown(worktree_path, &item_id, &text) {
+                    Ok(p) => Some(p.to_string_lossy().into_owned()),
+                    Err(e) => {
+                        eprintln!(
+                            "[verun][codex-rpc] failed to persist plan markdown: {e}"
+                        );
+                        None
+                    }
+                }
+            });
+            OutputItem::CodexPlanReady {
+                item_id,
+                text,
+                file_path: resolved,
+            }
+        }
+        other => other,
     }
 }
 
@@ -2814,10 +2936,11 @@ mod tests {
     }
 
     #[test]
-    fn rpc_item_plan_delta_streams_text() {
-        // Codex plan-mode emits `<proposed_plan>...</proposed_plan>` via the
-        // dedicated `item/plan/delta` channel (not `item/agentMessage/delta`);
-        // without this handler the plan body never reaches the UI.
+    fn rpc_item_plan_delta_streams_codex_plan_delta() {
+        // Codex plan-mode emits `<proposed_plan>...</proposed_plan>` via a
+        // dedicated `item/plan/delta` channel. The delta is routed into a
+        // live plan viewer overlay, NOT the chat transcript, so the
+        // authoritative completion text doesn't duplicate the stream.
         let params = serde_json::json!({
             "delta": "<proposed_plan>",
             "itemId": "p1",
@@ -2827,8 +2950,11 @@ mod tests {
         let items = process_codex_rpc_notification("item/plan/delta", &params);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::Text { text } => assert_eq!(text, "<proposed_plan>"),
-            other => panic!("expected Text, got {other:?}"),
+            OutputItem::CodexPlanDelta { item_id, delta } => {
+                assert_eq!(item_id, "p1");
+                assert_eq!(delta, "<proposed_plan>");
+            }
+            other => panic!("expected CodexPlanDelta, got {other:?}"),
         }
     }
 
@@ -2845,9 +2971,11 @@ mod tests {
     }
 
     #[test]
-    fn rpc_item_completed_plan_is_swallowed() {
-        // Deltas have already streamed the plan text; re-emitting the
-        // authoritative `text` on completion would render it twice.
+    fn rpc_item_completed_plan_emits_codex_plan_ready() {
+        // The `plan` ThreadItem's `text` is the authoritative plan body;
+        // the frontend uses it to finalize the live viewer (deltas may not
+        // match concat per schema). The caller fills `filePath` after
+        // persisting the markdown.
         let params = serde_json::json!({
             "item": {
                 "id": "p1",
@@ -2858,7 +2986,69 @@ mod tests {
             "turnId": "u",
         });
         let items = process_codex_rpc_notification("item/completed", &params);
-        assert!(items.is_empty(), "plan item must not double-emit");
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::CodexPlanReady { item_id, text, file_path } => {
+                assert_eq!(item_id, "p1");
+                assert!(text.contains("design it"));
+                assert!(file_path.is_none(), "filePath is filled by the stream loop after writing");
+            }
+            other => panic!("expected CodexPlanReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_item_completed_plan_empty_text_is_swallowed() {
+        let params = serde_json::json!({
+            "item": {"id": "p1", "type": "plan", "text": ""},
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/completed", &params);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn persist_codex_plan_markdown_writes_under_verun_plans() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = persist_codex_plan_markdown(
+            tmp.path(),
+            "item_abcdef",
+            "<proposed_plan>hello</proposed_plan>",
+        )
+        .expect("write plan");
+        assert!(path.starts_with(tmp.path().join(".verun").join("plans")));
+        assert!(path.extension().and_then(|e| e.to_str()) == Some("md"));
+        let contents = std::fs::read_to_string(&path).expect("read back");
+        assert!(contents.contains("hello"));
+    }
+
+    #[test]
+    fn persist_codex_plan_if_ready_fills_file_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let item = OutputItem::CodexPlanReady {
+            item_id: "item_xyz".into(),
+            text: "body".into(),
+            file_path: None,
+        };
+        match persist_codex_plan_if_ready(item, tmp.path()) {
+            OutputItem::CodexPlanReady { file_path, .. } => {
+                let path = file_path.expect("filePath populated");
+                assert!(path.contains(".verun/plans/plan-"));
+                assert!(std::path::Path::new(&path).exists());
+            }
+            other => panic!("expected CodexPlanReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn persist_codex_plan_if_ready_leaves_other_items_untouched() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let item = OutputItem::Text { text: "hi".into() };
+        match persist_codex_plan_if_ready(item, tmp.path()) {
+            OutputItem::Text { text } => assert_eq!(text, "hi"),
+            other => panic!("expected Text, got {other:?}"),
+        }
     }
 
     #[test]

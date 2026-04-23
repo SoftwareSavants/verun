@@ -146,6 +146,8 @@ export type OutputItem =
   | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; data: Uint8Array }>; timestamp?: number }
   | { kind: 'planUpdate'; items: PlanStep[]; explanation?: string }
   | { kind: 'diffUpdate'; diff: string }
+  | { kind: 'codexPlanDelta'; itemId: string; delta: string }
+  | { kind: 'codexPlanReady'; itemId: string; text: string; filePath?: string }
   | { kind: 'raw'; text: string }
 
 export interface SessionOutputEvent {

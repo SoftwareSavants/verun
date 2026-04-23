@@ -1702,6 +1702,7 @@ async fn spawn_codex_app_server_session(
             monitor_db_tx.clone(),
             &*monitor_agent,
             monitor_current_turn_id,
+            monitor_wt.clone().into(),
         )
         .await;
 

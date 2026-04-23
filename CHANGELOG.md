@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Codex plans no longer render as raw chat text — deltas stream live into the same Claude-style Plan Review overlay (approve / request changes), and on completion the plan is persisted to `<worktree>/.verun/plans/plan-<ts>-<id>.md` so reopening the session restores the viewer via the existing `planFilePath` flow
 - Fix steer (cmd+enter while busy) silently failing: the inline abort+send raced the in-flight interrupt and hit Rust's busy guard, leaving Claude running while the UI flipped to idle; steer now queues the new message as an armed step and lets the `session-aborted` listener dispatch it after graceful shutdown
 - Hook and start-command inputs (Settings and Add Project dialog) now autocomplete `$VERUN_*` env vars - typing `$` surfaces `$VERUN_REPO_PATH` and `$VERUN_PORT_0..9` with descriptions so you don't have to remember the exact names
 - Opening a file in a gitignored folder (e.g. `node_modules`, `dist`, `.next`) no longer auto-expands and reveals it in the file tree sidebar — reveal is gated on a cached `git check-ignore` lookup per task, so auto-open flows (Find References, Go to Definition, tab switching, global search) stay focused on source files while manual reveals still work

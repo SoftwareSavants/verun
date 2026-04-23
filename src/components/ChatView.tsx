@@ -265,6 +265,12 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         }
         break
       }
+      case 'codexPlanDelta':
+      case 'codexPlanReady':
+        // Codex plan-mode content lives in the floating plan viewer, not the
+        // chat transcript. `sessions.ts` routes these into
+        // `codexLivePlans` / `planFilePathForSession` instead.
+        break
       case 'raw':
         break
     }
