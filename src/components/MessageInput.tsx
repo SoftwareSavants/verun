@@ -1,6 +1,6 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
 import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
-import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession } from '../store/sessionContext'
+import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession, codexLivePlanForSession } from '../store/sessionContext'
 import { setSelectedSessionId, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
@@ -686,15 +686,24 @@ export const MessageInput: Component<Props> = (props) => {
   const [planFileContent, setPlanFileContent] = createSignal<string | null>(null)
   const [planFilePathSignal, setPlanFilePathSignal] = createSignal<string | null>(null)
 
-  // Whether to show the full plan viewer (live approval OR persisted plan file)
+  const codexLivePlanText = () => {
+    const sid = props.sessionId
+    if (!sid) return null
+    const live = codexLivePlanForSession(sid)
+    return live && live.text ? live.text : null
+  }
+
+  // Whether to show the full plan viewer (live approval, streaming Codex plan, or persisted plan file)
   const showPlanViewer = () => {
     if (planActionPending()) return false
-    // Never show while session is running (implementing)
-    if (props.isRunning && !isExitPlanMode()) return false
     if (isExitPlanMode()) return true
+    // Streaming Codex plan — show viewer even while the session is running
+    if (codexLivePlanText()) return true
+    // Never show while session is running (implementing)
+    if (props.isRunning) return false
     // No live approval — show viewer when plan file is pending and content is loaded
     const sid = props.sessionId
-    if (sid && !props.isRunning && planFilePathForSession(sid) && planFileContent()) return true
+    if (sid && planFilePathForSession(sid) && planFileContent()) return true
     return false
   }
 
@@ -745,9 +754,11 @@ export const MessageInput: Component<Props> = (props) => {
   ))
 
   const planContent = () => {
+    const live = codexLivePlanText()
+    if (live) return { plan: live, filePath: null as string | null, streaming: true }
     const content = planFileContent()
     if (!content) return null
-    return { plan: content, filePath: planFilePathSignal() }
+    return { plan: content, filePath: planFilePathSignal(), streaming: false }
   }
   const [planChanges, setPlanChanges] = createSignal('')
 
@@ -1880,31 +1891,31 @@ export const MessageInput: Component<Props> = (props) => {
             {/* Footer actions */}
             <div class="flex items-center gap-3 px-4 py-3 border-t border-border shrink-0">
               <input
-                class="flex-1 bg-surface-1 border border-border rounded-lg px-3 py-2 text-sm text-text-primary outline-none placeholder-text-dim focus:border-border-active transition-colors"
+                class="flex-1 bg-surface-1 border border-border rounded-lg px-3 py-2 text-sm text-text-primary outline-none placeholder-text-dim focus:border-border-active transition-colors disabled:opacity-60"
                 style={{ outline: 'none' }}
-                placeholder="Request changes..."
+                placeholder={plan().streaming ? 'Plan is still streaming...' : 'Request changes...'}
                 value={planChanges()}
                 onInput={(e) => setPlanChanges(e.currentTarget.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey && !planActionPending()) {
+                  if (e.key === 'Enter' && !e.shiftKey && !planActionPending() && !plan().streaming) {
                     e.preventDefault()
                     handlePlanViewerAction(planChanges().trim())
                   }
                 }}
-                disabled={planActionPending()}
+                disabled={planActionPending() || plan().streaming}
               />
               <button
                 class={clsx(
                   'px-4 py-2 rounded-lg text-sm font-medium transition-colors shrink-0',
-                  planActionPending() && 'opacity-60 cursor-not-allowed',
+                  (planActionPending() || plan().streaming) && 'opacity-60 cursor-not-allowed',
                   planChanges().trim()
                     ? 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25'
                     : 'bg-status-running/15 text-status-running hover:bg-status-running/25'
                 )}
-                disabled={planActionPending()}
+                disabled={planActionPending() || plan().streaming}
                 onClick={() => handlePlanViewerAction(planChanges().trim())}
               >
-                {planActionPending() ? 'Working...' : planChanges().trim() ? 'Send' : 'Approve'} <span class="text-text-dim ml-1">(Enter)</span>
+                {plan().streaming ? 'Streaming...' : planActionPending() ? 'Working...' : planChanges().trim() ? 'Send' : 'Approve'} <span class="text-text-dim ml-1">(Enter)</span>
               </button>
             </div>
           </div>

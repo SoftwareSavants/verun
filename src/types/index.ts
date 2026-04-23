@@ -129,6 +129,11 @@ export interface Attachment {
 
 // Structured output items from Claude's stream-json protocol
 
+export interface PlanStep {
+  status: string
+  step: string
+}
+
 export type OutputItem =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
@@ -139,6 +144,10 @@ export type OutputItem =
   | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; error?: string }
   | { kind: 'turnSnapshot'; messageUuid: string }
   | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; data: Uint8Array }>; timestamp?: number }
+  | { kind: 'planUpdate'; items: PlanStep[]; explanation?: string }
+  | { kind: 'diffUpdate'; diff: string }
+  | { kind: 'codexPlanDelta'; itemId: string; delta: string }
+  | { kind: 'codexPlanReady'; itemId: string; text: string; filePath?: string }
   | { kind: 'raw'; text: string }
 
 export interface SessionOutputEvent {
@@ -267,6 +276,7 @@ export interface PrInfo {
   url: string
   state: string
   title: string
+  body?: string
   mergeable: string
   isDraft: boolean
   body?: string

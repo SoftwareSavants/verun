@@ -6,7 +6,7 @@ use crate::worktree;
 use dashmap::DashMap;
 use serde::Deserialize;
 use sqlx::SqlitePool;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -208,6 +208,21 @@ pub struct ActiveProcess {
     /// request — so any change forces a respawn.
     pub current_thinking_mode: bool,
     pub current_fast_mode: bool,
+    /// Codex app-server thread id. `None` for non-RPC agents. Populated from
+    /// the `thread/started` notification during spawn.
+    pub codex_thread_id: Option<String>,
+    /// Request-id → response-oneshot map for the Codex app-server session.
+    /// `None` for non-RPC agents. The reader task writes to this; the main
+    /// thread reads via `register_pending`.
+    pub codex_pending: Option<crate::agent::codex_rpc::PendingRpcResponses>,
+    /// Monotonic request-id source for RPC calls. `None` for non-RPC agents.
+    pub codex_next_id: Option<Arc<AtomicI64>>,
+    /// Codex app-server turn id for the currently-in-flight turn. `None` when
+    /// no turn is running (idle, pre-warm, or after `turn/completed`). Set
+    /// from the `turn/start` response (`result.turn.id`) and cleared on
+    /// `turn/completed`. `turn/interrupt` requires this — sending just the
+    /// thread id fails with `Invalid request: missing field turnId`.
+    pub codex_current_turn_id: Option<Arc<TokioMutex<Option<String>>>>,
 }
 
 /// session_id → currently running claude process (only while processing a message)
@@ -953,6 +968,14 @@ pub async fn send_message(
                 send_set_permission_mode: bool,
                 send_set_model: bool,
             },
+            GoRpc {
+                stdin: Arc<TokioMutex<Option<ChildStdin>>>,
+                busy: Arc<AtomicBool>,
+                thread_id: String,
+                pending: crate::agent::codex_rpc::PendingRpcResponses,
+                next_id: Arc<AtomicI64>,
+                current_turn_id: Arc<TokioMutex<Option<String>>>,
+            },
             Respawn,
             Spawn,
         }
@@ -972,6 +995,32 @@ pub async fn send_message(
                 {
                     drop(entry);
                     FastPath::Respawn
+                } else if agent.uses_app_server() {
+                    let thread_id = entry.codex_thread_id.clone().ok_or_else(|| {
+                        "Codex RPC session missing thread id — cannot reuse process".to_string()
+                    })?;
+                    let pending = entry.codex_pending.clone().ok_or_else(|| {
+                        "Codex RPC session missing pending map — cannot reuse process".to_string()
+                    })?;
+                    let next_id = entry.codex_next_id.clone().ok_or_else(|| {
+                        "Codex RPC session missing request id counter — cannot reuse process"
+                            .to_string()
+                    })?;
+                    let current_turn_id =
+                        entry.codex_current_turn_id.clone().ok_or_else(|| {
+                            "Codex RPC session missing current-turn slot — cannot reuse process"
+                                .to_string()
+                        })?;
+                    entry.current_permission_mode = want_permission_mode.to_string();
+                    entry.current_model.clone_from(&model);
+                    FastPath::GoRpc {
+                        stdin: entry.stdin.clone(),
+                        busy: entry.busy.clone(),
+                        thread_id,
+                        pending,
+                        next_id,
+                        current_turn_id,
+                    }
                 } else {
                     let send_set_permission_mode =
                         entry.current_permission_mode != want_permission_mode;
@@ -1053,6 +1102,93 @@ pub async fn send_message(
                 }
                 write_to_stdin(&stdin, &user_bytes).await?;
                 busy.store(true, Ordering::SeqCst);
+                let _ = db_tx
+                    .send(db::DbWrite::UpdateSessionStatus {
+                        id: session_id.clone(),
+                        status: "running".to_string(),
+                    })
+                    .await;
+                let _ = app.emit(
+                    "session-status",
+                    stream::SessionStatusEvent {
+                        session_id,
+                        status: "running".to_string(),
+                        error: None,
+                    },
+                );
+                return Ok(());
+            }
+            FastPath::GoRpc {
+                stdin,
+                busy,
+                thread_id,
+                pending,
+                next_id,
+                current_turn_id,
+            } => {
+                use crate::agent::codex_rpc;
+                persist_verun_user_message(
+                    db_tx,
+                    &session_id,
+                    &message,
+                    &attachments,
+                    plan_mode,
+                    thinking_mode,
+                    fast_mode,
+                )
+                .await;
+                spawn_session_title_generation(
+                    app.clone(),
+                    db_tx.clone(),
+                    session_id.clone(),
+                    task_id.clone(),
+                    message.clone(),
+                    worktree_path.clone(),
+                    is_first_turn,
+                    task_name.is_none(),
+                );
+
+                let effort = effort_from_flags(thinking_mode, fast_mode);
+                let image_urls: Vec<String> = attachments
+                    .iter()
+                    .filter_map(|a| {
+                        if a.mime_type.starts_with("image/") {
+                            Some(format!("data:{};base64,{}", a.mime_type, a.data_base64))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let turn_id = codex_rpc::next_request_id(&next_id);
+                let turn_bytes = agent.encode_rpc_turn_start(
+                    turn_id,
+                    &crate::agent::CodexRpcTurnStartParams {
+                        thread_id: &thread_id,
+                        prompt: &message,
+                        image_urls: &image_urls,
+                        trust_level,
+                        model: model.as_deref(),
+                        effort: effort.as_deref(),
+                        plan_mode,
+                    },
+                )?;
+                // Clear the stale turn id from the previous turn before we
+                // dispatch the new one — otherwise `abort_message` racing
+                // ahead of `turn/start`'s response would send `turn/interrupt`
+                // targeting the *previous* turn, leaving the real in-flight
+                // turn running while the UI flipped to idle.
+                *current_turn_id.lock().await = None;
+                let turn_rx = codex_rpc::register_pending(&pending, turn_id);
+                codex_rpc::write_frame(&stdin, &turn_bytes).await?;
+                busy.store(true, Ordering::SeqCst);
+                spawn_turn_start_response_watcher(
+                    app.clone(),
+                    db_tx.clone(),
+                    session_id.clone(),
+                    busy.clone(),
+                    current_turn_id.clone(),
+                    turn_rx,
+                );
                 let _ = db_tx
                     .send(db::DbWrite::UpdateSessionStatus {
                         id: session_id.clone(),
@@ -1288,21 +1424,26 @@ pub struct SpawnSessionParams {
     pub prewarm: bool,
 }
 
-/// Spawn a new CLI process for this session and start the stream monitor.
+/// Spawn a `codex app-server` subprocess and bootstrap the JSON-RPC
+/// session. Handles `initialize` → `initialized` → `thread/{start,resume}` →
+/// (optional `turn/start`) before registering the process in `active` and
+/// kicking off the RPC stream monitor.
 ///
-/// Registers the child in `active` with `busy = !prewarm` (pre-warm leaves
-/// the process idle). The caller is responsible for persisting the user
-/// message and kicking off title generation.
+/// Called from `spawn_session_process` when `agent.uses_app_server()` is
+/// true. Short-circuits the Claude-style path entirely — no stream-json
+/// user message, no control_request plumbing.
 #[allow(clippy::too_many_arguments)]
-pub async fn spawn_session_process(
+async fn spawn_codex_app_server_session(
     app: AppHandle,
     db_tx: DbWriteTx,
     active: ActiveMap,
     pending_approvals: PendingApprovals,
     pending_approval_meta: PendingApprovalMeta,
-    pending_control_responses: PendingControlResponses,
+    agent: Box<dyn crate::agent::Agent>,
     params: SpawnSessionParams,
 ) -> Result<(), String> {
+    use crate::agent::codex_rpc;
+
     let SpawnSessionParams {
         session_id,
         task_id,
@@ -1322,7 +1463,499 @@ pub async fn spawn_session_process(
         prewarm,
     } = params;
 
-    let agent = AgentKind::parse(&agent_type).implementation();
+    let args_list = agent.build_session_args(&crate::agent::SessionArgs {
+        resume_session_id: None,
+        model: model.as_deref(),
+        plan_mode,
+        thinking_mode,
+        fast_mode,
+        trust_level,
+        worktree_path: &worktree_path,
+        repo_path: &repo_path,
+        message: &message,
+    });
+
+    eprintln!(
+        "[verun][{}] spawn (app-server{}): {} {}",
+        agent.display_name(),
+        if prewarm { ", prewarm" } else { "" },
+        agent.cli_binary(),
+        args_list.join(" ")
+    );
+    eprintln!("[verun][{}] cwd: {}", agent.display_name(), worktree_path);
+
+    let mut cmd = tokio::process::Command::new(agent.cli_binary());
+    cmd.args(&args_list);
+    for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
+        cmd.env(&k, &v);
+    }
+    cmd.env_remove("CLAUDECODE");
+    cmd.env("CLAUDE_CODE_ENTRYPOINT", "verun");
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .current_dir(&worktree_path);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn {}: {e}", agent.display_name()))?;
+    eprintln!(
+        "[verun][{}] spawned pid={:?}",
+        agent.display_name(),
+        child.id()
+    );
+
+    let stdin_handle = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to capture stdin".to_string())?;
+    let stdin = Arc::new(TokioMutex::new(Some(stdin_handle)));
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture stdout".to_string())?;
+
+    if let Some(stderr) = child.stderr.take() {
+        let agent_name = agent.display_name().to_string();
+        let sid = session_id.clone();
+        tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(stderr);
+            let mut line = String::new();
+            while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                let trimmed = line.trim_end();
+                if !trimmed.is_empty() {
+                    eprintln!("[verun][{agent_name}][stderr][{sid}] {trimmed}");
+                }
+                line.clear();
+            }
+        });
+    }
+
+    let pending = codex_rpc::new_pending_rpc_responses();
+    let next_id = Arc::new(AtomicI64::new(1));
+    let (events_tx, events_rx) =
+        tokio::sync::mpsc::unbounded_channel::<codex_rpc::CodexRpcEvent>();
+    codex_rpc::spawn_reader(stdout, pending.clone(), events_tx);
+
+    // -- 1. initialize + initialized --
+    let init_id = codex_rpc::next_request_id(&next_id);
+    let init_bytes = agent.encode_rpc_initialize(
+        init_id,
+        &crate::agent::CodexRpcClientInfo {
+            name: "verun",
+            version: env!("CARGO_PKG_VERSION"),
+        },
+    )?;
+    codex_rpc::call(&stdin, &pending, init_id, &init_bytes)
+        .await
+        .map_err(|e| format!("codex initialize failed: {e}"))?;
+    let initialized = agent.encode_rpc_initialized_notification()?;
+    codex_rpc::write_frame(&stdin, &initialized).await?;
+
+    // -- 2. thread/start (with thread/resume fallback on recoverable err) --
+    let resume = resume_session_id.as_deref().filter(|s| !s.is_empty());
+    let thread_id: String = if let Some(rid) = resume {
+        let rid_owned = rid.to_string();
+        let resume_id = codex_rpc::next_request_id(&next_id);
+        let resume_bytes = agent.encode_rpc_thread_resume(
+            resume_id,
+            &crate::agent::CodexRpcThreadResumeParams {
+                thread_id: &rid_owned,
+                cwd: &worktree_path,
+                trust_level,
+            },
+        )?;
+        match codex_rpc::call(&stdin, &pending, resume_id, &resume_bytes).await {
+            Ok(_) => rid_owned,
+            Err(err) if codex_rpc::is_recoverable_thread_resume_error(&err.message) => {
+                eprintln!(
+                    "[verun][codex-rpc][{session_id}] thread/resume recoverable, falling back to thread/start: {err}"
+                );
+                start_new_thread(&*agent, &stdin, &pending, &next_id, &worktree_path, trust_level, model.as_deref()).await?
+            }
+            Err(err) => return Err(format!("codex thread/resume failed: {err}")),
+        }
+    } else {
+        start_new_thread(&*agent, &stdin, &pending, &next_id, &worktree_path, trust_level, model.as_deref()).await?
+    };
+
+    // Persist the thread id immediately — no waiting for turn end.
+    let _ = db_tx
+        .send(db::DbWrite::SetResumeSessionId {
+            id: session_id.clone(),
+            resume_session_id: thread_id.clone(),
+        })
+        .await;
+
+    let busy = Arc::new(AtomicBool::new(!prewarm));
+    let current_turn_id: Arc<TokioMutex<Option<String>>> = Arc::new(TokioMutex::new(None));
+
+    // -- 3. turn/start (unless prewarming) --
+    if !prewarm {
+        let effort = effort_from_flags(thinking_mode, fast_mode);
+        let image_urls: Vec<String> = attachments
+            .iter()
+            .filter_map(|a| {
+                if a.mime_type.starts_with("image/") {
+                    Some(format!("data:{};base64,{}", a.mime_type, a.data_base64))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let turn_id = codex_rpc::next_request_id(&next_id);
+        let turn_bytes = agent.encode_rpc_turn_start(
+            turn_id,
+            &crate::agent::CodexRpcTurnStartParams {
+                thread_id: &thread_id,
+                prompt: &message,
+                image_urls: &image_urls,
+                trust_level,
+                model: model.as_deref(),
+                effort: effort.as_deref(),
+                plan_mode,
+            },
+        )?;
+        // Register a pending slot and keep the receiver — codex app-server
+        // resolves `turn/start` synchronously with the Codex turn id
+        // (`result.turn.id`), so the watcher populates
+        // `codex_current_turn_id` (needed for `turn/interrupt`) on success
+        // and surfaces any JSON-RPC error (e.g. missing `experimentalApi`
+        // capability) on failure.
+        let turn_rx = codex_rpc::register_pending(&pending, turn_id);
+        codex_rpc::write_frame(&stdin, &turn_bytes).await?;
+        spawn_turn_start_response_watcher(
+            app.clone(),
+            db_tx.clone(),
+            session_id.clone(),
+            busy.clone(),
+            current_turn_id.clone(),
+            turn_rx,
+        );
+    }
+
+    if !prewarm {
+        let _ = db_tx
+            .send(db::DbWrite::UpdateSessionStatus {
+                id: session_id.clone(),
+                status: "running".to_string(),
+            })
+            .await;
+        let _ = app.emit(
+            "session-status",
+            stream::SessionStatusEvent {
+                session_id: session_id.clone(),
+                status: "running".to_string(),
+                error: None,
+            },
+        );
+    }
+
+    let kind = AgentKind::parse(&agent_type);
+    let trust_level_atom = Arc::new(AtomicU8::new(trust_level.to_u8()));
+    active.insert(
+        session_id.clone(),
+        ActiveProcess {
+            child,
+            task_id: task_id.clone(),
+            stdin: stdin.clone(),
+            busy: busy.clone(),
+            trust_level: trust_level_atom,
+            kind,
+            current_permission_mode: if plan_mode { "plan" } else { "default" }.to_string(),
+            current_model: model.clone(),
+            current_thinking_mode: thinking_mode,
+            current_fast_mode: fast_mode,
+            codex_thread_id: Some(thread_id),
+            codex_pending: Some(pending),
+            codex_next_id: Some(next_id),
+            codex_current_turn_id: Some(current_turn_id.clone()),
+        },
+    );
+
+    // -- 4. Monitor: drive the RPC event stream, then clean up on reader close --
+    let monitor_app = app.clone();
+    let monitor_db_tx = db_tx.clone();
+    let monitor_sid = session_id.clone();
+    let monitor_tid = task_id.clone();
+    let monitor_pid = project_id.clone();
+    let monitor_active = active.clone();
+    let monitor_pending = pending_approvals;
+    let monitor_pending_meta = pending_approval_meta;
+    let monitor_wt = worktree_path.clone();
+    let monitor_agent = AgentKind::parse(&agent_type).implementation();
+    let monitor_busy = busy.clone();
+    let monitor_stdin = stdin;
+    let monitor_current_turn_id = current_turn_id;
+    tokio::spawn(async move {
+        let wt_for_hooks = monitor_wt.clone();
+        let stream_result = stream::stream_and_capture_rpc(
+            monitor_app.clone(),
+            monitor_sid.clone(),
+            monitor_tid.clone(),
+            events_rx,
+            monitor_stdin,
+            monitor_busy,
+            monitor_pending,
+            monitor_pending_meta,
+            monitor_db_tx.clone(),
+            &*monitor_agent,
+            monitor_current_turn_id,
+            monitor_wt.clone().into(),
+        )
+        .await;
+
+        if stream_result.total_cost > 0.0 {
+            let _ = monitor_db_tx
+                .send(db::DbWrite::AccumulateSessionCost {
+                    id: monitor_sid.clone(),
+                    cost: stream_result.total_cost,
+                })
+                .await;
+        }
+
+        let status = if let Some((_, mut proc)) = monitor_active.remove(&monitor_sid) {
+            let exit_status = proc.child.wait().await.ok();
+            let exit_code = exit_status.as_ref().and_then(|s| s.code());
+            eprintln!(
+                "[verun][codex-rpc][{monitor_sid}] exited code={exit_code:?}"
+            );
+            stream::map_exit_status(exit_code)
+        } else {
+            return;
+        };
+
+        let config_path = format!("{wt_for_hooks}/.verun.json");
+        if let Some((setup, destroy, start)) = parse_verun_config_file(&config_path) {
+            let auto_start =
+                if let Some(pool) = monitor_app.try_state::<sqlx::sqlite::SqlitePool>() {
+                    db::get_project(pool.inner(), &monitor_pid)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|p| p.auto_start)
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+            let _ = monitor_db_tx
+                .send(db::DbWrite::UpdateProjectHooks {
+                    id: monitor_pid.clone(),
+                    setup_hook: setup.clone(),
+                    destroy_hook: destroy.clone(),
+                    start_command: start.clone(),
+                    auto_start,
+                })
+                .await;
+            let _ = monitor_app.emit(
+                "project-hooks-updated",
+                serde_json::json!({
+                    "projectId": monitor_pid,
+                    "setupHook": setup,
+                    "destroyHook": destroy,
+                    "startCommand": start,
+                }),
+            );
+        }
+
+        let final_status = if status == "error" { "error" } else { "idle" };
+        let _ = monitor_db_tx
+            .send(db::DbWrite::UpdateSessionStatus {
+                id: monitor_sid.clone(),
+                status: final_status.to_string(),
+            })
+            .await;
+        if status == "error" {
+            let _ = monitor_db_tx
+                .send(db::DbWrite::EndSession {
+                    id: monitor_sid.clone(),
+                    ended_at: epoch_ms(),
+                })
+                .await;
+        }
+
+        let error_msg = if final_status == "error" {
+            stream_result
+                .error
+                .or_else(|| Some("Codex session exited unexpectedly".to_string()))
+        } else {
+            None
+        };
+        let _ = monitor_app.emit(
+            "session-status",
+            stream::SessionStatusEvent {
+                session_id: monitor_sid,
+                status: final_status.to_string(),
+                error: error_msg,
+            },
+        );
+        let _ = monitor_app.emit(
+            "git-status-changed",
+            stream::GitStatusChangedEvent {
+                task_id: monitor_tid,
+            },
+        );
+    });
+
+    Ok(())
+}
+
+async fn start_new_thread(
+    agent: &dyn crate::agent::Agent,
+    stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
+    pending: &crate::agent::codex_rpc::PendingRpcResponses,
+    next_id: &AtomicI64,
+    worktree_path: &str,
+    trust_level: TrustLevel,
+    model: Option<&str>,
+) -> Result<String, String> {
+    use crate::agent::codex_rpc;
+    let req_id = codex_rpc::next_request_id(next_id);
+    let bytes = agent.encode_rpc_thread_start(
+        req_id,
+        &crate::agent::CodexRpcThreadStartParams {
+            cwd: worktree_path,
+            trust_level,
+            model,
+        },
+    )?;
+    let result = codex_rpc::call(stdin, pending, req_id, &bytes)
+        .await
+        .map_err(|e| format!("codex thread/start failed: {e}"))?;
+    result
+        .pointer("/thread/id")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "codex thread/start response missing thread.id".to_string())
+}
+
+fn effort_from_flags(thinking_mode: bool, fast_mode: bool) -> Option<String> {
+    // Map Verun's thinking/fast binary knobs to a Codex reasoning effort
+    // string. Mirrors t3code's mapping in `CodexSessionRuntime`.
+    match (thinking_mode, fast_mode) {
+        (true, _) => Some("high".to_string()),
+        (_, true) => Some("low".to_string()),
+        _ => None,
+    }
+}
+
+/// Watch the JSON-RPC response for a `turn/start`.
+///
+/// codex app-server resolves `turn/start` synchronously (not at
+/// `turn/completed`): the response body is `{turn: {id, status:"inProgress", …}}`.
+/// We extract `turn.id` into `current_turn_id` so a subsequent
+/// `turn/interrupt` can carry the required `turnId`. On a JSON-RPC error
+/// (e.g. a protocol-level rejection like missing `experimentalApi`
+/// capability), we flip busy + session-status here so the UI is not stuck in
+/// `running` — the monitor would otherwise never see a `turn/completed`.
+fn spawn_turn_start_response_watcher(
+    app: AppHandle,
+    db_tx: DbWriteTx,
+    session_id: String,
+    busy: Arc<AtomicBool>,
+    current_turn_id: Arc<TokioMutex<Option<String>>>,
+    rx: tokio::sync::oneshot::Receiver<
+        Result<serde_json::Value, crate::agent::codex_rpc::JsonRpcError>,
+    >,
+) {
+    tokio::spawn(async move {
+        let err_msg = match rx.await {
+            Ok(Ok(val)) => {
+                if let Some(tid) = val
+                    .pointer("/turn/id")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string())
+                {
+                    *current_turn_id.lock().await = Some(tid);
+                }
+                return;
+            }
+            Ok(Err(err)) => err.message,
+            Err(_) => return,
+        };
+        if !busy.load(Ordering::SeqCst) {
+            return;
+        }
+        eprintln!(
+            "[verun][codex-rpc][{session_id}] turn/start failed: {err_msg}"
+        );
+        busy.store(false, Ordering::SeqCst);
+        let _ = app.emit(
+            "session-output",
+            stream::SessionOutputEvent {
+                session_id: session_id.clone(),
+                items: vec![stream::OutputItem::ErrorMessage {
+                    message: err_msg.clone(),
+                    raw: None,
+                }],
+            },
+        );
+        let _ = db_tx
+            .send(db::DbWrite::UpdateSessionStatus {
+                id: session_id.clone(),
+                status: "error".to_string(),
+            })
+            .await;
+        let _ = app.emit(
+            "session-status",
+            stream::SessionStatusEvent {
+                session_id,
+                status: "error".to_string(),
+                error: Some(err_msg),
+            },
+        );
+    });
+}
+
+/// Spawn a new CLI process for this session and start the stream monitor.
+///
+/// Registers the child in `active` with `busy = !prewarm` (pre-warm leaves
+/// the process idle). The caller is responsible for persisting the user
+/// message and kicking off title generation.
+#[allow(clippy::too_many_arguments)]
+pub async fn spawn_session_process(
+    app: AppHandle,
+    db_tx: DbWriteTx,
+    active: ActiveMap,
+    pending_approvals: PendingApprovals,
+    pending_approval_meta: PendingApprovalMeta,
+    pending_control_responses: PendingControlResponses,
+    params: SpawnSessionParams,
+) -> Result<(), String> {
+    let agent = AgentKind::parse(&params.agent_type).implementation();
+
+    if agent.uses_app_server() {
+        return spawn_codex_app_server_session(
+            app,
+            db_tx,
+            active,
+            pending_approvals,
+            pending_approval_meta,
+            agent,
+            params,
+        )
+        .await;
+    }
+
+    let SpawnSessionParams {
+        session_id,
+        task_id,
+        project_id,
+        worktree_path,
+        repo_path,
+        port_offset,
+        trust_level,
+        resume_session_id,
+        model,
+        plan_mode,
+        thinking_mode,
+        fast_mode,
+        agent_type,
+        message,
+        attachments,
+        prewarm,
+    } = params;
     let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let session_args = crate::agent::SessionArgs {
         resume_session_id: resume_id,
@@ -1405,6 +2038,17 @@ pub async fn spawn_session_process(
             drop(stdin_handle);
             Arc::new(TokioMutex::new(None::<tokio::process::ChildStdin>))
         }
+        crate::agent::InputMode::JsonRpcStdio => {
+            // Codex `app-server`: keep stdin open; the RPC client drives
+            // `initialize` → `thread/start` → `turn/start` itself. The full
+            // branch lives in the Codex-specific spawn path (Phase 4); this
+            // arm is the transitional default so the legacy flow compiles.
+            let stdin_handle = child
+                .stdin
+                .take()
+                .ok_or_else(|| "Failed to capture stdin".to_string())?;
+            Arc::new(TokioMutex::new(Some(stdin_handle)))
+        }
     };
 
     let stdout = child
@@ -1468,6 +2112,10 @@ pub async fn spawn_session_process(
             current_model: model.clone(),
             current_thinking_mode: thinking_mode,
             current_fast_mode: fast_mode,
+            codex_thread_id: None,
+            codex_pending: None,
+            codex_next_id: None,
+            codex_current_turn_id: None,
         },
     );
 
@@ -1631,32 +2279,100 @@ pub async fn abort_message(
 
     match agent.abort_strategy() {
         crate::agent::AbortStrategy::Interrupt => {
-            let stdin = match active.get(session_id) {
-                Some(entry) => entry.stdin.clone(),
+            let (stdin, rpc_state, busy) = match active.get(session_id) {
+                Some(entry) => {
+                    let rpc = if agent.uses_app_server() {
+                        match (
+                            entry.codex_thread_id.clone(),
+                            entry.codex_pending.clone(),
+                            entry.codex_next_id.clone(),
+                            entry.codex_current_turn_id.clone(),
+                        ) {
+                            (Some(tid), Some(pending), Some(next_id), Some(current_turn)) => {
+                                Some((tid, pending, next_id, current_turn))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    (entry.stdin.clone(), rpc, entry.busy.clone())
+                }
                 None => return Ok(()),
             };
-            let bytes = agent.encode_stream_interrupt(&new_control_request_id())?;
-            // Best-effort: if stdin is already closed we fall through (session will
-            // hit the regular exit path).
-            let _ = write_to_stdin(&stdin, &bytes).await;
+            let (maybe_bytes, sent_rpc_interrupt) = if let Some((
+                ref thread_id,
+                ref _pending,
+                ref next_id,
+                ref current_turn_id,
+            )) = rpc_state
+            {
+                // codex app-server requires both threadId AND turnId on
+                // `turn/interrupt`. If `turn/start`'s response hasn't yet
+                // populated the slot — either because we're mid-dispatch or
+                // because the server is still processing the first frame —
+                // we do NOT know which turn to cancel. Silently dropping the
+                // interrupt *and* flipping the session to idle would leave
+                // the real turn running under a UI that says it stopped.
+                // Instead, treat a missing turn id as "abort is in-flight,
+                // bail out and let the stream loop clear state on the real
+                // `turn/completed { status: "interrupted" }` frame".
+                let turn_id_opt = current_turn_id.lock().await.clone();
+                match turn_id_opt {
+                    Some(turn_id) => {
+                        let req_id = crate::agent::codex_rpc::next_request_id(next_id);
+                        (
+                            Some(agent.encode_rpc_turn_interrupt(req_id, thread_id, &turn_id)?),
+                            true,
+                        )
+                    }
+                    None => {
+                        eprintln!(
+                            "[verun][codex-rpc][{session_id}] abort requested before turn/start resolved — skipping interrupt and leaving busy flag set so the stream loop can clear it on turn/completed"
+                        );
+                        (None, false)
+                    }
+                }
+            } else {
+                (Some(agent.encode_stream_interrupt(&new_control_request_id())?), false)
+            };
+            if let Some(bytes) = maybe_bytes {
+                // Best-effort: if stdin is already closed we fall through
+                // (session will hit the regular exit path).
+                let _ = write_to_stdin(&stdin, &bytes).await;
+            }
 
-            let _ = db_tx
-                .send(db::DbWrite::UpdateSessionStatus {
-                    id: session_id.to_string(),
-                    status: "idle".to_string(),
-                })
-                .await;
-            let _ = app.emit(
-                "session-status",
-                stream::SessionStatusEvent {
-                    session_id: session_id.to_string(),
-                    status: "idle".to_string(),
-                    error: None,
-                },
-            );
-            // Interrupt completes on a single stdin write; no background wait.
-            // Emit session-aborted right away so the frontend drains armed steps.
-            let _ = app.emit("session-aborted", session_id.to_string());
+            // Only flip the session to idle when we actually sent an RPC
+            // interrupt (or we're on the legacy kill path, handled below).
+            // If we skipped the interrupt because the turn id was not yet
+            // known, the real turn is still running — leave busy set and
+            // let `turn/completed` drive the status.
+            if sent_rpc_interrupt || rpc_state.is_none() {
+                // Clear busy so the next send_message doesn't bounce with
+                // "already processing". The stream monitor will later see
+                // `turn/completed { status: "interrupted" }` and clear
+                // again — idempotent.
+                busy.store(false, Ordering::SeqCst);
+
+                let _ = db_tx
+                    .send(db::DbWrite::UpdateSessionStatus {
+                        id: session_id.to_string(),
+                        status: "idle".to_string(),
+                    })
+                    .await;
+                let _ = app.emit(
+                    "session-status",
+                    stream::SessionStatusEvent {
+                        session_id: session_id.to_string(),
+                        status: "idle".to_string(),
+                        error: None,
+                    },
+                );
+                // Interrupt completes on a single stdin write; no background
+                // wait. Emit session-aborted right away so the frontend
+                // drains armed steps.
+                let _ = app.emit("session-aborted", session_id.to_string());
+            }
         }
         crate::agent::AbortStrategy::Kill => {
             let Some((_, mut proc)) = active.remove(session_id) else {

@@ -12,7 +12,7 @@ Every task gets its own git worktree, branch, and set of ports - agents can't in
 
 ## Multi-agent support
 
-Pluggable agent backend with Claude Code support today, Codex and Cursor coming soon.
+Pluggable agent backend with first-class support for Claude Code and Codex (plan mode, structured approvals, streaming, resume). Cursor and other agents coming soon.
 
 ## Stay in control without babysitting
 

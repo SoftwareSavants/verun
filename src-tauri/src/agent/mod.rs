@@ -92,6 +92,8 @@
 
 mod claude;
 mod codex;
+pub mod codex_developer_instructions;
+pub mod codex_rpc;
 mod cursor;
 mod gemini;
 mod opencode;
@@ -220,6 +222,10 @@ pub enum InputMode {
     StreamJsonStdin,
     /// Pass the prompt as a positional arg or via stdin plaintext.
     PositionalOrStdin,
+    /// Newline-delimited JSON-RPC 2.0 frames over stdio (Codex `app-server`).
+    /// The prompt never appears in argv; every turn is sent as a `turn/start`
+    /// request on the already-running process.
+    JsonRpcStdio,
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +256,101 @@ pub struct SessionArgs<'a> {
     pub repo_path: &'a str,
     /// For `PositionalOrStdin` agents: the user message appended as the final positional arg.
     pub message: &'a str,
+}
+
+// ---------------------------------------------------------------------------
+// JSON-RPC payload types (Codex app-server)
+// ---------------------------------------------------------------------------
+//
+// These are small, agent-agnostic shapes the trait exposes so `task.rs` can
+// drive an app-server session without knowing the wire format. Only `Codex`
+// overrides the encoders today; every other agent returns `Err` by default.
+//
+// Upstream protocol reference (t3code): dbfe855f4fd0f5dcdf079882652a8efe622b0595
+
+pub struct CodexRpcClientInfo<'a> {
+    pub name: &'a str,
+    pub version: &'a str,
+}
+
+pub struct CodexRpcThreadStartParams<'a> {
+    pub cwd: &'a str,
+    pub trust_level: crate::policy::TrustLevel,
+    pub model: Option<&'a str>,
+}
+
+pub struct CodexRpcThreadResumeParams<'a> {
+    pub thread_id: &'a str,
+    pub cwd: &'a str,
+    pub trust_level: crate::policy::TrustLevel,
+}
+
+pub struct CodexRpcTurnStartParams<'a> {
+    pub thread_id: &'a str,
+    pub prompt: &'a str,
+    /// Optional image URLs (data: URLs or remote URLs).
+    pub image_urls: &'a [String],
+    pub trust_level: crate::policy::TrustLevel,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    pub plan_mode: bool,
+}
+
+/// Subset of Codex's `ApplyPatchApprovalResponse__ReviewDecision` /
+/// `ExecCommandApprovalResponse__ReviewDecision` that Verun surfaces today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexRpcDecision {
+    Approved,
+    ApprovedForSession,
+    Denied,
+    Abort,
+}
+
+impl CodexRpcDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::ApprovedForSession => "approved_for_session",
+            Self::Denied => "denied",
+            Self::Abort => "abort",
+        }
+    }
+}
+
+/// Subset of `FileChangeRequestApprovalResponse__FileChangeApprovalDecision`
+/// used for `item/fileChange/requestApproval` and
+/// `item/commandExecution/requestApproval`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexRpcItemDecision {
+    Accept,
+    AcceptForSession,
+    Decline,
+    Cancel,
+}
+
+impl CodexRpcItemDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::AcceptForSession => "acceptForSession",
+            Self::Decline => "decline",
+            Self::Cancel => "cancel",
+        }
+    }
+}
+
+/// Decision shape for `item/permissions/requestApproval`. Unlike the other
+/// approval methods, this one does **not** carry a `decision` enum — the
+/// response is `{permissions, scope}` where `permissions` is a
+/// `GrantedPermissionProfile` object.
+///
+/// Verun only ever declines permission elevation today, which maps to an
+/// empty `permissions` object at `scope = "turn"`. We model it as a dedicated
+/// enum so future affordances (granting filesystem / network access) can
+/// extend this without reshaping every callsite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexRpcPermissionsDecision {
+    Deny,
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +440,13 @@ pub trait Agent: Send + Sync {
         false
     }
 
+    /// Whether the agent speaks JSON-RPC 2.0 over stdio (Codex `app-server`).
+    /// When true, `task.rs` uses the `encode_rpc_*` family instead of the
+    /// stream-json / positional flows.
+    fn uses_app_server(&self) -> bool {
+        false
+    }
+
     /// Extract the agent's native resume/session ID from a parsed NDJSON event.
     /// Called on each line during streaming; returns `Some(id)` on the first
     /// event that carries one (e.g. Claude's `system.init`, Codex's
@@ -422,6 +530,88 @@ pub trait Agent: Send + Sync {
         _user_home: &Path,
     ) -> Vec<AgentSkill> {
         Vec::new()
+    }
+
+    // ── JSON-RPC (Codex app-server) encoders ──────────────────────────
+    //
+    // These return a single newline-delimited JSON-RPC frame. The caller
+    // (`task.rs`) supplies the integer request id; correlation with the
+    // response happens in `agent::codex_rpc::CodexRpcClient`.
+
+    fn encode_rpc_initialize(
+        &self,
+        _request_id: i64,
+        _client_info: &CodexRpcClientInfo<'_>,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent does not speak Codex app-server JSON-RPC".into())
+    }
+
+    fn encode_rpc_initialized_notification(&self) -> Result<Vec<u8>, String> {
+        Err("agent does not speak Codex app-server JSON-RPC".into())
+    }
+
+    fn encode_rpc_thread_start(
+        &self,
+        _request_id: i64,
+        _params: &CodexRpcThreadStartParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent does not speak Codex app-server JSON-RPC".into())
+    }
+
+    fn encode_rpc_thread_resume(
+        &self,
+        _request_id: i64,
+        _params: &CodexRpcThreadResumeParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent does not speak Codex app-server JSON-RPC".into())
+    }
+
+    fn encode_rpc_turn_start(
+        &self,
+        _request_id: i64,
+        _params: &CodexRpcTurnStartParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent does not speak Codex app-server JSON-RPC".into())
+    }
+
+    fn encode_rpc_turn_interrupt(
+        &self,
+        _request_id: i64,
+        _thread_id: &str,
+        _turn_id: &str,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent does not speak Codex app-server JSON-RPC".into())
+    }
+
+    /// Reply to an `applyPatchApproval` / `execCommandApproval` server
+    /// request with `{decision}`.
+    fn encode_rpc_review_decision_response(
+        &self,
+        _server_request_id: &serde_json::Value,
+        _decision: CodexRpcDecision,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent does not speak Codex app-server JSON-RPC".into())
+    }
+
+    /// Reply to `item/fileChange/requestApproval` or
+    /// `item/commandExecution/requestApproval` with `{decision}`.
+    fn encode_rpc_item_approval_response(
+        &self,
+        _server_request_id: &serde_json::Value,
+        _decision: CodexRpcItemDecision,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent does not speak Codex app-server JSON-RPC".into())
+    }
+
+    /// Reply to `item/permissions/requestApproval`. The response shape is
+    /// `{permissions, scope}` — the "deny" path is an empty permissions
+    /// object, which is what Verun always sends today.
+    fn encode_rpc_permissions_response(
+        &self,
+        _server_request_id: &serde_json::Value,
+        _decision: CodexRpcPermissionsDecision,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent does not speak Codex app-server JSON-RPC".into())
     }
 }
 
@@ -564,8 +754,12 @@ mod tests {
     }
 
     #[test]
+    fn codex_persists_across_turns_via_app_server() {
+        assert!(Codex.persists_across_turns());
+    }
+
+    #[test]
     fn other_agents_do_not_persist() {
-        assert!(!Codex.persists_across_turns());
         assert!(!Cursor.persists_across_turns());
         assert!(!Gemini.persists_across_turns());
         assert!(!OpenCode.persists_across_turns());
@@ -577,8 +771,12 @@ mod tests {
     }
 
     #[test]
+    fn codex_abort_strategy_is_interrupt() {
+        assert_eq!(Codex.abort_strategy(), AbortStrategy::Interrupt);
+    }
+
+    #[test]
     fn other_agents_abort_strategy_is_kill() {
-        assert_eq!(Codex.abort_strategy(), AbortStrategy::Kill);
         assert_eq!(Cursor.abort_strategy(), AbortStrategy::Kill);
         assert_eq!(Gemini.abort_strategy(), AbortStrategy::Kill);
         assert_eq!(OpenCode.abort_strategy(), AbortStrategy::Kill);
@@ -708,53 +906,111 @@ mod tests {
         }
     }
 
+    #[test]
+    fn non_codex_agents_reject_rpc_encoders_by_default() {
+        for agent in [
+            Box::new(Claude) as Box<dyn Agent>,
+            Box::new(Cursor),
+            Box::new(Gemini),
+            Box::new(OpenCode),
+        ] {
+            let client_info = CodexRpcClientInfo {
+                name: "verun",
+                version: "0.0.0",
+            };
+            assert!(agent.encode_rpc_initialize(1, &client_info).is_err());
+            assert!(agent.encode_rpc_initialized_notification().is_err());
+            let ts = CodexRpcThreadStartParams {
+                cwd: "/tmp",
+                trust_level: crate::policy::TrustLevel::Normal,
+                model: None,
+            };
+            assert!(agent.encode_rpc_thread_start(1, &ts).is_err());
+            let tr = CodexRpcThreadResumeParams {
+                thread_id: "t",
+                cwd: "/tmp",
+                trust_level: crate::policy::TrustLevel::Normal,
+            };
+            assert!(agent.encode_rpc_thread_resume(1, &tr).is_err());
+            let turn = CodexRpcTurnStartParams {
+                thread_id: "t",
+                prompt: "hi",
+                image_urls: &[],
+                trust_level: crate::policy::TrustLevel::Normal,
+                model: None,
+                effort: None,
+                plan_mode: false,
+            };
+            assert!(agent.encode_rpc_turn_start(1, &turn).is_err());
+            assert!(agent.encode_rpc_turn_interrupt(1, "t", "turn-1").is_err());
+            assert!(agent
+                .encode_rpc_review_decision_response(&json!(1), CodexRpcDecision::Approved)
+                .is_err());
+            assert!(agent
+                .encode_rpc_item_approval_response(&json!(1), CodexRpcItemDecision::Accept)
+                .is_err());
+            assert!(agent
+                .encode_rpc_permissions_response(&json!(1), CodexRpcPermissionsDecision::Deny)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn non_codex_agents_do_not_use_app_server() {
+        assert!(!Claude.uses_app_server());
+        assert!(!Cursor.uses_app_server());
+        assert!(!Gemini.uses_app_server());
+        assert!(!OpenCode.uses_app_server());
+    }
+
     // ── Codex ───────────────────────────────────────────────────────────
 
     #[test]
-    fn codex_build_args_basic() {
+    fn codex_build_args_is_app_server_only() {
         let agent = Codex;
         let args = agent.build_session_args(&SessionArgs {
             message: "fix the bug",
-            ..default_args()
-        });
-        assert!(args.contains(&"exec".to_string()));
-        assert!(args.contains(&"--json".to_string()));
-        assert!(args.contains(&"-a".to_string()));
-        assert!(args.contains(&"on-request".to_string()));
-        assert!(args.contains(&"-s".to_string()));
-        assert!(args.contains(&"workspace-write".to_string()));
-        assert!(args.contains(&"fix the bug".to_string()));
-    }
-
-    #[test]
-    fn codex_build_args_full_auto_uses_danger_mode() {
-        let agent = Codex;
-        let args = agent.build_session_args(&SessionArgs {
             trust_level: crate::policy::TrustLevel::FullAuto,
-            ..default_args()
-        });
-        assert!(args.contains(&"-a".to_string()));
-        assert!(args.contains(&"never".to_string()));
-        assert!(args.contains(&"-s".to_string()));
-        assert!(args.contains(&"danger-full-access".to_string()));
-    }
-
-    #[test]
-    fn codex_build_args_resume() {
-        let agent = Codex;
-        let args = agent.build_session_args(&SessionArgs {
             resume_session_id: Some("t-1"),
+            plan_mode: true,
             ..default_args()
         });
-        assert!(args.contains(&"resume".to_string()));
-        assert!(args.contains(&"t-1".to_string()));
+        // All CLI contract knobs (approval, sandbox, resume, prompt) move off
+        // argv and into `turn/start` params — argv is just `app-server`.
+        assert_eq!(args, vec!["app-server".to_string()]);
     }
 
     #[test]
-    fn codex_extract_resume_from_thread_started() {
+    fn codex_input_mode_is_json_rpc_stdio() {
+        assert_eq!(Codex.input_mode(), InputMode::JsonRpcStdio);
+    }
+
+    #[test]
+    fn codex_uses_app_server() {
+        assert!(Codex.uses_app_server());
+    }
+
+    #[test]
+    fn codex_does_not_defer_resume_id() {
+        // `thread/started` ships a persisted id immediately.
+        assert!(!Codex.defers_resume_id_until_turn_end());
+    }
+
+    #[test]
+    fn codex_extract_resume_from_legacy_thread_started() {
         let agent = Codex;
         let v = json!({"type":"thread.started","thread_id":"t-99"});
         assert_eq!(agent.extract_resume_id(&v), Some("t-99".into()));
+    }
+
+    #[test]
+    fn codex_extract_resume_from_rpc_thread_started_notification() {
+        let agent = Codex;
+        let v = json!({
+            "method": "thread/started",
+            "params": {"thread": {"id": "t-42", "cwd": "/tmp"}}
+        });
+        assert_eq!(agent.extract_resume_id(&v), Some("t-42".into()));
     }
 
     #[test]
@@ -767,21 +1023,359 @@ mod tests {
     #[test]
     fn codex_capabilities() {
         let agent = Codex;
-        assert!(!agent.supports_plan_mode());
-        assert!(!agent.supports_effort());
-        assert!(!agent.supports_skills());
+        assert!(agent.supports_plan_mode());
+        assert!(agent.supports_effort());
+        assert!(agent.supports_skills());
         assert!(agent.supports_attachments());
-        assert!(!agent.supports_fork());
+        assert!(agent.supports_fork());
         assert!(!agent.uses_claude_jsonl());
-        assert!(agent.defers_resume_id_until_turn_end());
     }
 
     #[test]
     fn other_agents_do_not_defer_resume_id() {
         assert!(!Claude.defers_resume_id_until_turn_end());
+        assert!(!Codex.defers_resume_id_until_turn_end());
         assert!(!Cursor.defers_resume_id_until_turn_end());
         assert!(!Gemini.defers_resume_id_until_turn_end());
         assert!(!OpenCode.defers_resume_id_until_turn_end());
+    }
+
+    // ── Codex JSON-RPC encoders ─────────────────────────────────────────
+
+    fn parse_rpc_frame(bytes: &[u8]) -> serde_json::Value {
+        assert!(
+            bytes.ends_with(b"\n"),
+            "rpc frame must be newline-delimited"
+        );
+        serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("valid json-rpc frame")
+    }
+
+    #[test]
+    fn codex_encode_initialize_has_client_info() {
+        let bytes = Codex
+            .encode_rpc_initialize(
+                1,
+                &CodexRpcClientInfo {
+                    name: "verun",
+                    version: "0.9.0",
+                },
+            )
+            .expect("encode initialize");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 1);
+        assert_eq!(v["method"], "initialize");
+        assert_eq!(v["params"]["clientInfo"]["name"], "verun");
+        assert_eq!(v["params"]["clientInfo"]["version"], "0.9.0");
+    }
+
+    #[test]
+    fn codex_encode_initialize_requests_experimental_api_capability() {
+        // codex app-server >= 0.120 rejects `turn/start.collaborationMode`
+        // unless the client negotiated `capabilities.experimentalApi = true`
+        // during `initialize`.
+        let bytes = Codex
+            .encode_rpc_initialize(
+                1,
+                &CodexRpcClientInfo {
+                    name: "verun",
+                    version: "0.9.0",
+                },
+            )
+            .expect("encode initialize");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["params"]["capabilities"]["experimentalApi"], true);
+    }
+
+    #[test]
+    fn codex_encode_initialized_notification_has_no_id() {
+        let bytes = Codex
+            .encode_rpc_initialized_notification()
+            .expect("encode initialized");
+        let v = parse_rpc_frame(&bytes);
+        assert!(v.get("id").is_none(), "notifications must not carry an id");
+        assert_eq!(v["method"], "initialized");
+    }
+
+    #[test]
+    fn codex_encode_thread_start_maps_normal_trust_to_workspace_write() {
+        let bytes = Codex
+            .encode_rpc_thread_start(
+                7,
+                &CodexRpcThreadStartParams {
+                    cwd: "/repo",
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: Some("gpt-5.4"),
+                },
+            )
+            .expect("encode thread/start");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["method"], "thread/start");
+        assert_eq!(v["params"]["cwd"], "/repo");
+        assert_eq!(v["params"]["approvalPolicy"], "on-request");
+        assert_eq!(v["params"]["sandbox"], "workspace-write");
+        assert_eq!(v["params"]["model"], "gpt-5.4");
+    }
+
+    #[test]
+    fn codex_encode_thread_start_maps_full_auto_to_danger() {
+        let bytes = Codex
+            .encode_rpc_thread_start(
+                2,
+                &CodexRpcThreadStartParams {
+                    cwd: "/repo",
+                    trust_level: crate::policy::TrustLevel::FullAuto,
+                    model: None,
+                },
+            )
+            .expect("encode");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["params"]["approvalPolicy"], "never");
+        assert_eq!(v["params"]["sandbox"], "danger-full-access");
+        assert!(v["params"].get("model").is_none());
+    }
+
+    #[test]
+    fn codex_encode_thread_start_maps_supervised_to_read_only() {
+        let bytes = Codex
+            .encode_rpc_thread_start(
+                3,
+                &CodexRpcThreadStartParams {
+                    cwd: "/repo",
+                    trust_level: crate::policy::TrustLevel::Supervised,
+                    model: None,
+                },
+            )
+            .expect("encode");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["params"]["approvalPolicy"], "untrusted");
+        assert_eq!(v["params"]["sandbox"], "read-only");
+    }
+
+    #[test]
+    fn codex_encode_thread_resume_carries_thread_id() {
+        let bytes = Codex
+            .encode_rpc_thread_resume(
+                4,
+                &CodexRpcThreadResumeParams {
+                    thread_id: "t-abc",
+                    cwd: "/repo",
+                    trust_level: crate::policy::TrustLevel::Normal,
+                },
+            )
+            .expect("encode thread/resume");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 4);
+        assert_eq!(v["method"], "thread/resume");
+        assert_eq!(v["params"]["threadId"], "t-abc");
+        assert_eq!(v["params"]["cwd"], "/repo");
+    }
+
+    #[test]
+    fn codex_encode_turn_start_default_has_text_input_and_default_collab_mode() {
+        let bytes = Codex
+            .encode_rpc_turn_start(
+                10,
+                &CodexRpcTurnStartParams {
+                    thread_id: "t-xyz",
+                    prompt: "list files",
+                    image_urls: &[],
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: Some("gpt-5.4"),
+                    effort: Some("medium"),
+                    plan_mode: false,
+                },
+            )
+            .expect("encode turn/start");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 10);
+        assert_eq!(v["method"], "turn/start");
+        assert_eq!(v["params"]["threadId"], "t-xyz");
+        assert_eq!(v["params"]["input"][0]["type"], "text");
+        assert_eq!(v["params"]["input"][0]["text"], "list files");
+        assert_eq!(v["params"]["approvalPolicy"], "on-request");
+        assert_eq!(v["params"]["sandboxPolicy"]["type"], "workspaceWrite");
+        assert_eq!(v["params"]["collaborationMode"]["mode"], "default");
+        assert_eq!(v["params"]["collaborationMode"]["settings"]["model"], "gpt-5.4");
+        assert_eq!(
+            v["params"]["collaborationMode"]["settings"]["reasoning_effort"],
+            "medium"
+        );
+        let di = v["params"]["collaborationMode"]["settings"]["developer_instructions"]
+            .as_str()
+            .expect("developer_instructions string");
+        assert!(
+            di.contains("Collaboration Mode: Default"),
+            "default mode must ship default developer instructions"
+        );
+    }
+
+    #[test]
+    fn codex_encode_turn_start_plan_mode_sets_collaboration_mode_plan() {
+        let bytes = Codex
+            .encode_rpc_turn_start(
+                11,
+                &CodexRpcTurnStartParams {
+                    thread_id: "t-xyz",
+                    prompt: "design a rate limiter",
+                    image_urls: &[],
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: Some("gpt-5.4"),
+                    effort: None,
+                    plan_mode: true,
+                },
+            )
+            .expect("encode turn/start plan");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["params"]["collaborationMode"]["mode"], "plan");
+        let di = v["params"]["collaborationMode"]["settings"]["developer_instructions"]
+            .as_str()
+            .expect("developer_instructions");
+        assert!(
+            di.contains("# Plan Mode (Conversational)"),
+            "plan mode must ship the plan developer instructions"
+        );
+        // Default effort is "medium" if unset.
+        assert_eq!(
+            v["params"]["collaborationMode"]["settings"]["reasoning_effort"],
+            "medium"
+        );
+    }
+
+    #[test]
+    fn codex_encode_turn_start_full_auto_sets_danger_sandbox_policy() {
+        let bytes = Codex
+            .encode_rpc_turn_start(
+                12,
+                &CodexRpcTurnStartParams {
+                    thread_id: "t-xyz",
+                    prompt: "rm -rf",
+                    image_urls: &[],
+                    trust_level: crate::policy::TrustLevel::FullAuto,
+                    model: None,
+                    effort: None,
+                    plan_mode: false,
+                },
+            )
+            .expect("encode");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["params"]["approvalPolicy"], "never");
+        assert_eq!(v["params"]["sandboxPolicy"]["type"], "dangerFullAccess");
+    }
+
+    #[test]
+    fn codex_encode_turn_start_supervised_sets_read_only_sandbox_policy() {
+        let bytes = Codex
+            .encode_rpc_turn_start(
+                13,
+                &CodexRpcTurnStartParams {
+                    thread_id: "t-xyz",
+                    prompt: "ls",
+                    image_urls: &[],
+                    trust_level: crate::policy::TrustLevel::Supervised,
+                    model: None,
+                    effort: None,
+                    plan_mode: false,
+                },
+            )
+            .expect("encode");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["params"]["approvalPolicy"], "untrusted");
+        assert_eq!(v["params"]["sandboxPolicy"]["type"], "readOnly");
+    }
+
+    #[test]
+    fn codex_encode_turn_start_appends_image_attachments() {
+        let urls = vec!["data:image/png;base64,abc".to_string()];
+        let bytes = Codex
+            .encode_rpc_turn_start(
+                14,
+                &CodexRpcTurnStartParams {
+                    thread_id: "t-xyz",
+                    prompt: "look",
+                    image_urls: &urls,
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: None,
+                    effort: None,
+                    plan_mode: false,
+                },
+            )
+            .expect("encode");
+        let v = parse_rpc_frame(&bytes);
+        let input = v["params"]["input"].as_array().expect("array");
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["type"], "text");
+        assert_eq!(input[1]["type"], "image");
+        assert_eq!(input[1]["url"], "data:image/png;base64,abc");
+    }
+
+    #[test]
+    fn codex_encode_turn_interrupt_has_thread_and_turn_id() {
+        // Live `codex app-server` rejects `turn/interrupt` without `turnId`
+        // with "Invalid request: missing field turnId". Both ids must be
+        // emitted.
+        let bytes = Codex
+            .encode_rpc_turn_interrupt(15, "t-xyz", "turn-7")
+            .expect("encode interrupt");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 15);
+        assert_eq!(v["method"], "turn/interrupt");
+        assert_eq!(v["params"]["threadId"], "t-xyz");
+        assert_eq!(v["params"]["turnId"], "turn-7");
+    }
+
+    #[test]
+    fn codex_encode_permissions_response_deny_is_empty_permissions() {
+        // Schema says the response wants
+        // `{permissions: GrantedPermissionProfile, scope}`, NOT `{decision}`.
+        // Deny path sends an empty permissions object with `scope: "turn"`.
+        let bytes = Codex
+            .encode_rpc_permissions_response(&json!(42), CodexRpcPermissionsDecision::Deny)
+            .expect("encode permissions");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 42);
+        assert!(v["result"]["decision"].is_null());
+        assert_eq!(v["result"]["permissions"], json!({}));
+        assert_eq!(v["result"]["scope"], "turn");
+    }
+
+    #[test]
+    fn codex_encode_review_decision_response_approved() {
+        let bytes = Codex
+            .encode_rpc_review_decision_response(&json!(99), CodexRpcDecision::Approved)
+            .expect("encode response");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 99);
+        assert_eq!(v["result"]["decision"], "approved");
+    }
+
+    #[test]
+    fn codex_encode_review_decision_response_denied() {
+        let bytes = Codex
+            .encode_rpc_review_decision_response(&json!("srv-1"), CodexRpcDecision::Denied)
+            .expect("encode");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], "srv-1");
+        assert_eq!(v["result"]["decision"], "denied");
+    }
+
+    #[test]
+    fn codex_encode_item_approval_response_accept() {
+        let bytes = Codex
+            .encode_rpc_item_approval_response(&json!(100), CodexRpcItemDecision::Accept)
+            .expect("encode");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 100);
+        assert_eq!(v["result"]["decision"], "accept");
+    }
+
+    #[test]
+    fn codex_encode_item_approval_response_decline() {
+        let bytes = Codex
+            .encode_rpc_item_approval_response(&json!(101), CodexRpcItemDecision::Decline)
+            .expect("encode");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["result"]["decision"], "decline");
     }
 
     // ── Cursor ──────────────────────────────────────────────────────────

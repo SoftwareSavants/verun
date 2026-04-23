@@ -63,3 +63,48 @@ describe('rebuildBlocks turnEnd rendering', () => {
     expect(blocks.find(b => b.type === 'error')).toBeUndefined()
   })
 })
+
+describe('rebuildBlocks codex plan/diff updates', () => {
+  test('planUpdate renders a plan block with the latest items', () => {
+    const items: OutputItem[] = [
+      { kind: 'userMessage', text: 'design rate limiter', timestamp: 1 } as OutputItem,
+      {
+        kind: 'planUpdate',
+        items: [
+          { status: 'completed', step: 'Survey existing middleware' },
+          { status: 'in_progress', step: 'Draft token bucket' },
+        ],
+        explanation: 'Working through the plan.',
+      } as OutputItem,
+    ]
+    const blocks = rebuildBlocks(items)
+    const plan = blocks.find(b => b.type === 'plan') as
+      | { type: 'plan'; items: Array<{ step: string }>; explanation?: string }
+      | undefined
+    expect(plan).toBeDefined()
+    expect(plan!.items).toHaveLength(2)
+    expect(plan!.items[1].step).toBe('Draft token bucket')
+    expect(plan!.explanation).toBe('Working through the plan.')
+  })
+
+  test('multiple planUpdates collapse — only the latest renders', () => {
+    const items: OutputItem[] = [
+      { kind: 'planUpdate', items: [{ status: 'in_progress', step: 'A' }] } as OutputItem,
+      { kind: 'planUpdate', items: [{ status: 'completed', step: 'A' }, { status: 'in_progress', step: 'B' }] } as OutputItem,
+    ]
+    const blocks = rebuildBlocks(items)
+    const plans = blocks.filter(b => b.type === 'plan')
+    expect(plans.length).toBe(1)
+    expect((plans[0] as { items: Array<{ step: string }> }).items).toHaveLength(2)
+  })
+
+  test('diffUpdate renders a diff block', () => {
+    const items: OutputItem[] = [
+      { kind: 'diffUpdate', diff: 'diff --git a/x b/x\n+new line\n' } as OutputItem,
+    ]
+    const blocks = rebuildBlocks(items)
+    const diff = blocks.find(b => b.type === 'diff') as { type: 'diff'; diff: string } | undefined
+    expect(diff).toBeDefined()
+    expect(diff!.diff).toContain('+new line')
+  })
+})

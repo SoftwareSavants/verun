@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Codex `item/tool/requestUserInput` now routes through the same `AskUserQuestion` approval UI Claude uses — each question renders with its header, pick list, and optional description, and submitting answers maps back onto Codex's `Record<questionId, {answers: string[]}>` response shape so the turn proceeds with the user's choices instead of being auto-denied; other unrecognized server-originated JSON-RPC requests still get a `-32601` method-not-found response so the process doesn't sit blocked
+- Codex plans no longer render as raw chat text — deltas stream live into the same Claude-style Plan Review overlay (approve / request changes), and on completion the plan is persisted to `<worktree>/.verun/plans/plan-<ts>-<id>.md` so reopening the session restores the viewer via the existing `planFilePath` flow
 - Fix steer (cmd+enter while busy) silently failing: the inline abort+send raced the in-flight interrupt and hit Rust's busy guard, leaving Claude running while the UI flipped to idle; steer now queues the new message as an armed step and lets the `session-aborted` listener dispatch it after graceful shutdown
 - Hook and start-command inputs (Settings and Add Project dialog) now autocomplete `$VERUN_*` env vars - typing `$` surfaces `$VERUN_REPO_PATH` and `$VERUN_PORT_0..9` with descriptions so you don't have to remember the exact names
 - Opening a file in a gitignored folder (e.g. `node_modules`, `dist`, `.next`) no longer auto-expands and reveals it in the file tree sidebar — reveal is gated on a cached `git check-ignore` lookup per task, so auto-open flows (Find References, Go to Definition, tab switching, global search) stay focused on source files while manual reveals still work
@@ -21,6 +23,19 @@
 - Terminal panel open/closed state now persists per task, so a detached window inherits the same visibility the main window had
 - Closing a detached task window re-syncs the main window's terminal list against Rust, so PTYs spawned or closed in the other window reappear / disappear correctly when the task comes back
 - Fix "No coding agent CLIs found" toast firing at startup on macOS when agents are installed in nvm/homebrew/~/.local/bin: PATH reload now completes before agent detection runs (was racing in parallel threads, so detection often saw the stripped GUI PATH)
+- Codex now runs against a persistent `codex app-server` JSON-RPC process instead of respawning `codex exec --json` per turn - the CLI stays alive across turns and the resume id is persisted as soon as `thread/started` arrives
+- Codex Plan Mode: the plan toggle is enabled for Codex sessions and sends `collaborationMode: "plan"` on `turn/start`; `<proposed_plan>` blocks and `turn/plan/updated` events render as a Proposed plan card with per-step status
+- Codex structured approvals: patch, exec, file-change, command-execution, and permission prompts from `codex app-server` are routed through the same approval UI Claude uses (allow/deny mapped to JSON-RPC responses)
+- Codex turn interrupts now send `turn/interrupt` over RPC so the process stays alive across aborts and the next send reuses it instead of respawning
+- Codex turn diffs render as a collapsible diff block driven by `turn/diff/updated`
+- Fix Codex `turn/interrupt` being silently rejected by `codex app-server` 0.120+ — Verun now tracks the in-flight `turnId` from the `turn/start` response and includes it on interrupt (required field per live schema)
+- Fix Codex abort leaving the session stuck on "busy" so the next send bounced with "already processing"; aborting now flips the busy atomic synchronously
+- Fix Codex assistant replies rendering twice when the `item/agentMessage` completion frame arrived on top of the streamed deltas
+- Fix Codex file-change tool badges showing "Edit" for every operation — `PatchChangeKind` is an object discriminated by `type` ("add"/"delete"/"update"), not a bare string
+- Codex `TurnEnd` now carries the per-turn token breakdown (`input/output/cache-read`) captured from `thread/tokenUsage/updated`, so the usage badge stops reading zero for every Codex turn
+- Codex `item/permissions/requestApproval` is answered with the `{permissions, scope}` shape required by the live schema instead of a `{decision}` field that the server silently ignored
+- Fix Codex abort targeting the previous turn's id: the `current_turn_id` slot is now cleared before dispatching `turn/start` and again on `turn/completed`, and aborting before the slot is populated no longer flips the session to idle (the real in-flight turn would have kept running under a UI that said it stopped)
+- Fix Codex plan mode rendering nothing: `codex app-server` 0.120 streams plan-mode output through its own `item/plan/delta` / `plan` ThreadItem channel rather than `item/agentMessage/*`; Verun was silently swallowing both, so the `<proposed_plan>` body never reached the UI. Deltas now stream as assistant text and the authoritative completion frame is deduplicated.
 
 ## 0.8.1 — 2026-04-20
 
