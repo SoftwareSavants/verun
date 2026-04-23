@@ -689,6 +689,20 @@ pub fn process_codex_rpc_notification(
                 }]
             })
             .unwrap_or_default(),
+        // Plan-mode streams the `<proposed_plan>...</proposed_plan>` body as a
+        // dedicated `plan` ThreadItem with its own delta channel. Stream those
+        // deltas as assistant Text so they render inline; the terminal
+        // `item/completed` frame is swallowed below.
+        "item/plan/delta" => params
+            .get("delta")
+            .and_then(|d| d.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|text| {
+                vec![OutputItem::Text {
+                    text: text.to_string(),
+                }]
+            })
+            .unwrap_or_default(),
 
         // -- Item lifecycle (command / tool / file change / file read) --
         // Live `codex app-server` (>= 0.120) emits camelCase item types
@@ -737,6 +751,12 @@ pub fn process_codex_rpc_notification(
                 // re-emitting the final text here would render the assistant
                 // reply twice. Swallow the completion frame.
                 "agentMessage" | "agent_message" => vec![],
+                // `plan` items stream via `item/plan/delta` (see above). The
+                // completion frame carries the authoritative text but the
+                // schema warns concatenated deltas may not match exactly;
+                // swallowing it avoids a duplicate render and keeps parity
+                // with `agentMessage`.
+                "plan" => vec![],
                 "commandExecution" | "command_execution" => {
                     let output = item
                         .get("aggregatedOutput")
@@ -2791,6 +2811,54 @@ mod tests {
         });
         let items = process_codex_rpc_notification("item/completed", &params);
         assert!(items.is_empty(), "agentMessage must not double-emit");
+    }
+
+    #[test]
+    fn rpc_item_plan_delta_streams_text() {
+        // Codex plan-mode emits `<proposed_plan>...</proposed_plan>` via the
+        // dedicated `item/plan/delta` channel (not `item/agentMessage/delta`);
+        // without this handler the plan body never reaches the UI.
+        let params = serde_json::json!({
+            "delta": "<proposed_plan>",
+            "itemId": "p1",
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/plan/delta", &params);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            OutputItem::Text { text } => assert_eq!(text, "<proposed_plan>"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rpc_item_plan_delta_empty_is_swallowed() {
+        let params = serde_json::json!({
+            "delta": "",
+            "itemId": "p1",
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/plan/delta", &params);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn rpc_item_completed_plan_is_swallowed() {
+        // Deltas have already streamed the plan text; re-emitting the
+        // authoritative `text` on completion would render it twice.
+        let params = serde_json::json!({
+            "item": {
+                "id": "p1",
+                "type": "plan",
+                "text": "<proposed_plan>design it</proposed_plan>",
+            },
+            "threadId": "t",
+            "turnId": "u",
+        });
+        let items = process_codex_rpc_notification("item/completed", &params);
+        assert!(items.is_empty(), "plan item must not double-emit");
     }
 
     #[test]
