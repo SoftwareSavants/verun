@@ -391,6 +391,17 @@ export const ptyResize = (terminalId: string, rows: number, cols: number) =>
 export const ptyClose = (terminalId: string) =>
   invoke<void>('pty_close', { terminalId })
 
+// Claude terminal mode (PTY running `claude --resume`)
+export interface OpenClaudeTerminalResult {
+  terminalId: string
+  sessionId: string
+}
+export const claudeTerminalOpen = (sessionId: string, rows: number, cols: number) =>
+  invoke<OpenClaudeTerminalResult>('claude_terminal_open', { sessionId, rows, cols })
+
+export const claudeTerminalClose = (sessionId: string) =>
+  invoke<void>('claude_terminal_close', { sessionId })
+
 // Clipboard
 export const readClipboard = () =>
   invoke<string>('read_clipboard')

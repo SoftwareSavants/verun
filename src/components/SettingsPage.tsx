@@ -8,6 +8,7 @@ import {
   type ThemeMode, type Density, type ThemePreset, type PaletteOverrides,
 } from '../lib/theme'
 import { setShowSettings, setSelectedTaskId, setSelectedSessionIdForTask, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist, sidebarWidth } from '../store/ui'
+import { claudeDefaultViewMode, setClaudeDefaultViewMode } from '../store/sessionViewMode'
 import { notificationsEnabled, setNotificationsEnabledAndPersist } from '../lib/notifications'
 import { projects, updateHooks, updateStoreHooks, updateBaseBranch } from '../store/projects'
 import { createTask, activeTasksForProject } from '../store/tasks'
@@ -261,6 +262,33 @@ export const SettingsPage: Component = () => {
                     <div class="text-xs text-text-dim mt-0.5">Ignore whitespace changes in diffs</div>
                   </div>
                   <Toggle checked={defaultHideWhitespace()} onChange={(v) => setDefaultHideWhitespaceAndPersist(v)} />
+                </div>
+              </div>
+            </div>
+
+            {/* Claude Code section */}
+            <div class="mb-8">
+              <h2 class="section-title mb-4">Claude Code</h2>
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="text-sm text-text-primary">Default session view</div>
+                  <div class="text-xs text-text-dim mt-0.5">
+                    Terminal runs <code>claude --resume</code> in a real PTY; UI uses Verun's chat interface. Each session can still override this.
+                  </div>
+                </div>
+                <div class="inline-flex items-center rounded-full bg-surface-2 ring-1 ring-outline/8 text-xs">
+                  <button
+                    class={`px-3 py-1 rounded-full transition-colors ${claudeDefaultViewMode() === 'ui' ? 'bg-accent/20 text-accent' : 'text-text-muted hover:text-text-primary'}`}
+                    onClick={() => setClaudeDefaultViewMode('ui')}
+                  >
+                    UI
+                  </button>
+                  <button
+                    class={`px-3 py-1 rounded-full transition-colors ${claudeDefaultViewMode() === 'terminal' ? 'bg-accent/20 text-accent' : 'text-text-muted hover:text-text-primary'}`}
+                    onClick={() => setClaudeDefaultViewMode('terminal')}
+                  >
+                    Terminal
+                  </button>
                 </div>
               </div>
             </div>

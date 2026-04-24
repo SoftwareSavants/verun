@@ -8,6 +8,7 @@
 - Selected tasks now refresh GitHub overview at session end when an agent likely changed remote state, and dev builds show a live GitHub debug panel with cache/fetch activity
 - Session-created pull requests now trigger a scoped GitHub overview refresh when the task is already tracking remote state, so the PR badge/link appears without a manual refresh
 - GitHub sidebar/PR/Actions refresh now uses cached Rust-side snapshots with scope-based invalidation, so local git changes stop fan-out refreshing GitHub and Actions/PR data refresh only when their remote state actually changes
+- Claude Code sessions now offer a UI / Terminal toggle: Terminal runs `claude --resume <id>` in a real PTY so you get the unmodified TUI, while still tailing `~/.claude/projects/.../<session>.jsonl` so history, fork, branch, and search keep working with no data gap. The mode is sticky per session, with a Settings default under General → Claude Code, and survives app restarts. Ctrl+D / `/exit` / crash exposes a one-click Reconnect
 
 ## 0.10.0 — 2026-04-28
 

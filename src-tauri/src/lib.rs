@@ -2,6 +2,8 @@ pub mod agent;
 mod blob;
 mod bts_scaffold;
 mod claude_jsonl;
+mod claude_terminal;
+mod claude_transcript_tail;
 mod db;
 mod env_path;
 mod fd_limit;
@@ -68,6 +70,7 @@ pub fn run() {
         .manage(task::new_setup_in_progress())
         .manage(task::new_hook_pty_map())
         .manage(pty::new_active_pty_map())
+        .manage(claude_terminal::new_claude_terminal_map())
         .manage(watcher::new_file_watcher_map())
         .manage(lsp::new_lsp_map())
         .manage(tsgo_check::new_tsgo_check_map())
@@ -344,6 +347,9 @@ pub fn run() {
             ipc::pty_resize,
             ipc::pty_close,
             ipc::pty_list_for_task,
+            // Claude terminal mode (PTY running `claude --resume`)
+            ipc::claude_terminal_open,
+            ipc::claude_terminal_close,
             // Clipboard
             ipc::read_clipboard,
             ipc::copy_image_to_clipboard,

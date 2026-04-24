@@ -1043,12 +1043,18 @@ pub async fn delete_task(
         abort_message(app, db_tx, active, &sid).await?;
     }
 
-    // Close any PTY terminals for this task
+    // Close any PTY terminals for this task (including Claude PTYs, which need
+    // their tail + driver torn down before the worktree is deleted so the
+    // on-disk JSONL stops being tailed).
     if let Some(pty_map) = app.try_state::<crate::pty::ActivePtyMap>() {
         let task_id = task.id.clone();
         let map = pty_map.inner().clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            crate::pty::close_all_for_task(&map, &task_id);
+        let ct_map = app
+            .try_state::<crate::claude_terminal::ClaudeTerminalMap>()
+            .map(|s| s.inner().clone());
+        let _ = tokio::task::spawn_blocking(move || match ct_map {
+            Some(ct) => crate::claude_terminal::close_all_for_task(&map, &ct, &task_id),
+            None => crate::pty::close_all_for_task(&map, &task_id),
         })
         .await;
     }
@@ -1118,12 +1124,17 @@ pub async fn archive_task(
         abort_message(app, db_tx, active, &sid).await?;
     }
 
-    // Close any PTY terminals for this task
+    // Close any PTY terminals for this task (including Claude PTYs, which need
+    // their tail + driver torn down before the worktree is archived).
     if let Some(pty_map) = app.try_state::<crate::pty::ActivePtyMap>() {
         let task_id = task.id.clone();
         let map = pty_map.inner().clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            crate::pty::close_all_for_task(&map, &task_id);
+        let ct_map = app
+            .try_state::<crate::claude_terminal::ClaudeTerminalMap>()
+            .map(|s| s.inner().clone());
+        let _ = tokio::task::spawn_blocking(move || match ct_map {
+            Some(ct) => crate::claude_terminal::close_all_for_task(&map, &ct, &task_id),
+            None => crate::pty::close_all_for_task(&map, &task_id),
         })
         .await;
     }

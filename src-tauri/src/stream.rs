@@ -115,6 +115,14 @@ pub enum OutputItem {
         file_path: Option<String>,
     },
 
+    /// User message replayed from a Claude JSONL transcript (terminal mode).
+    /// Normal sends go through `persist_verun_user_message` and the frontend
+    /// adds the bubble optimistically, so Rust only emits this variant when
+    /// tailing the on-disk transcript for a PTY-backed session.
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)] // constructed by the transcript tailer in the next phase
+    UserMessage { text: String },
+
     /// Raw line (fallback for unrecognized events)
     #[serde(rename_all = "camelCase")]
     Raw { text: String },
