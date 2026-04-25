@@ -2,6 +2,7 @@ pub mod agent;
 mod claude_jsonl;
 mod db;
 mod env_path;
+mod fd_limit;
 mod file_search;
 mod git_ops;
 mod github;
@@ -29,6 +30,20 @@ pub type WindowTaskMap = DashMap<String, String>;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // macOS defaults RLIMIT_NOFILE soft to 256. With multiple tasks each
+    // holding LSP + codex app-server + PTY + watcher FDs, a burst of
+    // concurrent `git` spawns (e.g. sidebar refresh when a task is added)
+    // trips EMFILE on `git check-ref-format` inside `create_task`. Raise
+    // the ceiling before any subprocess work begins.
+    #[cfg(unix)]
+    match fd_limit::raise_fd_limit() {
+        Ok((prev, new)) if new > prev => {
+            eprintln!("[verun] raised RLIMIT_NOFILE: {prev} -> {new}");
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("[verun] failed to raise RLIMIT_NOFILE: {e}"),
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
