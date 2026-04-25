@@ -1,4 +1,5 @@
 pub mod agent;
+mod bts_scaffold;
 mod claude_jsonl;
 mod db;
 mod env_path;
@@ -69,6 +70,7 @@ pub fn run() {
         .manage(lsp::new_lsp_map())
         .manage(tsgo_check::new_tsgo_check_map())
         .manage(file_search::new_search_map())
+        .manage(bts_scaffold::new_bts_scaffold_map())
         .manage(WindowTaskMap::new())
         .setup(|app| {
             // Capture the user's full PATH from their interactive shell and
@@ -379,6 +381,14 @@ pub fn run() {
             ipc::open_task_window,
             ipc::open_new_task_window,
             ipc::force_close_task_window,
+            // Better-T-Stack scaffolding
+            bts_scaffold::scaffold_better_t_stack,
+            bts_scaffold::kill_bts_scaffold,
+            bts_scaffold::bts_scaffold_input,
+            bts_scaffold::bts_scaffold_resize,
+            bts_scaffold::list_subdirs,
+            bts_scaffold::create_subdir,
+            bts_scaffold::default_bootstrap_dir,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

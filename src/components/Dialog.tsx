@@ -9,6 +9,8 @@ interface Props {
 }
 
 export const Dialog: Component<Props> = (props) => {
+  let mouseDownOnBackdrop = false
+
   createEffect(() => {
     if (!props.open) return
     const handler = (e: KeyboardEvent) => {
@@ -26,7 +28,11 @@ export const Dialog: Component<Props> = (props) => {
     <Show when={props.open}>
       <div
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-        onClick={(e) => { if (e.target === e.currentTarget) props.onClose() }}
+        onMouseDown={(e) => { mouseDownOnBackdrop = e.target === e.currentTarget }}
+        onClick={(e) => {
+          if (e.target === e.currentTarget && mouseDownOnBackdrop) props.onClose()
+          mouseDownOnBackdrop = false
+        }}
       >
         <div
           class="bg-surface-2 border border-border rounded-xl shadow-2xl p-5 animate-in overflow-y-auto"

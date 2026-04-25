@@ -408,6 +408,42 @@ export const reorderSteps = (sessionId: string, ids: string[]) =>
 export const disarmAllSteps = (sessionId: string) =>
   invoke<void>('disarm_all_steps', { sessionId })
 
+// Better-T-Stack scaffolding
+export const scaffoldBetterTStack = (
+  parentDir: string,
+  projectName: string,
+  pmRunner: string,
+  cliArgs: string[],
+  verunConfig: Record<string, unknown>,
+  scaffoldId: string,
+) =>
+  invoke<string>('scaffold_better_t_stack', {
+    parentDir,
+    projectName,
+    pmRunner,
+    cliArgs,
+    verunConfig,
+    scaffoldId,
+  })
+
+export const killBtsScaffold = (scaffoldId: string) =>
+  invoke<void>('kill_bts_scaffold', { scaffoldId })
+
+export const btsScaffoldInput = (scaffoldId: string, data: string) =>
+  invoke<void>('bts_scaffold_input', { scaffoldId, data })
+
+export const btsScaffoldResize = (scaffoldId: string, rows: number, cols: number) =>
+  invoke<void>('bts_scaffold_resize', { scaffoldId, rows, cols })
+
+export const listSubdirs = (path: string) =>
+  invoke<string[]>('list_subdirs', { path })
+
+export const createSubdir = (parent: string, name: string) =>
+  invoke<string>('create_subdir', { parent, name })
+
+export const defaultBootstrapDir = () =>
+  invoke<string>('default_bootstrap_dir')
+
 // App lifecycle
 export const quitApp = () =>
   invoke<void>('quit_app')

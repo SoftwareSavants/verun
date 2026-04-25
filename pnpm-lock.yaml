@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@better-t-stack/types':
+        specifier: ^3.27.4
+        version: 3.27.4
       '@choochmeque/tauri-plugin-notifications-api':
         specifier: ^0.4.3
         version: 0.4.3
@@ -311,6 +314,9 @@ packages:
   '@babel/types@7.29.0':
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
+
+  '@better-t-stack/types@3.27.4':
+    resolution: {integrity: sha512-dSOeh5c3cQxVJGqBKKELJvx8jcxSb/zCMUGORYUPErRLp4jj5fKqXmdbv1N47kyPAMQ6pKHdrVOK/JLwOkFzZg==}
 
   '@bramus/specificity@2.4.2':
     resolution: {integrity: sha512-ctxtJ/eA+t+6q2++vj5j7FYX3nRu311q1wfYH3xjlLOsczhlhxAg2FWNUXhpGvAw3BWo1xBcvOV6/YLc2r5FJw==}
@@ -2374,6 +2380,9 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
+  zod@4.3.6:
+    resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
+
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
@@ -2514,6 +2523,10 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
+
+  '@better-t-stack/types@3.27.4':
+    dependencies:
+      zod: 4.3.6
 
   '@bramus/specificity@2.4.2':
     dependencies:
@@ -4691,5 +4704,7 @@ snapshots:
   xmlchars@2.2.0: {}
 
   yallist@3.1.1: {}
+
+  zod@4.3.6: {}
 
   zwitch@2.0.4: {}
