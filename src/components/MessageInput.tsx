@@ -1,7 +1,7 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
 import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
 import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession, codexLivePlanForSession } from '../store/sessionContext'
-import { setSelectedSessionId, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
+import { setSelectedSessionIdForTask, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
@@ -985,7 +985,7 @@ export const MessageInput: Component<Props> = (props) => {
         if (tid) {
           const currentAgent = sessionById(props.sessionId ?? '')?.agentType ?? 'claude' as AgentType
           const session = await createSession(tid, currentAgent)
-          setSelectedSessionId(session.id)
+          setSelectedSessionIdForTask(tid, session.id)
           setMainView(tid, 'session')
         }
         break

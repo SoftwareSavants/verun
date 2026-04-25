@@ -22,7 +22,9 @@ import {
   addProjectPath,
   setAddProjectPath,
   pickAndAddProject,
+  setSelectedSessionIdForTask,
 } from './ui'
+import { selectedSessionForTask, clearTaskContext } from './taskContext'
 import * as ipc from '../lib/ipc'
 
 describe('new-task dialog signal', () => {
@@ -69,6 +71,32 @@ describe('focusOrSelectTask', () => {
     expect(ipc.openTaskWindow).not.toHaveBeenCalled()
     expect(selectedTaskId()).toBe('t-002')
     expect(selectedProjectId()).toBe('p-002')
+  })
+})
+
+describe('setSelectedSessionIdForTask', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    clearTaskContext('t-A')
+    clearTaskContext('t-B')
+    setSelectedTaskId(null)
+  })
+
+  test('writes to the explicitly passed task, ignoring currently-selected task', () => {
+    // User is on task A, but an async effect for task B fires setSelectedSessionIdForTask.
+    // Regression for cross-task session leak: setSelectedSessionId used to read the
+    // current selectedTaskId at call time, so a late-completing effect would clobber
+    // whichever task the user had switched to.
+    setSelectedTaskId('t-A')
+    setSelectedSessionIdForTask('t-B', 's-B1')
+
+    expect(selectedSessionForTask('t-B')).toBe('s-B1')
+    expect(selectedSessionForTask('t-A')).toBeNull()
+  })
+
+  test('persists to per-task lastSession storage', () => {
+    setSelectedSessionIdForTask('t-A', 's-A1')
+    expect(localStorage.getItem('verun:lastSession:t-A')).toBe('s-A1')
   })
 })
 

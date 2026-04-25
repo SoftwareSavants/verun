@@ -6,7 +6,7 @@ import { Loader2, Sparkles } from 'lucide-solid'
 import { addProject, updateHooks } from '../store/projects'
 import { createTask } from '../store/tasks'
 import { sendMessage, setSessions, setOutputItems } from '../store/sessions'
-import { addToast, setSelectedProjectId, setSelectedTaskId, setSelectedSessionId, setShowSettings } from '../store/ui'
+import { addToast, setSelectedProjectId, setSelectedTaskId, setSelectedSessionIdForTask, setShowSettings } from '../store/ui'
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
 import { produce } from 'solid-js/store'
 import * as ipc from '../lib/ipc'
@@ -65,7 +65,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
 
       // Navigate to the task and close dialog immediately
       setSelectedTaskId(task.id)
-      setSelectedSessionId(session.id)
+      setSelectedSessionIdForTask(task.id, session.id)
       setShowSettings(false)
       handleClose()
 
