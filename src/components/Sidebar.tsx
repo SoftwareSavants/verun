@@ -12,6 +12,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { taskGit, refreshTaskGit } from "../store/git";
+import { newTaskIds } from "../lib/taskDiff";
 import { projects } from "../store/projects";
 import {
   tasks,
@@ -248,15 +249,19 @@ export const Sidebar: Component = () => {
     ),
   );
 
-  // Load sessions + git state for all tasks on mount and when tasks change
+  // Load sessions + git state only for tasks that are newly in the list. A
+  // prior version re-fired the whole loop on any length change, which made a
+  // single task insert spawn ~10 git subprocesses per existing task in
+  // parallel — enough to exhaust the macOS 256 FD ceiling while
+  // `ipc.createTask` was trying to spawn its own `git check-ref-format`.
   createEffect(
     on(
-      () => tasks.length,
-      () => {
-        for (const t of tasks) {
-          loadSessions(t.id);
-          refreshTaskGit(t.id);
-          ipc.watchWorktree(t.id);
+      () => tasks.map(t => t.id),
+      (currIds, prevIds) => {
+        for (const id of newTaskIds(prevIds, currIds)) {
+          loadSessions(id);
+          refreshTaskGit(id);
+          ipc.watchWorktree(id);
         }
       },
     ),

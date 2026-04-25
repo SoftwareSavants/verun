@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix "Task setup failed: Too many open files" on new-task creation — raise `RLIMIT_NOFILE` at startup and only fetch sessions/git/watcher for newly-added tasks in the sidebar effect instead of re-fanning out across every existing task on each insert
 - Fix release CI: macOS Intel now builds on `macos-15-intel` (the plugin's Swift bundle doesn't cross-compile from the arm `macos-26` runner); Linux and Windows re-enable the `notify-rust` fallback in `tauri-plugin-notifications` since they have no native branch
 
 ## 0.9.0 - 2026-04-23
