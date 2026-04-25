@@ -214,6 +214,35 @@ pub fn migrations() -> Vec<Migration> {
         description: "add closed_at to sessions",
         sql: "ALTER TABLE sessions ADD COLUMN closed_at INTEGER;",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 20,
+        description: "create blobs table for content-addressed attachment storage",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS blobs (
+                hash TEXT PRIMARY KEY,
+                mime TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                ref_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                last_used_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_blobs_ref_count ON blobs(ref_count);
+            CREATE INDEX IF NOT EXISTS idx_blobs_last_used ON blobs(last_used_at);
+        "#,
+        kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 21,
+        description: "create app_meta key-value table for one-shot migration sentinels",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -501,6 +530,57 @@ pub fn spawn_write_queue(pool: SqlitePool) -> DbWriteTx {
     tx
 }
 
+/// Refcount errors are non-fatal — refcount drift is recoverable on the next
+/// GC sweep, but failing the actual write would lose user data.
+fn log_refcount_err(label: &str, result: Result<(), String>) {
+    if let Err(e) = result {
+        eprintln!("[verun] blob refcount {label} failed: {e}");
+    }
+}
+
+/// Walk every output_line for the given sessions and accumulate the blob
+/// hashes referenced by their NDJSON payloads.
+async fn collect_hashes_from_output_lines(
+    pool: &SqlitePool,
+    session_ids: &[String],
+) -> Result<Vec<String>, sqlx::Error> {
+    let mut out = Vec::new();
+    for sid in session_ids {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT line FROM output_lines WHERE session_id = ?")
+                .bind(sid)
+                .fetch_all(pool)
+                .await?;
+        for (line,) in rows {
+            out.extend(crate::blob::extract_hashes_from_output_line(&line));
+        }
+    }
+    Ok(out)
+}
+
+/// Snapshot every blob hash referenced by steps + output_lines for the given
+/// sessions. Used by cascade-delete handlers (DeleteTask, DeleteProject) to
+/// figure out what to decrement *before* the cascade nukes the rows.
+async fn drain_refs_for_sessions(
+    pool: &SqlitePool,
+    session_ids: &[String],
+) -> Result<Vec<String>, sqlx::Error> {
+    let mut hashes = Vec::new();
+    for sid in session_ids {
+        let step_rows: Vec<(Option<String>,)> = sqlx::query_as(
+            "SELECT attachments_json FROM steps WHERE session_id = ?",
+        )
+        .bind(sid)
+        .fetch_all(pool)
+        .await?;
+        for (json,) in step_rows {
+            hashes.extend(crate::blob::extract_hashes_from_attachments_json(json.as_deref()));
+        }
+    }
+    hashes.extend(collect_hashes_from_output_lines(pool, session_ids).await?);
+    Ok(hashes)
+}
+
 async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Error> {
     match write {
         // -- Projects --
@@ -555,6 +635,19 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .await?;
         }
         DbWrite::DeleteProject { id } => {
+            // Drain blob refcounts before the cascade — once steps and
+            // output_lines are gone we can no longer recover their hashes.
+            let session_ids: Vec<String> = sqlx::query_as::<_, (String,)>(
+                "SELECT s.id FROM sessions s JOIN tasks t ON s.task_id = t.id WHERE t.project_id = ?",
+            )
+            .bind(&id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|(s,)| s)
+            .collect();
+            let drained = drain_refs_for_sessions(pool, &session_ids).await?;
+
             // Cascade: audit_log → trust_levels → steps → output_lines → turn_snapshots → sessions → tasks → project
             sqlx::query(
                 "DELETE FROM policy_audit_log WHERE task_id IN \
@@ -580,6 +673,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                  (SELECT s.id FROM sessions s JOIN tasks t ON s.task_id = t.id WHERE t.project_id = ?)",
             )
             .bind(&id).execute(pool).await?;
+            log_refcount_err("decr DeleteProject", crate::blob::decr_refs(pool, &drained).await);
             sqlx::query(
                 "DELETE FROM turn_snapshots WHERE session_id IN \
                  (SELECT s.id FROM sessions s JOIN tasks t ON s.task_id = t.id WHERE t.project_id = ?)",
@@ -635,6 +729,18 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .await?;
         }
         DbWrite::DeleteTask { id } => {
+            // Drain blob refcounts for sessions of this task before cascade.
+            let session_ids: Vec<String> = sqlx::query_as::<_, (String,)>(
+                "SELECT id FROM sessions WHERE task_id = ?",
+            )
+            .bind(&id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|(s,)| s)
+            .collect();
+            let drained = drain_refs_for_sessions(pool, &session_ids).await?;
+
             sqlx::query("DELETE FROM policy_audit_log WHERE task_id = ?")
                 .bind(&id)
                 .execute(pool)
@@ -657,6 +763,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(&id)
             .execute(pool)
             .await?;
+            log_refcount_err("decr DeleteTask", crate::blob::decr_refs(pool, &drained).await);
             sqlx::query(
                 "DELETE FROM turn_snapshots WHERE session_id IN \
                  (SELECT id FROM sessions WHERE task_id = ?)",
@@ -772,8 +879,10 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
 
         // -- Output --
         DbWrite::InsertOutputLines { session_id, lines } => {
+            let mut hashes_to_incr: Vec<String> = Vec::new();
             let mut tx = pool.begin().await?;
             for (line, emitted_at) in &lines {
+                hashes_to_incr.extend(crate::blob::extract_hashes_from_output_line(line));
                 sqlx::query(
                     "INSERT INTO output_lines (session_id, line, emitted_at) VALUES (?, ?, ?)",
                 )
@@ -784,6 +893,10 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .await?;
             }
             tx.commit().await?;
+            log_refcount_err(
+                "incr InsertOutputLines",
+                crate::blob::incr_refs(pool, &hashes_to_incr).await,
+            );
         }
 
         DbWrite::CloseSession { id, closed_at } => {
@@ -805,10 +918,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         }
 
         DbWrite::DeleteOutputLines { session_id } => {
+            let hashes =
+                collect_hashes_from_output_lines(pool, std::slice::from_ref(&session_id)).await?;
             sqlx::query("DELETE FROM output_lines WHERE session_id = ?")
                 .bind(&session_id)
                 .execute(pool)
                 .await?;
+            log_refcount_err("decr DeleteOutputLines", crate::blob::decr_refs(pool, &hashes).await);
         }
 
         DbWrite::InsertTurnSnapshot {
@@ -878,6 +994,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
 
         // -- Steps --
         DbWrite::InsertStep(s) => {
+            let new_hashes = crate::blob::extract_hashes_from_attachments_json(s.attachments_json.as_deref());
             sqlx::query(
                 "INSERT INTO steps (id, session_id, message, attachments_json, armed, model, plan_mode, thinking_mode, fast_mode, sort_order, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -895,6 +1012,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(s.created_at)
             .execute(pool)
             .await?;
+            log_refcount_err("incr InsertStep", crate::blob::incr_refs(pool, &new_hashes).await);
         }
         DbWrite::UpdateStep {
             id,
@@ -906,6 +1024,17 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             fast_mode,
             attachments_json,
         } => {
+            let old_json: Option<(Option<String>,)> =
+                sqlx::query_as("SELECT attachments_json FROM steps WHERE id = ?")
+                    .bind(&id)
+                    .fetch_optional(pool)
+                    .await?;
+            let old_hashes = old_json
+                .as_ref()
+                .and_then(|(j,)| j.as_deref())
+                .map(|s| crate::blob::extract_hashes_from_attachments_json(Some(s)))
+                .unwrap_or_default();
+            let new_hashes = crate::blob::extract_hashes_from_attachments_json(attachments_json.as_deref());
             sqlx::query("UPDATE steps SET message = ?, armed = ?, model = ?, plan_mode = ?, thinking_mode = ?, fast_mode = ?, attachments_json = ? WHERE id = ?")
                 .bind(&message)
                 .bind(armed)
@@ -917,12 +1046,27 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .bind(&id)
                 .execute(pool)
                 .await?;
+            // Drop old refs first, then add new — temporary undercounting is
+            // safe because GC never runs concurrently with the write queue.
+            log_refcount_err("decr UpdateStep old", crate::blob::decr_refs(pool, &old_hashes).await);
+            log_refcount_err("incr UpdateStep new", crate::blob::incr_refs(pool, &new_hashes).await);
         }
         DbWrite::DeleteStep { id } => {
+            let old_json: Option<(Option<String>,)> =
+                sqlx::query_as("SELECT attachments_json FROM steps WHERE id = ?")
+                    .bind(&id)
+                    .fetch_optional(pool)
+                    .await?;
+            let old_hashes = old_json
+                .as_ref()
+                .and_then(|(j,)| j.as_deref())
+                .map(|s| crate::blob::extract_hashes_from_attachments_json(Some(s)))
+                .unwrap_or_default();
             sqlx::query("DELETE FROM steps WHERE id = ?")
                 .bind(&id)
                 .execute(pool)
                 .await?;
+            log_refcount_err("decr DeleteStep", crate::blob::decr_refs(pool, &old_hashes).await);
         }
         DbWrite::ReorderSteps { session_id, ids } => {
             for (i, id) in ids.iter().enumerate() {
@@ -1170,26 +1314,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_twelve_migrations() {
+    fn migration_versions_are_sequential() {
         let m = migrations();
-        assert_eq!(m.len(), 19);
-        assert_eq!(m[0].version, 1);
-        assert_eq!(m[1].version, 2);
-        assert_eq!(m[2].version, 3);
-        assert_eq!(m[3].version, 4);
-        assert_eq!(m[4].version, 5);
-        assert_eq!(m[5].version, 6);
-        assert_eq!(m[6].version, 7);
-        assert_eq!(m[7].version, 8);
-        assert_eq!(m[8].version, 9);
-        assert_eq!(m[9].version, 10);
-        assert_eq!(m[10].version, 11);
-        assert_eq!(m[11].version, 12);
-        assert_eq!(m[12].version, 13);
-        assert_eq!(m[13].version, 14);
-        assert_eq!(m[14].version, 15);
-        assert_eq!(m[15].version, 16);
-        assert_eq!(m[16].version, 17);
+        assert_eq!(m.len(), 21);
+        for (i, mig) in m.iter().enumerate() {
+            assert_eq!(mig.version, (i + 1) as i64, "migration index {} version mismatch", i);
+        }
     }
 
     #[test]
@@ -2318,5 +2448,251 @@ mod tests {
         assert!(json.get("sortOrder").is_some());
         assert!(json.get("planMode").is_some());
         assert!(json.get("createdAt").is_some());
+    }
+
+    // -- Refcount tests (Phase 6) --
+    //
+    // These exercise the full process_write → blob refcount wiring. We seed
+    // blobs via `blob::write_blob` and assert refcount tracks step / output
+    // lifecycle through the normal write queue dispatch.
+
+    async fn seed_blob_pair() -> (tempfile::TempDir, SqlitePool, String, String) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = test_pool().await;
+        let r1 = crate::blob::write_blob(&pool, tmp.path(), "image/png", b"img-1")
+            .await
+            .unwrap();
+        let r2 = crate::blob::write_blob(&pool, tmp.path(), "image/png", b"img-2")
+            .await
+            .unwrap();
+        (tmp, pool, r1.hash, r2.hash)
+    }
+
+    fn refs_json(hashes: &[&str]) -> String {
+        let arr: Vec<serde_json::Value> = hashes
+            .iter()
+            .map(|h| serde_json::json!({"hash": h, "mimeType": "image/png", "name": "x.png", "size": 1}))
+            .collect();
+        serde_json::to_string(&arr).unwrap()
+    }
+
+    async fn ref_count(pool: &SqlitePool, hash: &str) -> i64 {
+        crate::blob::get_blob_info(pool, hash)
+            .await
+            .unwrap()
+            .map(|i| i.ref_count)
+            .unwrap_or(-1)
+    }
+
+    async fn project_task_session(pool: &SqlitePool) {
+        process_write(pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn insert_step_increments_blob_refcount() {
+        let (_tmp, pool, h1, h2) = seed_blob_pair().await;
+        project_task_session(&pool).await;
+
+        let mut step = make_step("s-001", 0);
+        step.attachments_json = Some(refs_json(&[&h1, &h2]));
+        process_write(&pool, DbWrite::InsertStep(step)).await.unwrap();
+
+        assert_eq!(ref_count(&pool, &h1).await, 1);
+        assert_eq!(ref_count(&pool, &h2).await, 1);
+    }
+
+    #[tokio::test]
+    async fn delete_step_decrements_blob_refcount() {
+        let (_tmp, pool, h1, _h2) = seed_blob_pair().await;
+        project_task_session(&pool).await;
+
+        let mut step = make_step("s-001", 0);
+        step.attachments_json = Some(refs_json(&[&h1]));
+        let step_id = step.id.clone();
+        process_write(&pool, DbWrite::InsertStep(step)).await.unwrap();
+        assert_eq!(ref_count(&pool, &h1).await, 1);
+
+        process_write(&pool, DbWrite::DeleteStep { id: step_id }).await.unwrap();
+        assert_eq!(ref_count(&pool, &h1).await, 0);
+    }
+
+    #[tokio::test]
+    async fn update_step_swaps_attachment_refs() {
+        let (_tmp, pool, h1, h2) = seed_blob_pair().await;
+        project_task_session(&pool).await;
+
+        let mut step = make_step("s-001", 0);
+        step.attachments_json = Some(refs_json(&[&h1]));
+        let step_id = step.id.clone();
+        process_write(&pool, DbWrite::InsertStep(step)).await.unwrap();
+        assert_eq!(ref_count(&pool, &h1).await, 1);
+        assert_eq!(ref_count(&pool, &h2).await, 0);
+
+        process_write(
+            &pool,
+            DbWrite::UpdateStep {
+                id: step_id,
+                message: "updated".into(),
+                armed: false,
+                model: None,
+                plan_mode: None,
+                thinking_mode: None,
+                fast_mode: None,
+                attachments_json: Some(refs_json(&[&h2])),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ref_count(&pool, &h1).await, 0);
+        assert_eq!(ref_count(&pool, &h2).await, 1);
+    }
+
+    #[tokio::test]
+    async fn update_step_to_none_releases_all_refs() {
+        let (_tmp, pool, h1, h2) = seed_blob_pair().await;
+        project_task_session(&pool).await;
+
+        let mut step = make_step("s-001", 0);
+        step.attachments_json = Some(refs_json(&[&h1, &h2]));
+        let step_id = step.id.clone();
+        process_write(&pool, DbWrite::InsertStep(step)).await.unwrap();
+
+        process_write(
+            &pool,
+            DbWrite::UpdateStep {
+                id: step_id,
+                message: "no atts".into(),
+                armed: false,
+                model: None,
+                plan_mode: None,
+                thinking_mode: None,
+                fast_mode: None,
+                attachments_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ref_count(&pool, &h1).await, 0);
+        assert_eq!(ref_count(&pool, &h2).await, 0);
+    }
+
+    #[tokio::test]
+    async fn insert_output_lines_increments_user_message_refs() {
+        let (_tmp, pool, h1, _h2) = seed_blob_pair().await;
+        project_task_session(&pool).await;
+
+        let line = serde_json::json!({
+            "type": "verun_user_message",
+            "text": "hi",
+            "attachments": [{"hash": h1, "mimeType": "image/png", "name": "a.png", "size": 1}],
+        })
+        .to_string();
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: vec![(line, 1234)],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ref_count(&pool, &h1).await, 1);
+    }
+
+    #[tokio::test]
+    async fn delete_output_lines_decrements_user_message_refs() {
+        let (_tmp, pool, h1, _h2) = seed_blob_pair().await;
+        project_task_session(&pool).await;
+
+        let line = serde_json::json!({
+            "type": "verun_user_message",
+            "text": "hi",
+            "attachments": [{"hash": h1, "mimeType": "image/png", "name": "a.png", "size": 1}],
+        })
+        .to_string();
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: vec![(line, 1234)],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ref_count(&pool, &h1).await, 1);
+
+        process_write(
+            &pool,
+            DbWrite::DeleteOutputLines {
+                session_id: "s-001".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ref_count(&pool, &h1).await, 0);
+    }
+
+    #[tokio::test]
+    async fn delete_task_cascade_decrements_blob_refs() {
+        let (_tmp, pool, h1, h2) = seed_blob_pair().await;
+        project_task_session(&pool).await;
+
+        // step references h1, output_line references h2
+        let mut step = make_step("s-001", 0);
+        step.attachments_json = Some(refs_json(&[&h1]));
+        process_write(&pool, DbWrite::InsertStep(step)).await.unwrap();
+        let line = serde_json::json!({
+            "type": "verun_user_message",
+            "text": "hi",
+            "attachments": [{"hash": h2, "mimeType": "image/png", "name": "a.png", "size": 1}],
+        })
+        .to_string();
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: vec![(line, 1234)],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ref_count(&pool, &h1).await, 1);
+        assert_eq!(ref_count(&pool, &h2).await, 1);
+
+        process_write(&pool, DbWrite::DeleteTask { id: "t-001".into() }).await.unwrap();
+
+        assert_eq!(ref_count(&pool, &h1).await, 0);
+        assert_eq!(ref_count(&pool, &h2).await, 0);
+    }
+
+    #[tokio::test]
+    async fn delete_project_cascade_decrements_blob_refs() {
+        let (_tmp, pool, h1, h2) = seed_blob_pair().await;
+        project_task_session(&pool).await;
+
+        let mut step = make_step("s-001", 0);
+        step.attachments_json = Some(refs_json(&[&h1]));
+        process_write(&pool, DbWrite::InsertStep(step)).await.unwrap();
+        let line = serde_json::json!({
+            "type": "verun_user_message",
+            "text": "hi",
+            "attachments": [{"hash": h2, "mimeType": "image/png", "name": "a.png", "size": 1}],
+        })
+        .to_string();
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: vec![(line, 1234)],
+            },
+        )
+        .await
+        .unwrap();
+
+        process_write(&pool, DbWrite::DeleteProject { id: "p-001".into() }).await.unwrap();
+        assert_eq!(ref_count(&pool, &h1).await, 0);
+        assert_eq!(ref_count(&pool, &h2).await, 0);
     }
 }

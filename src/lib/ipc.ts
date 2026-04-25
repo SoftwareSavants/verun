@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Attachment, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step } from '../types'
-import { bytesToBase64 } from './binary'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 const seed = () => import('./seedData')
@@ -70,14 +69,8 @@ export const stopHook = (taskId: string) =>
 export const createSession = (taskId: string, agentType: string, model?: string) =>
   invoke<Session>('create_session', { taskId, agentType, model })
 
-export const sendMessage = (sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) => {
-  const wireAttachments = attachments?.map(a => ({
-    name: a.name,
-    mimeType: a.mimeType,
-    dataBase64: bytesToBase64(a.data),
-  }))
-  return invoke<void>('send_message', { sessionId, message, attachments: wireAttachments, model, planMode, thinkingMode, fastMode })
-}
+export const sendMessage = (sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) =>
+  invoke<void>('send_message', { sessionId, message, attachments, model, planMode, thinkingMode, fastMode })
 
 export const updateSessionModel = (sessionId: string, model: string | null) =>
   invoke<void>('update_session_model', { sessionId, model })
@@ -457,3 +450,33 @@ export const openNewTaskWindow = (projectId: string) =>
 
 export const forceCloseTaskWindow = () =>
   invoke<void>('force_close_task_window')
+
+// Blob store (attachments) — bytes ride the IPC wire as Uint8Array directly,
+// no base64. Tauri v2 serializes Vec<u8> from/to ArrayBuffer-style payloads.
+export const uploadAttachment = (mime: string, data: Uint8Array): Promise<BlobRef> =>
+  invoke<BlobRef>('upload_attachment', { mime, data })
+
+export const getBlob = (hash: string): Promise<Uint8Array> =>
+  invoke<number[] | Uint8Array>('get_blob', { hash })
+    .then(b => b instanceof Uint8Array ? b : new Uint8Array(b))
+
+export const getStorageStats = (): Promise<StorageStats> =>
+  invoke<StorageStats>('get_storage_stats')
+
+export interface GcReport {
+  reclaimedUnreferenced: number
+  reclaimedCapped: number
+}
+
+export const runBlobGc = (ttlMs: number, maxBytes: number): Promise<GcReport> =>
+  invoke<GcReport>('run_blob_gc', { ttlMs, maxBytes })
+
+export interface MigrationReport {
+  stepsMigrated: number
+  outputLinesMigrated: number
+  blobsCreated: number
+  alreadyDone: boolean
+}
+
+export const migrateLegacyAttachments = (): Promise<MigrationReport> =>
+  invoke<MigrationReport>('migrate_legacy_attachments')

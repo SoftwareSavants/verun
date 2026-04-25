@@ -15,6 +15,7 @@ import * as ipc from './lib/ipc'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, markTaskUnread } from './store/ui'
 import { initNotifications } from './lib/notifications'
 import { initUpdateListener } from './lib/updater'
+import { runConfiguredGc } from './store/storage'
 
 const ctx = parseWindowContext()
 
@@ -66,6 +67,13 @@ const MainApp: Component = () => {
 
     initNotifications()
     initUpdateListener()
+    // Fire-and-forget: rewrite any legacy base64 attachments into blob refs,
+    // then sweep unreferenced / over-cap blobs. Migration is idempotent via
+    // an app_meta sentinel so this is cheap on every startup after the first.
+    void (async () => {
+      try { await ipc.migrateLegacyAttachments() } catch (e) { console.error('migrateLegacyAttachments failed', e) }
+      void runConfiguredGc()
+    })()
   })
 
   return (

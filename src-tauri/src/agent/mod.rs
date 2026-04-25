@@ -805,9 +805,11 @@ mod tests {
     fn claude_encodes_stream_user_message_with_attachments_before_text() {
         let agent = Claude;
         let att = crate::task::Attachment {
+            hash: "deadbeef".into(),
             name: "logo.png".into(),
             mime_type: "image/png".into(),
-            data_base64: "abc123".into(),
+            data: vec![1, 2, 3, 4, 5],
+            size: 5,
         };
         let bytes = agent
             .encode_stream_user_message("look at this", std::slice::from_ref(&att))
@@ -818,7 +820,8 @@ mod tests {
         assert_eq!(content[0]["type"], "image");
         assert_eq!(content[0]["source"]["type"], "base64");
         assert_eq!(content[0]["source"]["media_type"], "image/png");
-        assert_eq!(content[0]["source"]["data"], "abc123");
+        // Bytes [1,2,3,4,5] base64-encoded.
+        assert_eq!(content[0]["source"]["data"], "AQIDBAU=");
         assert_eq!(content[1]["type"], "text");
         assert_eq!(content[1]["text"], "look at this");
     }

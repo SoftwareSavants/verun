@@ -1,6 +1,6 @@
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Attachment } from '../types'
+import type { AttachmentRef } from '../types'
 import * as ipc from '../lib/ipc'
 import { registerHookTerminal } from './terminals'
 import { selectedTaskId, setShowTerminal } from './ui'
@@ -16,7 +16,7 @@ interface SetupState {
 interface QueuedMessage {
   sessionId: string
   message: string
-  attachments?: Attachment[]
+  attachments?: AttachmentRef[]
   model?: string
   planMode?: boolean
   thinkingMode?: boolean

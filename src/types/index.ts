@@ -121,10 +121,46 @@ export interface AgentInfo {
   supportsFork: boolean
 }
 
+/**
+ * In-memory attachment held briefly by the composer between paste/drop and
+ * upload. Once `uploadAttachment` returns, the bytes are dropped and the
+ * composer holds the resulting `AttachmentRef` instead.
+ */
 export interface Attachment {
   name: string
   mimeType: string
   data: Uint8Array
+}
+
+/**
+ * Reference to a blob in the content-addressed store. This is the persistent
+ * shape used in Step.attachmentsJson and OutputItem.userMessage.images;
+ * bytes are fetched lazily via `getBlob(hash)` only when rendered.
+ */
+export interface AttachmentRef {
+  hash: string
+  mimeType: string
+  name: string
+  size: number
+}
+
+/**
+ * Raw blob handle returned by the upload command. `AttachmentRef` is just
+ * `BlobRef` with a user-facing filename glued on.
+ */
+export interface BlobRef {
+  hash: string
+  mime: string
+  size: number
+}
+
+export interface StorageStats {
+  totalBytes: number
+  referencedBytes: number
+  unreferencedBytes: number
+  blobCount: number
+  referencedCount: number
+  unreferencedCount: number
 }
 
 // Structured output items from Claude's stream-json protocol
@@ -143,7 +179,7 @@ export type OutputItem =
   | { kind: 'errorMessage'; message: string; raw?: string }
   | { kind: 'turnEnd'; status: string; timestamp?: number; cost?: number; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; error?: string }
   | { kind: 'turnSnapshot'; messageUuid: string }
-  | { kind: 'userMessage'; text: string; images?: Array<{ mimeType: string; data: Uint8Array }>; timestamp?: number }
+  | { kind: 'userMessage'; text: string; images?: AttachmentRef[]; timestamp?: number }
   | { kind: 'planUpdate'; items: PlanStep[]; explanation?: string }
   | { kind: 'diffUpdate'; diff: string }
   | { kind: 'codexPlanDelta'; itemId: string; delta: string }

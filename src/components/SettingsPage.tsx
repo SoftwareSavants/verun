@@ -18,6 +18,7 @@ import { hasOverlayTitlebar } from '../lib/platform'
 import { Toggle } from './Toggle'
 import { CodeTextarea } from './CodeTextarea'
 import { QuantityStepper } from './QuantityStepper'
+import { StorageSettings } from './StorageSettings'
 import { ColorPicker } from './ColorPicker'
 import { addToast } from '../store/ui'
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
@@ -275,6 +276,8 @@ export const SettingsPage: Component = () => {
                 <Toggle checked={notificationsEnabled()} onChange={(v) => setNotificationsEnabledAndPersist(v)} />
               </div>
             </div>
+
+            <StorageSettings />
           </Show>
 
           {/* Appearance section */}

@@ -15,13 +15,13 @@ import { projectById } from '../store/projects'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { invoke } from '@tauri-apps/api/core'
 import { clsx } from 'clsx'
-import type { Attachment, TrustLevel, AgentType } from '../types'
+import type { AttachmentRef, TrustLevel, AgentType } from '../types'
 import { agents } from '../store/agents'
 import * as ipc from '../lib/ipc'
 import { Popover } from './Popover'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
-import { serializeAttachments, deserializeAttachments } from '../lib/binary'
+import { serializeAttachments, deserializeAttachments, uploadAttachments } from '../lib/binary'
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 
 interface Props {
@@ -32,12 +32,13 @@ interface Props {
 const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 
-async function fileToAttachment(file: File): Promise<Attachment | null> {
+async function fileToAttachmentRef(file: File): Promise<AttachmentRef | null> {
   if (!SUPPORTED_IMAGE_TYPES.has(file.type)) return null
   if (file.size > MAX_FILE_SIZE) return null
   try {
     const buf = await file.arrayBuffer()
-    return { name: file.name, mimeType: file.type, data: new Uint8Array(buf) }
+    const refs = await uploadAttachments([{ name: file.name, mimeType: file.type, data: new Uint8Array(buf) }])
+    return refs[0] ?? null
   } catch {
     return null
   }
@@ -355,8 +356,8 @@ export const MessageInput: Component<Props> = (props) => {
   // composer text + attachments. Task-scoped settings (plan mode, model,
   // trust level, …) are still keyed by taskId further down.
   const [sessionMessages, setSessionMessages] = createSignal<Record<string, string>>({})
-  const [sessionAttachments, setSessionAttachments] = createSignal<Record<string, Attachment[]>>({})
-  const [viewerAttachment, setViewerAttachment] = createSignal<Attachment | null>(null)
+  const [sessionAttachments, setSessionAttachments] = createSignal<Record<string, AttachmentRef[]>>({})
+  const [viewerAttachment, setViewerAttachment] = createSignal<AttachmentRef | null>(null)
   const message = () => sessionMessages()[props.sessionId ?? ''] ?? ''
 
   // Debounced localStorage persistence for drafts
@@ -404,7 +405,7 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
   const attachments = () => sessionAttachments()[props.sessionId ?? ''] ?? []
-  const setAttachments = (v: Attachment[] | ((prev: Attachment[]) => Attachment[])) => {
+  const setAttachments = (v: AttachmentRef[] | ((prev: AttachmentRef[]) => AttachmentRef[])) => {
     const sid = props.sessionId
     if (!sid) return
     const resolved = typeof v === 'function' ? v(sessionAttachments()[sid] ?? []) : v
@@ -448,10 +449,10 @@ export const MessageInput: Component<Props> = (props) => {
   const [editingMessageIdx, setEditingMessageIdx] = createSignal<number | null>(null)
   const [editingStepId, setEditingStepId] = createSignal<string | null>(null)
   const [savedDraft, setSavedDraft] = createSignal<string>('')
-  const [savedDraftAttachments, setSavedDraftAttachments] = createSignal<Attachment[]>([])
+  const [savedDraftAttachments, setSavedDraftAttachments] = createSignal<AttachmentRef[]>([])
 
   // Per-session edit state so switching tasks preserves in-progress edits
-  type SessionEditState = { messageIdx: number | null; stepId: string | null; draft: string; draftAttachments: Attachment[] }
+  type SessionEditState = { messageIdx: number | null; stepId: string | null; draft: string; draftAttachments: AttachmentRef[] }
   const sessionEditStates = new Map<string, SessionEditState>()
 
   // React to prefill requests from the editor's merged hover ("Ask agent to fix")
@@ -867,8 +868,8 @@ export const MessageInput: Component<Props> = (props) => {
   })
 
   const addFiles = async (files: FileList | File[]) => {
-    const results = await Promise.all(Array.from(files).map(fileToAttachment))
-    const valid = results.filter((a): a is Attachment => a !== null)
+    const results = await Promise.all(Array.from(files).map(fileToAttachmentRef))
+    const valid = results.filter((a): a is AttachmentRef => a !== null)
     if (valid.length > 0) {
       setAttachments(prev => [...prev, ...valid])
     }
@@ -973,7 +974,7 @@ export const MessageInput: Component<Props> = (props) => {
     if (steps.length === 0) return
     const step = extractStep(sid, steps[0].id)
     if (!step) return
-    const atts = step.attachmentsJson ? JSON.parse(step.attachmentsJson) : undefined
+    const atts = step.attachmentsJson ? deserializeAttachments(step.attachmentsJson) : undefined
     await sendMessage(sid, step.message, atts, step.model ?? undefined, step.planMode ?? undefined, step.thinkingMode ?? undefined, step.fastMode ?? undefined)
   }
 
@@ -1086,7 +1087,7 @@ export const MessageInput: Component<Props> = (props) => {
           planMode: planMode(),
           thinkingMode: thinkingMode(),
           fastMode: fastMode(),
-          attachmentsJson: atts.length > 0 ? JSON.stringify(atts) : null,
+          attachmentsJson: atts.length > 0 ? serializeAttachments(atts) : null,
         })
       }
       setEditingStepId(null)
@@ -1335,7 +1336,7 @@ export const MessageInput: Component<Props> = (props) => {
           setSavedDraftAttachments(attachments())
           setEditingStepId(last.id)
           setMessage(last.message)
-          const stepAtts: Attachment[] = last.attachmentsJson ? JSON.parse(last.attachmentsJson) : []
+          const stepAtts: AttachmentRef[] = last.attachmentsJson ? deserializeAttachments(last.attachmentsJson) : []
           setAttachments(stepAtts)
           requestAnimationFrame(() => {
             if (inputRef) {
@@ -2127,7 +2128,7 @@ export const MessageInput: Component<Props> = (props) => {
                       title="Open image"
                     >
                       <BlobImage
-                        data={att.data}
+                        hash={att.hash}
                         mimeType={att.mimeType}
                         alt={att.name}
                         class="w-16 h-16 object-cover rounded-xl border border-border transition-all duration-150 hover:border-border-active hover:brightness-110 hover:scale-[1.03]"
@@ -2424,8 +2425,8 @@ export const MessageInput: Component<Props> = (props) => {
         {(att) => (
           <ImageViewer
             open={true}
+            hash={att().hash}
             mimeType={att().mimeType}
-            data={att().data}
             name={att().name}
             onClose={() => setViewerAttachment(null)}
           />

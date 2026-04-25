@@ -1,4 +1,4 @@
-import { Component, Show, createEffect, onCleanup } from 'solid-js'
+import { Component, Show, createEffect, createResource, onCleanup } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import { Copy, Download, X } from 'lucide-solid'
 import { save } from '@tauri-apps/plugin-dialog'
@@ -8,8 +8,8 @@ import { BlobImage } from './BlobImage'
 
 interface Props {
   open: boolean
+  hash: string
   mimeType: string
-  data: Uint8Array
   name?: string
   onClose: () => void
 }
@@ -29,6 +29,9 @@ function defaultFileName(name: string | undefined, mimeType: string): string {
 }
 
 export const ImageViewer: Component<Props> = (props) => {
+  // Pulled lazily so copy/download don't fire IPC until the user acts.
+  const [bytes] = createResource(() => props.open ? props.hash : null, (h) => h ? ipc.getBlob(h) : null)
+
   createEffect(() => {
     if (!props.open) return
     const handler = (e: KeyboardEvent) => {
@@ -43,7 +46,9 @@ export const ImageViewer: Component<Props> = (props) => {
 
   const handleCopy = async () => {
     try {
-      await ipc.copyImageToClipboard(props.mimeType, props.data)
+      const data = bytes()
+      if (!data) return
+      await ipc.copyImageToClipboard(props.mimeType, data)
       addToast('Image copied', 'success', { duration: 2000 })
     } catch (e) {
       addToast(`Copy failed: ${e}`, 'error', { duration: 4000 })
@@ -52,13 +57,15 @@ export const ImageViewer: Component<Props> = (props) => {
 
   const handleDownload = async () => {
     try {
+      const data = bytes()
+      if (!data) return
       const ext = EXT_BY_MIME[props.mimeType] ?? 'png'
       const path = await save({
         defaultPath: defaultFileName(props.name, props.mimeType),
         filters: [{ name: 'Image', extensions: [ext] }],
       })
       if (!path) return
-      await ipc.writeBinaryFile(path, props.data)
+      await ipc.writeBinaryFile(path, data)
       addToast('Image saved', 'success', { duration: 2000 })
     } catch (e) {
       addToast(`Save failed: ${e}`, 'error', { duration: 4000 })
@@ -96,7 +103,7 @@ export const ImageViewer: Component<Props> = (props) => {
           </button>
         </div>
         <BlobImage
-          data={props.data}
+          hash={props.hash}
           mimeType={props.mimeType}
           alt={props.name ?? ''}
           class="max-w-[95vw] max-h-[95vh] object-contain rounded-md shadow-2xl"

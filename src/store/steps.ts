@@ -1,5 +1,5 @@
 import { createStore, produce } from 'solid-js/store'
-import type { Step, Attachment } from '../types'
+import type { Step, AttachmentRef } from '../types'
 import * as ipc from '../lib/ipc'
 import { serializeAttachments } from '../lib/binary'
 
@@ -18,11 +18,12 @@ export function getSteps(sessionId: string | undefined | null): Step[] {
   return stepStore[sessionId] || []
 }
 
-/** Add a step — optimistic store update + fire-and-forget DB write */
+/** Add a step — optimistic store update + fire-and-forget DB write. Caller
+ *  must already have uploaded any pasted bytes to the blob store and pass refs. */
 export function addStep(opts: {
   sessionId: string
   message: string
-  attachments?: Attachment[]
+  attachments?: AttachmentRef[]
   armed: boolean
   model?: string
   planMode?: boolean

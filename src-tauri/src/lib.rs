@@ -1,4 +1,5 @@
 pub mod agent;
+mod blob;
 mod bts_scaffold;
 mod claude_jsonl;
 mod db;
@@ -150,9 +151,10 @@ pub fn run() {
                 std::io::Error::other(format!("Failed to create app data dir: {e}"))
             })?;
 
+            let app_data_dir_for_db = app_data_dir.clone();
             let (db_ready_tx, db_ready_rx) = std::sync::mpsc::sync_channel(1);
             std::thread::spawn(move || {
-                let result = tauri::async_runtime::block_on(db::connect(&app_data_dir))
+                let result = tauri::async_runtime::block_on(db::connect(&app_data_dir_for_db))
                     .map_err(|e| format!("DB connect: {e}"));
                 let _ = db_ready_tx.send(result);
             });
@@ -168,6 +170,7 @@ pub fn run() {
             });
             app.manage(pool);
             app.manage(db_tx);
+            app.manage(blob::AppDataDir(app_data_dir));
 
             // Auto-check for updates after a short delay
             let update_handle = app.handle().clone();
@@ -389,6 +392,12 @@ pub fn run() {
             bts_scaffold::list_subdirs,
             bts_scaffold::create_subdir,
             bts_scaffold::default_bootstrap_dir,
+            // Blob store (attachments)
+            ipc::upload_attachment,
+            ipc::get_blob,
+            ipc::get_storage_stats,
+            ipc::run_blob_gc,
+            ipc::migrate_legacy_attachments,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

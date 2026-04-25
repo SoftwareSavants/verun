@@ -4,7 +4,7 @@ use crate::policy::TrustLevel;
 use crate::stream;
 use crate::worktree;
 use dashmap::DashMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -883,13 +883,53 @@ pub async fn create_session(
     Ok(session)
 }
 
-/// A file attachment (base64-encoded data from the frontend)
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// A file attachment in resolved (bytes-loaded) form. Constructed from an
+/// `AttachmentRef` by reading the blob store; never crosses the IPC wire as
+/// frontend → backend (frontend sends refs only). Carries `hash` + `size`
+/// alongside the bytes so persistence layers can re-emit refs without going
+/// back to the DB.
+#[derive(Debug, Clone)]
 pub struct Attachment {
+    pub hash: String,
     pub name: String,
     pub mime_type: String,
-    pub data_base64: String,
+    pub data: Vec<u8>,
+    pub size: i64,
+}
+
+/// Wire shape for attachments — what the frontend sends in `send_message`
+/// and what is persisted as JSON in `verun_user_message` NDJSON lines and
+/// `Step.attachments_json`. Bytes live in the blob store, addressed by
+/// `hash`. Mirrors `AttachmentRef` in `src/types/index.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentRef {
+    pub hash: String,
+    pub mime_type: String,
+    pub name: String,
+    pub size: i64,
+}
+
+/// Resolve a slice of refs into `Attachment`s by reading bytes from the blob
+/// store. Errors out on the first missing blob — refs and bytes are expected
+/// to stay consistent because every persisted ref was created via
+/// `blob::write_blob` and ref counting prevents GC of in-use blobs.
+pub async fn resolve_attachments(
+    refs: &[AttachmentRef],
+    app_data_dir: &std::path::Path,
+) -> Result<Vec<Attachment>, String> {
+    let mut out = Vec::with_capacity(refs.len());
+    for r in refs {
+        let bytes = crate::blob::read_blob_bytes(app_data_dir, &r.hash).await?;
+        out.push(Attachment {
+            hash: r.hash.clone(),
+            name: r.name.clone(),
+            mime_type: r.mime_type.clone(),
+            data: bytes,
+            size: r.size,
+        });
+    }
+    Ok(out)
 }
 
 pub struct SendMessageParams {
@@ -1153,7 +1193,12 @@ pub async fn send_message(
                     .iter()
                     .filter_map(|a| {
                         if a.mime_type.starts_with("image/") {
-                            Some(format!("data:{};base64,{}", a.mime_type, a.data_base64))
+                            use base64::{engine::general_purpose::STANDARD, Engine as _};
+                            Some(format!(
+                                "data:{};base64,{}",
+                                a.mime_type,
+                                STANDARD.encode(&a.data)
+                            ))
                         } else {
                             None
                         }
@@ -1272,6 +1317,10 @@ pub async fn send_message(
 
 /// Persist the user's message to `output_lines` so it shows up after reload.
 /// Fire-and-forget semantics (send on the write queue; errors are logged upstream).
+///
+/// Embeds full attachment refs (hash + mime + name + size), not just names —
+/// the frontend's reload path lazy-loads bytes from the blob store via
+/// `get_blob(hash)` so images survive a session reopen.
 async fn persist_verun_user_message(
     db_tx: &DbWriteTx,
     session_id: &str,
@@ -1281,11 +1330,19 @@ async fn persist_verun_user_message(
     thinking_mode: bool,
     fast_mode: bool,
 ) {
-    let attachment_names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
+    let refs: Vec<AttachmentRef> = attachments
+        .iter()
+        .map(|a| AttachmentRef {
+            hash: a.hash.clone(),
+            mime_type: a.mime_type.clone(),
+            name: a.name.clone(),
+            size: a.size,
+        })
+        .collect();
     let user_line = serde_json::json!({
         "type": "verun_user_message",
         "text": message,
-        "attachments": attachment_names,
+        "attachments": refs,
         "plan_mode": plan_mode,
         "thinking_mode": thinking_mode,
         "fast_mode": fast_mode,
@@ -1598,7 +1655,12 @@ async fn spawn_codex_app_server_session(
             .iter()
             .filter_map(|a| {
                 if a.mime_type.starts_with("image/") {
-                    Some(format!("data:{};base64,{}", a.mime_type, a.data_base64))
+                    use base64::{engine::general_purpose::STANDARD, Engine as _};
+                    Some(format!(
+                        "data:{};base64,{}",
+                        a.mime_type,
+                        STANDARD.encode(&a.data)
+                    ))
                 } else {
                     None
                 }
