@@ -24,7 +24,6 @@ import {
   updateTaskName,
 } from "../store/tasks";
 import {
-  setSelectedProjectId,
   selectedTaskId,
   setSelectedTaskId,
   showSettings,
@@ -34,8 +33,8 @@ import {
   isTaskUnread,
   isTaskAttention,
   clearTaskIndicators,
-  addProjectPath,
   setAddProjectPath,
+  setShowBtsBuilder,
   isTaskWindowed,
   markTaskWindowed,
   requestNewTaskForProject,
@@ -45,12 +44,11 @@ import { sessions, loadSessions } from "../store/sessions";
 import { isStartCommandRunning } from "../store/terminals";
 import { deleteProject } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { AddProjectDialog } from "./AddProjectDialog";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { buildAddProjectMenuItems } from "../lib/addProjectMenu";
 import { selectSettingsSection } from "./SettingsPage";
 import {
   Plus,
-  FolderPlus,
   FolderOpen,
   Pencil,
   Trash2,
@@ -350,13 +348,22 @@ export const Sidebar: Component = () => {
           <span class="text-[10px] font-semibold uppercase tracking-wider text-text-muted px-1 no-drag">Projects</span>
           <button
             class="p-1 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors no-drag"
-            onClick={async () => {
-              const selected = await openDialog({ directory: true, multiple: false });
-              if (selected) setAddProjectPath(selected as string);
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              setContextMenu({
+                pos: { x: rect.left, y: rect.bottom + 4 },
+                items: buildAddProjectMenuItems({
+                  onAddExisting: async () => {
+                    const selected = await openDialog({ directory: true, multiple: false });
+                    if (selected) setAddProjectPath(selected as string);
+                  },
+                  onCreateNew: () => setShowBtsBuilder(true),
+                }),
+              });
             }}
             title="Add Project (⌘O)"
           >
-            <FolderPlus size={14} />
+            <Plus size={14} />
           </button>
         </div>
 
@@ -519,31 +526,6 @@ export const Sidebar: Component = () => {
               </div>
             )}
           </For>
-
-          {/* Empty state */}
-          <Show when={projects.length === 0}>
-            <div class="px-3 py-10 flex flex-col items-center">
-              <div class="w-10 h-10 rounded-xl bg-surface-3 flex items-center justify-center mb-4">
-                <FolderPlus size={20} class="text-text-muted" />
-              </div>
-              <p class="text-sm text-text-primary font-medium mb-1">
-                Add a git repo
-              </p>
-              <p class="text-xs text-text-dim text-center leading-relaxed mb-5">
-                Each repo becomes a project. Create tasks to spin up parallel
-                worktrees.
-              </p>
-              <button
-                class="btn-primary text-xs px-4 py-1.5"
-                onClick={async () => {
-                  const selected = await openDialog({ directory: true, multiple: false });
-                  if (selected) setAddProjectPath(selected as string);
-                }}
-              >
-                Add Project
-              </button>
-            </div>
-          </Show>
         </div>
 
         {/* Footer — compact icon strip */}
@@ -611,12 +593,6 @@ export const Sidebar: Component = () => {
         onCancel={() => setArchiveTaskTarget(null)}
       />
 
-      <AddProjectDialog
-        open={!!addProjectPath()}
-        repoPath={addProjectPath()}
-        onClose={() => setAddProjectPath(null)}
-        onAdded={(id) => { setSelectedProjectId(id); requestNewTaskForProject(id) }}
-      />
     </>
   );
 };

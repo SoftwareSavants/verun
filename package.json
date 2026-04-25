@@ -16,6 +16,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@better-t-stack/types": "^3.27.4",
     "@choochmeque/tauri-plugin-notifications-api": "^0.4.3",
     "@codemirror/autocomplete": "^6.20.1",
     "@codemirror/commands": "^6.10.3",

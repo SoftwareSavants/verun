@@ -151,6 +151,8 @@ export async function pickAndAddProject() {
   if (selected) setAddProjectPath(selected as string)
 }
 
+export const [showBtsBuilder, setShowBtsBuilder] = createSignal(false)
+
 export const [showSettings, setShowSettings] = createSignal(false)
 export const [showArchived, setShowArchived] = createSignal(false)
 export const [showQuickOpen, setShowQuickOpen] = createSignal(false)

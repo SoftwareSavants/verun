@@ -5,7 +5,9 @@ import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
-import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject } from '../store/ui'
+import { AddProjectDialog } from './AddProjectDialog'
+import { BtsBuilderDialog } from './BtsBuilderDialog'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
 import { activeTasksForProject, taskById } from '../store/tasks'
@@ -310,7 +312,7 @@ export const Layout: Component = () => {
 
   return (
     <div class="flex h-screen w-screen bg-surface-0 text-text-primary select-none overflow-hidden">
-      <Show when={!showSettings()}>
+      <Show when={!showSettings() && projects.length > 0}>
         <div style={{ width: `${sidebarWidth()}px` }} class="shrink-0 h-full overflow-hidden">
           <Sidebar />
         </div>
@@ -340,6 +342,20 @@ export const Layout: Component = () => {
         open={!!newTaskProjectId()}
         projectId={newTaskProjectId()}
         onClose={() => setNewTaskProjectId(null)}
+      />
+      <AddProjectDialog
+        open={!!addProjectPath()}
+        repoPath={addProjectPath()}
+        onClose={() => setAddProjectPath(null)}
+        onAdded={(id) => { setSelectedProjectId(id); requestNewTaskForProject(id) }}
+      />
+      <BtsBuilderDialog
+        open={showBtsBuilder()}
+        onClose={() => setShowBtsBuilder(false)}
+        onScaffoldComplete={(path) => {
+          setShowBtsBuilder(false)
+          setAddProjectPath(path)
+        }}
       />
       <GlobalCommandPalette />
       <ModelPicker

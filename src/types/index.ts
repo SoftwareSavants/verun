@@ -279,7 +279,6 @@ export interface PrInfo {
   body?: string
   mergeable: string
   isDraft: boolean
-  body?: string
 }
 
 export interface CiCheck {
