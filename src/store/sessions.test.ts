@@ -28,7 +28,7 @@ vi.mock('../lib/notifications', () => ({
   notify: vi.fn(),
 }))
 
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, clearOutputItems, closeSession, createSession, reopenSession, clearSessionContextsForTask } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, reopenSession, clearSessionContextsForTask, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
 import * as ipc from '../lib/ipc'
 import { setPlanFilePathForSession, planFilePathForSession, sessionContexts, setSessionContexts } from './sessionContext'
 import type { Session, OutputItem } from '../types'
@@ -284,6 +284,164 @@ describe('loadOutputLines caching', () => {
     await closeSession('s-close')
     await loadOutputLines('s-close')
     expect(vi.mocked(ipc.getOutputLines)).toHaveBeenCalledTimes(2)
+  })
+
+  test('caps initial fetch with a limit so long-running sessions hydrate fast', async () => {
+    await loadOutputLines('s-capped')
+    expect(vi.mocked(ipc.getOutputLines)).toHaveBeenCalledWith('s-capped', INITIAL_OUTPUT_LINES_LIMIT)
+  })
+})
+
+describe('loadOlderOutputLines pagination', () => {
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    vi.mocked(ipc.getOutputLines).mockReset()
+  })
+
+  const makeUserItemsLine = (id: number, text: string) => ({
+    id,
+    sessionId: 's-page',
+    line: JSON.stringify({ type: 'verun_user_message', text }),
+    emittedAt: id * 100,
+  })
+
+  test('fetches the next page using the oldest known line.id as the cursor', async () => {
+    const firstPage = Array.from({ length: INITIAL_OUTPUT_LINES_LIMIT }, (_, i) =>
+      makeUserItemsLine(1000 + i, `init-${i}`),
+    )
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce(firstPage)
+    await loadOutputLines('s-page')
+    expect(hasMoreOutputLines('s-page')).toBe(true)
+
+    const olderPage = [makeUserItemsLine(900, 'older-A'), makeUserItemsLine(901, 'older-B')]
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce(olderPage)
+    const added = await loadOlderOutputLines('s-page')
+    expect(added).toBe(2)
+    // Cursor matches the oldest id from the first page (1000), not the live tail
+    expect(vi.mocked(ipc.getOutputLines)).toHaveBeenLastCalledWith('s-page', OLDER_OUTPUT_PAGE_SIZE, 1000)
+    // Older items prepended in DB order
+    const items = outputItems['s-page']
+    expect(items[0]).toMatchObject({ kind: 'userMessage', text: 'older-A' })
+    expect(items[1]).toMatchObject({ kind: 'userMessage', text: 'older-B' })
+    // hasMore flips off when the page comes back short
+    expect(hasMoreOutputLines('s-page')).toBe(false)
+  })
+
+  test('is a no-op when the initial fetch returned fewer than the limit (no older pages)', async () => {
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce([makeUserItemsLine(1, 'only')])
+    await loadOutputLines('s-short')
+    expect(hasMoreOutputLines('s-short')).toBe(false)
+
+    const added = await loadOlderOutputLines('s-short')
+    expect(added).toBe(0)
+    // Only the initial call — pagination didn't fire
+    expect(vi.mocked(ipc.getOutputLines)).toHaveBeenCalledTimes(1)
+  })
+
+  test('keeps fetching while each page returns a full window, walking the cursor backward', async () => {
+    const fullPage = (startId: number) =>
+      Array.from({ length: OLDER_OUTPUT_PAGE_SIZE }, (_, i) =>
+        makeUserItemsLine(startId + i, `m-${startId + i}`),
+      )
+
+    // Initial page (ids 1000..1000+limit-1)
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce(fullPage(1000))
+    await loadOutputLines('s-walk')
+    expect(hasMoreOutputLines('s-walk')).toBe(true)
+
+    // First older page (ids 750..999) — full → still more
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce(fullPage(1000 - OLDER_OUTPUT_PAGE_SIZE))
+    await loadOlderOutputLines('s-walk')
+    expect(vi.mocked(ipc.getOutputLines)).toHaveBeenLastCalledWith(
+      's-walk',
+      OLDER_OUTPUT_PAGE_SIZE,
+      1000,
+    )
+    expect(hasMoreOutputLines('s-walk')).toBe(true)
+
+    // Second older page — cursor is now the new oldest id (1000 - limit)
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce(fullPage(1000 - 2 * OLDER_OUTPUT_PAGE_SIZE))
+    await loadOlderOutputLines('s-walk')
+    expect(vi.mocked(ipc.getOutputLines)).toHaveBeenLastCalledWith(
+      's-walk',
+      OLDER_OUTPUT_PAGE_SIZE,
+      1000 - OLDER_OUTPUT_PAGE_SIZE,
+    )
+  })
+
+  test('an empty older page flips hasMore off without mutating items', async () => {
+    const firstPage = Array.from({ length: INITIAL_OUTPUT_LINES_LIMIT }, (_, i) =>
+      makeUserItemsLine(1000 + i, `m-${i}`),
+    )
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce(firstPage)
+    await loadOutputLines('s-empty')
+    const before = outputItems['s-empty'].length
+
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce([])
+    const added = await loadOlderOutputLines('s-empty')
+    expect(added).toBe(0)
+    expect(hasMoreOutputLines('s-empty')).toBe(false)
+    expect(outputItems['s-empty'].length).toBe(before)
+  })
+
+  test('concurrent loadOlderOutputLines calls dedupe via the in-flight guard', async () => {
+    const firstPage = Array.from({ length: INITIAL_OUTPUT_LINES_LIMIT }, (_, i) =>
+      makeUserItemsLine(1000 + i, `m-${i}`),
+    )
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce(firstPage)
+    await loadOutputLines('s-dedup')
+
+    let resolveOlder: (lines: typeof firstPage) => void = () => {}
+    const olderPromise = new Promise<typeof firstPage>(r => { resolveOlder = r })
+    vi.mocked(ipc.getOutputLines).mockReturnValueOnce(olderPromise as Promise<typeof firstPage>)
+
+    // Fire two concurrent calls — only the first should issue an IPC fetch
+    const a = loadOlderOutputLines('s-dedup')
+    const b = loadOlderOutputLines('s-dedup')
+
+    // The second call short-circuits via the loading flag and returns 0
+    expect(await b).toBe(0)
+    // Only one ipc call queued so far (initial + this one)
+    expect(vi.mocked(ipc.getOutputLines)).toHaveBeenCalledTimes(2)
+
+    resolveOlder([makeUserItemsLine(900, 'older')])
+    await a
+  })
+
+  test('clearOutputItems resets pagination so the next load refetches from the tail', async () => {
+    const firstPage = Array.from({ length: INITIAL_OUTPUT_LINES_LIMIT }, (_, i) =>
+      makeUserItemsLine(1000 + i, `m-${i}`),
+    )
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce(firstPage)
+    await loadOutputLines('s-clear-pg')
+    expect(hasMoreOutputLines('s-clear-pg')).toBe(true)
+
+    await clearOutputItems('s-clear-pg')
+    expect(hasMoreOutputLines('s-clear-pg')).toBe(false)
+
+    // Re-load resets the cursor — older fetch shouldn't keep using the stale id
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce(firstPage)
+    await loadOutputLines('s-clear-pg')
+    expect(hasMoreOutputLines('s-clear-pg')).toBe(true)
+  })
+
+  test('session-removed event drops pagination state', async () => {
+    setSessions([makeSession({ id: 's-rm' })])
+    const firstPage = Array.from({ length: INITIAL_OUTPUT_LINES_LIMIT }, (_, i) =>
+      makeUserItemsLine(1000 + i, `m-${i}`),
+    )
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce(firstPage)
+    await loadOutputLines('s-rm')
+    expect(hasMoreOutputLines('s-rm')).toBe(true)
+
+    const fire = listenCallbacks.get('session-removed')!
+    fire({ payload: { sessionId: 's-rm', taskId: 't-001' } })
+    expect(hasMoreOutputLines('s-rm')).toBe(false)
   })
 })
 

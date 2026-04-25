@@ -133,10 +133,18 @@ export const forkSessionToNewTask = (
     worktreeState,
   })
 
-export const getOutputLines = (sessionId: string): Promise<OutputLine[]> =>
+export const getOutputLines = (
+  sessionId: string,
+  limit?: number,
+  beforeId?: number,
+): Promise<OutputLine[]> =>
   DEMO
-    ? seed().then(d => d.DEMO_OUTPUT_LINES[sessionId] ?? [])
-    : invoke<OutputLine[]>('get_output_lines', { sessionId })
+    ? seed().then(d => {
+        const all = d.DEMO_OUTPUT_LINES[sessionId] ?? []
+        const upTo = beforeId != null ? all.filter(l => l.id < beforeId) : all
+        return limit != null && limit >= 0 ? upTo.slice(-limit) : upTo
+      })
+    : invoke<OutputLine[]>('get_output_lines', { sessionId, limit, beforeId })
 
 // Policy / Trust levels
 export const setTrustLevel = (taskId: string, trustLevel: TrustLevel) =>

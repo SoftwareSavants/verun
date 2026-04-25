@@ -1205,14 +1205,55 @@ pub async fn list_all_session_ids_for_task(
 pub async fn get_output_lines(
     pool: &SqlitePool,
     session_id: &str,
+    limit: Option<i64>,
+    before_id: Option<i64>,
 ) -> Result<Vec<OutputLine>, String> {
-    sqlx::query_as::<_, OutputLine>(
-        "SELECT * FROM output_lines WHERE session_id = ? ORDER BY id ASC",
-    )
-    .bind(session_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())
+    match limit {
+        Some(n) if n >= 0 => {
+            // Fetch the last N rows ending strictly before `before_id` (when
+            // set) by id DESC, then flip to ASC so the chat renders
+            // oldest-first. Implemented in SQL to avoid loading the full row
+            // set into memory for long-lived sessions.
+            let mut rows = match before_id {
+                Some(cursor) => {
+                    sqlx::query_as::<_, OutputLine>(
+                        "SELECT * FROM output_lines \
+                         WHERE session_id = ? AND id < ? \
+                         ORDER BY id DESC \
+                         LIMIT ?",
+                    )
+                    .bind(session_id)
+                    .bind(cursor)
+                    .bind(n)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| e.to_string())?
+                }
+                None => {
+                    sqlx::query_as::<_, OutputLine>(
+                        "SELECT * FROM output_lines \
+                         WHERE session_id = ? \
+                         ORDER BY id DESC \
+                         LIMIT ?",
+                    )
+                    .bind(session_id)
+                    .bind(n)
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| e.to_string())?
+                }
+            };
+            rows.reverse();
+            Ok(rows)
+        }
+        _ => sqlx::query_as::<_, OutputLine>(
+            "SELECT * FROM output_lines WHERE session_id = ? ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string()),
+    }
 }
 
 // Turn snapshots
@@ -1455,7 +1496,7 @@ mod tests {
         assert!(get_project(&pool, "p-001").await.unwrap().is_none());
         assert!(get_task(&pool, "t-001").await.unwrap().is_none());
         assert!(get_session(&pool, "s-001").await.unwrap().is_none());
-        assert!(get_output_lines(&pool, "s-001").await.unwrap().is_empty());
+        assert!(get_output_lines(&pool, "s-001", None, None).await.unwrap().is_empty());
     }
 
     // -- Task tests --
@@ -1555,7 +1596,7 @@ mod tests {
 
         assert!(get_task(&pool, "t-001").await.unwrap().is_none());
         assert!(get_session(&pool, "s-001").await.unwrap().is_none());
-        assert!(get_output_lines(&pool, "s-001").await.unwrap().is_empty());
+        assert!(get_output_lines(&pool, "s-001", None, None).await.unwrap().is_empty());
         // Project still exists
         assert!(get_project(&pool, "p-001").await.unwrap().is_some());
     }
@@ -1599,7 +1640,7 @@ mod tests {
 
         // Sessions and output preserved
         assert!(get_session(&pool, "s-001").await.unwrap().is_some());
-        assert!(!get_output_lines(&pool, "s-001").await.unwrap().is_empty());
+        assert!(!get_output_lines(&pool, "s-001", None, None).await.unwrap().is_empty());
     }
 
     // Issue #138 — archive_task now flips the archived flag with
@@ -2032,10 +2073,138 @@ mod tests {
         .await
         .unwrap();
 
-        let output = get_output_lines(&pool, "s-001").await.unwrap();
+        let output = get_output_lines(&pool, "s-001", None, None).await.unwrap();
         assert_eq!(output.len(), 3);
         assert_eq!(output[0].line, "line 1");
         assert_eq!(output[2].line, "line 3");
+    }
+
+    #[tokio::test]
+    async fn get_output_lines_with_limit_returns_tail_in_ascending_order() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: (1..=10)
+                    .map(|i| (format!("line {i}"), i as i64 * 100))
+                    .collect(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let tail = get_output_lines(&pool, "s-001", Some(3), None)
+            .await
+            .unwrap();
+        assert_eq!(tail.len(), 3);
+        assert_eq!(tail[0].line, "line 8");
+        assert_eq!(tail[1].line, "line 9");
+        assert_eq!(tail[2].line, "line 10");
+
+        let all = get_output_lines(&pool, "s-001", None, None).await.unwrap();
+        assert_eq!(all.len(), 10);
+        assert_eq!(all[0].line, "line 1");
+
+        // Cursor-paginate older history strictly before tail[0].id.
+        let cursor = tail[0].id;
+        let older = get_output_lines(&pool, "s-001", Some(3), Some(cursor))
+            .await
+            .unwrap();
+        assert_eq!(older.len(), 3);
+        assert_eq!(older[0].line, "line 5");
+        assert_eq!(older[1].line, "line 6");
+        assert_eq!(older[2].line, "line 7");
+    }
+
+    #[tokio::test]
+    async fn get_output_lines_cursor_at_oldest_returns_empty() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: (1..=5)
+                    .map(|i| (format!("line {i}"), i as i64 * 100))
+                    .collect(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let all = get_output_lines(&pool, "s-001", None, None).await.unwrap();
+        let oldest_id = all[0].id;
+
+        // Walking past the very first row → empty page (signals "no more").
+        let none = get_output_lines(&pool, "s-001", Some(10), Some(oldest_id))
+            .await
+            .unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_output_lines_cursor_clamps_to_session_id() {
+        // The cursor is just an `id < ?` filter — make sure it can't accidentally
+        // bleed rows from another session that happens to have a larger id.
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+        let mut s2 = make_session("t-001");
+        s2.id = "s-002".into();
+        process_write(&pool, DbWrite::CreateSession(s2)).await.unwrap();
+
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: vec![("a".into(), 100), ("b".into(), 200)],
+            },
+        )
+        .await
+        .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-002".into(),
+                lines: vec![("x".into(), 300), ("y".into(), 400)],
+            },
+        )
+        .await
+        .unwrap();
+
+        // Fetch s-001 with a cursor large enough to admit s-002's rows by id —
+        // they must still be filtered out by the session_id predicate.
+        let lines = get_output_lines(&pool, "s-001", Some(100), Some(9_999))
+            .await
+            .unwrap();
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().all(|l| l.session_id == "s-001"));
     }
 
     // -- Startup recovery --

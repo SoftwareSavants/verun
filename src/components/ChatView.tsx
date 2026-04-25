@@ -10,8 +10,8 @@ import { BlobImage } from './BlobImage'
 import { Popover } from './Popover'
 import { parseMentions } from '../lib/mentions'
 import * as ipc from '../lib/ipc'
-import { addToast, setSelectedTaskId, setSelectedSessionId } from '../store/ui'
-import { setSessions, loadOutputLines, sendMessage, createSession } from '../store/sessions'
+import { addToast, setSelectedTaskId, setSelectedSessionIdForTask } from '../store/ui'
+import { setSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, sendMessage, createSession } from '../store/sessions'
 import { planModeForSession, thinkingModeForSession, fastModeForSession } from '../store/sessionContext'
 import { setTasks } from '../store/tasks'
 import { setMainView } from '../store/editorView'
@@ -104,8 +104,6 @@ interface DiffBlock {
   diff: string
 }
 type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock | ErrorBlock | PlanBlock | DiffBlock
-
-const displayBlockCache = new Map<string, { output: OutputItem[]; length: number; blocks: DisplayBlock[] }>()
 
 export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
   const blocks: DisplayBlock[] = []
@@ -332,7 +330,7 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
       const session = await ipc.forkSessionInTask(props.sessionId, props.messageUuid)
       setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
       await loadOutputLines(session.id)
-      setSelectedSessionId(session.id)
+      setSelectedSessionIdForTask(session.taskId, session.id)
       addToast('Forked in this task', 'success')
       close()
     } catch (e) {
@@ -350,7 +348,7 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
       setSessions(produce(s => { if (!s.find(x => x.id === tws.session.id)) s.push(tws.session) }))
       await loadOutputLines(tws.session.id)
       setSelectedTaskId(tws.task.id)
-      setSelectedSessionId(tws.session.id)
+      setSelectedSessionIdForTask(tws.task.id, tws.session.id)
       addToast('Forked to new task', 'success')
       close()
     } catch (e) {
@@ -718,12 +716,13 @@ const ErrorBlockView: Component<{
 
   const retryNewSession = async () => {
     const msg = retryMessage()
-    if (!msg || !props.taskId) return
+    const tid = props.taskId
+    if (!msg || !tid) return
     setRetrying(true)
     try {
-      const session = await createSession(props.taskId, props.agentType ?? 'claude', props.model ?? undefined)
-      setSelectedSessionId(session.id)
-      setMainView(props.taskId, 'session')
+      const session = await createSession(tid, props.agentType ?? 'claude', props.model ?? undefined)
+      setSelectedSessionIdForTask(tid, session.id)
+      setMainView(tid, 'session')
       const [model, plan, thinking, fast] = modeArgs()
       await sendMessage(session.id, msg, undefined, model, plan, thinking, fast)
     } catch { /* status will update via event */ }
@@ -940,41 +939,27 @@ export const ChatView: Component<Props> = (props) => {
     })
   })
 
-  // Rebuild blocks when output items change OR session switches.
-  // ChatView stays mounted across session/task switches (Solid <Show> doesn't
-  // remount on truthy->truthy), so we must track sessionId to avoid showing
-  // stale blocks from the previous session when item counts happen to match.
-  let lastSessionId: string | null | undefined = props.sessionId
+  // Each ChatView instance is keyed on sessionId by TaskPanel, so it only ever
+  // sees a single session's output for its lifetime. Rebuild blocks whenever
+  // the output length changes.
   createEffect(on(
-    [() => props.sessionId, () => props.output.length] as const,
-    ([sid, len]) => {
-      const sessionChanged = sid !== lastSessionId
-      lastSessionId = sid
-
-      if (len === 0 && (lastItemCount !== 0 || sessionChanged)) {
-        setBlocks([])
-        lastItemCount = 0
-        if (sessionChanged) scheduleAutoScroll()
+    () => props.output.length,
+    (len) => {
+      if (len === 0) {
+        if (lastItemCount !== 0) {
+          setBlocks([])
+          lastItemCount = 0
+        }
         return
       }
-      if (len !== lastItemCount || sessionChanged) {
-        const cached = sid ? displayBlockCache.get(sid) : undefined
-        const newBlocks = cached && cached.output === props.output && cached.length === len
-          ? cached.blocks
-          : rebuildBlocks(props.output)
-        if (sid && (!cached || cached.blocks !== newBlocks)) {
-          displayBlockCache.set(sid, { output: props.output, length: len, blocks: newBlocks })
-        }
-        setBlocks(reconcile(newBlocks, { merge: !sessionChanged }))
+      if (len !== lastItemCount) {
+        const newBlocks = rebuildBlocks(props.output)
+        setBlocks(reconcile(newBlocks, { merge: true }))
         lastItemCount = len
-        // Re-apply search highlights after block rebuild (preserve position)
         if (showSearch() && searchQuery()) {
           requestAnimationFrame(() => refreshHighlights())
         }
-        if (sessionChanged) {
-          scheduleAutoScroll()
-        } else if (pendingScrollRestore) {
-          // On remount: restore saved scroll position instead of auto-scrolling
+        if (pendingScrollRestore) {
           const restore = pendingScrollRestore
           pendingScrollRestore = null
           if (!restore.autoScroll) {
@@ -1014,12 +999,42 @@ export const ChatView: Component<Props> = (props) => {
     setIsAtBottom(true)
   }
 
+  // Guard so the scroll-up-near-top trigger only fires once per "approach"; the
+  // store's own loading flag dedupes concurrent fetches but resetting this here
+  // means the user has to scroll away from the top before another page kicks in.
+  let olderLoadInFlight = false
+  const maybeLoadOlder = async () => {
+    if (olderLoadInFlight) return
+    const sid = props.sessionId
+    if (!sid || !hasMoreOutputLines(sid) || !containerRef) return
+    olderLoadInFlight = true
+    const oldScrollHeight = containerRef.scrollHeight
+    const oldScrollTop = containerRef.scrollTop
+    try {
+      const added = await loadOlderOutputLines(sid)
+      if (added > 0) {
+        // Two RAFs: first lets Solid commit the prepended blocks, second waits
+        // until the browser has actually re-laid them out so scrollHeight is real.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (!containerRef) return
+            const delta = containerRef.scrollHeight - oldScrollHeight
+            if (delta > 0) containerRef.scrollTop = oldScrollTop + delta
+          })
+        })
+      }
+    } finally {
+      olderLoadInFlight = false
+    }
+  }
+
   const handleScroll = () => {
     if (!containerRef || scrollRafPending) return
     const { scrollTop, scrollHeight, clientHeight } = containerRef
     const distFromBottom = scrollHeight - scrollTop - clientHeight
     autoScroll = distFromBottom < 30
     setIsAtBottom(distFromBottom < 200)
+    if (scrollTop < 200) void maybeLoadOlder()
   }
 
   const handleLinkClick = (e: MouseEvent) => handleMarkdownLinkClick(e, props.taskId)

@@ -2750,7 +2750,7 @@ pub async fn fork_session_in_task(
 
     // Load parent output_lines outside the transaction so we can hold the
     // boundary check's error path separate from DB state.
-    let parent_lines = db::get_output_lines(pool, &parent.id).await?;
+    let parent_lines = db::get_output_lines(pool, &parent.id, None, None).await?;
 
     let new_session = Session {
         id: new_verun_sid.clone(),
@@ -2943,7 +2943,7 @@ pub async fn fork_session_to_new_task(
 
     // Load parent output_lines BEFORE creating the worktree so a missing
     // marker fails fast without leaving stray filesystem state behind.
-    let parent_lines = db::get_output_lines(pool, &parent_session.id).await?;
+    let parent_lines = db::get_output_lines(pool, &parent_session.id, None, None).await?;
     validate_fork_marker_present(&parent_lines, &fork_after_message_uuid)?;
 
     // Create the new worktree (off the runtime).

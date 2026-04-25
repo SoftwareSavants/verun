@@ -1,5 +1,5 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionId, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth, consumePendingSessionNav, getLastSessionForTask, pickAndAddProject, setShowBtsBuilder } from '../store/ui'
+import { selectedTaskId, selectedSessionId, setSelectedSessionIdForTask, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth, consumePendingSessionNav, getLastSessionForTask, pickAndAddProject, setShowBtsBuilder } from '../store/ui'
 import { refitActiveTerminal, setActiveTerminalForTask, startCommandTerminalId, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
 import { projects, projectById } from '../store/projects'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask, restoreTask } from '../store/tasks'
@@ -145,18 +145,22 @@ export const TaskPanel: Component = () => {
       initTaskContext(taskId)
       restoreTabState(taskId)
       await loadSessions(taskId)
+      // Scope writes to taskId: if the user switched tasks during the await,
+      // plain setSelectedSessionId would read the current selectedTaskId and
+      // clobber the wrong task's context — surfacing as messages from one task
+      // appearing in another task's session view.
       const pending = consumePendingSessionNav(taskId)
       const taskSessions = sessionsForTask(taskId)
       if (pending && taskSessions.some(s => s.id === pending)) {
-        setSelectedSessionId(pending)
+        setSelectedSessionIdForTask(taskId, pending)
       } else {
         const last = getLastSessionForTask(taskId)
         if (last && taskSessions.some(s => s.id === last)) {
-          setSelectedSessionId(last)
+          setSelectedSessionIdForTask(taskId, last)
         } else if (taskSessions.length > 0) {
-          setSelectedSessionId(taskSessions[0].id)
+          setSelectedSessionIdForTask(taskId, taskSessions[0].id)
         } else {
-          setSelectedSessionId(null)
+          setSelectedSessionIdForTask(taskId, null)
         }
       }
       // Start LSP eagerly so project-wide diagnostics populate the problems
@@ -200,11 +204,6 @@ export const TaskPanel: Component = () => {
     return id ? sessionsForTask(id) : []
   }
 
-  const currentOutput = () => {
-    const sid = selectedSessionId()
-    return sid ? (outputItems[sid] || []) : []
-  }
-
   // Scroll active tab into view when it changes
   let tabBarRef: HTMLDivElement | undefined
   createEffect(() => {
@@ -231,7 +230,7 @@ export const TaskPanel: Component = () => {
     const tid = selectedTaskId()
     if (!tid) return
     const session = await createSession(tid, agentType, model)
-    setSelectedSessionId(session.id)
+    setSelectedSessionIdForTask(tid, session.id)
     setMainView(tid, 'session')
   }
 
@@ -239,7 +238,7 @@ export const TaskPanel: Component = () => {
     const tid = selectedTaskId()
     if (!tid) return
     await reopenSession(sessionId)
-    setSelectedSessionId(sessionId)
+    setSelectedSessionIdForTask(tid, sessionId)
     setMainView(tid, 'session')
   }
 
@@ -537,7 +536,7 @@ export const TaskPanel: Component = () => {
                                   ? 'text-accent hover:text-accent-hover tab-unread-pulse'
                                   : 'text-text-muted hover:text-text-secondary hover:bg-outline/3'
                             )}
-                            onClick={() => { setSelectedSessionId(session.id); setMainView(t().id, 'session') }}
+                            onClick={() => { setSelectedSessionIdForTask(t().id, session.id); setMainView(t().id, 'session') }}
                           >
                             <SvgIcon svg={agentIcon(session.agentType)} size={10} />
                             <span>{session.name || AGENT_DISPLAY_NAMES[session.agentType]}</span>
@@ -565,7 +564,7 @@ export const TaskPanel: Component = () => {
                                   const idx = sessions.findIndex(s => s.id === session.id)
                                   if (selectedSessionId() === session.id) {
                                     const next = sessions[idx + 1] || sessions[idx - 1]
-                                    setSelectedSessionId(next?.id ?? null)
+                                    setSelectedSessionIdForTask(session.taskId, next?.id ?? null)
                                   }
                                   closeSession(session.id)
                                 }}
@@ -643,14 +642,21 @@ export const TaskPanel: Component = () => {
                       fallback={
                         <>
                           <div class="flex-1 overflow-hidden">
-                            <ChatView
-                              output={currentOutput()}
-                              sessionStatus={currentSession()?.status}
-                              sessionId={selectedSessionId()}
-                              taskId={t().id}
-                              agentType={currentSession()?.agentType}
-                              model={currentSession()?.model}
-                            />
+                            <Show when={selectedSessionId()} keyed>
+                              {(sid) => {
+                                const session = () => sessionById(sid)
+                                return (
+                                  <ChatView
+                                    output={outputItems[sid] || []}
+                                    sessionStatus={session()?.status}
+                                    sessionId={sid}
+                                    taskId={t().id}
+                                    agentType={session()?.agentType}
+                                    model={session()?.model}
+                                  />
+                                )
+                              }}
+                            </Show>
                           </div>
                           <Show
                             when={t().archived}

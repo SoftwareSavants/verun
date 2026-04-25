@@ -177,6 +177,7 @@ export async function closeSession(sessionId: string) {
   setSessionTokens(produce(store => { delete store[sessionId] }))
   setAbortingSessions(produce(store => { delete store[sessionId] }))
   loadedSessionOutputs.delete(sessionId)
+  outputPageState.delete(sessionId)
   // Persist closure to DB (status = 'closed', filtered from future loads)
   await ipc.closeSession(sessionId)
 }
@@ -188,10 +189,32 @@ export async function closeSession(sessionId: string) {
 // Invalidated on clearOutputItems, closeSession, session-removed.
 const loadedSessionOutputs = new Set<string>()
 
+// Initial hydration is intentionally tight: 250 NDJSON lines parses + paints
+// in a few tens of ms even on long-running sessions. Older history is fetched
+// on demand via loadOlderOutputLines when the chat scrolls near the top.
+export const INITIAL_OUTPUT_LINES_LIMIT = 250
+export const OLDER_OUTPUT_PAGE_SIZE = 250
+
+interface OutputPageState {
+  oldestLineId: number | null
+  hasMore: boolean
+  loading: boolean
+}
+const outputPageState = new Map<string, OutputPageState>()
+
+export function hasMoreOutputLines(sessionId: string): boolean {
+  return outputPageState.get(sessionId)?.hasMore ?? false
+}
+
 export async function loadOutputLines(sessionId: string) {
   if (loadedSessionOutputs.has(sessionId)) return
-  const lines = await ipc.getOutputLines(sessionId)
+  const lines = await ipc.getOutputLines(sessionId, INITIAL_OUTPUT_LINES_LIMIT)
   loadedSessionOutputs.add(sessionId)
+  outputPageState.set(sessionId, {
+    oldestLineId: lines.length > 0 ? lines[0].id : null,
+    hasMore: lines.length === INITIAL_OUTPUT_LINES_LIMIT,
+    loading: false,
+  })
   const items: OutputItem[] = []
   for (const l of lines) {
     const parsed = parseNdjsonLine(l.line, l.emittedAt)
@@ -219,6 +242,34 @@ export async function loadOutputLines(sessionId: string) {
   if (replayCost > 0) setSessionCosts(sessionId, replayCost)
   if (replayInputTokens > 0 || replayOutputTokens > 0) {
     setSessionTokens(sessionId, { input: replayInputTokens, output: replayOutputTokens, cacheRead: replayCacheRead, cacheWrite: replayCacheWrite })
+  }
+}
+
+/** Fetch the next page of older output_lines and prepend them to the in-memory
+ *  store. Returns the number of OutputItems added, or 0 when there's nothing
+ *  more to load (or a fetch is already in flight). */
+export async function loadOlderOutputLines(sessionId: string): Promise<number> {
+  const state = outputPageState.get(sessionId)
+  if (!state || !state.hasMore || state.loading || state.oldestLineId == null) return 0
+  state.loading = true
+  try {
+    const lines = await ipc.getOutputLines(sessionId, OLDER_OUTPUT_PAGE_SIZE, state.oldestLineId)
+    if (lines.length === 0) {
+      state.hasMore = false
+      return 0
+    }
+    const olderItems: OutputItem[] = []
+    for (const l of lines) {
+      const parsed = parseNdjsonLine(l.line, l.emittedAt)
+      if (parsed) olderItems.push(...parsed)
+    }
+    const current = outputItems[sessionId] ?? []
+    setOutputItems(sessionId, [...olderItems, ...current])
+    state.oldestLineId = lines[0].id
+    state.hasMore = lines.length === OLDER_OUTPUT_PAGE_SIZE
+    return olderItems.length
+  } finally {
+    state.loading = false
   }
 }
 
@@ -283,6 +334,7 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
 export async function clearOutputItems(sessionId: string) {
   setOutputItems(sessionId, [])
   loadedSessionOutputs.delete(sessionId)
+  outputPageState.delete(sessionId)
   // Also clear the Claude session context + persisted output in DB
   await ipc.clearSession(sessionId)
   setSessions(s => s.id === sessionId, 'resumeSessionId', null)
@@ -489,6 +541,7 @@ export async function initSessionListeners() {
     setSessionCosts(produce(store => { delete store[sessionId] }))
     setSessionTokens(produce(store => { delete store[sessionId] }))
     loadedSessionOutputs.delete(sessionId)
+    outputPageState.delete(sessionId)
     clearSteps(sessionId)
   })
 
