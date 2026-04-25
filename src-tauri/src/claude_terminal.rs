@@ -97,25 +97,9 @@ pub async fn open_claude_terminal(
         });
     }
 
-    let session = db::get_session(pool, &session_id)
-        .await?
-        .ok_or_else(|| format!("Session {session_id} not found"))?;
-
-    if session.agent_type != "claude" {
-        return Err(format!(
-            "Terminal mode is only available for Claude sessions (got {})",
-            session.agent_type
-        ));
-    }
-
-    let resume_id = session
-        .resume_session_id
-        .clone()
-        .ok_or_else(|| "Session has no resumable id yet - send a message first".to_string())?;
-
-    let task = db::get_task(pool, &session.task_id)
-        .await?
-        .ok_or_else(|| format!("Task {} not found", session.task_id))?;
+    let validated = validate_session_for_terminal(pool, &session_id).await?;
+    let task = validated.task;
+    let resume_id = validated.resume_id;
 
     let repo_path = db::get_repo_path_for_task(pool, &task.id).await?;
     let env_vars = crate::worktree::verun_env_vars(task.port_offset, &repo_path);
@@ -193,6 +177,51 @@ pub async fn close_claude_terminal(
             .map_err(|e| format!("close_pty join: {e}"))??;
     }
     Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) struct ValidatedTerminalSession {
+    pub task: crate::db::Task,
+    pub resume_id: String,
+}
+
+/// Look up the session, ensure it's a Claude session that has reached
+/// `system:init` (so `claude --resume <id>` will work), and return the task
+/// it belongs to. Pure DB validation extracted from `open_claude_terminal`
+/// so the error paths can be unit-tested without an `AppHandle`.
+pub(crate) async fn validate_session_for_terminal(
+    pool: &SqlitePool,
+    session_id: &str,
+) -> Result<ValidatedTerminalSession, String> {
+    let session = db::get_session(pool, session_id)
+        .await?
+        .ok_or_else(|| format!("Session {session_id} not found"))?;
+
+    if session.agent_type != "claude" {
+        return Err(format!(
+            "Terminal mode is only available for Claude sessions (got {})",
+            session.agent_type
+        ));
+    }
+
+    let resume_id = session
+        .resume_session_id
+        .clone()
+        .ok_or_else(|| "Session has no resumable id yet - send a message first".to_string())?;
+
+    let task = db::get_task(pool, &session.task_id)
+        .await?
+        .ok_or_else(|| format!("Task {} not found", session.task_id))?;
+
+    Ok(ValidatedTerminalSession { task, resume_id })
+}
+
+/// Build the JSON line we persist into `output_lines` for a batch of items
+/// emitted by the transcript tailer. The shape matches `verun_items` synthetic
+/// lines produced by the streaming agent path so the chat UI replays them
+/// without changes.
+pub(crate) fn verun_items_line(items: &[OutputItem]) -> String {
+    serde_json::json!({ "type": "verun_items", "items": items }).to_string()
 }
 
 /// True when the handle's PTY is still live (present in the pty map). A `false`
@@ -281,7 +310,7 @@ async fn run_tail_driver(
                 items: items.clone(),
             },
         );
-        let line = serde_json::json!({ "type": "verun_items", "items": items }).to_string();
+        let line = verun_items_line(&items);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -390,5 +419,138 @@ mod tests {
         let pty_map = pty::new_active_pty_map();
         let ct_map = new_claude_terminal_map();
         assert!(!drop_if_stale(&pty_map, &ct_map, "s-none"));
+    }
+
+    // ---------------------- verun_items_line ---------------------------
+
+    #[test]
+    fn verun_items_line_wraps_in_synthetic_envelope() {
+        let items = vec![OutputItem::Text { text: "hi".into() }];
+        let line = verun_items_line(&items);
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["type"], "verun_items");
+        assert_eq!(v["items"].as_array().unwrap().len(), 1);
+        assert_eq!(v["items"][0]["kind"], "text");
+        assert_eq!(v["items"][0]["text"], "hi");
+    }
+
+    #[test]
+    fn verun_items_line_handles_empty_batch() {
+        let line = verun_items_line(&[]);
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["type"], "verun_items");
+        assert!(v["items"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn verun_items_line_serializes_multiple_kinds_in_order() {
+        let items = vec![
+            OutputItem::Text { text: "first".into() },
+            OutputItem::Thinking { text: "thought".into() },
+            OutputItem::ToolStart { tool: "Read".into(), input: "{}".into() },
+        ];
+        let line = verun_items_line(&items);
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let arr = v["items"].as_array().unwrap();
+        assert_eq!(arr[0]["kind"], "text");
+        assert_eq!(arr[1]["kind"], "thinking");
+        assert_eq!(arr[2]["kind"], "toolStart");
+        assert_eq!(arr[2]["tool"], "Read");
+    }
+
+    // ---------------------- validate_session_for_terminal -------------------
+    //
+    // Exercises every error path that does not require a live AppHandle. The
+    // happy path is also covered so we know the validator doesn't reject a
+    // perfectly good session.
+
+    use crate::db::tests::{make_project, make_session, make_task, process_write_for_tests, test_pool};
+    use crate::db::DbWrite;
+
+    #[tokio::test]
+    async fn validate_session_for_terminal_errors_when_session_missing() {
+        let pool = test_pool().await;
+        let err = validate_session_for_terminal(&pool, "s-none").await.unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn validate_session_for_terminal_rejects_non_claude_agent() {
+        let pool = test_pool().await;
+        process_write_for_tests(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write_for_tests(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        let mut s = make_session("t-001");
+        s.agent_type = "codex".into();
+        s.resume_session_id = Some("r-1".into());
+        process_write_for_tests(&pool, DbWrite::CreateSession(s)).await.unwrap();
+
+        let err = validate_session_for_terminal(&pool, "s-001").await.unwrap_err();
+        assert!(err.contains("Claude sessions"), "got: {err}");
+        assert!(err.contains("codex"), "should name the actual agent: {err}");
+    }
+
+    #[tokio::test]
+    async fn validate_session_for_terminal_rejects_session_without_resume_id() {
+        let pool = test_pool().await;
+        process_write_for_tests(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write_for_tests(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        // make_session leaves resume_session_id = None
+        process_write_for_tests(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+
+        let err = validate_session_for_terminal(&pool, "s-001").await.unwrap_err();
+        assert!(err.contains("resumable id"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn validate_session_for_terminal_returns_task_and_resume_id_for_valid_session() {
+        let pool = test_pool().await;
+        process_write_for_tests(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write_for_tests(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        let mut s = make_session("t-001");
+        s.resume_session_id = Some("resume-uuid-abc".into());
+        process_write_for_tests(&pool, DbWrite::CreateSession(s)).await.unwrap();
+
+        let validated = validate_session_for_terminal(&pool, "s-001").await.unwrap();
+        assert_eq!(validated.task.id, "t-001");
+        assert_eq!(validated.resume_id, "resume-uuid-abc");
+    }
+
+    #[tokio::test]
+    async fn validate_session_for_terminal_errors_when_task_missing() {
+        // Force a session whose task_id does not exist. The DB schema would
+        // normally prevent this via FK; we disable FKs on the same connection
+        // and insert a session pointing at a non-existent task to exercise the
+        // validator's own task-lookup error path.
+        let pool = test_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        sqlx::query("PRAGMA foreign_keys=OFF")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions(id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at) \
+             VALUES('s-orphan', 't-missing', NULL, 'r-1', 'idle', 0, NULL, 0.0, NULL, NULL, 'claude', NULL, NULL)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        drop(conn);
+
+        let err = validate_session_for_terminal(&pool, "s-orphan").await.unwrap_err();
+        assert!(err.contains("Task t-missing not found"), "got: {err}");
     }
 }

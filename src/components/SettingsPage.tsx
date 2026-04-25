@@ -8,7 +8,7 @@ import {
   type ThemeMode, type Density, type ThemePreset, type PaletteOverrides,
 } from '../lib/theme'
 import { setShowSettings, setSelectedTaskId, setSelectedSessionIdForTask, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist, sidebarWidth } from '../store/ui'
-import { claudeDefaultViewMode, setClaudeDefaultViewMode } from '../store/sessionViewMode'
+import { ClaudeDefaultViewPicker } from './ClaudeDefaultViewPicker'
 import { notificationsEnabled, setNotificationsEnabledAndPersist } from '../lib/notifications'
 import { projects, updateHooks, updateStoreHooks, updateBaseBranch } from '../store/projects'
 import { createTask, activeTasksForProject } from '../store/tasks'
@@ -276,20 +276,7 @@ export const SettingsPage: Component = () => {
                     Terminal runs <code>claude --resume</code> in a real PTY; UI uses Verun's chat interface. Each session can still override this.
                   </div>
                 </div>
-                <div class="inline-flex items-center rounded-full bg-surface-2 ring-1 ring-outline/8 text-xs">
-                  <button
-                    class={`px-3 py-1 rounded-full transition-colors ${claudeDefaultViewMode() === 'ui' ? 'bg-accent/20 text-accent' : 'text-text-muted hover:text-text-primary'}`}
-                    onClick={() => setClaudeDefaultViewMode('ui')}
-                  >
-                    UI
-                  </button>
-                  <button
-                    class={`px-3 py-1 rounded-full transition-colors ${claudeDefaultViewMode() === 'terminal' ? 'bg-accent/20 text-accent' : 'text-text-muted hover:text-text-primary'}`}
-                    onClick={() => setClaudeDefaultViewMode('terminal')}
-                  >
-                    Terminal
-                  </button>
-                </div>
+                <ClaudeDefaultViewPicker />
               </div>
             </div>
 

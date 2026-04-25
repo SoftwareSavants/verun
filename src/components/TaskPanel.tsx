@@ -10,7 +10,8 @@ import { StepList } from './StepList'
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { SessionTerminal } from './SessionTerminal'
-import { sessionViewMode, setSessionViewMode } from '../store/sessionViewMode'
+import { ClaudeViewToggle } from './ClaudeViewToggle'
+import { sessionViewMode } from '../store/sessionViewMode'
 import { canUseTerminalView } from '../lib/terminalMode'
 import { RightPanel } from './RightPanel'
 import { QuickOpen } from './QuickOpen'
@@ -644,45 +645,7 @@ export const TaskPanel: Component = () => {
                       when={mainView(t().id) !== 'session'}
                       fallback={
                         <>
-                          <Show when={currentSession()?.agentType === 'claude' && selectedSessionId()}>
-                            <div class="flex items-center justify-end px-3 py-1 border-b border-border-subtle bg-surface-1">
-                              <div class="inline-flex items-center rounded-full bg-surface-2 ring-1 ring-outline/8 text-[11px]">
-                                <button
-                                  class={clsx(
-                                    'px-2.5 py-0.5 rounded-full transition-colors',
-                                    sessionViewMode(selectedSessionId()) === 'ui'
-                                      ? 'bg-accent/20 text-accent'
-                                      : 'text-text-muted hover:text-text-primary'
-                                  )}
-                                  onClick={() => { const sid = selectedSessionId(); if (sid) setSessionViewMode(sid, 'ui') }}
-                                >
-                                  UI
-                                </button>
-                                <button
-                                  disabled={!canUseTerminalView(currentSession())}
-                                  class={clsx(
-                                    'px-2.5 py-0.5 rounded-full transition-colors',
-                                    !canUseTerminalView(currentSession())
-                                      ? 'text-text-dim/60 cursor-not-allowed'
-                                      : sessionViewMode(selectedSessionId()) === 'terminal'
-                                        ? 'bg-accent/20 text-accent'
-                                        : 'text-text-muted hover:text-text-primary'
-                                  )}
-                                  onClick={() => {
-                                    const sid = selectedSessionId()
-                                    if (sid && canUseTerminalView(currentSession())) setSessionViewMode(sid, 'terminal')
-                                  }}
-                                  title={
-                                    canUseTerminalView(currentSession())
-                                      ? 'Run claude --resume in a real terminal'
-                                      : 'Send a message first — the terminal view needs a resumable Claude session'
-                                  }
-                                >
-                                  Terminal
-                                </button>
-                              </div>
-                            </div>
-                          </Show>
+                          <ClaudeViewToggle session={currentSession()} sessionId={selectedSessionId()} />
                           <Show
                             when={canUseTerminalView(currentSession()) && sessionViewMode(selectedSessionId()) === 'terminal' && selectedSessionId()}
                             fallback={

@@ -440,4 +440,151 @@ mod tests {
             .await
             .expect("stop did not return within 2s");
     }
+
+    /// Build a single user-message JSONL line with the given text. Helper for
+    /// burst tests below.
+    fn user_line(text: &str) -> Vec<u8> {
+        format!(
+            "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"text\":\"{text}\",\"type\":\"text\"}}]}}}}\n"
+        )
+        .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn tail_consumes_a_burst_of_many_lines_in_one_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, b"").unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tail = spawn_transcript_tail(&path, 0, tx);
+
+        // Write 200 complete lines as a single append. The poller should
+        // ingest all of them on its next tick.
+        let mut burst = Vec::new();
+        for i in 0..200u32 {
+            burst.extend_from_slice(&user_line(&format!("m{i}")));
+        }
+        append(&path, &burst);
+
+        let mut received: Vec<String> = Vec::new();
+        for _ in 0..200 {
+            let item = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .expect("timed out before all 200 items arrived")
+                .expect("channel closed mid-burst");
+            match item {
+                OutputItem::UserMessage { text } => received.push(text),
+                other => panic!("unexpected item kind: {other:?}"),
+            }
+        }
+        assert_eq!(received.len(), 200);
+        assert_eq!(received.first().map(String::as_str), Some("m0"));
+        assert_eq!(received.last().map(String::as_str), Some("m199"));
+        tail.stop().await;
+    }
+
+    #[tokio::test]
+    async fn tail_consumes_lines_appended_across_multiple_ticks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, b"").unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tail = spawn_transcript_tail(&path, 0, tx);
+
+        // Append four lines, each separated by enough wall time that the
+        // poll loop runs at least once between writes.
+        for i in 0..4u32 {
+            append(&path, &user_line(&format!("t{i}")));
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+
+        let mut received: Vec<String> = Vec::new();
+        for _ in 0..4 {
+            let item = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("timed out waiting for tick item")
+                .expect("channel closed");
+            match item {
+                OutputItem::UserMessage { text } => received.push(text),
+                other => panic!("unexpected: {other:?}"),
+            }
+        }
+        assert_eq!(received, vec!["t0", "t1", "t2", "t3"]);
+        tail.stop().await;
+    }
+
+    #[tokio::test]
+    async fn tail_handles_partial_line_split_across_ticks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, b"").unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tail = spawn_transcript_tail(&path, 0, tx);
+
+        // Write the head of a JSONL line without its terminating newline.
+        let line = user_line("split");
+        let split_at = line.len() - 5; // chops off the trailing `}]}}\n`
+        append(&path, &line[..split_at]);
+        // Give the tail a couple of ticks; nothing should arrive yet.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(rx.try_recv().is_err(), "tail emitted before line completed");
+
+        // Now append the rest including the newline.
+        append(&path, &line[split_at..]);
+        let item = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out after completing partial line")
+            .expect("channel closed");
+        assert_user_text(&item, "split");
+
+        tail.stop().await;
+    }
+
+    #[tokio::test]
+    async fn tail_skips_garbage_lines_without_blocking_subsequent_good_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, b"").unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tail = spawn_transcript_tail(&path, 0, tx);
+
+        // First: an unparseable line. Then a real one. The tail should drop
+        // the garbage silently and emit only the real one.
+        append(&path, b"this is not json\n");
+        append(&path, &user_line("after-garbage"));
+
+        let item = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for post-garbage item")
+            .expect("channel closed");
+        assert_user_text(&item, "after-garbage");
+        // Confirm the garbage line did not slip through.
+        assert!(rx.try_recv().is_err(), "unexpected extra item after garbage");
+
+        tail.stop().await;
+    }
+
+    #[tokio::test]
+    async fn tail_exits_when_receiver_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, b"").unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let tail = spawn_transcript_tail(&path, 0, tx);
+
+        // Drop the receiver, then write something so the next poll observes
+        // the closed channel and bails out.
+        drop(rx);
+        append(&path, &user_line("orphan"));
+
+        // The TranscriptTail's stop() awaits the join handle. If the task
+        // doesn't notice the closed receiver, this times out.
+        tokio::time::timeout(Duration::from_secs(3), tail.stop())
+            .await
+            .expect("tail did not exit after receiver was dropped");
+    }
 }
