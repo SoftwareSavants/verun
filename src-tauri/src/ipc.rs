@@ -650,13 +650,14 @@ pub async fn send_message(
     app: AppHandle,
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
+    app_data: State<'_, crate::blob::AppDataDir>,
     active: State<'_, ActiveMap>,
     pending: State<'_, PendingApprovals>,
     pending_meta: State<'_, PendingApprovalMeta>,
     pending_ctrl: State<'_, PendingControlResponses>,
     session_id: String,
     message: String,
-    attachments: Option<Vec<task::Attachment>>,
+    attachments: Option<Vec<task::AttachmentRef>>,
     model: Option<String>,
     plan_mode: Option<bool>,
     thinking_mode: Option<bool>,
@@ -678,6 +679,9 @@ pub async fn send_message(
     let trust_level = crate::policy::TrustLevel::from_str(&trust_str);
     let repo_path = repo_result?;
 
+    let refs = attachments.unwrap_or_default();
+    let resolved = task::resolve_attachments(&refs, &app_data.0).await?;
+
     task::send_message(
         app,
         db_tx.inner(),
@@ -695,7 +699,7 @@ pub async fn send_message(
             trust_level,
             message,
             resume_session_id: session.resume_session_id,
-            attachments: attachments.unwrap_or_default(),
+            attachments: resolved,
             model,
             plan_mode: plan_mode.unwrap_or(false),
             thinking_mode: thinking_mode.unwrap_or(false),
@@ -2838,6 +2842,77 @@ pub async fn force_close_task_window(
     window
         .destroy()
         .map_err(|e| format!("Failed to destroy window: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Blob store (attachments)
+// ---------------------------------------------------------------------------
+
+use crate::blob::{self, AppDataDir, BlobRef, StorageStats};
+
+/// Upload bytes into the content-addressed blob store. Returns a ref the
+/// frontend can persist in a Step / OutputItem instead of inlining base64.
+/// Idempotent: identical bytes yield the same hash and reuse the on-disk file.
+#[tauri::command]
+pub async fn upload_attachment(
+    pool: State<'_, SqlitePool>,
+    app_data: State<'_, AppDataDir>,
+    mime: String,
+    data: Vec<u8>,
+) -> Result<BlobRef, String> {
+    blob::write_blob(pool.inner(), &app_data.0, &mime, &data).await
+}
+
+/// Read bytes back from the blob store. The frontend calls this lazily when
+/// rendering an attached image so the chat-view restore path doesn't load
+/// every blob up front.
+#[tauri::command]
+pub async fn get_blob(
+    app_data: State<'_, AppDataDir>,
+    hash: String,
+) -> Result<Vec<u8>, String> {
+    blob::read_blob_bytes(&app_data.0, &hash).await
+}
+
+/// Aggregate counts and byte totals for the Storage Breakdown UI.
+#[tauri::command]
+pub async fn get_storage_stats(pool: State<'_, SqlitePool>) -> Result<StorageStats, String> {
+    blob::get_storage_stats(pool.inner()).await
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GcReport {
+    pub reclaimed_unreferenced: u64,
+    pub reclaimed_capped: u64,
+}
+
+/// Run the blob GC sweep. `ttl_ms <= 0` skips the TTL pass; `max_bytes <= 0`
+/// skips the cap pass. Returns counts so the UI can show a toast with what
+/// was reclaimed.
+#[tauri::command]
+pub async fn run_blob_gc(
+    pool: State<'_, SqlitePool>,
+    app_data: State<'_, AppDataDir>,
+    ttl_ms: i64,
+    max_bytes: i64,
+) -> Result<GcReport, String> {
+    let reclaimed_unreferenced = blob::gc_unreferenced(pool.inner(), &app_data.0, ttl_ms).await?;
+    let reclaimed_capped = blob::enforce_storage_cap(pool.inner(), &app_data.0, max_bytes).await?;
+    Ok(GcReport {
+        reclaimed_unreferenced,
+        reclaimed_capped,
+    })
+}
+
+/// One-shot rewrite of legacy base64 attachments into blob refs. Idempotent
+/// via an `app_meta` sentinel — safe to call on every startup.
+#[tauri::command]
+pub async fn migrate_legacy_attachments(
+    pool: State<'_, SqlitePool>,
+    app_data: State<'_, AppDataDir>,
+) -> Result<blob::MigrationReport, String> {
+    blob::migrate_legacy_attachments(pool.inner(), &app_data.0).await
 }
 
 #[cfg(test)]

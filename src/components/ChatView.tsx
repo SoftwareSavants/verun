@@ -2,7 +2,7 @@ import { Component, For, Show, Switch, Match, createEffect, on, createSignal, on
 import { createStore, produce, reconcile } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
-import type { OutputItem, SessionStatus } from '../types'
+import type { OutputItem, SessionStatus, AttachmentRef } from '../types'
 import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
@@ -58,7 +58,7 @@ interface Props {
 interface UserBlock {
   type: 'user'
   text: string
-  images?: Array<{ mimeType: string; data: Uint8Array }>
+  images?: AttachmentRef[]
 }
 interface AssistantBlock {
   type: 'assistant'
@@ -808,7 +808,7 @@ export const ChatView: Component<Props> = (props) => {
   let lastItemCount = 0
 
   // Image viewer state
-  const [viewerImage, setViewerImage] = createSignal<{ mimeType: string; data: Uint8Array } | null>(null)
+  const [viewerImage, setViewerImage] = createSignal<AttachmentRef | null>(null)
 
   // Scroll to bottom button visibility
   const [isAtBottom, setIsAtBottom] = createSignal(true)
@@ -1091,11 +1091,11 @@ export const ChatView: Component<Props> = (props) => {
                               <button
                                 type="button"
                                 class="block cursor-pointer"
-                                onClick={() => setViewerImage({ mimeType: img.mimeType, data: img.data })}
+                                onClick={() => setViewerImage(img)}
                                 title="Open image"
                               >
                                 <BlobImage
-                                  data={img.data}
+                                  hash={img.hash}
                                   mimeType={img.mimeType}
                                   class="h-16 w-16 object-cover rounded-xl border border-border transition-all duration-150 hover:border-border-active hover:brightness-110 hover:scale-[1.03]"
                                 />
@@ -1279,8 +1279,9 @@ export const ChatView: Component<Props> = (props) => {
         {(img) => (
           <ImageViewer
             open={true}
+            hash={img().hash}
             mimeType={img().mimeType}
-            data={img().data}
+            name={img().name}
             onClose={() => setViewerImage(null)}
           />
         )}

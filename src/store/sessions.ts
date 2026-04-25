@@ -1,7 +1,7 @@
 import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attachment, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo } from '../types'
+import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo } from '../types'
 import { setTasks, taskById } from './tasks'
 import { markTaskUnread, markTaskAttention, clearTaskAttention, markSessionUnread } from './ui'
 import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
@@ -74,10 +74,8 @@ export function updateSessionModel(sessionId: string, model: string | null) {
   ipc.updateSessionModel(sessionId, model)
 }
 
-export async function sendMessage(sessionId: string, message: string, attachments?: Attachment[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) {
-  const images = attachments
-    ?.filter(a => a.mimeType.startsWith('image/'))
-    .map(a => ({ mimeType: a.mimeType, data: a.data }))
+export async function sendMessage(sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) {
+  const images = attachments?.filter(a => a.mimeType.startsWith('image/'))
 
   const item: OutputItem = {
     kind: 'userMessage',
@@ -122,7 +120,7 @@ export async function abortMessage(sessionId: string) {
 export async function steerSession(
   sessionId: string,
   message: string,
-  attachments: Attachment[] | undefined,
+  attachments: AttachmentRef[] | undefined,
   model: string | undefined,
   planMode: boolean | undefined,
   thinkingMode: boolean | undefined,
@@ -237,7 +235,26 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
 
   // Our synthetic user message
   if (type === 'verun_user_message') {
-    return [{ kind: 'userMessage', text: v.text as string, timestamp: emittedAt }]
+    const rawAtts = v.attachments
+    const images: AttachmentRef[] | undefined = Array.isArray(rawAtts)
+      ? rawAtts
+          .filter((a): a is Record<string, unknown> => typeof a === 'object' && a !== null)
+          .filter(a => typeof (a as { hash?: unknown }).hash === 'string'
+            && typeof (a as { mimeType?: unknown }).mimeType === 'string'
+            && (a as { mimeType: string }).mimeType.startsWith('image/'))
+          .map(a => ({
+            hash: String(a.hash),
+            mimeType: String(a.mimeType),
+            name: String(a.name ?? ''),
+            size: Number(a.size ?? 0),
+          }))
+      : undefined
+    return [{
+      kind: 'userMessage',
+      text: v.text as string,
+      timestamp: emittedAt,
+      ...(images && images.length > 0 ? { images } : {}),
+    }]
   }
 
   // Per-turn snapshot marker — attach the message uuid to the most recent
@@ -385,7 +402,7 @@ export async function initSessionListeners() {
     if (status === 'idle' && !abortingSessions[sessionId]) {
       const next = dequeueArmedStep(sessionId)
       if (next) {
-        const attachments = next.attachmentsJson ? JSON.parse(next.attachmentsJson) : undefined
+        const attachments = next.attachmentsJson ? deserializeAttachments(next.attachmentsJson) : undefined
         sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
       }
     }

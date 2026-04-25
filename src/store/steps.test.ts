@@ -58,15 +58,16 @@ describe('steps store', () => {
     expect(step.thinkingMode).toBe(false)
   })
 
-  test('addStep serializes attachments', () => {
-    const attachments = [{ name: 'img.png', mimeType: 'image/png', data: new Uint8Array([1, 2, 3, 4]) }]
+  test('addStep serializes attachment refs', () => {
+    const attachments = [{ hash: 'h-1', mimeType: 'image/png', name: 'img.png', size: 4 }]
     addStep({ sessionId: 's-001', message: 'With image', armed: false, attachments })
     const step = getSteps('s-001')[0]
     expect(step.attachmentsJson).not.toBeNull()
     const parsed = JSON.parse(step.attachmentsJson!)
-    expect(parsed[0].name).toBe('img.png')
+    expect(parsed[0].hash).toBe('h-1')
     expect(parsed[0].mimeType).toBe('image/png')
-    expect(parsed[0].dataBase64).toBe('AQIDBA==')
+    expect(parsed[0].name).toBe('img.png')
+    expect(parsed[0].size).toBe(4)
   })
 
   test('addStep with no attachments sets null', () => {

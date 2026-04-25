@@ -139,6 +139,7 @@ impl Agent for Claude {
         message: &str,
         attachments: &[crate::task::Attachment],
     ) -> Result<Vec<u8>, String> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
         let mut content_blocks: Vec<serde_json::Value> = Vec::new();
         for attachment in attachments {
             content_blocks.push(serde_json::json!({
@@ -146,7 +147,7 @@ impl Agent for Claude {
                 "source": {
                     "type": "base64",
                     "media_type": attachment.mime_type,
-                    "data": attachment.data_base64,
+                    "data": STANDARD.encode(&attachment.data),
                 }
             }));
         }

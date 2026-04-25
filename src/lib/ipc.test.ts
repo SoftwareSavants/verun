@@ -37,4 +37,10 @@ describe('ipc', () => {
   test('utility functions are exported', () => {
     expect(typeof ipc.openInFinder).toBe('function')
   })
+
+  test('blob store wrappers are exported', () => {
+    expect(typeof ipc.uploadAttachment).toBe('function')
+    expect(typeof ipc.getBlob).toBe('function')
+    expect(typeof ipc.getStorageStats).toBe('function')
+  })
 })
