@@ -65,6 +65,16 @@ export const runHook = (taskId: string, hookType: 'setup' | 'destroy') =>
 export const stopHook = (taskId: string) =>
   invoke<void>('stop_hook', { taskId })
 
+// Pinned workspaces (#61)
+export const pinBranch = (projectId: string, branch: string) =>
+  invoke<Task>('pin_branch', { projectId, branch })
+
+export const unpinTask = (taskId: string) =>
+  invoke<void>('unpin_task', { taskId })
+
+export const listLocalBranches = (projectId: string) =>
+  invoke<string[]>('list_local_branches', { projectId })
+
 // Sessions
 export const createSession = (taskId: string, agentType: string, model?: string) =>
   invoke<Session>('create_session', { taskId, agentType, model })

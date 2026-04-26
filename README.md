@@ -34,6 +34,7 @@ Pluggable agent backend with first-class support for Claude Code and Codex (plan
 - **Workspace search** - Cmd+Shift+F content search across the task's worktree with case/whole-word/regex toggles and include/exclude globs, powered by embedded ripgrep
 - **Multi-window** - pop any task into its own window for side-by-side work across monitors
 - **Bootstrap from Better-T-Stack** - create a new project inside Verun via an in-app [Better-T-Stack](https://better-t-stack.dev) builder: big icon-and-description cards per option, a left category rail, a `~`-anchored folder picker with keyboard completion, live command preview, and `⌘↵` to scaffold. Verun runs the CLI (no install required), writes a sensible `.verun.json`, and hands off to the Add Project dialog
+- **Pinned workspaces** - run sessions against long-lived branches (main, trunk, develop) without task/worktree/PR ceremony; pinned rows sit above regular tasks in the sidebar and skip archive/merge flows
 
 ## Open source & local
 

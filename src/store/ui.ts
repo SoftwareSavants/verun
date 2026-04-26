@@ -143,6 +143,15 @@ export function requestNewTaskForProject(projectId: string) {
   setNewTaskProjectId(projectId)
 }
 
+// Mirror of newTaskProjectId for the Pin Branch dialog. Sidebar's "+ Pin branch"
+// button and any future pinning entry point write this signal; the dialog
+// component subscribes and opens itself.
+export const [pinBranchProjectId, setPinBranchProjectId] = createSignal<string | null>(null)
+
+export function requestPinBranchForProject(projectId: string) {
+  setPinBranchProjectId(projectId)
+}
+
 export const [addProjectPath, setAddProjectPath] = createSignal<string | null>(null)
 
 // Open the native directory picker and route the selected path through the

@@ -7,7 +7,8 @@ import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { AddProjectDialog } from './AddProjectDialog'
 import { BtsBuilderDialog } from './BtsBuilderDialog'
-import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId, siblingTaskInList, nextSessionIdInTask } from '../store/ui'
+import { PinBranchDialog } from './PinBranchDialog'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, pinBranchProjectId, setPinBranchProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId, siblingTaskInList, nextSessionIdInTask } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
 import { activeTasksForProject, taskById } from '../store/tasks'
@@ -370,6 +371,11 @@ export const Layout: Component = () => {
           setShowBtsBuilder(false)
           setAddProjectPath(path)
         }}
+      />
+      <PinBranchDialog
+        open={!!pinBranchProjectId()}
+        projectId={pinBranchProjectId()}
+        onClose={() => setPinBranchProjectId(null)}
       />
       <GlobalCommandPalette />
       <ModelPicker

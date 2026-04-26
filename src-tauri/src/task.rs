@@ -974,6 +974,7 @@ pub async fn create_task(
         parent_task_id: None,
         agent_type: agent_type.clone(),
         last_pushed_sha: None,
+        is_pinned: false,
     };
 
     db_tx
@@ -1020,6 +1021,78 @@ pub async fn create_task(
     );
 
     Ok((task, session))
+}
+
+/// Build the main pinned Task for a project. The worktree_path is set to the
+/// project's repo_path — no actual git worktree is created. Sessions run in
+/// the repo root on whatever HEAD currently is.
+pub fn build_main_pinned_task(project: &db::Project, port_offset: i64) -> Task {
+    Task {
+        id: Uuid::new_v4().to_string(),
+        project_id: project.id.clone(),
+        name: Some("main".into()),
+        worktree_path: project.repo_path.clone(),
+        branch: project.base_branch.clone(),
+        created_at: epoch_ms(),
+        merge_base_sha: None,
+        port_offset,
+        archived: false,
+        archived_at: None,
+        last_commit_message: None,
+        parent_task_id: None,
+        agent_type: project.default_agent_type.clone(),
+        last_pushed_sha: None,
+        is_pinned: true,
+    }
+}
+
+/// Attach a worktree to an existing branch and insert a pinned Task row for it.
+/// Unlike `create_task`, no session is auto-created — the user opens one manually.
+/// The `task-created` event is emitted by the IPC layer after this returns.
+pub async fn pin_branch(
+    db_tx: &DbWriteTx,
+    pool: &SqlitePool,
+    project_id: &str,
+    branch: &str,
+) -> Result<Task, String> {
+    let project = db::get_project(pool, project_id)
+        .await?
+        .ok_or_else(|| format!("project not found: {project_id}"))?;
+
+    let repo_path = project.repo_path.clone();
+    let br = branch.to_string();
+    let worktree_path = tokio::task::spawn_blocking(move || {
+        worktree::attach_worktree_for_existing_branch(&repo_path, &br)
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))??;
+
+    let port_offset = db::next_port_offset(pool, project_id).await?;
+
+    let task = Task {
+        id: Uuid::new_v4().to_string(),
+        project_id: project_id.to_string(),
+        name: None,
+        worktree_path,
+        branch: branch.to_string(),
+        created_at: epoch_ms(),
+        merge_base_sha: None,
+        port_offset,
+        archived: false,
+        archived_at: None,
+        last_commit_message: None,
+        parent_task_id: None,
+        agent_type: project.default_agent_type,
+        last_pushed_sha: None,
+        is_pinned: true,
+    };
+
+    db_tx
+        .send(db::DbWrite::InsertTask(task.clone()))
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+
+    Ok(task)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1073,16 +1146,21 @@ pub async fn delete_task(
     };
     let branch = task.branch.clone();
     let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
+    // The main pinned task's worktree IS the repo root: never remove it, never
+    // delete the base branch on project deletion.
+    let is_main_pinned = task.is_pinned && task.worktree_path == repo_path;
     let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
         if !hook.is_empty() {
             if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
                 eprintln!("[verun] destroy hook failed: {e}");
             }
         }
-        worktree::delete_worktree(&rp, &wtp)?;
-        if delete_branch {
-            if let Err(e) = worktree::delete_branch(&rp, &branch) {
-                eprintln!("[verun] branch delete failed: {e}");
+        if !is_main_pinned {
+            worktree::delete_worktree(&rp, &wtp)?;
+            if delete_branch {
+                if let Err(e) = worktree::delete_branch(&rp, &branch) {
+                    eprintln!("[verun] branch delete failed: {e}");
+                }
             }
         }
         Ok(())
@@ -3427,6 +3505,7 @@ pub async fn fork_session_to_new_task(
         parent_task_id: Some(parent_task.id.clone()),
         agent_type: parent_session.agent_type.clone(),
         last_pushed_sha: None,
+        is_pinned: false,
     };
 
     let parent_agent = AgentKind::parse(&parent_session.agent_type).implementation();
@@ -3660,5 +3739,151 @@ mod tests {
         assert!(args.iter().any(|a| a == "test prompt"));
         assert!(args.iter().any(|a| a == "--no-session-persistence"));
         assert!(args.iter().any(|a| a == "haiku"));
+    }
+
+    // -- Pinned workspace (#61) --
+
+    fn pin_test_repo() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("repo");
+        std::fs::create_dir(&repo_path).unwrap();
+        let rp = repo_path.to_str().unwrap();
+        std::process::Command::new("git")
+            .current_dir(rp)
+            .args(["init"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(rp)
+            .args(["config", "user.email", "t@t.com"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(rp)
+            .args(["config", "user.name", "T"])
+            .output()
+            .unwrap();
+        std::fs::write(repo_path.join("README.md"), "# x").unwrap();
+        std::process::Command::new("git")
+            .current_dir(rp)
+            .args(["add", "."])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(rp)
+            .args(["commit", "-m", "init"])
+            .output()
+            .unwrap();
+        (dir, rp.to_string())
+    }
+
+    async fn pin_test_pool_and_tx() -> (SqlitePool, DbWriteTx) {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        for m in db::migrations() {
+            sqlx::query(m.sql).execute(&pool).await.unwrap();
+        }
+        let tx = db::spawn_write_queue(pool.clone());
+        (pool, tx)
+    }
+
+    #[tokio::test]
+    async fn pin_branch_attaches_worktree_and_inserts_pinned_task() {
+        let (_dir, repo_path) = pin_test_repo();
+        std::process::Command::new("git")
+            .current_dir(&repo_path)
+            .args(["branch", "trunk"])
+            .output()
+            .unwrap();
+
+        let (pool, tx) = pin_test_pool_and_tx().await;
+        // Seed a project pointing at this repo.
+        sqlx::query(
+            "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at, default_agent_type) \
+             VALUES ('p1', 'R', ?, 'main', '', '', '', 0, 1000, 'claude')",
+        )
+        .bind(&repo_path)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let task = pin_branch(&tx, &pool, "p1", "trunk").await.unwrap();
+        assert!(task.is_pinned);
+        assert_eq!(task.branch, "trunk");
+        assert!(task.worktree_path.contains("trunk"));
+
+        // Allow the async write queue to flush.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stored = db::get_task(&pool, &task.id).await.unwrap().unwrap();
+        assert!(stored.is_pinned);
+        assert_eq!(stored.project_id, "p1");
+    }
+
+    #[tokio::test]
+    async fn pin_branch_rejects_nonexistent_branch() {
+        let (_dir, repo_path) = pin_test_repo();
+        let (pool, tx) = pin_test_pool_and_tx().await;
+        sqlx::query(
+            "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at, default_agent_type) \
+             VALUES ('p1', 'R', ?, 'main', '', '', '', 0, 1000, 'claude')",
+        )
+        .bind(&repo_path)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let err = pin_branch(&tx, &pool, "p1", "does-not-exist")
+            .await
+            .unwrap_err();
+        assert!(err.contains("does not exist"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn pin_branch_assigns_unique_port_offsets_across_pins() {
+        // Port offsets are per-project — pinning multiple branches must allocate
+        // a new offset each time so dev servers on separate workspaces never
+        // collide on VERUN_PORT_*.
+        let (_dir, repo_path) = pin_test_repo();
+        for b in ["trunk", "develop"] {
+            std::process::Command::new("git")
+                .current_dir(&repo_path)
+                .args(["branch", b])
+                .output()
+                .unwrap();
+        }
+
+        let (pool, tx) = pin_test_pool_and_tx().await;
+        sqlx::query(
+            "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at, default_agent_type) \
+             VALUES ('p1', 'R', ?, 'main', '', '', '', 0, 1000, 'claude')",
+        )
+        .bind(&repo_path)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let trunk = pin_branch(&tx, &pool, "p1", "trunk").await.unwrap();
+        // Next port offset is read from the DB, so we have to let the first
+        // write land before the second pin runs.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let develop = pin_branch(&tx, &pool, "p1", "develop").await.unwrap();
+
+        assert_ne!(
+            trunk.port_offset, develop.port_offset,
+            "pinned workspaces must get unique port offsets"
+        );
+    }
+
+    #[tokio::test]
+    async fn pin_branch_errors_when_project_missing() {
+        let (_dir, _repo_path) = pin_test_repo();
+        let (pool, tx) = pin_test_pool_and_tx().await;
+        let err = pin_branch(&tx, &pool, "nonexistent-project", "trunk")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("project not found"),
+            "expected project-not-found error, got: {err}"
+        );
     }
 }

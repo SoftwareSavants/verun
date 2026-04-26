@@ -72,6 +72,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: null,
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   {
     id: 'demo-task-ctx',
@@ -87,6 +88,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: 'refactor: extract ContextMenu into shared component',
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   {
     id: 'demo-task-diff',
@@ -102,6 +104,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: null,
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   // phase: pr-open
   {
@@ -118,6 +121,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: 'feat: render file tree in right panel',
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   // phase: ci-failed
   {
@@ -134,6 +138,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: 'perf: lazy-load heavy modules on first use',
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   // ── dashboard ─────────────────────────────────────────────────────────────
   {
@@ -150,6 +155,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: null,
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   {
     id: 'demo-task-perf',
@@ -165,6 +171,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: 'chore: replace moment.js with date-fns',
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   // phase: conflicts
   {
@@ -181,6 +188,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: 'chore: convert JSON configs to TOML',
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   // phase: pr-merged
   {
@@ -197,6 +205,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: 'feat: export table data to CSV',
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   // ── api-server ────────────────────────────────────────────────────────────
   {
@@ -213,6 +222,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: 'feat: implement /auth/refresh endpoint',
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   {
     id: 'demo-task-rate',
@@ -228,6 +238,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: null,
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
   // phase: error
   {
@@ -244,6 +255,7 @@ export const DEMO_TASKS: Task[] = [
     lastCommitMessage: null,
     parentTaskId: null,
     agentType: 'claude',
+    isPinned: false,
   },
 ]
 

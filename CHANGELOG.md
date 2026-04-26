@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Pinned workspaces: sidebar now surfaces a separate section above regular tasks for long-lived branches. Every project auto-gets a `main` pinned row that runs sessions directly in the repo root (no worktree); use the `+ Pin branch` button in the project header to attach worktrees for branches like `trunk` or `develop`. The pin dialog filters local branches, previews the target worktree path, and hides branches that are already pinned. Pinned rows skip the archive/merge/PR flow and wear a dedicated Pin badge in the TaskPanel header (labeled `Main` for the repo-root pin); right-click → Unpin removes non-main pins (#61)
 - Cmd+Alt+Left/Right now cycles between sessions in the current task when viewing a session (wraps at edges). The shortcut still cycles editor tabs when a file is open, mirroring Ctrl+Tab's view-aware behavior
 - File edits detected by the worktree watcher now trigger a debounced local git refresh, so status/commits/branch state update automatically as you change code without hitting GitHub
 - Local git refresh now uses non-locking read-only git commands, so viewing status no longer rewrites `.git/index` and self-triggers endless `git-local-changed` watcher loops

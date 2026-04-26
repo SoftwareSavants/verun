@@ -63,6 +63,15 @@ fn github_remote_debugger(app: &AppHandle) -> github_remote::DebugFn {
     })
 }
 
+/// Reject the operation if the task is a pinned workspace. Pinned workspaces
+/// (main repo and long-lived branches) never go through archive/merge/PR flows.
+fn reject_if_pinned(task: &Task, op: &str) -> Result<(), String> {
+    if task.is_pinned {
+        return Err(format!("pinned workspaces cannot be {op}"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskWithSession {
@@ -83,6 +92,7 @@ fn epoch_ms() -> i64 {
 
 #[tauri::command]
 pub async fn add_project(
+    app: AppHandle,
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     repo_path: String,
@@ -131,6 +141,22 @@ pub async fn add_project(
         .send(db::DbWrite::InsertProject(project.clone()))
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
+
+    // Seed the main pinned task (worktree == repo root). Mirrors the v20
+    // migration backfill for pre-existing projects.
+    let main_task = task::build_main_pinned_task(&project, 0);
+    db_tx
+        .send(db::DbWrite::InsertTask(main_task.clone()))
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+    let _ = app.emit(
+        "task-created",
+        serde_json::json!({
+            "taskId": main_task.id,
+            "projectId": main_task.project_id,
+            "sourceWindow": serde_json::Value::Null,
+        }),
+    );
 
     Ok(project)
 }
@@ -473,6 +499,8 @@ pub async fn delete_task(
         .await?
         .ok_or_else(|| format!("Task {id} not found"))?;
 
+    reject_if_pinned(&t, "deleted")?;
+
     let project = db::get_project(pool.inner(), &t.project_id)
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
@@ -503,6 +531,8 @@ pub async fn archive_task(
     let t = db::get_task(pool.inner(), &id)
         .await?
         .ok_or_else(|| format!("Task {id} not found"))?;
+
+    reject_if_pinned(&t, "archived")?;
 
     let project = db::get_project(pool.inner(), &t.project_id)
         .await?
@@ -1116,6 +1146,8 @@ pub async fn merge_branch(
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
+    reject_if_pinned(&t, "merged")?;
+
     let project = db::get_project(pool.inner(), &t.project_id)
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
@@ -1608,6 +1640,8 @@ pub async fn create_pull_request(
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
+    reject_if_pinned(&t, "opened as pull requests")?;
+
     let pr = flatten_join(
         tokio::task::spawn_blocking(move || {
             github::create_pr(&t.worktree_path, &title, &body, &base)
@@ -1649,6 +1683,8 @@ pub async fn merge_pull_request(
     let t = db::get_task(pool.inner(), &task_id)
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    reject_if_pinned(&t, "merged")?;
 
     let force = force.unwrap_or(false);
     let delete_branch = delete_branch.unwrap_or(false);
@@ -3148,6 +3184,90 @@ pub async fn migrate_legacy_attachments(
     blob::migrate_legacy_attachments(pool.inner(), &app_data.0).await
 }
 
+// ---------------------------------------------------------------------------
+// Pinned workspaces (#61)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn pin_branch(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    project_id: String,
+    branch: String,
+) -> Result<Task, String> {
+    let task = task::pin_branch(db_tx.inner(), pool.inner(), &project_id, &branch).await?;
+    let _ = app.emit(
+        "task-created",
+        serde_json::json!({
+            "taskId": task.id,
+            "projectId": task.project_id,
+            "sourceWindow": serde_json::Value::Null,
+        }),
+    );
+    Ok(task)
+}
+
+#[tauri::command]
+pub async fn unpin_task(
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    task_id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    if !t.is_pinned {
+        return Err("task is not pinned".into());
+    }
+
+    let project = db::get_project(pool.inner(), &t.project_id)
+        .await?
+        .ok_or_else(|| format!("Project {} not found", t.project_id))?;
+
+    // The auto-created main task has worktree_path == repo_path. Unpinning it
+    // would expose archive UI that would try to git-worktree-remove the repo
+    // root — always reject.
+    if t.worktree_path == project.repo_path {
+        return Err("cannot unpin the main workspace".into());
+    }
+
+    db_tx
+        .send(db::DbWrite::SetTaskPinned {
+            id: task_id,
+            pinned: false,
+        })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_local_branches(
+    pool: State<'_, SqlitePool>,
+    project_id: String,
+) -> Result<Vec<String>, String> {
+    let project = db::get_project(pool.inner(), &project_id)
+        .await?
+        .ok_or_else(|| format!("Project {project_id} not found"))?;
+
+    let repo_path = project.repo_path.clone();
+    let mut branches = flatten_join(
+        tokio::task::spawn_blocking(move || worktree::list_local_branches(&repo_path)).await,
+    )?;
+
+    // Exclude branches that are already pinned for this project.
+    let tasks = db::list_tasks_for_project(pool.inner(), &project_id).await?;
+    let pinned: std::collections::HashSet<String> = tasks
+        .iter()
+        .filter(|t| t.is_pinned && !t.archived)
+        .map(|t| t.branch.clone())
+        .collect();
+    branches.retain(|b| !pinned.contains(b));
+    Ok(branches)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3289,5 +3409,51 @@ mod tests {
         assert_eq!(returned.len(), 1);
         assert_eq!(cache.read().unwrap().len(), 1);
         assert_eq!(cache.read().unwrap()[0].id, "claude");
+    }
+
+    // -- Pinned workspace (#61) guards --
+
+    fn make_task(is_pinned: bool) -> Task {
+        Task {
+            id: "t-1".into(),
+            project_id: "p-1".into(),
+            name: None,
+            worktree_path: "/tmp/wt".into(),
+            branch: "b".into(),
+            created_at: 0,
+            merge_base_sha: None,
+            port_offset: 0,
+            archived: false,
+            archived_at: None,
+            last_commit_message: None,
+            parent_task_id: None,
+            agent_type: "claude".into(),
+            last_pushed_sha: None,
+            is_pinned,
+        }
+    }
+
+    #[test]
+    fn reject_if_pinned_blocks_pinned_task() {
+        let t = make_task(true);
+        let err = reject_if_pinned(&t, "archived").unwrap_err();
+        assert!(err.contains("pinned"), "got: {err}");
+        assert!(err.contains("archived"), "error message includes op: {err}");
+    }
+
+    #[test]
+    fn reject_if_pinned_allows_unpinned_task() {
+        let t = make_task(false);
+        assert!(reject_if_pinned(&t, "archived").is_ok());
+    }
+
+    #[test]
+    fn reject_if_pinned_surfaces_operation_in_error() {
+        // Callers pass "merged", "used as a PR source", etc. The message has
+        // to echo the op back so the frontend can show a meaningful toast.
+        for op in ["archived", "merged", "deleted", "used as a PR source"] {
+            let err = reject_if_pinned(&make_task(true), op).unwrap_err();
+            assert!(err.contains(op), "op '{op}' missing from error: {err}");
+        }
     }
 }
