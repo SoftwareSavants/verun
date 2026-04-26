@@ -150,11 +150,19 @@ pub struct TaskNameEvent {
     pub name: String,
 }
 
-/// Emitted to frontend when git status may have changed (session ended)
+/// Emitted to frontend when local git state may have changed.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitStatusChangedEvent {
     pub task_id: String,
+}
+
+/// Emitted to frontend when cached GitHub remote state is invalidated.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubRemoteInvalidatedEvent {
+    pub task_id: String,
+    pub scopes: Vec<String>,
 }
 
 /// Emitted to frontend when a task's hook starts, completes, or fails
@@ -257,10 +265,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                 .and_then(|s| s.as_str())
                 .or_else(|| v.get("status").and_then(|s| s.as_str()))
                 .unwrap_or("unknown");
-            let is_error = v
-                .get("is_error")
-                .and_then(|e| e.as_bool())
-                .unwrap_or(false);
+            let is_error = v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
             let error = v
                 .get("error")
                 .and_then(|e| e.as_str())
@@ -682,10 +687,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
 /// top-level `type` strings; this one maps RPC `method` strings.
 ///
 /// Wire ref: t3code `packages/effect-codex-app-server/src/_generated/meta.gen.ts`.
-pub fn process_codex_rpc_notification(
-    method: &str,
-    params: &serde_json::Value,
-) -> Vec<OutputItem> {
+pub fn process_codex_rpc_notification(method: &str, params: &serde_json::Value) -> Vec<OutputItem> {
     match method {
         // -- Token deltas (streamed into the current assistant / thinking block) --
         "item/agentMessage/delta" => params
@@ -915,7 +917,10 @@ pub fn process_codex_rpc_notification(
 
         // -- Turn completion --
         "turn/completed" => {
-            let turn = params.get("turn").cloned().unwrap_or(serde_json::Value::Null);
+            let turn = params
+                .get("turn")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let status_str = turn
                 .get("status")
                 .and_then(|s| s.as_str())
@@ -981,7 +986,11 @@ fn format_codex_file_change(item: &serde_json::Value) -> Vec<OutputItem> {
         // not a bare string. Older CLIs emitted a string; accept both.
         let kind = change
             .get("kind")
-            .and_then(|k| k.get("type").and_then(|t| t.as_str()).or_else(|| k.as_str()))
+            .and_then(|k| {
+                k.get("type")
+                    .and_then(|t| t.as_str())
+                    .or_else(|| k.as_str())
+            })
             .unwrap_or("");
         let tool = match kind {
             "add" => "Write",
@@ -1663,9 +1672,7 @@ pub async fn stream_and_capture(
     }
 
     flush_buffer(&app, &session_id, &mut buffer);
-    StreamResult {
-        error: last_error,
-    }
+    StreamResult { error: last_error }
 }
 
 /// JSON-RPC streaming loop for Codex `app-server`. Mirrors the legacy
@@ -1678,9 +1685,7 @@ pub async fn stream_and_capture_rpc(
     app: AppHandle,
     session_id: String,
     task_id: String,
-    mut events_rx: tokio::sync::mpsc::UnboundedReceiver<
-        crate::agent::codex_rpc::CodexRpcEvent,
-    >,
+    mut events_rx: tokio::sync::mpsc::UnboundedReceiver<crate::agent::codex_rpc::CodexRpcEvent>,
     stdin: Arc<TokioMutex<Option<ChildStdin>>>,
     busy: Arc<AtomicBool>,
     _pending_approvals: PendingApprovals,
@@ -1907,9 +1912,7 @@ pub async fn stream_and_capture_rpc(
     }
 
     flush_buffer(&app, &session_id, &mut buffer);
-    StreamResult {
-        error: last_error,
-    }
+    StreamResult { error: last_error }
 }
 
 /// Check if a line is a `control_request` for tool approval.
@@ -2240,10 +2243,7 @@ pub fn extract_codex_token_usage(params: &serde_json::Value) -> Option<CodexToke
 
 /// Stamp the most recent `thread/tokenUsage/updated` breakdown onto a
 /// `TurnEnd` item. Leaves non-`TurnEnd` items untouched.
-pub fn patch_turn_end_with_usage(
-    item: OutputItem,
-    usage: &Option<CodexTokenUsage>,
-) -> OutputItem {
+pub fn patch_turn_end_with_usage(item: OutputItem, usage: &Option<CodexTokenUsage>) -> OutputItem {
     match (item, usage) {
         (
             OutputItem::TurnEnd {
@@ -2319,9 +2319,7 @@ pub fn persist_codex_plan_if_ready(item: OutputItem, worktree_path: &Path) -> Ou
                 match persist_codex_plan_markdown(worktree_path, &item_id, &text) {
                     Ok(p) => Some(p.to_string_lossy().into_owned()),
                     Err(e) => {
-                        eprintln!(
-                            "[verun][codex-rpc] failed to persist plan markdown: {e}"
-                        );
+                        eprintln!("[verun][codex-rpc] failed to persist plan markdown: {e}");
                         None
                     }
                 }
@@ -2502,8 +2500,12 @@ fn encode_codex_user_input_response(
         let ids = input.get("_codexQuestionIds").and_then(|v| v.as_object());
         if let (Some(answers), Some(ids)) = (answers, ids) {
             for (question_text, answer_val) in answers {
-                let Some(answer_text) = answer_val.as_str() else { continue };
-                let Some(id_val) = ids.get(question_text) else { continue };
+                let Some(answer_text) = answer_val.as_str() else {
+                    continue;
+                };
+                let Some(id_val) = ids.get(question_text) else {
+                    continue;
+                };
                 let Some(id) = id_val.as_str() else { continue };
                 out.insert(
                     id.to_string(),
@@ -2516,8 +2518,8 @@ fn encode_codex_user_input_response(
         "id": server_req_id,
         "result": { "answers": serde_json::Value::Object(out) },
     });
-    let mut bytes = serde_json::to_vec(&frame)
-        .map_err(|e| format!("serialize user input response: {e}"))?;
+    let mut bytes =
+        serde_json::to_vec(&frame).map_err(|e| format!("serialize user input response: {e}"))?;
     bytes.push(b'\n');
     Ok(bytes)
 }
@@ -2721,7 +2723,10 @@ mod tests {
         let (message, raw) = err.expect("expected ErrorMessage item");
         assert_eq!(message, "Prompt is too long");
         let raw = raw.expect("expected raw JSON payload");
-        assert!(raw.contains("\"<synthetic>\""), "raw should carry source JSON: {raw}");
+        assert!(
+            raw.contains("\"<synthetic>\""),
+            "raw should carry source JSON: {raw}"
+        );
         // Should NOT emit a duplicate plain Text item for the same synthetic error.
         assert!(
             !items.iter().any(|i| matches!(i, OutputItem::Text { .. })),
@@ -3103,10 +3108,17 @@ mod tests {
         let items = process_codex_rpc_notification("item/completed", &params);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::CodexPlanReady { item_id, text, file_path } => {
+            OutputItem::CodexPlanReady {
+                item_id,
+                text,
+                file_path,
+            } => {
                 assert_eq!(item_id, "p1");
                 assert!(text.contains("design it"));
-                assert!(file_path.is_none(), "filePath is filled by the stream loop after writing");
+                assert!(
+                    file_path.is_none(),
+                    "filePath is filled by the stream loop after writing"
+                );
             }
             other => panic!("expected CodexPlanReady, got {other:?}"),
         }
@@ -3227,9 +3239,7 @@ mod tests {
 
     #[test]
     fn patch_turn_end_preserves_non_turn_end_items() {
-        let item = OutputItem::Text {
-            text: "hi".into(),
-        };
+        let item = OutputItem::Text { text: "hi".into() };
         match patch_turn_end_with_usage(item, &None) {
             OutputItem::Text { text } => assert_eq!(text, "hi"),
             other => panic!("expected Text, got {other:?}"),
@@ -3525,9 +3535,18 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("questions array");
         assert_eq!(qs.len(), 1);
-        assert_eq!(qs[0].get("question").and_then(|v| v.as_str()), Some("Pick a framework"));
-        assert_eq!(qs[0].get("header").and_then(|v| v.as_str()), Some("Frontend"));
-        assert_eq!(qs[0].get("multiSelect").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            qs[0].get("question").and_then(|v| v.as_str()),
+            Some("Pick a framework")
+        );
+        assert_eq!(
+            qs[0].get("header").and_then(|v| v.as_str()),
+            Some("Frontend")
+        );
+        assert_eq!(
+            qs[0].get("multiSelect").and_then(|v| v.as_bool()),
+            Some(false)
+        );
         let opts = qs[0].get("options").and_then(|v| v.as_array()).unwrap();
         assert_eq!(opts.len(), 2);
         assert_eq!(opts[0].get("label").and_then(|v| v.as_str()), Some("Solid"));

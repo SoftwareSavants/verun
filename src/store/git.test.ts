@@ -9,10 +9,18 @@ vi.mock('../lib/ipc', () => ({
   getGitStatus: vi.fn().mockResolvedValue({ files: [], summary: '' }),
   getBranchCommits: vi.fn().mockResolvedValue([]),
   getBranchStatus: vi.fn().mockResolvedValue([0, 0, 0]),
-  getPullRequest: vi.fn().mockResolvedValue(null),
-  getBranchUrl: vi.fn().mockResolvedValue(null),
   checkGithub: vi.fn().mockResolvedValue(null),
-  getCiChecks: vi.fn().mockResolvedValue([]),
+  getGithubOverview: vi.fn().mockResolvedValue({
+    github: null,
+    branchUrl: null,
+    pr: null,
+    checks: [],
+    fetchedAt: 1,
+    staleAt: 2,
+    expiresAt: 3,
+    isStale: false,
+    fromCache: false,
+  }),
 }))
 
 import { refreshTaskGit } from './git'
@@ -24,6 +32,8 @@ describe('refreshTaskGit', () => {
     vi.mocked(ipc.getGitStatus).mockClear()
     vi.mocked(ipc.getBranchCommits).mockClear()
     vi.mocked(ipc.getBranchStatus).mockClear()
+    vi.mocked(ipc.checkGithub).mockClear()
+    vi.mocked(ipc.getGithubOverview).mockClear()
   })
 
   afterEach(() => {
@@ -51,6 +61,25 @@ describe('refreshTaskGit', () => {
     await p
 
     expect(ipc.getGitStatus).toHaveBeenCalledTimes(1)
+  })
+
+  test('default refresh is local-only and does not fetch remote overview', async () => {
+    refreshTaskGit('t-local-default')
+
+    await vi.runAllTimersAsync()
+
+    expect(ipc.getGitStatus).toHaveBeenCalledTimes(1)
+    expect(ipc.checkGithub).toHaveBeenCalledTimes(1)
+    expect(ipc.getGithubOverview).not.toHaveBeenCalled()
+  })
+
+  test('explicit remote refresh fetches consolidated overview once', async () => {
+    const p = refreshTaskGit('t-remote', { local: false, remote: true, force: true })
+    await p
+
+    expect(ipc.getGitStatus).not.toHaveBeenCalled()
+    expect(ipc.getGithubOverview).toHaveBeenCalledTimes(1)
+    expect(ipc.getGithubOverview).toHaveBeenCalledWith('t-remote', 'network-only')
   })
 
   test('independent tasks each get their own debounce', async () => {

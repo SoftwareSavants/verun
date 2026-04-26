@@ -524,11 +524,7 @@ pub trait Agent: Send + Sync {
     /// root (typically a repo root or worktree path) and the user's home
     /// directory. Returns empty by default; each agent that supports skills
     /// overrides this.
-    fn discover_skills(
-        &self,
-        _scan_root: Option<&Path>,
-        _user_home: &Path,
-    ) -> Vec<AgentSkill> {
+    fn discover_skills(&self, _scan_root: Option<&Path>, _user_home: &Path) -> Vec<AgentSkill> {
         Vec::new()
     }
 
@@ -788,7 +784,10 @@ mod tests {
         let bytes = agent
             .encode_stream_user_message("hi there", &[])
             .expect("claude should encode");
-        assert!(bytes.ends_with(b"\n"), "stream lines must be newline-delimited");
+        assert!(
+            bytes.ends_with(b"\n"),
+            "stream lines must be newline-delimited"
+        );
         let text = std::str::from_utf8(&bytes).expect("utf8");
         let v: serde_json::Value = serde_json::from_str(text.trim_end()).expect("valid json");
         assert_eq!(v["type"], "user");
@@ -831,8 +830,7 @@ mod tests {
         let agent = Claude;
         let bytes = agent.encode_stream_interrupt("req_abc").expect("encode");
         assert!(bytes.ends_with(b"\n"));
-        let v: serde_json::Value =
-            serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("json");
+        let v: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("json");
         assert_eq!(v["type"], "control_request");
         assert_eq!(v["request_id"], "req_abc");
         assert_eq!(v["request"]["subtype"], "interrupt");
@@ -845,8 +843,7 @@ mod tests {
             .encode_stream_set_permission_mode("req_1", "plan")
             .expect("encode");
         assert!(bytes.ends_with(b"\n"));
-        let v: serde_json::Value =
-            serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("json");
+        let v: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("json");
         assert_eq!(v["type"], "control_request");
         assert_eq!(v["request_id"], "req_1");
         assert_eq!(v["request"]["subtype"], "set_permission_mode");
@@ -859,8 +856,7 @@ mod tests {
         let bytes = agent
             .encode_stream_set_permission_mode("req_2", "default")
             .expect("encode");
-        let v: serde_json::Value =
-            serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("json");
+        let v: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("json");
         assert_eq!(v["request"]["mode"], "default");
     }
 
@@ -871,8 +867,7 @@ mod tests {
             .encode_stream_set_model("req_3", Some("claude-sonnet-4-6"))
             .expect("encode");
         assert!(bytes.ends_with(b"\n"));
-        let v: serde_json::Value =
-            serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("json");
+        let v: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("json");
         assert_eq!(v["type"], "control_request");
         assert_eq!(v["request_id"], "req_3");
         assert_eq!(v["request"]["subtype"], "set_model");
@@ -885,8 +880,7 @@ mod tests {
         let bytes = agent
             .encode_stream_set_model("req_4", None)
             .expect("encode");
-        let v: serde_json::Value =
-            serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("json");
+        let v: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("json");
         assert!(v["request"]["model"].is_null());
     }
 
@@ -903,9 +897,7 @@ mod tests {
             assert!(agent
                 .encode_stream_set_permission_mode("req_x", "plan")
                 .is_err());
-            assert!(agent
-                .encode_stream_set_model("req_x", Some("m"))
-                .is_err());
+            assert!(agent.encode_stream_set_model("req_x", Some("m")).is_err());
         }
     }
 
@@ -1199,7 +1191,10 @@ mod tests {
         assert_eq!(v["params"]["approvalPolicy"], "on-request");
         assert_eq!(v["params"]["sandboxPolicy"]["type"], "workspaceWrite");
         assert_eq!(v["params"]["collaborationMode"]["mode"], "default");
-        assert_eq!(v["params"]["collaborationMode"]["settings"]["model"], "gpt-5.4");
+        assert_eq!(
+            v["params"]["collaborationMode"]["settings"]["model"],
+            "gpt-5.4"
+        );
         assert_eq!(
             v["params"]["collaborationMode"]["settings"]["reasoning_effort"],
             "medium"

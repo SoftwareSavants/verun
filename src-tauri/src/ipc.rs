@@ -1,18 +1,20 @@
 use crate::db::{self, DbWriteTx, OutputLine, Project, Session, Step, Task};
+use crate::file_search::{SearchMap, SearchOpts};
 use crate::git_ops;
 use crate::github;
+use crate::github_remote;
 use crate::lsp::LspMap;
 use crate::pty::{self, ActivePtyMap};
 use crate::task::{
     self, ActiveMap, ApprovalResponse, HookPtyMap, PendingApprovalEntry, PendingApprovalMeta,
     PendingApprovals, PendingControlResponses, SetupInProgress,
 };
-use crate::file_search::{SearchMap, SearchOpts};
 use crate::tsgo_check::TsgoCheckMap;
 use crate::watcher::FileWatcherMap;
 use crate::worktree;
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::task::JoinError;
 use uuid::Uuid;
@@ -21,13 +23,35 @@ fn flatten_join<T>(result: Result<Result<T, String>, JoinError>) -> Result<T, St
     result.map_err(|e| format!("Task join error: {e}"))?
 }
 
-fn emit_git_status_changed(app: &AppHandle, task_id: &str) {
+fn emit_git_local_changed(app: &AppHandle, task_id: &str) {
     let _ = app.emit(
-        "git-status-changed",
+        "git-local-changed",
         crate::stream::GitStatusChangedEvent {
             task_id: task_id.to_string(),
         },
     );
+}
+
+fn emit_github_remote_invalidated(app: &AppHandle, task_id: &str, scopes: &[&str]) {
+    let _ = app.emit(
+        "github-remote-invalidated",
+        crate::stream::GitHubRemoteInvalidatedEvent {
+            task_id: task_id.to_string(),
+            scopes: scopes.iter().map(|s| s.to_string()).collect(),
+        },
+    );
+}
+
+fn github_remote_invalidator(
+    app: &AppHandle,
+) -> github_remote::InvalidateFn {
+    let app = app.clone();
+    Arc::new(move |task_id, scopes| {
+        let _ = app.emit(
+            "github-remote-invalidated",
+            crate::stream::GitHubRemoteInvalidatedEvent { task_id, scopes },
+        );
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -220,8 +244,10 @@ pub async fn export_project_config(
         "startCommand": &project.start_command,
     });
     let pretty = serde_json::to_string_pretty(&config).unwrap_or_default();
-    let config_path =
-        resolve_config_path(&project.repo_path, task.as_ref().map(|t| t.worktree_path.as_str()));
+    let config_path = resolve_config_path(
+        &project.repo_path,
+        task.as_ref().map(|t| t.worktree_path.as_str()),
+    );
     std::fs::write(&config_path, format!("{pretty}\n"))
         .map_err(|e| format!("Failed to write .verun.json: {e}"))
 }
@@ -255,8 +281,10 @@ pub async fn import_project_config(
         None => None,
     };
 
-    let config_path =
-        resolve_config_path(&project.repo_path, task.as_ref().map(|t| t.worktree_path.as_str()));
+    let config_path = resolve_config_path(
+        &project.repo_path,
+        task.as_ref().map(|t| t.worktree_path.as_str()),
+    );
     let (setup, destroy, start) = task::parse_verun_config_file(&config_path)
         .ok_or_else(|| "No .verun.json found or file is empty".to_string())?;
 
@@ -1082,7 +1110,7 @@ pub async fn merge_branch(
         })
         .await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    emit_git_local_changed(&app, &task_id);
     Ok(())
 }
 
@@ -1098,7 +1126,10 @@ pub async fn get_branch_status(
 
     let last_pushed = t.last_pushed_sha.clone();
     let status = flatten_join(
-        tokio::task::spawn_blocking(move || worktree::get_branch_status(&t.worktree_path, last_pushed.as_deref())).await,
+        tokio::task::spawn_blocking(move || {
+            worktree::get_branch_status(&t.worktree_path, last_pushed.as_deref())
+        })
+        .await,
     )?;
 
     if let Some(sha) = status.tracking_sha {
@@ -1262,7 +1293,7 @@ pub async fn git_stage(
         })
         .await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    emit_git_local_changed(&app, &task_id);
     Ok(())
 }
 
@@ -1280,7 +1311,7 @@ pub async fn git_unstage(
     flatten_join(
         tokio::task::spawn_blocking(move || git_ops::unstage_files(&t.worktree_path, &paths)).await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    emit_git_local_changed(&app, &task_id);
     Ok(())
 }
 
@@ -1298,7 +1329,7 @@ pub async fn git_commit(
     let hash = flatten_join(
         tokio::task::spawn_blocking(move || git_ops::commit(&t.worktree_path, &message)).await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    emit_git_local_changed(&app, &task_id);
     Ok(hash)
 }
 
@@ -1326,7 +1357,14 @@ pub async fn git_push(
         })
         .await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    db::invalidate_github_cache(
+        pool.inner(),
+        &task_id,
+        &["overview", "actions", "jobs", "logs"],
+    )
+    .await?;
+    emit_git_local_changed(&app, &task_id);
+    emit_github_remote_invalidated(&app, &task_id, &["overview", "actions"]);
     Ok(())
 }
 
@@ -1343,7 +1381,14 @@ pub async fn git_pull(
     let output = flatten_join(
         tokio::task::spawn_blocking(move || git_ops::pull_branch(&t.worktree_path)).await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    db::invalidate_github_cache(
+        pool.inner(),
+        &task_id,
+        &["overview", "actions", "jobs", "logs"],
+    )
+    .await?;
+    emit_git_local_changed(&app, &task_id);
+    emit_github_remote_invalidated(&app, &task_id, &["overview", "actions"]);
     Ok(output)
 }
 
@@ -1370,7 +1415,14 @@ pub async fn git_commit_and_push(
         })
         .await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    db::invalidate_github_cache(
+        pool.inner(),
+        &task_id,
+        &["overview", "actions", "jobs", "logs"],
+    )
+    .await?;
+    emit_git_local_changed(&app, &task_id);
+    emit_github_remote_invalidated(&app, &task_id, &["overview", "actions"]);
     Ok(hash)
 }
 
@@ -1545,7 +1597,8 @@ pub async fn create_pull_request(
         })
         .await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    db::invalidate_github_cache(pool.inner(), &task_id, &["overview"]).await?;
+    emit_github_remote_invalidated(&app, &task_id, &["overview"]);
     Ok(pr)
 }
 
@@ -1562,7 +1615,8 @@ pub async fn mark_pr_ready(
     flatten_join(
         tokio::task::spawn_blocking(move || github::mark_pr_ready(&t.worktree_path)).await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    db::invalidate_github_cache(pool.inner(), &task_id, &["overview"]).await?;
+    emit_github_remote_invalidated(&app, &task_id, &["overview"]);
     Ok(())
 }
 
@@ -1593,7 +1647,14 @@ pub async fn merge_pull_request(
         })
         .await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    db::invalidate_github_cache(
+        pool.inner(),
+        &task_id,
+        &["overview", "actions", "jobs", "logs"],
+    )
+    .await?;
+    emit_git_local_changed(&app, &task_id);
+    emit_github_remote_invalidated(&app, &task_id, &["overview", "actions"]);
     Ok(())
 }
 
@@ -1638,7 +1699,14 @@ pub async fn git_ship(
         })
         .await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    db::invalidate_github_cache(
+        pool.inner(),
+        &task_id,
+        &["overview", "actions", "jobs", "logs"],
+    )
+    .await?;
+    emit_git_local_changed(&app, &task_id);
+    emit_github_remote_invalidated(&app, &task_id, &["overview", "actions"]);
     Ok(pr)
 }
 
@@ -1677,9 +1745,106 @@ pub async fn has_conflicts(pool: State<'_, SqlitePool>, task_id: String) -> Resu
     flatten_join(tokio::task::spawn_blocking(move || github::has_conflicts(&t.worktree_path)).await)
 }
 
+#[tauri::command]
+pub async fn get_github_overview(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    mode: Option<String>,
+) -> Result<github_remote::GitHubOverviewSnapshot, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    let mode = github_remote::RemoteFetchMode::parse(mode.as_deref());
+
+    github_remote::get_overview(
+        pool.inner(),
+        &task_id,
+        &t.worktree_path,
+        mode,
+        Some(github_remote_invalidator(&app)),
+    )
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // GitHub Actions (workflow runs)
 // ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_github_actions(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    limit: Option<u32>,
+    mode: Option<String>,
+) -> Result<github_remote::GitHubActionsSnapshot, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    let limit = limit.unwrap_or(25);
+    let mode = github_remote::RemoteFetchMode::parse(mode.as_deref());
+
+    github_remote::get_actions(
+        pool.inner(),
+        &task_id,
+        &t.worktree_path,
+        limit,
+        mode,
+        Some(github_remote_invalidator(&app)),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_github_workflow_jobs(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    run_id: u64,
+    mode: Option<String>,
+) -> Result<github_remote::WorkflowJobsSnapshot, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    let mode = github_remote::RemoteFetchMode::parse(mode.as_deref());
+
+    github_remote::get_workflow_jobs(
+        pool.inner(),
+        &task_id,
+        &t.worktree_path,
+        run_id,
+        mode,
+        Some(github_remote_invalidator(&app)),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_github_workflow_log(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    job_id: u64,
+    max_bytes: Option<u32>,
+    mode: Option<String>,
+) -> Result<github_remote::WorkflowLogSnapshot, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    let mode = github_remote::RemoteFetchMode::parse(mode.as_deref());
+
+    github_remote::get_workflow_log(
+        pool.inner(),
+        &task_id,
+        &t.worktree_path,
+        job_id,
+        max_bytes.unwrap_or(0) as usize,
+        mode,
+        Some(github_remote_invalidator(&app)),
+    )
+    .await
+}
 
 #[tauri::command]
 pub async fn list_workflow_runs(
@@ -1720,7 +1885,7 @@ pub async fn list_workflow_jobs(
 pub async fn get_workflow_failed_logs(
     pool: State<'_, SqlitePool>,
     task_id: String,
-    run_id: u64,
+    _run_id: u64,
     job_id: u64,
     max_bytes: Option<u32>,
 ) -> Result<String, String> {
@@ -1733,7 +1898,7 @@ pub async fn get_workflow_failed_logs(
 
     flatten_join(
         tokio::task::spawn_blocking(move || {
-            github::get_failed_step_logs(&t.worktree_path, run_id, job_id, max_bytes)
+            github::get_failed_step_logs(&t.worktree_path, job_id, max_bytes)
         })
         .await,
     )
@@ -1758,7 +1923,8 @@ pub async fn rerun_workflow_run(
         })
         .await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    db::invalidate_github_cache(pool.inner(), &task_id, &["actions", "jobs", "logs"]).await?;
+    emit_github_remote_invalidated(&app, &task_id, &["actions"]);
     Ok(())
 }
 
@@ -1777,7 +1943,8 @@ pub async fn rerun_workflow_job(
         tokio::task::spawn_blocking(move || github::rerun_workflow_job(&t.worktree_path, job_id))
             .await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    db::invalidate_github_cache(pool.inner(), &task_id, &["actions", "jobs", "logs"]).await?;
+    emit_github_remote_invalidated(&app, &task_id, &["actions"]);
     Ok(())
 }
 
@@ -1796,7 +1963,8 @@ pub async fn cancel_workflow_run(
         tokio::task::spawn_blocking(move || github::cancel_workflow(&t.worktree_path, run_id))
             .await,
     )?;
-    emit_git_status_changed(&app, &task_id);
+    db::invalidate_github_cache(pool.inner(), &task_id, &["actions", "jobs", "logs"]).await?;
+    emit_github_remote_invalidated(&app, &task_id, &["actions"]);
     Ok(())
 }
 
@@ -2069,11 +2237,7 @@ pub fn new_agent_cache() -> AgentCache {
 /// the result in the cache. The ordering is load-bearing: GUI-launched
 /// apps on macOS start with a stripped PATH, so running detection first
 /// would mark agents installed in nvm/homebrew/~/.local/bin as missing.
-pub async fn init_agents_cache<R, D>(
-    cache: AgentCache,
-    reload_path: R,
-    detect: D,
-) -> Vec<AgentInfo>
+pub async fn init_agents_cache<R, D>(cache: AgentCache, reload_path: R, detect: D) -> Vec<AgentInfo>
 where
     R: FnOnce() + Send + 'static,
     D: FnOnce() -> Vec<AgentInfo> + Send + 'static,
@@ -2149,8 +2313,7 @@ pub async fn refresh_agents(
 ) -> Result<(), String> {
     let cache = std::sync::Arc::clone(&*cache);
     tauri::async_runtime::spawn(async move {
-        let agents =
-            init_agents_cache(cache, crate::env_path::reload_now, detect_all_agents).await;
+        let agents = init_agents_cache(cache, crate::env_path::reload_now, detect_all_agents).await;
         let _ = app.emit("agents-updated", agents);
     });
     Ok(())
@@ -2869,10 +3032,7 @@ pub async fn upload_attachment(
 /// rendering an attached image so the chat-view restore path doesn't load
 /// every blob up front.
 #[tauri::command]
-pub async fn get_blob(
-    app_data: State<'_, AppDataDir>,
-    hash: String,
-) -> Result<Vec<u8>, String> {
+pub async fn get_blob(app_data: State<'_, AppDataDir>, hash: String) -> Result<Vec<u8>, String> {
     blob::read_blob_bytes(&app_data.0, &hash).await
 }
 

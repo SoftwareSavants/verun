@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- GitHub sidebar/PR/Actions refresh now uses cached Rust-side snapshots with scope-based invalidation, so local git changes stop fan-out refreshing GitHub and Actions/PR data refresh only when their remote state actually changes
+
 ## 0.10.0 — 2026-04-28
 
 ### Bootstrap a new project without leaving Verun

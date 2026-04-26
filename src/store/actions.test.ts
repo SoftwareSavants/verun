@@ -6,9 +6,9 @@ vi.mock('@tauri-apps/api/event', () => ({
 }))
 
 const ipcMocks = vi.hoisted(() => ({
-  listWorkflowRuns: vi.fn(),
-  listWorkflowJobs: vi.fn(),
-  getWorkflowFailedLogs: vi.fn(),
+  getGithubActions: vi.fn(),
+  getGithubWorkflowJobs: vi.fn(),
+  getGithubWorkflowLog: vi.fn(),
   rerunWorkflowRun: vi.fn(),
   rerunWorkflowJob: vi.fn(),
   cancelWorkflowRun: vi.fn(),
@@ -47,19 +47,26 @@ function run(partial: Partial<WorkflowRun> = {}): WorkflowRun {
 describe('actions store', () => {
   beforeEach(() => {
     clearActionsState('t1')
-    ipcMocks.listWorkflowRuns.mockReset()
-    ipcMocks.listWorkflowJobs.mockReset()
-    ipcMocks.getWorkflowFailedLogs.mockReset()
+    ipcMocks.getGithubActions.mockReset()
+    ipcMocks.getGithubWorkflowJobs.mockReset()
+    ipcMocks.getGithubWorkflowLog.mockReset()
     ipcMocks.rerunWorkflowRun.mockReset()
     ipcMocks.rerunWorkflowJob.mockReset()
     ipcMocks.cancelWorkflowRun.mockReset()
   })
 
   test('refreshWorkflowRuns populates state', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([
-      run({ databaseId: 100, state: 'running' }),
-      run({ databaseId: 99, state: 'success' }),
-    ])
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [
+        run({ databaseId: 100, state: 'running' }),
+        run({ databaseId: 99, state: 'success' }),
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
 
     await refreshWorkflowRuns('t1')
 
@@ -69,7 +76,7 @@ describe('actions store', () => {
   })
 
   test('refreshWorkflowRuns swallows ipc errors', async () => {
-    ipcMocks.listWorkflowRuns.mockRejectedValue(new Error('gh missing'))
+    ipcMocks.getGithubActions.mockRejectedValue(new Error('gh missing'))
 
     await refreshWorkflowRuns('t1')
 
@@ -78,19 +85,33 @@ describe('actions store', () => {
   })
 
   test('isAnyRunActive returns true when a run is queued or running', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([
-      run({ databaseId: 1, state: 'success' }),
-      run({ databaseId: 2, state: 'running' }),
-    ])
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [
+        run({ databaseId: 1, state: 'success' }),
+        run({ databaseId: 2, state: 'running' }),
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await refreshWorkflowRuns('t1')
     expect(isAnyRunActive('t1')).toBe(true)
   })
 
   test('isAnyRunActive returns false when all runs settled', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([
-      run({ databaseId: 1, state: 'success' }),
-      run({ databaseId: 2, state: 'failure' }),
-    ])
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [
+        run({ databaseId: 1, state: 'success' }),
+        run({ databaseId: 2, state: 'failure' }),
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await refreshWorkflowRuns('t1')
     expect(isAnyRunActive('t1')).toBe(false)
   })
@@ -99,7 +120,15 @@ describe('actions store', () => {
     const jobs: WorkflowJob[] = [
       { databaseId: 10, name: 'test', state: 'failure', startedAt: null, completedAt: null, url: 'u' },
     ]
-    ipcMocks.listWorkflowJobs.mockResolvedValue(jobs)
+    ipcMocks.getGithubWorkflowJobs.mockResolvedValue({
+      runId: 42,
+      jobs,
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
 
     await loadJobsForRun('t1', 42)
 
@@ -107,10 +136,18 @@ describe('actions store', () => {
   })
 
   test('buildFixPrompt composes a structured summary (job, workflow, run, step, gh command)', async () => {
-    ipcMocks.getWorkflowFailedLogs.mockResolvedValue([
+    ipcMocks.getGithubWorkflowLog.mockResolvedValue({
+      jobId: 77,
+      text: [
       'Type Check\tRun build\t2026-04-22T10:00:01Z compiling',
       'Type Check\tRun build\t2026-04-22T10:00:02Z ##[error]boom',
-    ].join('\n'))
+      ].join('\n'),
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
 
     const prompt = await buildFixPrompt('t1', { runNumber: 42, workflowName: 'CI', runId: 999, jobId: 77, jobName: 'test' })
 
@@ -125,11 +162,19 @@ describe('actions store', () => {
   })
 
   test('buildFixPrompt surfaces structured error annotations (file:line:col title msg)', async () => {
-    ipcMocks.getWorkflowFailedLogs.mockResolvedValue([
+    ipcMocks.getGithubWorkflowLog.mockResolvedValue({
+      jobId: 1,
+      text: [
       'Type Check\tRun build\t2026-04-22T10:00:01Z ##[error]file=src/foo.ts,line=17,col=3,title=TS2322::Type mismatch',
       'Type Check\tRun build\t2026-04-22T10:00:02Z ##[error]file=src/bar.ts,line=42::Another error',
       'Type Check\tRun build\t2026-04-22T10:00:03Z ##[error]boom without location',
-    ].join('\n'))
+      ].join('\n'),
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
 
     const prompt = await buildFixPrompt('t1', { runNumber: 1, workflowName: 'CI', runId: 1, jobId: 1, jobName: 'test' })
 
@@ -142,19 +187,27 @@ describe('actions store', () => {
   })
 
   test('buildFixPrompt reuses cached logs without hitting ipc', async () => {
-    ipcMocks.getWorkflowFailedLogs.mockResolvedValue('Type Check\tRun build\t2026-04-22T10:00:01Z ##[error]cached boom')
+    ipcMocks.getGithubWorkflowLog.mockResolvedValue({
+      jobId: 77,
+      text: 'Type Check\tRun build\t2026-04-22T10:00:01Z ##[error]cached boom',
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await loadJobLogs('t1', 999, 77)
-    expect(ipcMocks.getWorkflowFailedLogs).toHaveBeenCalledTimes(1)
+    expect(ipcMocks.getGithubWorkflowLog).toHaveBeenCalledTimes(1)
 
-    ipcMocks.getWorkflowFailedLogs.mockClear()
+    ipcMocks.getGithubWorkflowLog.mockClear()
     const prompt = await buildFixPrompt('t1', { runNumber: 42, workflowName: 'CI', runId: 999, jobId: 77, jobName: 'test' })
 
-    expect(ipcMocks.getWorkflowFailedLogs).not.toHaveBeenCalled()
+    expect(ipcMocks.getGithubWorkflowLog).not.toHaveBeenCalled()
     expect(prompt).toContain('cached boom')
   })
 
   test('buildFixPrompt falls back to just the gh command when logs unavailable', async () => {
-    ipcMocks.getWorkflowFailedLogs.mockRejectedValue(new Error('no perms'))
+    ipcMocks.getGithubWorkflowLog.mockRejectedValue(new Error('no perms'))
 
     const prompt = await buildFixPrompt('t1', { runNumber: 1, workflowName: 'CI', runId: 1, jobId: 55, jobName: 'test' })
 
@@ -163,7 +216,14 @@ describe('actions store', () => {
   })
 
   test('clearActionsState removes the task entry', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([run()])
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [run()],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await refreshWorkflowRuns('t1')
     expect(actionsState['t1']).toBeTruthy()
 
@@ -172,9 +232,14 @@ describe('actions store', () => {
   })
 
   test('markRunRerunning flips run state to queued', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([
-      run({ databaseId: 42, state: 'failure' }),
-    ])
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [run({ databaseId: 42, state: 'failure' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await refreshWorkflowRuns('t1')
     expect(actionsState['t1']?.runs[0].state).toBe('failure')
 
@@ -185,11 +250,26 @@ describe('actions store', () => {
   })
 
   test('markRunRerunning marks cached jobs as queued', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([run({ databaseId: 42, state: 'failure' })])
-    ipcMocks.listWorkflowJobs.mockResolvedValue([
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [run({ databaseId: 42, state: 'failure' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+    ipcMocks.getGithubWorkflowJobs.mockResolvedValue({
+      runId: 42,
+      jobs: [
       { databaseId: 1, name: 'test', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:00Z', url: 'u' },
       { databaseId: 2, name: 'lint', state: 'success', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:00Z', url: 'u' },
-    ])
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await refreshWorkflowRuns('t1')
     await loadJobsForRun('t1', 42)
 
@@ -202,7 +282,14 @@ describe('actions store', () => {
   })
 
   test('rerunFailedJobsForRun calls ipc and optimistically updates state', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([run({ databaseId: 42, state: 'failure' })])
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [run({ databaseId: 42, state: 'failure' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     ipcMocks.rerunWorkflowRun.mockResolvedValue(undefined)
     await refreshWorkflowRuns('t1')
 
@@ -213,41 +300,86 @@ describe('actions store', () => {
   })
 
   test('refreshWorkflowRuns does not clobber the optimistic queued state inside the rerun grace window', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValueOnce([run({ databaseId: 42, state: 'failure' })])
+    ipcMocks.getGithubActions.mockResolvedValueOnce({
+      runs: [run({ databaseId: 42, state: 'failure' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await refreshWorkflowRuns('t1')
     markRunRerunning('t1', 42)
     expect(actionsState['t1']?.runs[0].state).toBe('queued')
 
     // GH still reports the old attempt as failure for a few seconds after rerun
-    ipcMocks.listWorkflowRuns.mockResolvedValueOnce([run({ databaseId: 42, state: 'failure' })])
+    ipcMocks.getGithubActions.mockResolvedValueOnce({
+      runs: [run({ databaseId: 42, state: 'failure' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await refreshWorkflowRuns('t1')
 
     expect(actionsState['t1']?.runs[0].state).toBe('queued')
   })
 
   test('refreshWorkflowRuns does not clobber optimistic queued jobs inside the rerun grace window', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValueOnce([run({ databaseId: 42, state: 'failure' })])
-    ipcMocks.listWorkflowJobs.mockResolvedValueOnce([
+    ipcMocks.getGithubActions.mockResolvedValueOnce({
+      runs: [run({ databaseId: 42, state: 'failure' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+    ipcMocks.getGithubWorkflowJobs.mockResolvedValueOnce({
+      runId: 42,
+      jobs: [
       { databaseId: 1, name: 'test', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:00Z', url: 'u' },
-    ])
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await refreshWorkflowRuns('t1')
     await loadJobsForRun('t1', 42)
     markRunRerunning('t1', 42)
 
     // Next poll: GH returns stale jobs list
-    ipcMocks.listWorkflowJobs.mockResolvedValueOnce([
+    ipcMocks.getGithubWorkflowJobs.mockResolvedValueOnce({
+      runId: 42,
+      jobs: [
       { databaseId: 1, name: 'test', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:00Z', url: 'u' },
-    ])
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await loadJobsForRun('t1', 42)
 
     expect(actionsState['t1']?.jobsByRun[42]?.[0].state).toBe('queued')
   })
 
   test('loadJobLogs caches logs keyed by jobId', async () => {
-    ipcMocks.getWorkflowFailedLogs.mockResolvedValue('some log tail')
+    ipcMocks.getGithubWorkflowLog.mockResolvedValue({
+      jobId: 55,
+      text: 'some log tail',
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     await loadJobLogs('t1', 999, 55)
 
-    expect(ipcMocks.getWorkflowFailedLogs).toHaveBeenCalledWith('t1', 999, 55)
+    expect(ipcMocks.getGithubWorkflowLog).toHaveBeenCalledWith('t1', 55)
     expect(actionsState['t1']?.logsByJob[55]?.text).toBe('some log tail')
     expect(actionsState['t1']?.logsByJob[55]?.loading).toBe(false)
     expect(actionsState['t1']?.logsByJob[55]?.error).toBeNull()
@@ -255,7 +387,15 @@ describe('actions store', () => {
 
   test('loadJobLogs dedupes concurrent calls', async () => {
     let resolveFn: (v: string) => void = () => {}
-    ipcMocks.getWorkflowFailedLogs.mockReturnValue(new Promise<string>(r => { resolveFn = r }))
+    ipcMocks.getGithubWorkflowLog.mockReturnValue(new Promise(r => { resolveFn = (v: string) => r({
+      jobId: 10,
+      text: v,
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    }) }))
 
     const p1 = loadJobLogs('t1', 1, 10)
     const p2 = loadJobLogs('t1', 1, 10)
@@ -264,12 +404,12 @@ describe('actions store', () => {
     resolveFn('logs here')
     await Promise.all([p1, p2])
 
-    expect(ipcMocks.getWorkflowFailedLogs).toHaveBeenCalledTimes(1)
+    expect(ipcMocks.getGithubWorkflowLog).toHaveBeenCalledTimes(1)
     expect(actionsState['t1']?.logsByJob[10]?.text).toBe('logs here')
   })
 
   test('loadJobLogs stores error on ipc failure', async () => {
-    ipcMocks.getWorkflowFailedLogs.mockRejectedValue(new Error('no perms'))
+    ipcMocks.getGithubWorkflowLog.mockRejectedValue(new Error('no perms'))
     await loadJobLogs('t1', 1, 10)
 
     expect(actionsState['t1']?.logsByJob[10]?.error).toContain('no perms')
@@ -277,11 +417,26 @@ describe('actions store', () => {
   })
 
   test('rerunSingleJob calls the job-level IPC and only flips the target job to queued', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([run({ databaseId: 42, state: 'failure' })])
-    ipcMocks.listWorkflowJobs.mockResolvedValue([
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [run({ databaseId: 42, state: 'failure' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+    ipcMocks.getGithubWorkflowJobs.mockResolvedValue({
+      runId: 42,
+      jobs: [
       { databaseId: 10, name: 'test', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:00Z', url: 'u' },
       { databaseId: 11, name: 'lint', state: 'success', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:00Z', url: 'u' },
-    ])
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     ipcMocks.rerunWorkflowJob.mockResolvedValue(undefined)
 
     await refreshWorkflowRuns('t1')

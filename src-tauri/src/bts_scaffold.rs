@@ -71,11 +71,7 @@ pub async fn write_verun_config(
 
 /// Spawn a reader thread that pumps PTY master bytes into `bts-scaffold-output`
 /// events. Uses a dedicated OS thread because portable-pty's reader is blocking.
-fn spawn_reader_thread(
-    app: AppHandle,
-    scaffold_id: String,
-    mut reader: Box<dyn Read + Send>,
-) {
+fn spawn_reader_thread(app: AppHandle, scaffold_id: String, mut reader: Box<dyn Read + Send>) {
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -336,7 +332,10 @@ pub async fn create_subdir(parent: String, name: String) -> Result<String, Strin
     }
     let parent_path = expand_tilde(&parent)?;
     if !parent_path.is_dir() {
-        return Err(format!("Parent directory does not exist: {}", parent_path.display()));
+        return Err(format!(
+            "Parent directory does not exist: {}",
+            parent_path.display()
+        ));
     }
     let target = parent_path.join(trimmed);
     if target.exists() {
@@ -403,10 +402,18 @@ mod tests {
     #[tokio::test]
     async fn list_subdirs_returns_sorted_visible_dirs() {
         let dir = tempdir().unwrap();
-        tokio::fs::create_dir(dir.path().join("zeta")).await.unwrap();
-        tokio::fs::create_dir(dir.path().join("alpha")).await.unwrap();
-        tokio::fs::create_dir(dir.path().join(".hidden")).await.unwrap();
-        tokio::fs::write(dir.path().join("notadir.txt"), "x").await.unwrap();
+        tokio::fs::create_dir(dir.path().join("zeta"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir(dir.path().join("alpha"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir(dir.path().join(".hidden"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("notadir.txt"), "x")
+            .await
+            .unwrap();
         let out = list_subdirs(dir.path().to_string_lossy().into_owned())
             .await
             .unwrap();
@@ -432,7 +439,9 @@ mod tests {
         {
             perms.set_readonly(true);
         }
-        tokio::fs::set_permissions(dir.path(), perms.clone()).await.unwrap();
+        tokio::fs::set_permissions(dir.path(), perms.clone())
+            .await
+            .unwrap();
         let result = check_writable(dir.path()).await;
         // restore perms so tempdir can be cleaned up
         #[cfg(unix)]
@@ -455,7 +464,9 @@ mod tests {
     async fn create_subdir_creates_a_new_directory() {
         let parent = tempdir().unwrap();
         let parent_path = parent.path().to_string_lossy().into_owned();
-        create_subdir(parent_path.clone(), "newproj".to_string()).await.unwrap();
+        create_subdir(parent_path.clone(), "newproj".to_string())
+            .await
+            .unwrap();
         assert!(parent.path().join("newproj").is_dir());
     }
 
@@ -463,8 +474,12 @@ mod tests {
     async fn create_subdir_rejects_invalid_names() {
         let parent = tempdir().unwrap();
         let parent_path = parent.path().to_string_lossy().into_owned();
-        assert!(create_subdir(parent_path.clone(), "".to_string()).await.is_err());
-        assert!(create_subdir(parent_path.clone(), "a/b".to_string()).await.is_err());
+        assert!(create_subdir(parent_path.clone(), "".to_string())
+            .await
+            .is_err());
+        assert!(create_subdir(parent_path.clone(), "a/b".to_string())
+            .await
+            .is_err());
         assert!(create_subdir(parent_path, "..".to_string()).await.is_err());
     }
 
@@ -472,7 +487,9 @@ mod tests {
     async fn create_subdir_errors_if_already_exists() {
         let parent = tempdir().unwrap();
         let parent_path = parent.path().to_string_lossy().into_owned();
-        tokio::fs::create_dir(parent.path().join("dup")).await.unwrap();
+        tokio::fs::create_dir(parent.path().join("dup"))
+            .await
+            .unwrap();
         let res = create_subdir(parent_path, "dup".to_string()).await;
         assert!(res.is_err());
     }
@@ -481,10 +498,17 @@ mod tests {
     async fn create_subdir_expands_tilde() {
         // sanity: tilde expansion path is wired up. We can't write to $HOME in tests,
         // so just confirm a non-existent-parent error surfaces, not a tilde-literal path.
-        let res = create_subdir("~/__verun_definitely_missing_parent__".to_string(), "x".to_string()).await;
+        let res = create_subdir(
+            "~/__verun_definitely_missing_parent__".to_string(),
+            "x".to_string(),
+        )
+        .await;
         assert!(res.is_err());
         let err = res.unwrap_err();
-        assert!(!err.contains('~'), "tilde should be expanded before error: {err}");
+        assert!(
+            !err.contains('~'),
+            "tilde should be expanded before error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -501,6 +525,9 @@ mod tests {
         assert!(written.contains("\"startCommand\""));
         assert!(written.contains("\"pnpm dev\""));
         assert!(written.contains("\"setup\""));
-        assert!(written.contains('\n'), "expected pretty-printed (multi-line) JSON");
+        assert!(
+            written.contains('\n'),
+            "expected pretty-printed (multi-line) JSON"
+        );
     }
 }

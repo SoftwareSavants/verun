@@ -212,11 +212,7 @@ impl Agent for Claude {
         Ok(payload)
     }
 
-    fn discover_skills(
-        &self,
-        scan_root: Option<&Path>,
-        user_home: &Path,
-    ) -> Vec<AgentSkill> {
+    fn discover_skills(&self, scan_root: Option<&Path>, user_home: &Path) -> Vec<AgentSkill> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut out: Vec<AgentSkill> = Vec::new();
 
@@ -303,10 +299,7 @@ mod tests {
                 )
             })
             .collect();
-        let json = format!(
-            r#"{{"version":2,"plugins":{{ {} }}}}"#,
-            entries.join(",")
-        );
+        let json = format!(r#"{{"version":2,"plugins":{{ {} }}}}"#, entries.join(","));
         fs::write(plugins_dir.join("installed_plugins.json"), json).unwrap();
     }
 
@@ -317,16 +310,28 @@ mod tests {
 
         let global_dir = home.path().join(".claude/skills");
         fs::create_dir_all(&global_dir).unwrap();
-        write_skill(&global_dir, "global-only", "---\nname: global-only\ndescription: g\n---\n");
+        write_skill(
+            &global_dir,
+            "global-only",
+            "---\nname: global-only\ndescription: g\n---\n",
+        );
 
         let project_dir = project.path().join(".claude/skills");
         fs::create_dir_all(&project_dir).unwrap();
-        write_skill(&project_dir, "project-only", "---\nname: project-only\ndescription: p\n---\n");
+        write_skill(
+            &project_dir,
+            "project-only",
+            "---\nname: project-only\ndescription: p\n---\n",
+        );
 
         let install_path = home.path().join(".claude/plugins/cache/mp/plugin-x/1.0.0");
         let plugin_skills = install_path.join("skills");
         fs::create_dir_all(&plugin_skills).unwrap();
-        write_skill(&plugin_skills, "plugin-only", "---\nname: plugin-only\ndescription: pl\n---\n");
+        write_skill(
+            &plugin_skills,
+            "plugin-only",
+            "---\nname: plugin-only\ndescription: pl\n---\n",
+        );
         write_installed_plugins(home.path(), &[&install_path]);
 
         let skills = Claude.discover_skills(Some(project.path()), home.path());
@@ -343,11 +348,19 @@ mod tests {
 
         let global_dir = home.path().join(".claude/skills");
         fs::create_dir_all(&global_dir).unwrap();
-        write_skill(&global_dir, "review", "---\nname: review\ndescription: global\n---\n");
+        write_skill(
+            &global_dir,
+            "review",
+            "---\nname: review\ndescription: global\n---\n",
+        );
 
         let project_dir = project.path().join(".claude/skills");
         fs::create_dir_all(&project_dir).unwrap();
-        write_skill(&project_dir, "review", "---\nname: review\ndescription: project override\n---\n");
+        write_skill(
+            &project_dir,
+            "review",
+            "---\nname: review\ndescription: project override\n---\n",
+        );
 
         let skills = Claude.discover_skills(Some(project.path()), home.path());
         let review: Vec<&AgentSkill> = skills.iter().filter(|s| s.name == "review").collect();
@@ -376,10 +389,16 @@ mod tests {
     #[test]
     fn plugin_scan_reads_installed_plugin_cache() {
         let home = TempDir::new().unwrap();
-        let install_path = home.path().join(".claude/plugins/cache/official/code-review/1.0.0");
+        let install_path = home
+            .path()
+            .join(".claude/plugins/cache/official/code-review/1.0.0");
         let skills_dir = install_path.join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
-        write_skill(&skills_dir, "review", "---\nname: review\ndescription: PR review\n---\n");
+        write_skill(
+            &skills_dir,
+            "review",
+            "---\nname: review\ndescription: PR review\n---\n",
+        );
         write_installed_plugins(home.path(), &[&install_path]);
 
         let skills = Claude.discover_skills(None, home.path());
@@ -390,9 +409,15 @@ mod tests {
     #[test]
     fn plugin_scan_ignores_uninstalled_marketplace_entries() {
         let home = TempDir::new().unwrap();
-        let stray = home.path().join(".claude/plugins/marketplaces/official/plugins/example/skills");
+        let stray = home
+            .path()
+            .join(".claude/plugins/marketplaces/official/plugins/example/skills");
         fs::create_dir_all(&stray).unwrap();
-        write_skill(&stray, "example-skill", "---\nname: example-skill\ndescription: catalog only\n---\n");
+        write_skill(
+            &stray,
+            "example-skill",
+            "---\nname: example-skill\ndescription: catalog only\n---\n",
+        );
 
         let skills = Claude.discover_skills(None, home.path());
         assert!(skills.iter().all(|s| s.name != "example-skill"));
@@ -403,7 +428,11 @@ mod tests {
         let home = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let cmds_dir = project.path().join(".claude/commands");
-        write_command(&cmds_dir, "bump-version", "---\nname: bump-version\ndescription: Bump the version\n---\n");
+        write_command(
+            &cmds_dir,
+            "bump-version",
+            "---\nname: bump-version\ndescription: Bump the version\n---\n",
+        );
 
         let skills = Claude.discover_skills(Some(project.path()), home.path());
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
@@ -414,7 +443,11 @@ mod tests {
     fn discover_includes_global_commands() {
         let home = TempDir::new().unwrap();
         let cmds_dir = home.path().join(".claude/commands");
-        write_command(&cmds_dir, "my-global-cmd", "---\nname: my-global-cmd\ndescription: Global\n---\n");
+        write_command(
+            &cmds_dir,
+            "my-global-cmd",
+            "---\nname: my-global-cmd\ndescription: Global\n---\n",
+        );
 
         let skills = Claude.discover_skills(None, home.path());
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
@@ -425,7 +458,11 @@ mod tests {
     fn discover_includes_plugin_commands() {
         let home = TempDir::new().unwrap();
         let install_path = home.path().join(".claude/plugins/cache/mp/plugin-x/1.0.0");
-        write_command(&install_path.join("commands"), "plugin-cmd", "---\nname: plugin-cmd\ndescription: from plugin\n---\n");
+        write_command(
+            &install_path.join("commands"),
+            "plugin-cmd",
+            "---\nname: plugin-cmd\ndescription: from plugin\n---\n",
+        );
         write_installed_plugins(home.path(), &[&install_path]);
 
         let skills = Claude.discover_skills(None, home.path());
@@ -439,7 +476,11 @@ mod tests {
         let project = TempDir::new().unwrap();
         let agents_dir = project.path().join(".agents/skills");
         fs::create_dir_all(&agents_dir).unwrap();
-        write_skill(&agents_dir, "tauri-v2", "---\nname: tauri-v2\ndescription: Tauri v2 helper\n---\n");
+        write_skill(
+            &agents_dir,
+            "tauri-v2",
+            "---\nname: tauri-v2\ndescription: Tauri v2 helper\n---\n",
+        );
 
         let skills = Claude.discover_skills(Some(project.path()), home.path());
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
@@ -449,8 +490,12 @@ mod tests {
     #[test]
     #[ignore]
     fn sanity_real_home() {
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap();
-        let project = std::env::current_dir().ok().and_then(|p| p.parent().map(|p| p.to_path_buf()));
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap();
+        let project = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()));
         let skills = Claude.discover_skills(project.as_deref(), &home);
         println!("discovered {} skills", skills.len());
         let mut names: Vec<_> = skills.iter().map(|s| s.name.clone()).collect();

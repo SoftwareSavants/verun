@@ -15,7 +15,9 @@ use std::path::Path;
 /// single-line `key: value` entries with optional wrapping quotes. Full YAML
 /// would require a dependency we don't need for two fields.
 pub fn parse_skill_frontmatter(text: &str) -> Option<AgentSkill> {
-    let rest = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n"))?;
+    let rest = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))?;
     let end = rest.find("\n---")?;
     let block = &rest[..end];
 
@@ -177,11 +179,7 @@ mod tests {
             "alpha",
             "---\nname: alpha\ndescription: A\n---\n",
         );
-        write_skill(
-            tmp.path(),
-            "beta",
-            "---\nname: beta\ndescription: B\n---\n",
-        );
+        write_skill(tmp.path(), "beta", "---\nname: beta\ndescription: B\n---\n");
         fs::create_dir_all(tmp.path().join("not-a-skill")).unwrap();
 
         let mut skills = scan_skills_dir(tmp.path());

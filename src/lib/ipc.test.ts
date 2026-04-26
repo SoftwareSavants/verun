@@ -34,6 +34,13 @@ describe('ipc', () => {
     expect(typeof ipc.getRepoInfo).toBe('function')
   })
 
+  test('consolidated GitHub wrappers are exported', () => {
+    expect(typeof ipc.getGithubOverview).toBe('function')
+    expect(typeof ipc.getGithubActions).toBe('function')
+    expect(typeof ipc.getGithubWorkflowJobs).toBe('function')
+    expect(typeof ipc.getGithubWorkflowLog).toBe('function')
+  })
+
   test('utility functions are exported', () => {
     expect(typeof ipc.openInFinder).toBe('function')
   })

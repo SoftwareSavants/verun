@@ -319,7 +319,10 @@ pub struct BranchStatus {
     pub tracking_sha: Option<String>,
 }
 
-pub fn get_branch_status(worktree_path: &str, last_pushed_sha: Option<&str>) -> Result<BranchStatus, String> {
+pub fn get_branch_status(
+    worktree_path: &str,
+    last_pushed_sha: Option<&str>,
+) -> Result<BranchStatus, String> {
     let current = get_current_branch(worktree_path)?;
     let base_ref = find_compare_ref(worktree_path, &current)?;
     let (behind, ahead) = rev_list_left_right(worktree_path, &base_ref, &current);
@@ -336,7 +339,12 @@ pub fn get_branch_status(worktree_path: &str, last_pushed_sha: Option<&str>) -> 
         (ahead, None)
     };
 
-    Ok(BranchStatus { ahead, behind, unpushed, tracking_sha })
+    Ok(BranchStatus {
+        ahead,
+        behind,
+        unpushed,
+        tracking_sha,
+    })
 }
 
 fn resolve_ref(worktree_path: &str, refname: &str) -> Option<String> {

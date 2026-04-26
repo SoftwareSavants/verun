@@ -1,11 +1,11 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::process::Command;
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubRepo {
     pub owner: String,
@@ -13,7 +13,7 @@ pub struct GitHubRepo {
     pub url: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrInfo {
     pub number: u32,
@@ -293,7 +293,7 @@ fn capitalize(s: &str) -> String {
 // CI checks
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CiCheck {
     pub name: String,
@@ -305,7 +305,7 @@ pub struct CiCheck {
 // Workflow runs (GitHub Actions)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowRun {
     pub database_id: u64,
@@ -319,7 +319,7 @@ pub struct WorkflowRun {
     pub event: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowJob {
     pub database_id: u64,
@@ -342,7 +342,11 @@ pub fn derive_run_state(status: &str, conclusion: Option<&str>) -> String {
     match s.as_str() {
         "queued" | "waiting" | "requested" | "pending" => "queued",
         "in_progress" => "running",
-        "completed" => match conclusion.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        "completed" => match conclusion
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
             Some("success") | Some("neutral") => "success",
             Some("failure") | Some("timed_out") | Some("action_required") => "failure",
             Some("cancelled") => "cancelled",
@@ -482,8 +486,7 @@ pub fn list_workflow_runs_for_branch(
 
 /// List jobs for a workflow run.
 pub fn list_jobs_for_run(worktree_path: &str, run_id: u64) -> Result<Vec<WorkflowJob>, String> {
-    let repo = detect_github_repo(worktree_path)?
-        .ok_or_else(|| "not a GitHub repo".to_string())?;
+    let repo = detect_github_repo(worktree_path)?.ok_or_else(|| "not a GitHub repo".to_string())?;
     let endpoint = format!(
         "repos/{}/{}/actions/runs/{}/jobs",
         repo.owner, repo.name, run_id
@@ -509,7 +512,6 @@ pub fn list_jobs_for_run(worktree_path: &str, run_id: u64) -> Result<Vec<Workflo
 /// so no individual step is marked failed).
 pub fn get_failed_step_logs(
     worktree_path: &str,
-    _run_id: u64,
     job_id: u64,
     max_bytes: usize,
 ) -> Result<String, String> {
@@ -540,7 +542,11 @@ pub fn get_failed_step_logs(
 }
 
 fn maybe_tail(s: &str, max_bytes: usize) -> String {
-    if max_bytes == 0 { s.to_string() } else { tail_bytes(s, max_bytes) }
+    if max_bytes == 0 {
+        s.to_string()
+    } else {
+        tail_bytes(s, max_bytes)
+    }
 }
 
 /// Re-run a workflow run. When `failed_only` is true, passes `--failed` to re-run only failed jobs.
@@ -552,9 +558,7 @@ pub fn rerun_workflow(worktree_path: &str, run_id: u64, failed_only: bool) -> Re
     if failed_only {
         cmd.arg("--failed");
     }
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to rerun: {e}"))?;
+    let output = cmd.output().map_err(|e| format!("Failed to rerun: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("gh run rerun failed: {stderr}"));
@@ -762,7 +766,10 @@ mod tests {
 
     #[test]
     fn derive_state_completed_cancelled_and_skipped() {
-        assert_eq!(derive_run_state("completed", Some("cancelled")), "cancelled");
+        assert_eq!(
+            derive_run_state("completed", Some("cancelled")),
+            "cancelled"
+        );
         assert_eq!(derive_run_state("completed", Some("skipped")), "skipped");
         assert_eq!(derive_run_state("completed", Some("stale")), "skipped");
     }

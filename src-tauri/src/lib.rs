@@ -8,6 +8,7 @@ mod fd_limit;
 mod file_search;
 mod git_ops;
 mod github;
+mod github_remote;
 mod ipc;
 mod lsp;
 mod markdown_skills;
@@ -325,11 +326,15 @@ pub fn run() {
             ipc::git_ship,
             ipc::get_ci_checks,
             ipc::get_branch_url,
+            ipc::get_github_overview,
             ipc::has_conflicts,
             // GitHub Actions
             ipc::list_workflow_runs,
             ipc::list_workflow_jobs,
             ipc::get_workflow_failed_logs,
+            ipc::get_github_actions,
+            ipc::get_github_workflow_jobs,
+            ipc::get_github_workflow_log,
             ipc::rerun_workflow_run,
             ipc::rerun_workflow_job,
             ipc::cancel_workflow_run,
