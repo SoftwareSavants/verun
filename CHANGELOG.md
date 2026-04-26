@@ -9,6 +9,7 @@
 - Session-created pull requests now trigger a scoped GitHub overview refresh when the task is already tracking remote state, so the PR badge/link appears without a manual refresh
 - GitHub sidebar/PR/Actions refresh now uses cached Rust-side snapshots with scope-based invalidation, so local git changes stop fan-out refreshing GitHub and Actions/PR data refresh only when their remote state actually changes
 - Claude Code sessions now offer a UI / Terminal toggle: Terminal runs `claude --resume <id>` in a real PTY so you get the unmodified TUI, while still tailing `~/.claude/projects/.../<session>.jsonl` so history, fork, branch, and search keep working with no data gap. The mode is sticky per session, with a Settings default under General → Claude Code, and survives app restarts. Ctrl+D / `/exit` / crash exposes a one-click Reconnect
+- Claude Code terminal sessions now capture pasted images: the JSONL transcript tail decodes `image` content blocks, writes the bytes to the blob store, and persists the user message as a `verun_user_message` line with attachment refs - so when you toggle back to UI view the chat shows the same image bubble you'd get from the in-app composer. Refcount tracking + GC keep storage bounded
 
 ## 0.10.0 — 2026-04-28
 

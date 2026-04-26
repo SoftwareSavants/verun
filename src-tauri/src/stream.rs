@@ -123,6 +123,15 @@ pub enum OutputItem {
     #[allow(dead_code)] // constructed by the transcript tailer in the next phase
     UserMessage { text: String },
 
+    /// Pasted-image attachment carried alongside a transcript user message.
+    /// Holds the still-base64 data straight from the JSONL so the driver can
+    /// decode it once and write it to the blob store. The driver consumes
+    /// these locally — they are filtered out before the live `session-output`
+    /// emit so the frontend never sees the raw payload over IPC.
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)] // constructed by the transcript tailer
+    UserAttachment { mime: String, data_b64: String },
+
     /// Raw line (fallback for unrecognized events)
     #[serde(rename_all = "camelCase")]
     Raw { text: String },

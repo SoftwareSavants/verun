@@ -78,6 +78,7 @@ pub struct OpenClaudeTerminalResult {
 pub async fn open_claude_terminal(
     app: AppHandle,
     pool: &SqlitePool,
+    app_data_dir: std::path::PathBuf,
     db_tx: DbWriteTx,
     pty_map: ActivePtyMap,
     ct_map: ClaudeTerminalMap,
@@ -144,8 +145,18 @@ pub async fn open_claude_terminal(
     let driver_session_id = session_id.clone();
     let driver_app = app.clone();
     let driver_db_tx = db_tx.clone();
+    let driver_pool = pool.clone();
+    let driver_data_dir = app_data_dir.clone();
     let driver = tokio::spawn(async move {
-        run_tail_driver(driver_app, driver_db_tx, driver_session_id, item_rx).await;
+        run_tail_driver(
+            driver_app,
+            driver_pool,
+            driver_data_dir,
+            driver_db_tx,
+            driver_session_id,
+            item_rx,
+        )
+        .await;
     });
 
     let handle = ClaudeTerminalHandle {
@@ -224,6 +235,153 @@ pub(crate) fn verun_items_line(items: &[OutputItem]) -> String {
     serde_json::json!({ "type": "verun_items", "items": items }).to_string()
 }
 
+/// One persistable chunk of a tail batch. User-content items (UserMessage +
+/// UserAttachment) are bundled into a `UserTurn` segment so they can persist
+/// as a single `verun_user_message` line — matching the composer flow shape.
+/// Everything else flows through `Other` and persists as `verun_items`.
+#[derive(Debug)]
+pub(crate) enum TailSegment {
+    UserTurn {
+        text: String,
+        /// (mime, base64-encoded data) pairs, straight from the JSONL.
+        attachments: Vec<(String, String)>,
+    },
+    Other(Vec<OutputItem>),
+}
+
+/// Walk a tail batch and group contiguous user-content items into
+/// `TailSegment::UserTurn`, with everything else flowing into `Other`.
+/// Multiple `UserMessage` blocks in the same content array are joined with
+/// newlines so they remain a single user turn in persistence.
+pub(crate) fn partition_tail_batch(items: &[OutputItem]) -> Vec<TailSegment> {
+    let mut segments: Vec<TailSegment> = Vec::new();
+    let mut user_text_parts: Vec<String> = Vec::new();
+    let mut user_attachments: Vec<(String, String)> = Vec::new();
+    let mut other: Vec<OutputItem> = Vec::new();
+    let mut in_user_segment = false;
+
+    let flush_user = |segments: &mut Vec<TailSegment>,
+                      texts: &mut Vec<String>,
+                      atts: &mut Vec<(String, String)>| {
+        if texts.is_empty() && atts.is_empty() {
+            return;
+        }
+        segments.push(TailSegment::UserTurn {
+            text: std::mem::take(texts).join("\n"),
+            attachments: std::mem::take(atts),
+        });
+    };
+
+    let flush_other = |segments: &mut Vec<TailSegment>, other: &mut Vec<OutputItem>| {
+        if other.is_empty() {
+            return;
+        }
+        segments.push(TailSegment::Other(std::mem::take(other)));
+    };
+
+    for item in items {
+        match item {
+            OutputItem::UserMessage { text } => {
+                if !in_user_segment {
+                    flush_other(&mut segments, &mut other);
+                    in_user_segment = true;
+                }
+                user_text_parts.push(text.clone());
+            }
+            OutputItem::UserAttachment { mime, data_b64 } => {
+                if !in_user_segment {
+                    flush_other(&mut segments, &mut other);
+                    in_user_segment = true;
+                }
+                user_attachments.push((mime.clone(), data_b64.clone()));
+            }
+            other_item => {
+                if in_user_segment {
+                    flush_user(&mut segments, &mut user_text_parts, &mut user_attachments);
+                    in_user_segment = false;
+                }
+                other.push(other_item.clone());
+            }
+        }
+    }
+    if in_user_segment {
+        flush_user(&mut segments, &mut user_text_parts, &mut user_attachments);
+    }
+    flush_other(&mut segments, &mut other);
+    segments
+}
+
+/// Strip `UserAttachment` items so the raw base64 payload never crosses the
+/// IPC boundary. The frontend wouldn't render it anyway — it lazy-loads
+/// resolved blob bytes via `get_blob(hash)` from the persisted `verun_user_message`.
+pub(crate) fn live_items_for_emit(items: &[OutputItem]) -> Vec<OutputItem> {
+    items
+        .iter()
+        .filter(|i| !matches!(i, OutputItem::UserAttachment { .. }))
+        .cloned()
+        .collect()
+}
+
+/// Convert a partitioned batch into JSON lines ready for `output_lines`.
+/// User-turn segments write each attachment to the blob store and produce a
+/// `verun_user_message` line carrying the resulting refs (matches the
+/// composer flow exactly, so the chat UI's existing replay path works).
+/// Attachments whose base64 fails to decode or whose blob write fails are
+/// silently dropped — text persistence must not regress because of one bad
+/// attachment.
+pub(crate) async fn build_persist_lines(
+    pool: &SqlitePool,
+    app_data_dir: &std::path::Path,
+    segments: Vec<TailSegment>,
+) -> Vec<String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let mut lines = Vec::with_capacity(segments.len());
+    for seg in segments {
+        match seg {
+            TailSegment::UserTurn { text, attachments } => {
+                let mut refs: Vec<serde_json::Value> = Vec::with_capacity(attachments.len());
+                for (mime, data_b64) in attachments {
+                    let bytes = match STANDARD.decode(data_b64.as_bytes()) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("[verun][claude-terminal] dropping attachment with bad base64: {e}");
+                            continue;
+                        }
+                    };
+                    match crate::blob::write_blob(pool, app_data_dir, &mime, &bytes).await {
+                        Ok(blob_ref) => {
+                            refs.push(serde_json::json!({
+                                "hash": blob_ref.hash,
+                                "mimeType": blob_ref.mime,
+                                "name": "",
+                                "size": blob_ref.size,
+                            }));
+                        }
+                        Err(e) => {
+                            eprintln!("[verun][claude-terminal] blob write failed: {e}");
+                        }
+                    }
+                }
+                lines.push(
+                    serde_json::json!({
+                        "type": "verun_user_message",
+                        "text": text,
+                        "attachments": refs,
+                        "plan_mode": false,
+                        "thinking_mode": false,
+                        "fast_mode": false,
+                    })
+                    .to_string(),
+                );
+            }
+            TailSegment::Other(items) => {
+                lines.push(verun_items_line(&items));
+            }
+        }
+    }
+    lines
+}
+
 /// True when the handle's PTY is still live (present in the pty map). A `false`
 /// means the Claude process has exited (or been killed) but our ct_map entry
 /// wasn't cleaned up yet — the handle should be discarded and a fresh one
@@ -288,6 +446,8 @@ fn shell_quote(s: &str) -> String {
 
 async fn run_tail_driver(
     app: AppHandle,
+    pool: SqlitePool,
+    app_data_dir: std::path::PathBuf,
     db_tx: DbWriteTx,
     session_id: String,
     mut rx: mpsc::UnboundedReceiver<OutputItem>,
@@ -303,21 +463,34 @@ async fn run_tail_driver(
         while let Ok(next) = rx.try_recv() {
             items.push(next);
         }
-        let _ = app.emit(
-            "session-output",
-            SessionOutputEvent {
-                session_id: session_id.clone(),
-                items: items.clone(),
-            },
-        );
-        let line = verun_items_line(&items);
+
+        // The live event drops `UserAttachment` items so the raw base64
+        // payload doesn't traverse IPC. The chat UI lazy-loads bytes through
+        // the blob store off the persisted `verun_user_message` line.
+        let live = live_items_for_emit(&items);
+        if !live.is_empty() {
+            let _ = app.emit(
+                "session-output",
+                SessionOutputEvent {
+                    session_id: session_id.clone(),
+                    items: live,
+                },
+            );
+        }
+
+        let segments = partition_tail_batch(&items);
+        let lines = build_persist_lines(&pool, &app_data_dir, segments).await;
+        if lines.is_empty() {
+            continue;
+        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
+        let timestamped: Vec<(String, i64)> = lines.into_iter().map(|l| (l, now)).collect();
         let _ = db_tx.try_send(DbWrite::InsertOutputLines {
             session_id: session_id.clone(),
-            lines: vec![(line, now)],
+            lines: timestamped,
         });
     }
 }
@@ -527,6 +700,213 @@ mod tests {
         let validated = validate_session_for_terminal(&pool, "s-001").await.unwrap();
         assert_eq!(validated.task.id, "t-001");
         assert_eq!(validated.resume_id, "resume-uuid-abc");
+    }
+
+    // ---------------------- attachment plumbing ---------------------------
+    //
+    // The transcript tailer surfaces pasted images as `OutputItem::UserAttachment`
+    // items adjacent to the `UserMessage`. The driver's job is to:
+    //   1. Split a batch into "user-turn" segments (text + attachments) vs
+    //      "other" segments (text/thinking/tool_*) preserving order.
+    //   2. Write each attachment to the blob store, producing an `AttachmentRef`.
+    //   3. Persist user-turn segments as `verun_user_message` lines (matches
+    //      composer flow), and other segments as `verun_items` lines.
+    //   4. Filter `UserAttachment` items out of the live event payload so the
+    //      raw base64 doesn't traverse IPC.
+
+    #[test]
+    fn partition_tail_batch_groups_user_content_into_a_single_segment() {
+        let items = vec![
+            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "AAAA".into() },
+            OutputItem::UserMessage { text: "look".into() },
+            OutputItem::Text { text: "ok".into() },
+            OutputItem::ToolStart { tool: "Read".into(), input: "{}".into() },
+        ];
+        let segs = partition_tail_batch(&items);
+        assert_eq!(segs.len(), 2, "segments: {segs:?}");
+        match &segs[0] {
+            TailSegment::UserTurn { text, attachments } => {
+                assert_eq!(text, "look");
+                assert_eq!(attachments.len(), 1);
+                assert_eq!(attachments[0].0, "image/png");
+                assert_eq!(attachments[0].1, "AAAA");
+            }
+            other => panic!("expected UserTurn, got {other:?}"),
+        }
+        match &segs[1] {
+            TailSegment::Other(its) => {
+                assert_eq!(its.len(), 2);
+                assert!(matches!(its[0], OutputItem::Text { .. }));
+                assert!(matches!(its[1], OutputItem::ToolStart { .. }));
+            }
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn partition_tail_batch_text_only_user_segment_yields_no_attachments() {
+        // A batch with just a UserMessage (no UserAttachment) is still a
+        // user-turn segment so persistence routes through verun_user_message.
+        // Doing this consistently avoids two parallel persistence shapes.
+        let items = vec![OutputItem::UserMessage { text: "hi".into() }];
+        let segs = partition_tail_batch(&items);
+        assert_eq!(segs.len(), 1);
+        match &segs[0] {
+            TailSegment::UserTurn { text, attachments } => {
+                assert_eq!(text, "hi");
+                assert!(attachments.is_empty());
+            }
+            other => panic!("expected UserTurn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn partition_tail_batch_attachment_only_yields_user_segment_with_empty_text() {
+        // Image-only paste — text is empty, attachments populated.
+        let items = vec![
+            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "AAAA".into() },
+        ];
+        let segs = partition_tail_batch(&items);
+        assert_eq!(segs.len(), 1);
+        match &segs[0] {
+            TailSegment::UserTurn { text, attachments } => {
+                assert_eq!(text, "");
+                assert_eq!(attachments.len(), 1);
+            }
+            other => panic!("expected UserTurn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn partition_tail_batch_two_user_turns_become_two_segments() {
+        // If a tick captures two distinct user turns separated by an
+        // assistant chunk, each should be its own segment.
+        let items = vec![
+            OutputItem::UserMessage { text: "first".into() },
+            OutputItem::Text { text: "reply".into() },
+            OutputItem::UserMessage { text: "second".into() },
+        ];
+        let segs = partition_tail_batch(&items);
+        assert_eq!(segs.len(), 3);
+        assert!(matches!(&segs[0], TailSegment::UserTurn { text, .. } if text == "first"));
+        assert!(matches!(&segs[1], TailSegment::Other(_)));
+        assert!(matches!(&segs[2], TailSegment::UserTurn { text, .. } if text == "second"));
+    }
+
+    #[test]
+    fn partition_tail_batch_concatenates_multiple_user_text_blocks_with_newlines() {
+        // Claude can emit multiple text blocks in a single user content array;
+        // keep them in one verun_user_message line by joining with newlines.
+        let items = vec![
+            OutputItem::UserMessage { text: "one".into() },
+            OutputItem::UserMessage { text: "two".into() },
+        ];
+        let segs = partition_tail_batch(&items);
+        assert_eq!(segs.len(), 1);
+        match &segs[0] {
+            TailSegment::UserTurn { text, .. } => assert_eq!(text, "one\ntwo"),
+            other => panic!("expected UserTurn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn live_items_for_emit_filters_user_attachments() {
+        let items = vec![
+            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "AAAA".into() },
+            OutputItem::UserMessage { text: "hi".into() },
+            OutputItem::Text { text: "ok".into() },
+        ];
+        let live = live_items_for_emit(&items);
+        assert_eq!(live.len(), 2);
+        assert!(matches!(live[0], OutputItem::UserMessage { .. }));
+        assert!(matches!(live[1], OutputItem::Text { .. }));
+    }
+
+    #[tokio::test]
+    async fn process_tail_batch_writes_blob_and_emits_verun_user_message_with_attachment_ref() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let pool = test_pool().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"PNGFAKE-bytes-for-test";
+        let data_b64 = STANDARD.encode(bytes);
+
+        let items = vec![
+            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: data_b64.clone() },
+            OutputItem::UserMessage { text: "look at this".into() },
+        ];
+
+        let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(v["type"], "verun_user_message");
+        assert_eq!(v["text"], "look at this");
+        let atts = v["attachments"].as_array().unwrap();
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0]["mimeType"], "image/png");
+        assert_eq!(atts[0]["size"].as_i64().unwrap(), bytes.len() as i64);
+        assert_eq!(atts[0]["name"], "");
+        let hash = atts[0]["hash"].as_str().unwrap();
+        assert_eq!(hash.len(), 64, "sha256 hex");
+
+        // Bytes are now in the blob store under the expected hash.
+        let stored = crate::blob::read_blob_bytes(dir.path(), hash).await.unwrap();
+        assert_eq!(stored, bytes);
+    }
+
+    #[tokio::test]
+    async fn process_tail_batch_skips_attachments_with_invalid_base64() {
+        let pool = test_pool().await;
+        let dir = tempfile::tempdir().unwrap();
+        let items = vec![
+            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "not!!base64".into() },
+            OutputItem::UserMessage { text: "still text".into() },
+        ];
+        let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(v["type"], "verun_user_message");
+        assert_eq!(v["text"], "still text");
+        // Bad base64 is dropped; text still persists.
+        assert!(v["attachments"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn process_tail_batch_emits_verun_items_for_other_segments() {
+        let pool = test_pool().await;
+        let dir = tempfile::tempdir().unwrap();
+        let items = vec![
+            OutputItem::Text { text: "hello".into() },
+            OutputItem::ToolStart { tool: "Read".into(), input: "{}".into() },
+        ];
+        let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
+        assert_eq!(lines.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(v["type"], "verun_items");
+        let arr = v["items"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["kind"], "text");
+        assert_eq!(arr[1]["kind"], "toolStart");
+    }
+
+    #[tokio::test]
+    async fn process_tail_batch_mixed_batch_yields_two_lines_in_order() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let pool = test_pool().await;
+        let dir = tempfile::tempdir().unwrap();
+        let png_b64 = STANDARD.encode(b"img");
+        let items = vec![
+            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: png_b64 },
+            OutputItem::UserMessage { text: "what's this".into() },
+            OutputItem::Text { text: "an image".into() },
+        ];
+        let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
+        assert_eq!(lines.len(), 2);
+        let user: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        let other: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
+        assert_eq!(user["type"], "verun_user_message");
+        assert_eq!(user["attachments"].as_array().unwrap().len(), 1);
+        assert_eq!(other["type"], "verun_items");
+        assert_eq!(other["items"][0]["kind"], "text");
     }
 
     #[tokio::test]

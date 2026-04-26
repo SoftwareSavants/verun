@@ -244,10 +244,41 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
                     items.push(OutputItem::ToolResult { text, is_error });
                 }
             }
+            "image" => {
+                if let Some(att) = parse_image_block(block) {
+                    items.push(att);
+                }
+            }
             _ => {}
         }
     }
     items
+}
+
+/// Parse a transcript `image` content block into `OutputItem::UserAttachment`.
+/// Returns `None` for malformed blocks (missing/empty data, non-base64 source).
+/// Falls back to `application/octet-stream` when `media_type` is omitted, so
+/// the caller can still round-trip the bytes into the blob store even though
+/// the chat UI's image-only filter will probably drop the resulting ref.
+#[allow(dead_code)]
+fn parse_image_block(block: &serde_json::Value) -> Option<OutputItem> {
+    let source = block.get("source")?;
+    if source.get("type").and_then(|t| t.as_str()) != Some("base64") {
+        return None;
+    }
+    let data = source.get("data").and_then(|d| d.as_str())?;
+    if data.is_empty() {
+        return None;
+    }
+    let mime = source
+        .get("media_type")
+        .and_then(|m| m.as_str())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    Some(OutputItem::UserAttachment {
+        mime,
+        data_b64: data.to_string(),
+    })
 }
 
 #[allow(dead_code)]
@@ -524,6 +555,56 @@ mod tests {
         assert!(matches!(&items[0], OutputItem::Thinking { text } if text == "hm"));
         assert!(matches!(&items[1], OutputItem::Text { text } if text == "running tool"));
         assert!(matches!(&items[2], OutputItem::ToolStart { tool, .. } if tool == "Bash"));
+    }
+
+    #[test]
+    fn transcript_user_image_block_yields_attachment_item() {
+        // Claude writes pasted images as content blocks of type=image with a
+        // base64 data URL inline. The terminal-mode parser must surface those
+        // so the driver can write them to the blob store alongside the text.
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserAttachment { mime, data_b64 }] => {
+                assert_eq!(mime, "image/png");
+                assert_eq!(data_b64, "iVBORw0KGgo=");
+            }
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_text_and_image_block_yields_both_items_in_order() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"AAAA"}},{"text":"check this","type":"text"}]},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        assert_eq!(items.len(), 2, "items: {items:#?}");
+        assert!(matches!(&items[0], OutputItem::UserAttachment { mime, data_b64 } if mime == "image/jpeg" && data_b64 == "AAAA"));
+        assert!(matches!(&items[1], OutputItem::UserMessage { text } if text == "check this"));
+    }
+
+    #[test]
+    fn transcript_user_image_block_skipped_when_data_missing_or_empty() {
+        // Malformed: missing source.data — drop silently so the rest of the
+        // line still flows through.
+        let no_data = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png"}}]},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(no_data).is_empty());
+        let empty_data = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":""}}]},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(empty_data).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_image_block_defaults_mime_when_missing() {
+        // We've seen older transcript lines omit `media_type`. Falling back to
+        // application/octet-stream keeps the blob round-trippable even if the
+        // chat UI's image-only filter ends up dropping it.
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"AAAA"}}]},"uuid":"u1"}"#;
+        match parse_transcript_line(line).as_slice() {
+            [OutputItem::UserAttachment { mime, data_b64 }] => {
+                assert_eq!(mime, "application/octet-stream");
+                assert_eq!(data_b64, "AAAA");
+            }
+            other => panic!("unexpected items: {other:?}"),
+        }
     }
 
     #[test]

@@ -2095,6 +2095,7 @@ pub async fn pty_list_for_task(
 pub async fn claude_terminal_open(
     app: AppHandle,
     pool: State<'_, SqlitePool>,
+    app_data: State<'_, crate::blob::AppDataDir>,
     db_tx: State<'_, DbWriteTx>,
     pty_map: State<'_, ActivePtyMap>,
     ct_map: State<'_, ClaudeTerminalMap>,
@@ -2105,6 +2106,7 @@ pub async fn claude_terminal_open(
     claude_terminal::open_claude_terminal(
         app,
         pool.inner(),
+        app_data.0.clone(),
         db_tx.inner().clone(),
         pty_map.inner().clone(),
         ct_map.inner().clone(),
