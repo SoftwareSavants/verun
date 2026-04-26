@@ -288,11 +288,10 @@ fn matches_deny_pattern(command: &str) -> Option<&'static str> {
 
 /// Hard blocks that require approval regardless of trust level.
 /// These protect Verun's own infrastructure (worktrees, .verun dirs).
+/// Only parsed-and-matched patterns hard-block; parse failures fall through
+/// so FullAuto can still auto-allow exotic shell (heredocs, etc).
 fn matches_hard_block(command: &str) -> Option<&'static str> {
-    let list: yash_syntax::syntax::List = match command.parse() {
-        Ok(l) => l,
-        Err(_) => return Some("unparseable command"),
-    };
+    let list: yash_syntax::syntax::List = command.parse().ok()?;
     walk_list_with(&list, check_hard_block_args)
 }
 
@@ -691,6 +690,34 @@ mod tests {
             TrustLevel::FullAuto,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_heredoc_command() {
+        let cmd = "cd /tmp/shein-research && python3 << 'PY'\n\
+                   content = open('bundles/foo.js').read()\n\
+                   print(content[0:100])\n\
+                   PY";
+        let r = evaluate(
+            "Bash",
+            &json!({ "command": cmd }),
+            WORKTREE,
+            REPO,
+            TrustLevel::FullAuto,
+        );
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn full_auto_allows_unparseable_command() {
+        let r = evaluate(
+            "Bash",
+            &json!({ "command": "((( unbalanced" }),
+            WORKTREE,
+            REPO,
+            TrustLevel::FullAuto,
+        );
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
 
     #[test]
