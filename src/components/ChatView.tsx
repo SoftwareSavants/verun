@@ -1003,6 +1003,10 @@ export const ChatView: Component<Props> = (props) => {
   // store's own loading flag dedupes concurrent fetches but resetting this here
   // means the user has to scroll away from the top before another page kicks in.
   let olderLoadInFlight = false
+  // Tracks ChatView mount state so a pagination fetch in flight when the user
+  // switches sessions doesn't end up writing scrollTop to the detached div.
+  let mounted = true
+  onCleanup(() => { mounted = false })
   const maybeLoadOlder = async () => {
     if (olderLoadInFlight) return
     const sid = props.sessionId
@@ -1012,12 +1016,13 @@ export const ChatView: Component<Props> = (props) => {
     const oldScrollTop = containerRef.scrollTop
     try {
       const added = await loadOlderOutputLines(sid)
+      if (!mounted) return
       if (added > 0) {
         // Two RAFs: first lets Solid commit the prepended blocks, second waits
         // until the browser has actually re-laid them out so scrollHeight is real.
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            if (!containerRef) return
+            if (!mounted || !containerRef) return
             const delta = containerRef.scrollHeight - oldScrollHeight
             if (delta > 0) containerRef.scrollTop = oldScrollTop + delta
           })
