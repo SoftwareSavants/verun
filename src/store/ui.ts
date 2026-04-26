@@ -29,9 +29,12 @@ export function selectedSessionId(): string | null {
   return taskId ? selectedSessionForTask(taskId) : null
 }
 
-export function setSelectedSessionId(id: string | null) {
-  const taskId = selectedTaskId()
-  if (!taskId) return
+/**
+ * Set the active session for a specific task. Always takes the taskId
+ * explicitly — prevents the cross-task races that happened when a helper
+ * read `selectedTaskId()` at call time after an await.
+ */
+export function setSelectedSessionIdForTask(taskId: string, id: string | null) {
   setSelectedSessionForTask(taskId, id)
   setLastSessionForTask(taskId, id)
 }

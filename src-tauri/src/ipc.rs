@@ -979,8 +979,10 @@ pub async fn get_session(
 pub async fn get_output_lines(
     pool: State<'_, SqlitePool>,
     session_id: String,
+    limit: Option<i64>,
+    before_id: Option<i64>,
 ) -> Result<Vec<OutputLine>, String> {
-    db::get_output_lines(pool.inner(), &session_id).await
+    db::get_output_lines(pool.inner(), &session_id, limit, before_id).await
 }
 
 // ---------------------------------------------------------------------------

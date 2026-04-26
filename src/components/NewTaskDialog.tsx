@@ -1,6 +1,6 @@
 import { Component, Show, For, createSignal, createEffect } from 'solid-js'
 import { startTaskCreation } from '../store/tasks'
-import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionId, setShowArchived } from '../store/ui'
+import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionIdForTask, setShowArchived } from '../store/ui'
 import { projectById, updateProjectDefaultAgentInStore } from '../store/projects'
 import * as ipc from '../lib/ipc'
 import { agents } from '../store/agents'
@@ -75,7 +75,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
     const placeholderId = startTaskCreation(props.projectId, baseBranch(), agentType())
     setSelectedTaskId(placeholderId)
     setSelectedProjectId(props.projectId)
-    setSelectedSessionId(null)
+    setSelectedSessionIdForTask(placeholderId, null)
     setShowArchived(false)
     props.onClose()
   }

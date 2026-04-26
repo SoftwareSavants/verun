@@ -22,7 +22,7 @@ import { ModelPicker } from './ModelPicker'
 import { modelPickerRequest, openModelPicker, closeModelPicker } from '../store/modelPicker'
 import { createSession, sessionsForTask } from '../store/sessions'
 import { selectedSessionForTask } from '../store/taskContext'
-import { setSelectedSessionId } from '../store/ui'
+import { setSelectedSessionIdForTask } from '../store/ui'
 import { setMainView } from '../store/editorView'
 
 export const Layout: Component = () => {
@@ -199,7 +199,7 @@ export const Layout: Component = () => {
             defaultModel: current?.model ?? undefined,
             onPick: async (agentType, model) => {
               const session = await createSession(tid, agentType, model)
-              setSelectedSessionId(session.id)
+              setSelectedSessionIdForTask(tid, session.id)
               setMainView(tid, 'session')
             },
           })

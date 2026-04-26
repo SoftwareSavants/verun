@@ -28,6 +28,22 @@ export const [sessionTokens, setSessionTokens] = createStore<Record<string, { in
 export const [abortingSessions, setAbortingSessions] = createStore<Record<string, boolean>>({})
 export const [rateLimitInfo, setRateLimitInfo] = createSignal<RateLimitInfo | null>(null)
 
+function seedSessionAggregates(session: Session) {
+  if (session.totalCost > 0) setSessionCosts(session.id, session.totalCost)
+  else setSessionCosts(produce(store => { delete store[session.id] }))
+
+  if (session.inputTokens > 0 || session.outputTokens > 0 || session.cacheReadTokens > 0 || session.cacheWriteTokens > 0) {
+    setSessionTokens(session.id, {
+      input: session.inputTokens,
+      output: session.outputTokens,
+      cacheRead: session.cacheReadTokens,
+      cacheWrite: session.cacheWriteTokens,
+    })
+  } else {
+    setSessionTokens(produce(store => { delete store[session.id] }))
+  }
+}
+
 /**
  * Backstop for cross-window session sync: when the window becomes visible,
  * refresh sessions for every task currently in the store. The session-created
@@ -46,10 +62,7 @@ export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
   // Merge — keep sessions from other tasks, replace sessions for this task
   setSessions(prev => [...prev.filter(s => s.taskId !== taskId), ...list])
-  // Seed session costs from persisted data
-  for (const s of list) {
-    if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
-  }
+  for (const s of list) seedSessionAggregates(s)
 }
 
 export async function createSession(taskId: string, agentType: string, model?: string): Promise<Session> {
@@ -57,6 +70,7 @@ export async function createSession(taskId: string, agentType: string, model?: s
   // Dedup vs the session-created broadcast: Rust emits to all windows including
   // the source, and the broadcast can land before this await resolves.
   setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
+  seedSessionAggregates(session)
   setOutputItems(session.id, [])
   return session
 }
@@ -66,6 +80,7 @@ export async function reopenSession(sessionId: string): Promise<Session> {
   // Rust broadcasts session-created on reopen (mirrors createSession); same
   // dedup against the broadcast landing before this await resolves.
   setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
+  seedSessionAggregates(session)
   return session
 }
 
@@ -177,6 +192,7 @@ export async function closeSession(sessionId: string) {
   setSessionTokens(produce(store => { delete store[sessionId] }))
   setAbortingSessions(produce(store => { delete store[sessionId] }))
   loadedSessionOutputs.delete(sessionId)
+  outputPageState.delete(sessionId)
   // Persist closure to DB (status = 'closed', filtered from future loads)
   await ipc.closeSession(sessionId)
 }
@@ -188,10 +204,32 @@ export async function closeSession(sessionId: string) {
 // Invalidated on clearOutputItems, closeSession, session-removed.
 const loadedSessionOutputs = new Set<string>()
 
+// Initial hydration is intentionally tight: 250 NDJSON lines parses + paints
+// in a few tens of ms even on long-running sessions. Older history is fetched
+// on demand via loadOlderOutputLines when the chat scrolls near the top.
+export const INITIAL_OUTPUT_LINES_LIMIT = 250
+export const OLDER_OUTPUT_PAGE_SIZE = 250
+
+interface OutputPageState {
+  oldestLineId: number | null
+  hasMore: boolean
+  loading: boolean
+}
+const outputPageState = new Map<string, OutputPageState>()
+
+export function hasMoreOutputLines(sessionId: string): boolean {
+  return outputPageState.get(sessionId)?.hasMore ?? false
+}
+
 export async function loadOutputLines(sessionId: string) {
   if (loadedSessionOutputs.has(sessionId)) return
-  const lines = await ipc.getOutputLines(sessionId)
+  const lines = await ipc.getOutputLines(sessionId, INITIAL_OUTPUT_LINES_LIMIT)
   loadedSessionOutputs.add(sessionId)
+  outputPageState.set(sessionId, {
+    oldestLineId: lines.length > 0 ? lines[0].id : null,
+    hasMore: lines.length === INITIAL_OUTPUT_LINES_LIMIT,
+    loading: false,
+  })
   const items: OutputItem[] = []
   for (const l of lines) {
     const parsed = parseNdjsonLine(l.line, l.emittedAt)
@@ -201,24 +239,33 @@ export async function loadOutputLines(sessionId: string) {
   const current = outputItems[sessionId]
   if (current && current.length > 0 && items.length === 0) return
   setOutputItems(sessionId, items)
-  // Accumulate costs + tokens from replayed output
-  let replayCost = 0
-  let replayInputTokens = 0
-  let replayOutputTokens = 0
-  let replayCacheRead = 0
-  let replayCacheWrite = 0
-  for (const item of items) {
-    if (item.kind === 'turnEnd') {
-      if (item.cost) replayCost += item.cost
-      if (item.inputTokens) replayInputTokens += item.inputTokens
-      if (item.outputTokens) replayOutputTokens += item.outputTokens
-      if (item.cacheReadTokens) replayCacheRead += item.cacheReadTokens
-      if (item.cacheWriteTokens) replayCacheWrite += item.cacheWriteTokens
+}
+
+/** Fetch the next page of older output_lines and prepend them to the in-memory
+ *  store. Returns the number of OutputItems added, or 0 when there's nothing
+ *  more to load (or a fetch is already in flight). */
+export async function loadOlderOutputLines(sessionId: string): Promise<number> {
+  const state = outputPageState.get(sessionId)
+  if (!state || !state.hasMore || state.loading || state.oldestLineId == null) return 0
+  state.loading = true
+  try {
+    const lines = await ipc.getOutputLines(sessionId, OLDER_OUTPUT_PAGE_SIZE, state.oldestLineId)
+    if (lines.length === 0) {
+      state.hasMore = false
+      return 0
     }
-  }
-  if (replayCost > 0) setSessionCosts(sessionId, replayCost)
-  if (replayInputTokens > 0 || replayOutputTokens > 0) {
-    setSessionTokens(sessionId, { input: replayInputTokens, output: replayOutputTokens, cacheRead: replayCacheRead, cacheWrite: replayCacheWrite })
+    const olderItems: OutputItem[] = []
+    for (const l of lines) {
+      const parsed = parseNdjsonLine(l.line, l.emittedAt)
+      if (parsed) olderItems.push(...parsed)
+    }
+    const current = outputItems[sessionId] ?? []
+    setOutputItems(sessionId, [...olderItems, ...current])
+    state.oldestLineId = lines[0].id
+    state.hasMore = lines.length === OLDER_OUTPUT_PAGE_SIZE
+    return olderItems.length
+  } finally {
+    state.loading = false
   }
 }
 
@@ -282,7 +329,10 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
 
 export async function clearOutputItems(sessionId: string) {
   setOutputItems(sessionId, [])
+  setSessionCosts(produce(store => { delete store[sessionId] }))
+  setSessionTokens(produce(store => { delete store[sessionId] }))
   loadedSessionOutputs.delete(sessionId)
+  outputPageState.delete(sessionId)
   // Also clear the Claude session context + persisted output in DB
   await ipc.clearSession(sessionId)
   setSessions(s => s.id === sessionId, 'resumeSessionId', null)
@@ -478,7 +528,7 @@ export async function initSessionListeners() {
     const s = event.payload
     if (sessions.some(x => x.id === s.id)) return
     setSessions(produce(list => { list.push(s) }))
-    if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
+    seedSessionAggregates(s)
   })
 
   await listen<{ sessionId: string; taskId: string | null }>('session-removed', (event) => {
@@ -489,6 +539,7 @@ export async function initSessionListeners() {
     setSessionCosts(produce(store => { delete store[sessionId] }))
     setSessionTokens(produce(store => { delete store[sessionId] }))
     loadedSessionOutputs.delete(sessionId)
+    outputPageState.delete(sessionId)
     clearSteps(sessionId)
   })
 

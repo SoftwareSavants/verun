@@ -113,16 +113,13 @@ export function startTaskCreation(projectId: string, baseBranch: string, agentTy
 
     // Set up session
     import('./sessions').then(({ setSessions, setOutputItems }) => {
-      import('./ui').then(({ setSelectedSessionId, selectedTaskId }) => {
+      import('./ui').then(({ setSelectedSessionIdForTask, selectedTaskId, setSelectedTaskId }) => {
         setSessions(produce((s: any[]) => s.push(result.session)))
         setOutputItems(result.session.id, [])
         // Only auto-select session if user is still viewing this task
         if (selectedTaskId() === placeholderId) {
-          // Update selectedTaskId to the real task ID if it changed
-          import('./ui').then(({ setSelectedTaskId }) => {
-            setSelectedTaskId(result.task.id)
-            setSelectedSessionId(result.session.id)
-          })
+          setSelectedTaskId(result.task.id)
+          setSelectedSessionIdForTask(result.task.id, result.session.id)
         }
       })
     })
@@ -150,12 +147,12 @@ export function retryTaskCreation(placeholderId: string, projectId: string, base
     removeCreating(placeholderId)
 
     import('./sessions').then(({ setSessions, setOutputItems }) => {
-      import('./ui').then(({ setSelectedSessionId, selectedTaskId, setSelectedTaskId }) => {
+      import('./ui').then(({ setSelectedSessionIdForTask, selectedTaskId, setSelectedTaskId }) => {
         setSessions(produce((s: any[]) => s.push(result.session)))
         setOutputItems(result.session.id, [])
         if (selectedTaskId() === placeholderId) {
           setSelectedTaskId(result.task.id)
-          setSelectedSessionId(result.session.id)
+          setSelectedSessionIdForTask(result.task.id, result.session.id)
         }
       })
     })

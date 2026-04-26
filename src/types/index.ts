@@ -49,6 +49,10 @@ export interface Session {
   startedAt: number
   endedAt: number | null
   totalCost: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
   parentSessionId: string | null
   forkedAtMessageUuid: string | null
   agentType: AgentType

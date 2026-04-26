@@ -1272,7 +1272,6 @@ fn extract_cursor_tool_result(tc: &serde_json::Map<String, serde_json::Value>) -
 // ---------------------------------------------------------------------------
 
 pub struct StreamResult {
-    pub total_cost: f64,
     pub error: Option<String>,
 }
 
@@ -1427,7 +1426,6 @@ pub async fn stream_and_capture(
     let mut buffer: Vec<OutputItem> = Vec::new();
     let mut last_flush = Instant::now();
     let mut total_persisted: usize = 0;
-    let mut total_cost: f64 = 0.0;
     let mut last_error: Option<String> = None;
     // Captured from `system.init` events for the per-turn snapshot hook.
     let mut resume_id_for_snapshot: Option<String> = None;
@@ -1558,11 +1556,8 @@ pub async fn stream_and_capture(
                                     emit_item(&app, &session_id, item.clone());
                                     has_immediate = true;
                                 }
-                                OutputItem::TurnEnd { cost, error: ref err, .. } => {
+                                OutputItem::TurnEnd { error: ref err, .. } => {
                                     is_turn_end = true;
-                                    if let Some(c) = cost {
-                                        total_cost += *c;
-                                    }
                                     if err.is_some() {
                                         last_error.clone_from(err);
                                     }
@@ -1669,7 +1664,6 @@ pub async fn stream_and_capture(
 
     flush_buffer(&app, &session_id, &mut buffer);
     StreamResult {
-        total_cost,
         error: last_error,
     }
 }
@@ -1914,7 +1908,6 @@ pub async fn stream_and_capture_rpc(
 
     flush_buffer(&app, &session_id, &mut buffer);
     StreamResult {
-        total_cost: 0.0,
         error: last_error,
     }
 }

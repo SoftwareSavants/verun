@@ -7,7 +7,7 @@ import {
   resolveMode, resolvePalette,
   type ThemeMode, type Density, type ThemePreset, type PaletteOverrides,
 } from '../lib/theme'
-import { setShowSettings, setSelectedTaskId, setSelectedSessionId, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist, sidebarWidth } from '../store/ui'
+import { setShowSettings, setSelectedTaskId, setSelectedSessionIdForTask, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist, sidebarWidth } from '../store/ui'
 import { notificationsEnabled, setNotificationsEnabledAndPersist } from '../lib/notifications'
 import { projects, updateHooks, updateStoreHooks, updateBaseBranch } from '../store/projects'
 import { createTask, activeTasksForProject } from '../store/tasks'
@@ -116,7 +116,7 @@ export const SettingsPage: Component = () => {
       setOutputItems(session.id, [])
 
       setSelectedTaskId(task.id)
-      setSelectedSessionId(session.id)
+      setSelectedSessionIdForTask(task.id, session.id)
       setShowSettings(false)
 
       const prompt = AUTODETECT_PROMPT

@@ -2,7 +2,7 @@ import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { Project } from '../types'
 import * as ipc from '../lib/ipc'
-import { selectedTaskId, selectedProjectId, setSelectedProjectId, setSelectedTaskId, setSelectedSessionId } from './ui'
+import { selectedTaskId, selectedProjectId, setSelectedProjectId, setSelectedTaskId, setSelectedSessionIdForTask } from './ui'
 import { taskById } from './tasks'
 import { clearRecentFilesForProject } from './recentFiles'
 
@@ -29,8 +29,8 @@ export async function deleteProject(id: string) {
   if (tid) {
     const task = taskById(tid)
     if (!task || task.projectId === id) {
+      setSelectedSessionIdForTask(tid, null)
       setSelectedTaskId(null)
-      setSelectedSessionId(null)
     }
   }
   if (selectedProjectId() === id) {

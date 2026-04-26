@@ -15,7 +15,7 @@ import { taskGit } from '../store/git'
 import { taskById } from '../store/tasks'
 import { sessionsForTask, sendMessage } from '../store/sessions'
 import { selectedSessionForTask } from '../store/taskContext'
-import { addToast, dismissToast, setSelectedSessionId } from '../store/ui'
+import { addToast, dismissToast, setSelectedSessionIdForTask } from '../store/ui'
 import { setMainView } from '../store/editorView'
 import { openModelPicker } from '../store/modelPicker'
 import * as ipc from '../lib/ipc'
@@ -337,7 +337,7 @@ const ActionsJobRow: Component<{ taskId: string; run: WorkflowRun; job: Workflow
             ipc.createSession(props.taskId, agentType, model),
             buildPrompt(),
           ])
-          setSelectedSessionId(created.id)
+          setSelectedSessionIdForTask(props.taskId, created.id)
           setMainView(props.taskId, 'session')
           await sendMessage(created.id, prompt)
           dismissToast(toastId)
