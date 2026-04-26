@@ -323,6 +323,15 @@ pub struct OutputLine {
     pub emitted_at: i64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTokenTotals {
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditEntry {
@@ -1254,6 +1263,57 @@ pub async fn get_output_lines(
         .await
         .map_err(|e| e.to_string()),
     }
+}
+
+/// Sum token usage across every persisted `turnEnd` item for a session.
+///
+/// Tokens are not stored as a session aggregate (unlike `total_cost`), so this
+/// scans `output_lines`, parses each NDJSON row, and pulls camelCase token
+/// fields out of every `verun_items` -> `kind: "turnEnd"` item. Used by
+/// `loadOutputLines` to seed the in-memory store with full-session totals
+/// after the 250-line initial-load cap was introduced — replaying only the
+/// tail would otherwise show partial usage in the UI chips.
+pub async fn get_session_token_totals(
+    pool: &SqlitePool,
+    session_id: &str,
+) -> Result<SessionTokenTotals, String> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT line FROM output_lines WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    let mut totals = SessionTokenTotals::default();
+    for (line,) in rows {
+        let v: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("verun_items") {
+            continue;
+        }
+        let items = match v.get("items").and_then(|i| i.as_array()) {
+            Some(items) => items,
+            None => continue,
+        };
+        for item in items {
+            if item.get("kind").and_then(|k| k.as_str()) != Some("turnEnd") {
+                continue;
+            }
+            totals.input += item.get("inputTokens").and_then(|x| x.as_i64()).unwrap_or(0);
+            totals.output += item.get("outputTokens").and_then(|x| x.as_i64()).unwrap_or(0);
+            totals.cache_read += item
+                .get("cacheReadTokens")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(0);
+            totals.cache_write += item
+                .get("cacheWriteTokens")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(0);
+        }
+    }
+    Ok(totals)
 }
 
 // Turn snapshots
@@ -2205,6 +2265,111 @@ mod tests {
             .unwrap();
         assert_eq!(lines.len(), 2);
         assert!(lines.iter().all(|l| l.session_id == "s-001"));
+    }
+
+    #[tokio::test]
+    async fn token_totals_sum_turn_end_items_across_lines() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+
+        let l1 = r#"{"type":"verun_items","items":[{"kind":"text","text":"hi"},{"kind":"turnEnd","status":"completed","cost":0.01,"inputTokens":100,"outputTokens":50,"cacheReadTokens":10,"cacheWriteTokens":5}]}"#;
+        let l2 = r#"{"type":"verun_items","items":[{"kind":"toolStart","tool":"Read","input":"{}"}]}"#;
+        let l3 = r#"{"type":"verun_user_message","text":"another"}"#;
+        let l4 = r#"{"type":"verun_items","items":[{"kind":"turnEnd","status":"completed","cost":0.02,"inputTokens":200,"outputTokens":80,"cacheReadTokens":20,"cacheWriteTokens":7}]}"#;
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: vec![
+                    (l1.into(), 100),
+                    (l2.into(), 200),
+                    (l3.into(), 300),
+                    (l4.into(), 400),
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+        let totals = get_session_token_totals(&pool, "s-001").await.unwrap();
+        assert_eq!(totals.input, 300);
+        assert_eq!(totals.output, 130);
+        assert_eq!(totals.cache_read, 30);
+        assert_eq!(totals.cache_write, 12);
+    }
+
+    #[tokio::test]
+    async fn token_totals_zero_for_empty_session() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+
+        let totals = get_session_token_totals(&pool, "s-001").await.unwrap();
+        assert_eq!(totals.input, 0);
+        assert_eq!(totals.output, 0);
+        assert_eq!(totals.cache_read, 0);
+        assert_eq!(totals.cache_write, 0);
+    }
+
+    #[tokio::test]
+    async fn token_totals_skip_unparseable_and_other_sessions() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+        let mut s2 = make_session("t-001");
+        s2.id = "s-other".into();
+        process_write(&pool, DbWrite::CreateSession(s2)).await.unwrap();
+
+        let valid = r#"{"type":"verun_items","items":[{"kind":"turnEnd","status":"completed","inputTokens":42,"outputTokens":7,"cacheReadTokens":0,"cacheWriteTokens":0}]}"#;
+        let garbage = "this is not json";
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: vec![(valid.into(), 100), (garbage.into(), 200)],
+            },
+        )
+        .await
+        .unwrap();
+        // Other-session totals must not bleed in.
+        let bleed = r#"{"type":"verun_items","items":[{"kind":"turnEnd","status":"completed","inputTokens":9999,"outputTokens":9999,"cacheReadTokens":9999,"cacheWriteTokens":9999}]}"#;
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-other".into(),
+                lines: vec![(bleed.into(), 300)],
+            },
+        )
+        .await
+        .unwrap();
+
+        let totals = get_session_token_totals(&pool, "s-001").await.unwrap();
+        assert_eq!(totals.input, 42);
+        assert_eq!(totals.output, 7);
+        assert_eq!(totals.cache_read, 0);
+        assert_eq!(totals.cache_write, 0);
     }
 
     // -- Startup recovery --

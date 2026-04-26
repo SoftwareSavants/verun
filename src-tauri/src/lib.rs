@@ -289,6 +289,7 @@ pub fn run() {
             ipc::reopen_session,
             ipc::get_session,
             ipc::get_output_lines,
+            ipc::get_session_token_totals,
             ipc::fork_session_in_task,
             ipc::fork_session_to_new_task,
             // Policy / Trust levels

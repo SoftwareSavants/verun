@@ -224,24 +224,19 @@ export async function loadOutputLines(sessionId: string) {
   const current = outputItems[sessionId]
   if (current && current.length > 0 && items.length === 0) return
   setOutputItems(sessionId, items)
-  // Accumulate costs + tokens from replayed output
-  let replayCost = 0
-  let replayInputTokens = 0
-  let replayOutputTokens = 0
-  let replayCacheRead = 0
-  let replayCacheWrite = 0
-  for (const item of items) {
-    if (item.kind === 'turnEnd') {
-      if (item.cost) replayCost += item.cost
-      if (item.inputTokens) replayInputTokens += item.inputTokens
-      if (item.outputTokens) replayOutputTokens += item.outputTokens
-      if (item.cacheReadTokens) replayCacheRead += item.cacheReadTokens
-      if (item.cacheWriteTokens) replayCacheWrite += item.cacheWriteTokens
+  // Cost: trust the seed from `loadSessions` (DB-maintained `total_cost`).
+  // Summing replayed turnEnd costs only sees the last 250 lines, so it would
+  // clobber the authoritative DB total with a partial sum.
+  // Tokens: there's no persisted aggregate, so ask the backend to scan
+  // output_lines and sum every turnEnd's token fields once per session load.
+  try {
+    const totals = await ipc.getSessionTokenTotals(sessionId)
+    if (totals.input > 0 || totals.output > 0 || totals.cacheRead > 0 || totals.cacheWrite > 0) {
+      setSessionTokens(sessionId, totals)
     }
-  }
-  if (replayCost > 0) setSessionCosts(sessionId, replayCost)
-  if (replayInputTokens > 0 || replayOutputTokens > 0) {
-    setSessionTokens(sessionId, { input: replayInputTokens, output: replayOutputTokens, cacheRead: replayCacheRead, cacheWrite: replayCacheWrite })
+  } catch {
+    // Best-effort — a stale token chip is preferable to a thrown promise that
+    // breaks the surrounding chat-load flow.
   }
 }
 

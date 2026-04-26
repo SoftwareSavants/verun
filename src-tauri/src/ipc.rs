@@ -985,6 +985,14 @@ pub async fn get_output_lines(
     db::get_output_lines(pool.inner(), &session_id, limit, before_id).await
 }
 
+#[tauri::command]
+pub async fn get_session_token_totals(
+    pool: State<'_, SqlitePool>,
+    session_id: String,
+) -> Result<db::SessionTokenTotals, String> {
+    db::get_session_token_totals(pool.inner(), &session_id).await
+}
+
 // ---------------------------------------------------------------------------
 // Policy / Trust levels
 // ---------------------------------------------------------------------------
