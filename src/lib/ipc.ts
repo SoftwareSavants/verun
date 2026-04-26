@@ -146,38 +146,6 @@ export const getOutputLines = (
       })
     : invoke<OutputLine[]>('get_output_lines', { sessionId, limit, beforeId })
 
-export interface SessionTokenTotals {
-  input: number
-  output: number
-  cacheRead: number
-  cacheWrite: number
-}
-
-/// Server-side scan of `output_lines` that sums every persisted `turnEnd`
-/// item's token fields. Lets `loadOutputLines` seed the in-memory token store
-/// with full-session totals even when only the last 250 lines are replayed.
-export const getSessionTokenTotals = (sessionId: string): Promise<SessionTokenTotals> =>
-  DEMO
-    ? seed().then(d => {
-        const lines = d.DEMO_OUTPUT_LINES[sessionId] ?? []
-        const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-        for (const l of lines) {
-          try {
-            const v = JSON.parse(l.line) as { type?: string; items?: Array<Record<string, unknown>> }
-            if (v.type !== 'verun_items' || !Array.isArray(v.items)) continue
-            for (const item of v.items) {
-              if (item.kind !== 'turnEnd') continue
-              totals.input += Number(item.inputTokens ?? 0)
-              totals.output += Number(item.outputTokens ?? 0)
-              totals.cacheRead += Number(item.cacheReadTokens ?? 0)
-              totals.cacheWrite += Number(item.cacheWriteTokens ?? 0)
-            }
-          } catch { /* ignore */ }
-        }
-        return totals
-      })
-    : invoke<SessionTokenTotals>('get_session_token_totals', { sessionId })
-
 // Policy / Trust levels
 export const setTrustLevel = (taskId: string, trustLevel: TrustLevel) =>
   invoke<void>('set_trust_level', { taskId, trustLevel })

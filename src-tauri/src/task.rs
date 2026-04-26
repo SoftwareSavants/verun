@@ -866,6 +866,10 @@ pub async fn create_session(
         started_at: epoch_ms(),
         ended_at: None,
         total_cost: 0.0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
         parent_session_id: None,
         forked_at_message_uuid: None,
         agent_type,
@@ -1768,15 +1772,6 @@ async fn spawn_codex_app_server_session(
         )
         .await;
 
-        if stream_result.total_cost > 0.0 {
-            let _ = monitor_db_tx
-                .send(db::DbWrite::AccumulateSessionCost {
-                    id: monitor_sid.clone(),
-                    cost: stream_result.total_cost,
-                })
-                .await;
-        }
-
         let status = if let Some((_, mut proc)) = monitor_active.remove(&monitor_sid) {
             let exit_status = proc.child.wait().await.ok();
             let exit_code = exit_status.as_ref().and_then(|s| s.code());
@@ -2216,16 +2211,6 @@ pub async fn spawn_session_process(
             monitor_agent,
         )
         .await;
-
-        // Persist accumulated session cost
-        if stream_result.total_cost > 0.0 {
-            let _ = monitor_db_tx
-                .send(db::DbWrite::AccumulateSessionCost {
-                    id: monitor_sid.clone(),
-                    cost: stream_result.total_cost,
-                })
-                .await;
-        }
 
         // Process exited — get exit code
         let status = if let Some((_, mut proc)) = monitor_active.remove(&monitor_sid) {
@@ -2751,6 +2736,7 @@ pub async fn fork_session_in_task(
     // Load parent output_lines outside the transaction so we can hold the
     // boundary check's error path separate from DB state.
     let parent_lines = db::get_output_lines(pool, &parent.id, None, None).await?;
+    let fork_usage = session_usage_up_to_marker(&parent_lines, &fork_after_message_uuid)?;
 
     let new_session = Session {
         id: new_verun_sid.clone(),
@@ -2760,7 +2746,11 @@ pub async fn fork_session_in_task(
         status: "idle".to_string(),
         started_at: now,
         ended_at: None,
-        total_cost: 0.0,
+        total_cost: fork_usage.total_cost,
+        input_tokens: fork_usage.input_tokens,
+        output_tokens: fork_usage.output_tokens,
+        cache_read_tokens: fork_usage.cache_read_tokens,
+        cache_write_tokens: fork_usage.cache_write_tokens,
         parent_session_id: Some(parent.id.clone()),
         forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
         agent_type: parent.agent_type.clone(),
@@ -2823,6 +2813,32 @@ async fn copy_output_lines_up_to_marker_tx(
     Ok(())
 }
 
+fn session_usage_up_to_marker(
+    parent_lines: &[crate::db::OutputLine],
+    fork_uuid: &str,
+) -> Result<crate::db::SessionUsageDelta, String> {
+    let needle = format!("\"messageUuid\":\"{fork_uuid}\"");
+    let mut found = false;
+    let mut totals = crate::db::SessionUsageDelta::default();
+    for ol in parent_lines {
+        let delta = crate::db::usage_delta_from_output_line(&ol.line);
+        totals.total_cost += delta.total_cost;
+        totals.input_tokens += delta.input_tokens;
+        totals.output_tokens += delta.output_tokens;
+        totals.cache_read_tokens += delta.cache_read_tokens;
+        totals.cache_write_tokens += delta.cache_write_tokens;
+        if ol.line.contains("\"verun_turn_snapshot\"") && ol.line.contains(&needle) {
+            found = true;
+            break;
+        }
+    }
+    if found {
+        Ok(totals)
+    } else {
+        Err(format!("fork marker not found for message {fork_uuid}"))
+    }
+}
+
 /// Copy `turn_snapshots` rows from the parent session to the newly-forked
 /// session. Without this the forked session has output_lines markers that
 /// reference message uuids, but no corresponding snapshot rows under its own
@@ -2854,8 +2870,8 @@ async fn insert_session_row_tx(
     s: &Session,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.task_id)
@@ -2865,6 +2881,10 @@ async fn insert_session_row_tx(
     .bind(s.started_at)
     .bind(s.ended_at)
     .bind(s.total_cost)
+    .bind(s.input_tokens)
+    .bind(s.output_tokens)
+    .bind(s.cache_read_tokens)
+    .bind(s.cache_write_tokens)
     .bind(&s.parent_session_id)
     .bind(&s.forked_at_message_uuid)
     .bind(&s.agent_type)
@@ -2945,6 +2965,7 @@ pub async fn fork_session_to_new_task(
     // marker fails fast without leaving stray filesystem state behind.
     let parent_lines = db::get_output_lines(pool, &parent_session.id, None, None).await?;
     validate_fork_marker_present(&parent_lines, &fork_after_message_uuid)?;
+    let fork_usage = session_usage_up_to_marker(&parent_lines, &fork_after_message_uuid)?;
 
     // Create the new worktree (off the runtime).
     let repo_path = project.repo_path.clone();
@@ -3069,7 +3090,11 @@ pub async fn fork_session_to_new_task(
         status: "idle".to_string(),
         started_at: now,
         ended_at: None,
-        total_cost: 0.0,
+        total_cost: fork_usage.total_cost,
+        input_tokens: fork_usage.input_tokens,
+        output_tokens: fork_usage.output_tokens,
+        cache_read_tokens: fork_usage.cache_read_tokens,
+        cache_write_tokens: fork_usage.cache_write_tokens,
         parent_session_id: Some(parent_session.id.clone()),
         forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
         agent_type: parent_session.agent_type.clone(),

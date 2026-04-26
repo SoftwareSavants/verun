@@ -243,6 +243,17 @@ pub fn migrations() -> Vec<Migration> {
             );
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 22,
+        description: "add session token aggregate columns",
+        sql: r#"
+            ALTER TABLE sessions ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE sessions ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE sessions ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE sessions ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0;
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -303,6 +314,14 @@ pub struct Session {
     pub ended_at: Option<i64>,
     pub total_cost: f64,
     #[sqlx(default)]
+    pub input_tokens: i64,
+    #[sqlx(default)]
+    pub output_tokens: i64,
+    #[sqlx(default)]
+    pub cache_read_tokens: i64,
+    #[sqlx(default)]
+    pub cache_write_tokens: i64,
+    #[sqlx(default)]
     pub parent_session_id: Option<String>,
     #[sqlx(default)]
     pub forked_at_message_uuid: Option<String>,
@@ -330,6 +349,25 @@ pub struct SessionTokenTotals {
     pub output: i64,
     pub cache_read: i64,
     pub cache_write: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SessionUsageDelta {
+    pub total_cost: f64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+}
+
+impl SessionUsageDelta {
+    pub fn is_zero(&self) -> bool {
+        self.total_cost == 0.0
+            && self.input_tokens == 0
+            && self.output_tokens == 0
+            && self.cache_read_tokens == 0
+            && self.cache_write_tokens == 0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -449,10 +487,6 @@ pub enum DbWrite {
         id: String,
         ended_at: i64,
     },
-    AccumulateSessionCost {
-        id: String,
-        cost: f64,
-    },
     CloseSession {
         id: String,
         closed_at: i64,
@@ -545,6 +579,38 @@ fn log_refcount_err(label: &str, result: Result<(), String>) {
     if let Err(e) = result {
         eprintln!("[verun] blob refcount {label} failed: {e}");
     }
+}
+
+pub(crate) fn usage_delta_from_output_line(line: &str) -> SessionUsageDelta {
+    let v: serde_json::Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => return SessionUsageDelta::default(),
+    };
+    if v.get("type").and_then(|t| t.as_str()) != Some("verun_items") {
+        return SessionUsageDelta::default();
+    }
+    let items = match v.get("items").and_then(|i| i.as_array()) {
+        Some(items) => items,
+        None => return SessionUsageDelta::default(),
+    };
+    let mut delta = SessionUsageDelta::default();
+    for item in items {
+        if item.get("kind").and_then(|k| k.as_str()) != Some("turnEnd") {
+            continue;
+        }
+        delta.total_cost += item.get("cost").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        delta.input_tokens += item.get("inputTokens").and_then(|x| x.as_i64()).unwrap_or(0);
+        delta.output_tokens += item.get("outputTokens").and_then(|x| x.as_i64()).unwrap_or(0);
+        delta.cache_read_tokens += item
+            .get("cacheReadTokens")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(0);
+        delta.cache_write_tokens += item
+            .get("cacheWriteTokens")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(0);
+    }
+    delta
 }
 
 /// Walk every output_line for the given sessions and accumulate the blob
@@ -821,8 +887,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Sessions --
         DbWrite::CreateSession(s) => {
             sqlx::query(
-                "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(&s.task_id)
@@ -832,6 +898,10 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(s.started_at)
             .bind(s.ended_at)
             .bind(s.total_cost)
+            .bind(s.input_tokens)
+            .bind(s.output_tokens)
+            .bind(s.cache_read_tokens)
+            .bind(s.cache_write_tokens)
             .bind(&s.parent_session_id)
             .bind(&s.forked_at_message_uuid)
             .bind(&s.agent_type)
@@ -878,26 +948,39 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .execute(pool)
                 .await?;
         }
-        DbWrite::AccumulateSessionCost { id, cost } => {
-            sqlx::query("UPDATE sessions SET total_cost = total_cost + ? WHERE id = ?")
-                .bind(cost)
-                .bind(&id)
-                .execute(pool)
-                .await?;
-        }
 
         // -- Output --
         DbWrite::InsertOutputLines { session_id, lines } => {
             let mut hashes_to_incr: Vec<String> = Vec::new();
+            let mut usage_delta = SessionUsageDelta::default();
             let mut tx = pool.begin().await?;
             for (line, emitted_at) in &lines {
                 hashes_to_incr.extend(crate::blob::extract_hashes_from_output_line(line));
+                let delta = usage_delta_from_output_line(line);
+                usage_delta.total_cost += delta.total_cost;
+                usage_delta.input_tokens += delta.input_tokens;
+                usage_delta.output_tokens += delta.output_tokens;
+                usage_delta.cache_read_tokens += delta.cache_read_tokens;
+                usage_delta.cache_write_tokens += delta.cache_write_tokens;
                 sqlx::query(
                     "INSERT INTO output_lines (session_id, line, emitted_at) VALUES (?, ?, ?)",
                 )
                 .bind(&session_id)
                 .bind(line)
                 .bind(emitted_at)
+                .execute(&mut *tx)
+                .await?;
+            }
+            if !usage_delta.is_zero() {
+                sqlx::query(
+                    "UPDATE sessions SET total_cost = total_cost + ?, input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, cache_read_tokens = cache_read_tokens + ?, cache_write_tokens = cache_write_tokens + ? WHERE id = ?",
+                )
+                .bind(usage_delta.total_cost)
+                .bind(usage_delta.input_tokens)
+                .bind(usage_delta.output_tokens)
+                .bind(usage_delta.cache_read_tokens)
+                .bind(usage_delta.cache_write_tokens)
+                .bind(&session_id)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -933,6 +1016,12 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .bind(&session_id)
                 .execute(pool)
                 .await?;
+            sqlx::query(
+                "UPDATE sessions SET total_cost = 0.0, input_tokens = 0, output_tokens = 0, cache_read_tokens = 0, cache_write_tokens = 0 WHERE id = ?",
+            )
+            .bind(&session_id)
+            .execute(pool)
+            .await?;
             log_refcount_err("decr DeleteOutputLines", crate::blob::decr_refs(pool, &hashes).await);
         }
 
@@ -1286,34 +1375,64 @@ pub async fn get_session_token_totals(
 
     let mut totals = SessionTokenTotals::default();
     for (line,) in rows {
-        let v: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if v.get("type").and_then(|t| t.as_str()) != Some("verun_items") {
-            continue;
-        }
-        let items = match v.get("items").and_then(|i| i.as_array()) {
-            Some(items) => items,
-            None => continue,
-        };
-        for item in items {
-            if item.get("kind").and_then(|k| k.as_str()) != Some("turnEnd") {
-                continue;
-            }
-            totals.input += item.get("inputTokens").and_then(|x| x.as_i64()).unwrap_or(0);
-            totals.output += item.get("outputTokens").and_then(|x| x.as_i64()).unwrap_or(0);
-            totals.cache_read += item
-                .get("cacheReadTokens")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(0);
-            totals.cache_write += item
-                .get("cacheWriteTokens")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(0);
-        }
+        let delta = usage_delta_from_output_line(&line);
+        totals.input += delta.input_tokens;
+        totals.output += delta.output_tokens;
+        totals.cache_read += delta.cache_read_tokens;
+        totals.cache_write += delta.cache_write_tokens;
     }
     Ok(totals)
+}
+
+async fn read_meta(pool: &SqlitePool, key: &str) -> Result<Option<String>, String> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM app_meta WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(row.map(|r| r.0))
+}
+
+async fn write_meta(pool: &SqlitePool, key: &str, value: &str) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO app_meta (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub async fn backfill_session_usage_aggregates(pool: &SqlitePool) -> Result<(), String> {
+    const SENTINEL: &str = "session_usage_aggregate_backfill_v1";
+    if read_meta(pool, SENTINEL).await?.as_deref() == Some("done") {
+        return Ok(());
+    }
+
+    let session_ids = sqlx::query_scalar::<_, String>("SELECT id FROM sessions")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for session_id in session_ids {
+        let totals = get_session_token_totals(pool, &session_id).await?;
+        sqlx::query(
+            "UPDATE sessions SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ? WHERE id = ?",
+        )
+        .bind(totals.input)
+        .bind(totals.output)
+        .bind(totals.cache_read)
+        .bind(totals.cache_write)
+        .bind(&session_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    write_meta(pool, SENTINEL, "done").await
 }
 
 // Turn snapshots
@@ -1403,6 +1522,13 @@ pub async fn connect(app_data_dir: &std::path::Path) -> Result<SqlitePool, Strin
         .await
         .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
 
+    let backfill_pool = pool.clone();
+    tokio::spawn(async move {
+        if let Err(e) = backfill_session_usage_aggregates(&backfill_pool).await {
+            eprintln!("session usage aggregate backfill failed: {e}");
+        }
+    });
+
     Ok(pool)
 }
 
@@ -1417,7 +1543,7 @@ mod tests {
     #[test]
     fn migration_versions_are_sequential() {
         let m = migrations();
-        assert_eq!(m.len(), 21);
+        assert_eq!(m.len(), 22);
         for (i, mig) in m.iter().enumerate() {
             assert_eq!(mig.version, (i + 1) as i64, "migration index {} version mismatch", i);
         }
@@ -1481,6 +1607,10 @@ mod tests {
             started_at: 3000,
             ended_at: None,
             total_cost: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
             parent_session_id: None,
             forked_at_message_uuid: None,
             agent_type: "claude".into(),
@@ -2137,6 +2267,79 @@ mod tests {
         assert_eq!(output.len(), 3);
         assert_eq!(output[0].line, "line 1");
         assert_eq!(output[2].line, "line 3");
+    }
+
+    #[tokio::test]
+    async fn insert_output_lines_updates_session_usage_aggregates() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+
+        let l1 = r#"{"type":"verun_items","items":[{"kind":"turnEnd","status":"completed","cost":0.01,"inputTokens":100,"outputTokens":50,"cacheReadTokens":10,"cacheWriteTokens":5}]}"#;
+        let l2 = r#"{"type":"verun_items","items":[{"kind":"turnEnd","status":"completed","cost":0.02,"inputTokens":200,"outputTokens":80,"cacheReadTokens":20,"cacheWriteTokens":7}]}"#;
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: vec![(l1.into(), 100), (l2.into(), 200)],
+            },
+        )
+        .await
+        .unwrap();
+
+        let session = get_session(&pool, "s-001").await.unwrap().unwrap();
+        assert!((session.total_cost - 0.03).abs() < 1e-9);
+        assert_eq!(session.input_tokens, 300);
+        assert_eq!(session.output_tokens, 130);
+        assert_eq!(session.cache_read_tokens, 30);
+        assert_eq!(session.cache_write_tokens, 12);
+    }
+
+    #[tokio::test]
+    async fn delete_output_lines_resets_session_usage_aggregates() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001")))
+            .await
+            .unwrap();
+
+        let line = r#"{"type":"verun_items","items":[{"kind":"turnEnd","status":"completed","cost":0.01,"inputTokens":100,"outputTokens":50,"cacheReadTokens":10,"cacheWriteTokens":5}]}"#;
+        process_write(
+            &pool,
+            DbWrite::InsertOutputLines {
+                session_id: "s-001".into(),
+                lines: vec![(line.into(), 100)],
+            },
+        )
+        .await
+        .unwrap();
+        process_write(
+            &pool,
+            DbWrite::DeleteOutputLines {
+                session_id: "s-001".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let session = get_session(&pool, "s-001").await.unwrap().unwrap();
+        assert_eq!(session.total_cost, 0.0);
+        assert_eq!(session.input_tokens, 0);
+        assert_eq!(session.output_tokens, 0);
+        assert_eq!(session.cache_read_tokens, 0);
+        assert_eq!(session.cache_write_tokens, 0);
     }
 
     #[tokio::test]

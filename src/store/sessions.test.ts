@@ -19,7 +19,6 @@ vi.mock('../lib/ipc', () => ({
   syncSessionStatuses: vi.fn().mockResolvedValue(undefined),
   createSession: vi.fn(),
   getOutputLines: vi.fn().mockResolvedValue([]),
-  getSessionTokenTotals: vi.fn().mockResolvedValue({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }),
   clearSession: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
   reopenSession: vi.fn(),
@@ -43,6 +42,10 @@ const makeSession = (overrides: Partial<Session> = {}): Session => ({
   startedAt: 1000,
   endedAt: null,
   totalCost: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
   parentSessionId: null,
   forkedAtMessageUuid: null,
   agentType: 'claude' as const,
@@ -238,6 +241,28 @@ describe('loadSessions', () => {
     await loadSessions('t-001')
     const ids = sessions.map(s => s.id).sort()
     expect(ids).toEqual(['s-fresh', 's-other'])
+  })
+
+  test('seeds cost and token aggregates from persisted session rows', async () => {
+    vi.mocked(ipc.listSessions).mockResolvedValueOnce([
+      makeSession({
+        id: 's-agg',
+        taskId: 't-001',
+        totalCost: 12.5,
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadTokens: 100,
+        cacheWriteTokens: 50,
+      }),
+    ])
+    await loadSessions('t-001')
+    expect(sessionCosts['s-agg']).toBe(12.5)
+    expect(sessionTokens['s-agg']).toEqual({
+      input: 1000,
+      output: 500,
+      cacheRead: 100,
+      cacheWrite: 50,
+    })
   })
 })
 
@@ -446,12 +471,9 @@ describe('loadOlderOutputLines pagination', () => {
   })
 })
 
-// Regression — pre-PR `loadOutputLines` summed every replayed turnEnd item's
-// cost/tokens and overwrote the live store. After capping the initial replay
-// at 250 lines, that overwrite would clobber the DB-seeded `totalCost` (set
-// by `loadSessions`) with a partial sum, and seed `sessionTokens` with a
-// partial sum. The fix: trust the DB seed for cost, and call the new
-// `getSessionTokenTotals` IPC for full-session token totals.
+// Regression — initial chat replay is capped at 250 lines, so session
+// aggregates must come from the persisted session row, not from transcript
+// replay or an output_lines rescan.
 describe('loadOutputLines preserves session aggregates after 250-line cap', () => {
   beforeAll(async () => {
     await initSessionListeners()
@@ -464,8 +486,6 @@ describe('loadOutputLines preserves session aggregates after 250-line cap', () =
     setSessionTokens({})
     vi.mocked(ipc.getOutputLines).mockReset()
     vi.mocked(ipc.getOutputLines).mockResolvedValue([])
-    vi.mocked(ipc.getSessionTokenTotals).mockReset()
-    vi.mocked(ipc.getSessionTokenTotals).mockResolvedValue({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
   })
 
   test('does not overwrite the DB-seeded session cost with a partial replay sum', async () => {
@@ -486,15 +506,25 @@ describe('loadOutputLines preserves session aggregates after 250-line cap', () =
     expect(sessionCosts['s-cost']).toBe(12.5)
   })
 
-  test('seeds sessionTokens from getSessionTokenTotals (full-session aggregate)', async () => {
-    vi.mocked(ipc.getSessionTokenTotals).mockResolvedValueOnce({
+  test('does not overwrite DB-seeded sessionTokens with replay-local totals', async () => {
+    setSessionTokens('s-tokens', {
       input: 1000,
       output: 500,
       cacheRead: 100,
       cacheWrite: 50,
     })
+    vi.mocked(ipc.getOutputLines).mockResolvedValueOnce([
+      {
+        id: 1,
+        sessionId: 's-tokens',
+        line: JSON.stringify({
+          type: 'verun_items',
+          items: [{ kind: 'turnEnd', status: 'completed', inputTokens: 1, outputTokens: 1 }],
+        }),
+        emittedAt: 1,
+      },
+    ])
     await loadOutputLines('s-tokens')
-    expect(ipc.getSessionTokenTotals).toHaveBeenCalledWith('s-tokens')
     expect(sessionTokens['s-tokens']).toEqual({ input: 1000, output: 500, cacheRead: 100, cacheWrite: 50 })
   })
 })

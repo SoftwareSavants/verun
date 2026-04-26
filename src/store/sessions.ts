@@ -28,6 +28,22 @@ export const [sessionTokens, setSessionTokens] = createStore<Record<string, { in
 export const [abortingSessions, setAbortingSessions] = createStore<Record<string, boolean>>({})
 export const [rateLimitInfo, setRateLimitInfo] = createSignal<RateLimitInfo | null>(null)
 
+function seedSessionAggregates(session: Session) {
+  if (session.totalCost > 0) setSessionCosts(session.id, session.totalCost)
+  else setSessionCosts(produce(store => { delete store[session.id] }))
+
+  if (session.inputTokens > 0 || session.outputTokens > 0 || session.cacheReadTokens > 0 || session.cacheWriteTokens > 0) {
+    setSessionTokens(session.id, {
+      input: session.inputTokens,
+      output: session.outputTokens,
+      cacheRead: session.cacheReadTokens,
+      cacheWrite: session.cacheWriteTokens,
+    })
+  } else {
+    setSessionTokens(produce(store => { delete store[session.id] }))
+  }
+}
+
 /**
  * Backstop for cross-window session sync: when the window becomes visible,
  * refresh sessions for every task currently in the store. The session-created
@@ -46,10 +62,7 @@ export async function loadSessions(taskId: string) {
   const list = await ipc.listSessions(taskId)
   // Merge — keep sessions from other tasks, replace sessions for this task
   setSessions(prev => [...prev.filter(s => s.taskId !== taskId), ...list])
-  // Seed session costs from persisted data
-  for (const s of list) {
-    if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
-  }
+  for (const s of list) seedSessionAggregates(s)
 }
 
 export async function createSession(taskId: string, agentType: string, model?: string): Promise<Session> {
@@ -57,6 +70,7 @@ export async function createSession(taskId: string, agentType: string, model?: s
   // Dedup vs the session-created broadcast: Rust emits to all windows including
   // the source, and the broadcast can land before this await resolves.
   setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
+  seedSessionAggregates(session)
   setOutputItems(session.id, [])
   return session
 }
@@ -66,6 +80,7 @@ export async function reopenSession(sessionId: string): Promise<Session> {
   // Rust broadcasts session-created on reopen (mirrors createSession); same
   // dedup against the broadcast landing before this await resolves.
   setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
+  seedSessionAggregates(session)
   return session
 }
 
@@ -224,20 +239,6 @@ export async function loadOutputLines(sessionId: string) {
   const current = outputItems[sessionId]
   if (current && current.length > 0 && items.length === 0) return
   setOutputItems(sessionId, items)
-  // Cost: trust the seed from `loadSessions` (DB-maintained `total_cost`).
-  // Summing replayed turnEnd costs only sees the last 250 lines, so it would
-  // clobber the authoritative DB total with a partial sum.
-  // Tokens: there's no persisted aggregate, so ask the backend to scan
-  // output_lines and sum every turnEnd's token fields once per session load.
-  try {
-    const totals = await ipc.getSessionTokenTotals(sessionId)
-    if (totals.input > 0 || totals.output > 0 || totals.cacheRead > 0 || totals.cacheWrite > 0) {
-      setSessionTokens(sessionId, totals)
-    }
-  } catch {
-    // Best-effort — a stale token chip is preferable to a thrown promise that
-    // breaks the surrounding chat-load flow.
-  }
 }
 
 /** Fetch the next page of older output_lines and prepend them to the in-memory
@@ -328,6 +329,8 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
 
 export async function clearOutputItems(sessionId: string) {
   setOutputItems(sessionId, [])
+  setSessionCosts(produce(store => { delete store[sessionId] }))
+  setSessionTokens(produce(store => { delete store[sessionId] }))
   loadedSessionOutputs.delete(sessionId)
   outputPageState.delete(sessionId)
   // Also clear the Claude session context + persisted output in DB
@@ -525,7 +528,7 @@ export async function initSessionListeners() {
     const s = event.payload
     if (sessions.some(x => x.id === s.id)) return
     setSessions(produce(list => { list.push(s) }))
-    if (s.totalCost > 0) setSessionCosts(s.id, s.totalCost)
+    seedSessionAggregates(s)
   })
 
   await listen<{ sessionId: string; taskId: string | null }>('session-removed', (event) => {
