@@ -17,6 +17,7 @@ const makeTask = (overrides: Partial<Task> = {}): Task => ({
   lastCommitMessage: null,
   parentTaskId: null,
   agentType: 'claude',
+  isPinned: false,
   ...overrides,
 })
 

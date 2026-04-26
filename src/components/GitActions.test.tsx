@@ -76,7 +76,7 @@ describe('closed PR treated as no PR', () => {
   test('shows Create PR button when PR is closed and tree is clean', () => {
     taskGitMock.mockReturnValue(makeGitState({
       number: 42, title: 'old PR', state: 'CLOSED', url: 'https://github.com/x', isDraft: false,
-      mergeable: 'MERGEABLE', body: '',
+      mergeable: 'MERGEABLE',
     }))
     const { getByText } = render(() => <GitActions taskId="t-001" sessionId="s-001" />)
     expect(getByText('Create PR')).toBeTruthy()
