@@ -107,7 +107,8 @@ async function refreshRemote(taskId: string): Promise<void> {
     state.pr = snapshot.pr
     state.checks = snapshot.checks
     state.branchUrl = snapshot.branchUrl
-    state.github = snapshot.github
+    // Repo detection is local git state; preserve that as the source of truth.
+    if (!state.github) state.github = snapshot.github
     state.lastRemoteRefresh = snapshot.fetchedAt
   }))
 }

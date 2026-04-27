@@ -3107,6 +3107,61 @@ mod tests {
         assert_eq!(steps.len(), 0);
     }
 
+    #[tokio::test]
+    async fn invalidate_github_cache_removes_only_requested_scopes() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+
+        upsert_github_cache_entry(
+            &pool,
+            &GitHubCacheEntry {
+                cache_key: "t-001:overview".into(),
+                task_id: "t-001".into(),
+                scope: "overview".into(),
+                entity_id: None,
+                payload_json: "{}".into(),
+                fetched_at: 1,
+                stale_at: 2,
+                expires_at: 3,
+            },
+        )
+        .await
+        .unwrap();
+        upsert_github_cache_entry(
+            &pool,
+            &GitHubCacheEntry {
+                cache_key: "t-001:actions".into(),
+                task_id: "t-001".into(),
+                scope: "actions".into(),
+                entity_id: None,
+                payload_json: "{}".into(),
+                fetched_at: 1,
+                stale_at: 2,
+                expires_at: 3,
+            },
+        )
+        .await
+        .unwrap();
+
+        invalidate_github_cache(&pool, "t-001", &["overview"])
+            .await
+            .unwrap();
+
+        assert!(get_github_cache_entry(&pool, "t-001:overview")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(get_github_cache_entry(&pool, "t-001:actions")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
     #[test]
     fn step_serializes_as_camel_case() {
         let step = Step {

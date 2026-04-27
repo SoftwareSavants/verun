@@ -23,12 +23,19 @@ vi.mock('../lib/ipc', () => ({
   }),
 }))
 
-import { refreshTaskGit } from './git'
+import { clearTaskGitState, refreshTaskGit, taskGit } from './git'
 import * as ipc from '../lib/ipc'
 
 describe('refreshTaskGit', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    clearTaskGitState('t-debounce')
+    clearTaskGitState('t-force')
+    clearTaskGitState('t-local-default')
+    clearTaskGitState('t-remote')
+    clearTaskGitState('t-a')
+    clearTaskGitState('t-b')
+    clearTaskGitState('t-github-source')
     vi.mocked(ipc.getGitStatus).mockClear()
     vi.mocked(ipc.getBranchCommits).mockClear()
     vi.mocked(ipc.getBranchStatus).mockClear()
@@ -92,5 +99,37 @@ describe('refreshTaskGit', () => {
     expect(ipc.getGitStatus).toHaveBeenCalledTimes(2)
     expect(ipc.getGitStatus).toHaveBeenCalledWith('t-a')
     expect(ipc.getGitStatus).toHaveBeenCalledWith('t-b')
+  })
+
+  test('remote refresh does not overwrite github repo set by local detection', async () => {
+    vi.mocked(ipc.checkGithub).mockResolvedValueOnce({
+      owner: 'local',
+      name: 'repo',
+      url: 'https://github.com/local/repo',
+    })
+    vi.mocked(ipc.getGithubOverview).mockResolvedValueOnce({
+      github: {
+        owner: 'remote',
+        name: 'repo',
+        url: 'https://github.com/remote/repo',
+      },
+      branchUrl: null,
+      pr: null,
+      checks: [],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+
+    await refreshTaskGit('t-github-source', { local: true, remote: false, force: true })
+    await refreshTaskGit('t-github-source', { local: false, remote: true, force: true })
+
+    expect(taskGit('t-github-source').github).toEqual({
+      owner: 'local',
+      name: 'repo',
+      url: 'https://github.com/local/repo',
+    })
   })
 })

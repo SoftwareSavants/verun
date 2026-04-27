@@ -155,6 +155,30 @@ async fn singleflight_gate(cache_key: &str) -> Arc<TokioMutex<()>> {
         .clone()
 }
 
+async fn cleanup_singleflight_gate(cache_key: &str, gate: &Arc<TokioMutex<()>>) {
+    let mut gates = singleflight_gates().lock().await;
+    let should_remove = gates
+        .get(cache_key)
+        .map(|existing| Arc::ptr_eq(existing, gate) && Arc::strong_count(existing) == 2)
+        .unwrap_or(false);
+    if should_remove {
+        gates.remove(cache_key);
+    }
+}
+
+async fn with_singleflight<T, F, Fut>(cache_key: &str, work: F) -> Result<T, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T, String>>,
+{
+    let gate = singleflight_gate(cache_key).await;
+    let guard = gate.lock().await;
+    let result = work().await;
+    drop(guard);
+    cleanup_singleflight_gate(cache_key, &gate).await;
+    result
+}
+
 fn schedule_revalidate<F, Fut>(
     pool: SqlitePool,
     task_id: String,
@@ -167,12 +191,15 @@ fn schedule_revalidate<F, Fut>(
     Fut: Future<Output = Result<bool, String>> + Send + 'static,
 {
     tokio::spawn(async move {
-        let gate = singleflight_gate(&cache_key).await;
-        let _guard = gate.lock().await;
-        let refreshed = work(pool).await.unwrap_or(false);
-        if refreshed {
-            if let Some(notify) = notifier {
-                notify(task_id, vec![scope.to_string()]);
+        match with_singleflight(&cache_key, move || work(pool)).await {
+            Ok(true) => {
+                if let Some(notify) = notifier {
+                    notify(task_id, vec![scope.to_string()]);
+                }
+            }
+            Ok(false) => {}
+            Err(err) => {
+                eprintln!("[verun][github-remote] revalidate {cache_key} failed: {err}");
             }
         }
     });
@@ -477,17 +504,18 @@ pub async fn get_overview(
         _ => {}
     }
 
-    let gate = singleflight_gate(&cache_key).await;
-    let _guard = gate.lock().await;
-    if mode != RemoteFetchMode::NetworkOnly {
-        if let CacheState::Fresh(payload, entry) =
-            cached_payload::<OverviewPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst)
-                .await?
-        {
-            return Ok(overview_snapshot(payload, &entry, true));
+    with_singleflight(&cache_key, || async {
+        if mode != RemoteFetchMode::NetworkOnly {
+            if let CacheState::Fresh(payload, entry) =
+                cached_payload::<OverviewPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst)
+                    .await?
+            {
+                return Ok(overview_snapshot(payload, &entry, true));
+            }
         }
-    }
-    fetch_overview_and_store(pool, task_id, worktree_path).await
+        fetch_overview_and_store(pool, task_id, worktree_path).await
+    })
+    .await
 }
 
 pub async fn get_actions(
@@ -537,12 +565,13 @@ pub async fn get_actions(
                             Ok(false)
                         }
                         CacheState::Miss | CacheState::Fresh(_, _) | CacheState::Stale(_, _) => {
+                            // Re-fetch enough rows to preserve the largest cached window we have seen.
                             fetch_actions_and_store(
                                 &pool,
                                 &fetch_task_id,
                                 &worktree_path,
-                                limit,
-                                Some(keep_limit),
+                                keep_limit,
+                                None,
                             )
                             .await?;
                             Ok(true)
@@ -555,22 +584,25 @@ pub async fn get_actions(
         _ => {}
     }
 
-    let gate = singleflight_gate(&cache_key).await;
-    let _guard = gate.lock().await;
-    let existing_limit = if mode != RemoteFetchMode::NetworkOnly {
-        match cached_payload::<ActionsPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst)
-            .await?
-        {
-            CacheState::Fresh(payload, entry) if payload.cached_limit >= limit => {
-                return Ok(actions_snapshot(payload, &entry, limit, true));
+    with_singleflight(&cache_key, || async {
+        let existing_limit = if mode != RemoteFetchMode::NetworkOnly {
+            match cached_payload::<ActionsPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst)
+                .await?
+            {
+                CacheState::Fresh(payload, entry) if payload.cached_limit >= limit => {
+                    return Ok(actions_snapshot(payload, &entry, limit, true));
+                }
+                CacheState::Fresh(payload, _) | CacheState::Stale(payload, _) => {
+                    Some(payload.cached_limit)
+                }
+                CacheState::Miss => None,
             }
-            CacheState::Fresh(payload, _) | CacheState::Stale(payload, _) => Some(payload.cached_limit),
-            CacheState::Miss => None,
-        }
-    } else {
-        None
-    };
-    fetch_actions_and_store(pool, task_id, worktree_path, limit, existing_limit).await
+        } else {
+            None
+        };
+        fetch_actions_and_store(pool, task_id, worktree_path, limit, existing_limit).await
+    })
+    .await
 }
 
 pub async fn get_workflow_jobs(
@@ -623,16 +655,17 @@ pub async fn get_workflow_jobs(
         _ => {}
     }
 
-    let gate = singleflight_gate(&cache_key).await;
-    let _guard = gate.lock().await;
-    if mode != RemoteFetchMode::NetworkOnly {
-        if let CacheState::Fresh(payload, entry) =
-            cached_payload::<JobsPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst).await?
-        {
-            return Ok(jobs_snapshot(payload, &entry, true));
+    with_singleflight(&cache_key, || async {
+        if mode != RemoteFetchMode::NetworkOnly {
+            if let CacheState::Fresh(payload, entry) =
+                cached_payload::<JobsPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst).await?
+            {
+                return Ok(jobs_snapshot(payload, &entry, true));
+            }
         }
-    }
-    fetch_jobs_and_store(pool, task_id, worktree_path, run_id).await
+        fetch_jobs_and_store(pool, task_id, worktree_path, run_id).await
+    })
+    .await
 }
 
 pub async fn get_workflow_log(
@@ -688,16 +721,17 @@ pub async fn get_workflow_log(
         _ => {}
     }
 
-    let gate = singleflight_gate(&cache_key).await;
-    let _guard = gate.lock().await;
-    if mode != RemoteFetchMode::NetworkOnly {
-        if let CacheState::Fresh(payload, entry) =
-            cached_payload::<LogPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst).await?
-        {
-            return Ok(log_snapshot(payload, &entry, max_bytes, true));
+    with_singleflight(&cache_key, || async {
+        if mode != RemoteFetchMode::NetworkOnly {
+            if let CacheState::Fresh(payload, entry) =
+                cached_payload::<LogPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst).await?
+            {
+                return Ok(log_snapshot(payload, &entry, max_bytes, true));
+            }
         }
-    }
-    fetch_log_and_store(pool, task_id, worktree_path, job_id, max_bytes).await
+        fetch_log_and_store(pool, task_id, worktree_path, job_id, max_bytes).await
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -862,6 +896,10 @@ mod tests {
             .unwrap_or(0)
     }
 
+    async fn gate_count() -> usize {
+        singleflight_gates().lock().await.len()
+    }
+
     #[tokio::test]
     async fn smaller_actions_limit_reuses_larger_cached_result() {
         let _lock = test_env_lock().lock().unwrap_or_else(|poison| poison.into_inner());
@@ -902,6 +940,7 @@ mod tests {
         assert_eq!(second.runs.len(), 1);
         assert!(second.from_cache);
         assert_eq!(read_count(&count_file), 1);
+        assert_eq!(gate_count().await, 0);
     }
 
     #[tokio::test]
@@ -985,6 +1024,7 @@ mod tests {
         assert_eq!(refreshed.runs[0].database_id, 2);
         assert!(!refreshed.is_stale);
         assert_eq!(read_count(&count_file), 2);
+        assert_eq!(gate_count().await, 0);
     }
 
     #[tokio::test]
@@ -1021,5 +1061,98 @@ mod tests {
         assert_eq!(first.unwrap().runs.len(), 2);
         assert_eq!(second.unwrap().runs.len(), 2);
         assert_eq!(read_count(&count_file), 1);
+        assert_eq!(gate_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn network_only_bypasses_fresh_actions_cache() {
+        let _lock = test_env_lock().lock().unwrap_or_else(|poison| poison.into_inner());
+        let pool = test_pool().await;
+        let (_temp, repo) = setup_git_repo();
+        let bin_dir = repo.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        seed_task(&pool, "task-4", &repo).await;
+        let output_file = repo.join("runs.json");
+        let count_file = repo.join("gh-count.txt");
+        std::fs::write(&output_file, actions_json(&[11])).unwrap();
+        write_fake_gh(&bin_dir, &output_file, &count_file, 0);
+        let _path_guard = PathGuard::install(&bin_dir);
+
+        get_actions(
+            &pool,
+            "task-4",
+            repo.to_str().unwrap(),
+            1,
+            RemoteFetchMode::CacheFirst,
+            None,
+        )
+        .await
+        .unwrap();
+        std::fs::write(&output_file, actions_json(&[12])).unwrap();
+
+        let refreshed = get_actions(
+            &pool,
+            "task-4",
+            repo.to_str().unwrap(),
+            1,
+            RemoteFetchMode::NetworkOnly,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(refreshed.runs[0].database_id, 12);
+        assert_eq!(read_count(&count_file), 2);
+        assert_eq!(gate_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn expired_actions_cache_falls_back_to_miss() {
+        let _lock = test_env_lock().lock().unwrap_or_else(|poison| poison.into_inner());
+        let pool = test_pool().await;
+        let (_temp, repo) = setup_git_repo();
+        let bin_dir = repo.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        seed_task(&pool, "task-5", &repo).await;
+        let output_file = repo.join("runs.json");
+        let count_file = repo.join("gh-count.txt");
+        std::fs::write(&output_file, actions_json(&[21])).unwrap();
+        write_fake_gh(&bin_dir, &output_file, &count_file, 0);
+        let _path_guard = PathGuard::install(&bin_dir);
+
+        get_actions(
+            &pool,
+            "task-5",
+            repo.to_str().unwrap(),
+            1,
+            RemoteFetchMode::CacheFirst,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let mut entry = db::get_github_cache_entry(&pool, "task-5:actions")
+            .await
+            .unwrap()
+            .unwrap();
+        entry.stale_at = now_ms() - 10_000;
+        entry.expires_at = now_ms() - 1;
+        db::upsert_github_cache_entry(&pool, &entry).await.unwrap();
+        std::fs::write(&output_file, actions_json(&[22])).unwrap();
+
+        let refreshed = get_actions(
+            &pool,
+            "task-5",
+            repo.to_str().unwrap(),
+            1,
+            RemoteFetchMode::CacheFirst,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(refreshed.runs[0].database_id, 22);
+        assert_eq!(read_count(&count_file), 2);
+        assert_eq!(gate_count().await, 0);
     }
 }
