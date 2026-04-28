@@ -7,7 +7,7 @@ import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { AddProjectDialog } from './AddProjectDialog'
 import { BtsBuilderDialog } from './BtsBuilderDialog'
-import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId, siblingTaskInList } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
 import { activeTasksForProject, taskById } from '../store/tasks'
@@ -213,6 +213,13 @@ export const Layout: Component = () => {
       if (modPressed(e) && e.altKey && e.key === 'ArrowLeft') {
         const tid = selectedTaskId()
         if (tid) { e.preventDefault(); prevTab(tid) }
+      }
+      // Cmd+Alt+Down / Cmd+Alt+Up — move to next/previous task in the sidebar
+      if (modPressed(e) && e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault()
+        const ordered = projects.flatMap(p => activeTasksForProject(p.id))
+        const next = siblingTaskInList(ordered, selectedTaskId(), e.key === 'ArrowDown' ? 'down' : 'up')
+        if (next) focusOrSelectTask(next)
       }
       // Ctrl+` — toggle terminal panel (focus terminal when opening)
       if (e.ctrlKey && !e.shiftKey && e.key === '`') {

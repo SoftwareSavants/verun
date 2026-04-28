@@ -1,25 +1,42 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-04-28
 
-- Full Auto trust level no longer prompts on commands that fail to parse as POSIX shell (heredocs with embedded scripts, exotic syntax, etc.) - parse failures used to fall through to the "unparseable command" hard-block which ran *before* the FullAuto override. Hard-blocks now only fire on parsed-and-matched patterns; parse failures fall through so FullAuto can auto-allow. Normal mode still requires approval on unparseable bash via the deny-pattern path
-- Fix "Task setup failed: Too many open files" on new-task creation — raise `RLIMIT_NOFILE` at startup and only fetch sessions/git/watcher for newly-added tasks in the sidebar effect instead of re-fanning out across every existing task on each insert
-- Fix messages from a previously-viewed task briefly appearing in another task's session when switching between tasks quickly across projects: the async task-select effect now writes session state scoped to the task it started for, instead of reading the currently-selected task after the await
-- ChatView now remounts per-session (keyed on sessionId) so switching sessions can't surface stale blocks from a previous session's in-memory cache
-- Cap initial chat hydration at the latest 250 NDJSON lines and lazy-load older history when the chat scrolls within 200px of the top; long-running sessions now render in tens of ms instead of seconds, and the scroll position is anchored across each prepend so reading older messages doesn't jump. Backed by a cursor-based `get_output_lines(session_id, limit, before_id)` query
-- Persist session usage aggregates (`total_cost`, input/output/cache tokens) on the session row and maintain them at transcript write time, so the 250-line chat cap no longer needs any replay-time or scan-time usage reconstruction
-- Remove duplicate `body?: string` field from `PrInfo` that was failing `tsc --noEmit`
-- Fix release CI: macOS Intel now builds on `macos-15-intel` (the plugin's Swift bundle doesn't cross-compile from the arm `macos-26` runner); Linux and Windows re-enable the `notify-rust` fallback in `tauri-plugin-notifications` since they have no native branch
-- Bootstrap dialog icons now ship as pre-fetched brand assets (Iconify's `logos:` colored set, with `simple-icons` shape fallbacks tinted to each brand's marketing hex, and project-hosted assets for Elysia/oRPC/Starlight/Ultracite/Oxlint/OpenTUI/Fumadocs which don't exist in either set) — added Better-Auth, MCP, Neon, and Fumadocs brand marks, swapped the Cloudflare wordmark for the icon-only variant and MCP wordmark for the icon-only variant, dropped the `simple-icons` npm dep; fetch script now handles PNG as well as SVG so `brandFromImage` renders `fumadocs.png` via `<img>`; refresh via `node scripts/fetch-brand-icons.mjs`. Monochrome marks whose fills/strokes are all pure white or all pure black (Expo, Express, Fastify, Lefthook, Planetscale, Next.js, Starlight, Ultracite) are auto-rewritten to `currentColor` so they pick up the host element's theme-aware text color instead of rendering white-on-white or black-on-black; multi-color brand palettes are left untouched
-- Empty-state layout: when no projects exist, the left sidebar is hidden and the "Add Project" + "Bootstrap new" actions live side-by-side in the main area (no more duplicate CTAs)
-- Bootstrap dialog parent-folder picker: typing a name that doesn't match any existing folder shows an inline `+ Create "<name>"` row at the bottom of the suggestion dropdown - one click (or Tab/Enter) creates the directory under the current parent and applies the path. The dropdown lost its native browser bullets, gained per-row folder icons, and the highlighted entry now scrolls into view as you arrow through the list
-- Bootstrap dialog brand icons: replaced the Next.js mark with the official Vercel "N" (no surrounding circle) so it survives `currentColor` rendering; `prisma`, `mcp`, and `orpc` now also force `currentColor` so their dark mono marks inherit the host's text color instead of rendering black-on-black on dark surfaces. Added a `mono ` prefix to `scripts/fetch-brand-icons.mjs` for forcing the recolor regardless of the source's actual color, and the rewriter now injects `fill="currentColor"` on the root `<svg>` when missing so paths without an explicit fill don't fall back to black
-- Bootstrap dialog: scaffold no longer fails with `Cannot combine --yes with core stack configuration flags` - dropped both `--yes` (defaults-only, rejects config flags) and `--yolo` (silently defaults every unanswered question) so the user's form selections drive the run AND any question we don't pre-answer still surfaces as a real prompt. The CLI now runs through a portable-pty so Clack/inquirer cursor sequences render correctly, and the dialog's log pane is an inline xterm.js terminal: keystrokes (arrow keys, Enter, Ctrl+C, etc.) are forwarded to the child via `bts_scaffold_input`; window resizes flow through `bts_scaffold_resize`. The Retry button on a failed scaffold lost its rocket icon
-- Bootstrap a new project from Better-T-Stack without leaving Verun: the sidebar's `+` button now offers "Add existing project..." or "Bootstrap a new project...", which opens a visual builder to pick your frontend, backend, database, ORM, auth, runtime, addons, examples, and package manager, see the equivalent CLI command update live (one-click copy), and scaffold straight into a parent folder of your choice. Sensible defaults are pre-filled (TanStack Router + Hono + Bun + tRPC + SQLite + Drizzle + Better-Auth + Turborepo) and each option shows an official brand icon with a short description. Incompatible combinations are outlined in red with a personalized reason ("SQLite doesn't need Docker", "Neon requires PostgreSQL", "Convex includes its own database", "Clerk doesn't support Astro", "Cloudflare D1 requires Workers + Cloudflare deploy", "Fullstack backend requires runtime none", "tRPC doesn't support Nuxt") - one click on the card applies the auto-fix-up that flips the dependent fields, no confirmation step or hunting for what to change. Reasons only appear when the conflict involves a prior category the user has already committed to; conflicts that only touch fields below the clicked card are silently auto-fixed instead of warning about choices the user hasn't made yet. Compatible picks auto-pair for you (mongodb picks mongoose, workers runtime picks cloudflare deploy, etc.). Validation is verified against the live Better-T-Stack CLI across 83 representative configurations so disabled cards match exactly what the CLI would reject. `⌘↵` submits; scaffold progress streams live with elapsed time; cancel kills the process and cleans up the partial directory; on failure the last 40 log lines stay visible with a Retry button. Your last config is remembered across sessions once a scaffold succeeds, and completed projects hand off to the existing Add Project dialog with `.verun.json` hooks pre-filled
-- Fix armed steps with attachments silently dropping the attachment when the session became idle: the drain path used `JSON.parse` on `attachmentsJson` instead of `deserializeAttachments`, so images arrived with no `data` and the agent received text only
-- Replace base64-in-JSONL attachments with a content-addressed blob store: bytes live under `<app_data>/blobs/<aa>/<sha256>.bin`, refs (hash + mime + name + size) ride the wire, identical pastes deduplicate, and refcount-based GC reclaims unreferenced blobs
-- New Settings → Storage: configurable retention TTL and disk cap, "Run cleanup now" button, and breakdown modal showing referenced vs unreferenced bytes
-- Background GC sweeps unreferenced and over-cap blobs at startup; legacy base64 attachments migrate to the blob store on first launch (idempotent via app_meta sentinel)
+### Bootstrap a new project without leaving Verun
+
+- The sidebar `+` button now offers "Bootstrap a new project..." alongside "Add existing project...". Pick your frontend, backend, database, ORM, auth, runtime, addons, examples, and package manager from a visual builder, watch the equivalent [Better-T-Stack](https://better-t-stack.dev) CLI command update live (one-click copy), and scaffold straight into a parent folder of your choice
+- Sensible defaults pre-filled (TanStack Router + Hono + Bun + tRPC + SQLite + Drizzle + Better-Auth + Turborepo) and every option shows an official brand icon with a short description
+- Incompatible combinations are outlined in red with a personalized reason. One click on the card applies the auto-fix that flips the dependent fields, no confirmation step or hunting for what to change. Compatible picks auto-pair for you. Validation is verified against the live CLI across 83 representative configurations so disabled cards match exactly what the CLI would reject
+- Folder picker: type a name that doesn't exist and an inline `+ Create "<name>"` row appears, one click creates the directory and applies the path. Per-row folder icons, scroll-into-view on arrow-key navigation
+- `⌘↵` submits; scaffold progress streams live in an inline terminal with elapsed time; cancel kills the process and cleans up the partial directory. On failure the last 40 log lines stay visible with a Retry button
+- Your last config is remembered across sessions and completed projects hand off to the existing Add Project dialog with `.verun.json` hooks pre-filled
+
+### Storage
+
+- New Settings → Storage panel: configurable retention TTL and disk cap, "Run cleanup now" button, and a breakdown modal showing referenced vs unreferenced bytes
+- Image and file attachments now use a deduplicated, content-addressed store under the hood, so identical pastes don't bloat your disk and old attachments are garbage-collected automatically
+- Existing attachments migrate to the new store on first launch, no action required
+
+### Performance
+
+- Long-running sessions now open in tens of milliseconds instead of seconds. Verun loads the latest 250 messages on first paint and lazy-loads older history as you scroll up. Your scroll position stays anchored across loads so reading old messages doesn't jump
+- Switching tasks no longer leaks messages or stale UI from the previous task into the new one
+- New-task creation no longer fails with "Too many open files" on accounts with many existing tasks
+
+### Shortcuts and navigation
+
+- Cmd+Alt+Down / Cmd+Alt+Up move between tasks in the sidebar (wraps at the edges), complementing the existing Cmd+Number jumps
+
+### Fixes
+
+- Returning to the app no longer steals focus from the terminal back to the task composer. Shell terminal cursor now renders as a hollow outline when unfocused so it's obvious whether keystrokes will land in the PTY
+- Full Auto trust level no longer prompts on commands with exotic shell syntax (heredocs with embedded scripts, etc.). Normal mode still requires approval on those commands
+- Fixed armed steps silently dropping image attachments when the session became idle, so the agent only saw the text. Attachments now arrive intact
+
+### Polish
+
+- Empty-state: when no projects exist, the sidebar hides and the "Add Project" + "Bootstrap new" actions live side-by-side in the main area
+- Brand icons across the bootstrap dialog now respect your theme (white-on-white and black-on-black marks fixed), and the icon set has expanded (Better-Auth, MCP, Neon, Fumadocs added; Next.js mark replaced with the official Vercel "N")
 
 ## 0.9.0 - 2026-04-23
 

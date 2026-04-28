@@ -192,6 +192,7 @@ export const ShellTerminal: Component<Props> = (props) => {
       lineHeight: 1.0,
       cursorBlink: fontCfg.cursorBlink,
       cursorStyle: 'block',
+      cursorInactiveStyle: 'outline',
       scrollback: 10000,
       allowProposedApi: true,
       macOptionIsMeta: isMac,
