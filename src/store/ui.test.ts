@@ -23,6 +23,7 @@ import {
   setAddProjectPath,
   pickAndAddProject,
   setSelectedSessionIdForTask,
+  siblingTaskInList,
 } from './ui'
 import { selectedSessionForTask, clearTaskContext } from './taskContext'
 import * as ipc from '../lib/ipc'
@@ -97,6 +98,50 @@ describe('setSelectedSessionIdForTask', () => {
   test('persists to per-task lastSession storage', () => {
     setSelectedSessionIdForTask('t-A', 's-A1')
     expect(localStorage.getItem('verun:lastSession:t-A')).toBe('s-A1')
+  })
+})
+
+describe('siblingTaskInList', () => {
+  const tasks = [
+    { id: 't-a' },
+    { id: 't-b' },
+    { id: 't-c' },
+  ]
+
+  test('returns null for empty list', () => {
+    expect(siblingTaskInList([], null, 'down')).toBeNull()
+    expect(siblingTaskInList([], 't-a', 'up')).toBeNull()
+  })
+
+  test('down with no selection picks first', () => {
+    expect(siblingTaskInList(tasks, null, 'down')?.id).toBe('t-a')
+  })
+
+  test('up with no selection picks last', () => {
+    expect(siblingTaskInList(tasks, null, 'up')?.id).toBe('t-c')
+  })
+
+  test('down moves to next', () => {
+    expect(siblingTaskInList(tasks, 't-a', 'down')?.id).toBe('t-b')
+    expect(siblingTaskInList(tasks, 't-b', 'down')?.id).toBe('t-c')
+  })
+
+  test('up moves to previous', () => {
+    expect(siblingTaskInList(tasks, 't-c', 'up')?.id).toBe('t-b')
+    expect(siblingTaskInList(tasks, 't-b', 'up')?.id).toBe('t-a')
+  })
+
+  test('wraps from last to first when going down', () => {
+    expect(siblingTaskInList(tasks, 't-c', 'down')?.id).toBe('t-a')
+  })
+
+  test('wraps from first to last when going up', () => {
+    expect(siblingTaskInList(tasks, 't-a', 'up')?.id).toBe('t-c')
+  })
+
+  test('falls back to first/last when current id is not in list', () => {
+    expect(siblingTaskInList(tasks, 'gone', 'down')?.id).toBe('t-a')
+    expect(siblingTaskInList(tasks, 'gone', 'up')?.id).toBe('t-c')
   })
 })
 

@@ -311,3 +311,22 @@ export function focusOrSelectTask(task: { id: string; projectId: string; name: s
   setShowSettings(false)
   setShowArchived(false)
 }
+
+// Pure helper for Cmd+Alt+Up/Down sidebar navigation. Wraps around at the
+// edges. When nothing is selected, Down picks the first task and Up picks the
+// last so the shortcut still does something useful.
+export function siblingTaskInList<T extends { id: string }>(
+  ordered: T[],
+  currentId: string | null,
+  direction: 'up' | 'down',
+): T | null {
+  if (ordered.length === 0) return null
+  const idx = currentId ? ordered.findIndex(t => t.id === currentId) : -1
+  if (idx === -1) {
+    return direction === 'down' ? ordered[0] : ordered[ordered.length - 1]
+  }
+  const nextIdx = direction === 'down'
+    ? (idx + 1) % ordered.length
+    : (idx - 1 + ordered.length) % ordered.length
+  return ordered[nextIdx]
+}

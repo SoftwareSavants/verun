@@ -841,12 +841,14 @@ export const MessageInput: Component<Props> = (props) => {
     onCleanup(() => window.removeEventListener('keydown', handler))
   })
 
-  // Refocus input when the window regains focus
+  // Refocus input when the window regains focus, but only if nothing else
+  // (e.g. an xterm instance) is already holding focus — otherwise we steal it.
   onMount(() => {
     const handler = () => {
-      if (inputRef && props.sessionId) {
-        requestAnimationFrame(() => inputRef.focus())
-      }
+      if (!inputRef || !props.sessionId) return
+      const active = document.activeElement
+      if (active && active !== document.body && active !== inputRef) return
+      requestAnimationFrame(() => inputRef.focus())
     }
     window.addEventListener('focus', handler)
     onCleanup(() => window.removeEventListener('focus', handler))
