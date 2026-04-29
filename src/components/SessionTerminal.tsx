@@ -24,6 +24,33 @@ export const SessionTerminal: Component<Props> = (props) => {
   const [terminalId, setTerminalId] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [exited, setExited] = createSignal(false)
+  let containerRef: HTMLDivElement | undefined
+
+  // Capture-phase Cmd/Ctrl+V handler. Fires before ShellTerminal's inner-
+  // container handler (capture order is outer→inner), so when the clipboard
+  // holds an image we forward the saved file path to the PTY instead of
+  // letting the text-only fallback eat the paste. Falls back to text when
+  // there's no image so plain Cmd+V still works.
+  function handleKeyDownCapture(e: KeyboardEvent) {
+    if (e.key !== 'v' || !(e.metaKey || e.ctrlKey)) return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    const tid = terminalId()
+    if (!tid) return
+    void (async () => {
+      try {
+        const imagePath = await ipc.readClipboardImageToPath()
+        if (imagePath) {
+          await ipc.ptyWrite(tid, formatDroppedPathsForTerminal([imagePath]))
+          return
+        }
+        const text = await ipc.readClipboard()
+        if (text) await ipc.ptyWrite(tid, text)
+      } catch {
+        // Paste failures are silent — same posture as ShellTerminal.
+      }
+    })()
+  }
 
   async function openTerminal() {
     setError(null)
@@ -67,11 +94,18 @@ export const SessionTerminal: Component<Props> = (props) => {
   onCleanup(() => {
     unlisten?.()
     unlistenDrop?.()
+    if (containerRef) containerRef.removeEventListener('keydown', handleKeyDownCapture, true)
     ipc.claudeTerminalClose(props.sessionId).catch(() => {})
   })
 
   return (
-    <div class="w-full h-full flex flex-col bg-surface-0">
+    <div
+      ref={(el) => {
+        containerRef = el
+        el.addEventListener('keydown', handleKeyDownCapture, true)
+      }}
+      class="w-full h-full flex flex-col bg-surface-0"
+    >
       <Show
         when={!error()}
         fallback={

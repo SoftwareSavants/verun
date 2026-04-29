@@ -406,6 +406,9 @@ export const claudeTerminalClose = (sessionId: string) =>
 export const readClipboard = () =>
   invoke<string>('read_clipboard')
 
+export const readClipboardImageToPath = () =>
+  invoke<string | null>('read_clipboard_image_to_path')
+
 export const copyImageToClipboard = (mimeType: string, data: Uint8Array) =>
   invoke<void>('copy_image_to_clipboard', data.buffer as ArrayBuffer, {
     headers: { 'mime-type': mimeType },
