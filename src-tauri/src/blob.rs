@@ -64,7 +64,9 @@ pub fn blobs_dir(app_data_dir: &Path) -> PathBuf {
 
 pub fn blob_path(app_data_dir: &Path, hash: &str) -> PathBuf {
     let shard = hash.get(..2).unwrap_or("00");
-    blobs_dir(app_data_dir).join(shard).join(format!("{hash}.bin"))
+    blobs_dir(app_data_dir)
+        .join(shard)
+        .join(format!("{hash}.bin"))
 }
 
 pub fn hash_bytes(bytes: &[u8]) -> String {
@@ -159,14 +161,12 @@ pub async fn get_blob_info(pool: &SqlitePool, hash: &str) -> Result<Option<BlobI
 }
 
 pub async fn incr_ref(pool: &SqlitePool, hash: &str) -> Result<(), String> {
-    sqlx::query(
-        "UPDATE blobs SET ref_count = ref_count + 1, last_used_at = ? WHERE hash = ?",
-    )
-    .bind(epoch_ms())
-    .bind(hash)
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE blobs SET ref_count = ref_count + 1, last_used_at = ? WHERE hash = ?")
+        .bind(epoch_ms())
+        .bind(hash)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -193,7 +193,9 @@ pub fn extract_hashes_from_attachments_json(json: Option<&str>) -> Vec<String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(s) else {
         return Vec::new();
     };
-    let Some(arr) = value.as_array() else { return Vec::new() };
+    let Some(arr) = value.as_array() else {
+        return Vec::new();
+    };
     arr.iter()
         .filter_map(|item| item.get("hash").and_then(|h| h.as_str()).map(String::from))
         .collect()
@@ -238,11 +240,7 @@ pub async fn decr_refs(pool: &SqlitePool, hashes: &[String]) -> Result<(), Strin
 /// Delete a single blob: file first, then the DB row. File-first ordering
 /// makes a crash mid-delete leave a dangling row (recoverable on next sweep)
 /// rather than a dangling file (which would leak forever).
-pub async fn delete_blob(
-    pool: &SqlitePool,
-    app_data_dir: &Path,
-    hash: &str,
-) -> Result<(), String> {
+pub async fn delete_blob(pool: &SqlitePool, app_data_dir: &Path, hash: &str) -> Result<(), String> {
     let path = blob_path(app_data_dir, hash);
     match tokio::fs::remove_file(&path).await {
         Ok(()) => {}
@@ -270,13 +268,12 @@ pub async fn gc_unreferenced(
         return Ok(0);
     }
     let cutoff = epoch_ms() - ttl_ms;
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT hash FROM blobs WHERE ref_count = 0 AND last_used_at < ?",
-    )
-    .bind(cutoff)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT hash FROM blobs WHERE ref_count = 0 AND last_used_at < ?")
+            .bind(cutoff)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
 
     let mut reclaimed = 0u64;
     for (hash,) in rows {
@@ -491,7 +488,10 @@ async fn migrate_legacy_user_message_line(
         return Ok(None);
     }
     if let Some(obj) = value.as_object_mut() {
-        obj.insert("attachments".to_string(), serde_json::Value::Array(rewritten));
+        obj.insert(
+            "attachments".to_string(),
+            serde_json::Value::Array(rewritten),
+        );
     }
     let new_line = serde_json::to_string(&value).map_err(|e| e.to_string())?;
     Ok(Some((new_line, hashes, created)))
@@ -523,9 +523,17 @@ async fn rewrite_array(
             out.push(item.clone());
             continue;
         };
-        let mime = obj.get("mimeType").and_then(|v| v.as_str()).unwrap_or("application/octet-stream");
-        let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("attachment");
-        let bytes = STANDARD.decode(b64).map_err(|e| format!("base64 decode failed: {e}"))?;
+        let mime = obj
+            .get("mimeType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("application/octet-stream");
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("attachment");
+        let bytes = STANDARD
+            .decode(b64)
+            .map_err(|e| format!("base64 decode failed: {e}"))?;
 
         let pre: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM blobs")
             .fetch_one(pool)
@@ -615,13 +623,17 @@ mod tests {
         let (pool, tmp) = test_setup().await;
         let bytes = b"hello world";
 
-        let r = write_blob(&pool, tmp.path(), "text/plain", bytes).await.unwrap();
+        let r = write_blob(&pool, tmp.path(), "text/plain", bytes)
+            .await
+            .unwrap();
 
         assert_eq!(r.hash, hash_bytes(bytes));
         assert_eq!(r.mime, "text/plain");
         assert_eq!(r.size, 11);
 
-        let on_disk = tokio::fs::read(blob_path(tmp.path(), &r.hash)).await.unwrap();
+        let on_disk = tokio::fs::read(blob_path(tmp.path(), &r.hash))
+            .await
+            .unwrap();
         assert_eq!(on_disk, bytes);
 
         let info = get_blob_info(&pool, &r.hash).await.unwrap().unwrap();
@@ -634,8 +646,12 @@ mod tests {
         let (pool, tmp) = test_setup().await;
         let bytes = b"same bytes";
 
-        let r1 = write_blob(&pool, tmp.path(), "image/png", bytes).await.unwrap();
-        let r2 = write_blob(&pool, tmp.path(), "image/png", bytes).await.unwrap();
+        let r1 = write_blob(&pool, tmp.path(), "image/png", bytes)
+            .await
+            .unwrap();
+        let r2 = write_blob(&pool, tmp.path(), "image/png", bytes)
+            .await
+            .unwrap();
 
         assert_eq!(r1.hash, r2.hash);
 
@@ -670,7 +686,9 @@ mod tests {
     async fn read_blob_bytes_round_trips() {
         let (pool, tmp) = test_setup().await;
         let bytes: Vec<u8> = (0u8..=255).collect();
-        let r = write_blob(&pool, tmp.path(), "image/png", &bytes).await.unwrap();
+        let r = write_blob(&pool, tmp.path(), "image/png", &bytes)
+            .await
+            .unwrap();
 
         let read = read_blob_bytes(tmp.path(), &r.hash).await.unwrap();
         assert_eq!(read, bytes);
@@ -679,7 +697,9 @@ mod tests {
     #[tokio::test]
     async fn incr_decr_ref_track_count() {
         let (pool, tmp) = test_setup().await;
-        let r = write_blob(&pool, tmp.path(), "image/png", b"x").await.unwrap();
+        let r = write_blob(&pool, tmp.path(), "image/png", b"x")
+            .await
+            .unwrap();
 
         incr_ref(&pool, &r.hash).await.unwrap();
         incr_ref(&pool, &r.hash).await.unwrap();
@@ -694,7 +714,9 @@ mod tests {
     #[tokio::test]
     async fn decr_ref_floors_at_zero() {
         let (pool, tmp) = test_setup().await;
-        let r = write_blob(&pool, tmp.path(), "image/png", b"x").await.unwrap();
+        let r = write_blob(&pool, tmp.path(), "image/png", b"x")
+            .await
+            .unwrap();
 
         // No incr — refcount is 0. Decrement must not go negative.
         decr_ref(&pool, &r.hash).await.unwrap();
@@ -705,8 +727,12 @@ mod tests {
     #[tokio::test]
     async fn get_storage_stats_partitions_referenced_vs_unreferenced() {
         let (pool, tmp) = test_setup().await;
-        let a = write_blob(&pool, tmp.path(), "image/png", b"aaaa").await.unwrap();
-        let _b = write_blob(&pool, tmp.path(), "image/png", b"bbbbbb").await.unwrap();
+        let a = write_blob(&pool, tmp.path(), "image/png", b"aaaa")
+            .await
+            .unwrap();
+        let _b = write_blob(&pool, tmp.path(), "image/png", b"bbbbbb")
+            .await
+            .unwrap();
         incr_ref(&pool, &a.hash).await.unwrap();
 
         let stats = get_storage_stats(&pool).await.unwrap();
@@ -797,7 +823,9 @@ mod tests {
     #[tokio::test]
     async fn delete_blob_removes_file_and_row() {
         let (pool, tmp) = test_setup().await;
-        let r = write_blob(&pool, tmp.path(), "image/png", b"bye").await.unwrap();
+        let r = write_blob(&pool, tmp.path(), "image/png", b"bye")
+            .await
+            .unwrap();
         let path = blob_path(tmp.path(), &r.hash);
         assert!(path.exists());
 
@@ -810,9 +838,13 @@ mod tests {
     #[tokio::test]
     async fn delete_blob_tolerates_missing_file() {
         let (pool, tmp) = test_setup().await;
-        let r = write_blob(&pool, tmp.path(), "image/png", b"x").await.unwrap();
+        let r = write_blob(&pool, tmp.path(), "image/png", b"x")
+            .await
+            .unwrap();
         // Pre-delete the file out from under the row — DB row should still go.
-        tokio::fs::remove_file(blob_path(tmp.path(), &r.hash)).await.unwrap();
+        tokio::fs::remove_file(blob_path(tmp.path(), &r.hash))
+            .await
+            .unwrap();
 
         delete_blob(&pool, tmp.path(), &r.hash).await.unwrap();
         assert!(get_blob_info(&pool, &r.hash).await.unwrap().is_none());
@@ -882,15 +914,30 @@ mod tests {
     async fn enforce_storage_cap_evicts_oldest_unreferenced_until_under_cap() {
         let (pool, tmp) = test_setup().await;
         let a = write_blob(&pool, tmp.path(), "image/png", b"aaaaa") // 5
-            .await.unwrap();
+            .await
+            .unwrap();
         let b = write_blob(&pool, tmp.path(), "image/png", b"bbbbbb") // 6
-            .await.unwrap();
+            .await
+            .unwrap();
         let c = write_blob(&pool, tmp.path(), "image/png", b"ccccccc") // 7
-            .await.unwrap();
+            .await
+            .unwrap();
         // a is oldest, b mid, c newest — set last_used_at explicitly.
-        sqlx::query("UPDATE blobs SET last_used_at = 100 WHERE hash = ?").bind(&a.hash).execute(&pool).await.unwrap();
-        sqlx::query("UPDATE blobs SET last_used_at = 200 WHERE hash = ?").bind(&b.hash).execute(&pool).await.unwrap();
-        sqlx::query("UPDATE blobs SET last_used_at = 300 WHERE hash = ?").bind(&c.hash).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE blobs SET last_used_at = 100 WHERE hash = ?")
+            .bind(&a.hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE blobs SET last_used_at = 200 WHERE hash = ?")
+            .bind(&b.hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE blobs SET last_used_at = 300 WHERE hash = ?")
+            .bind(&c.hash)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // Cap at 10 bytes — total is 18, must reclaim ≥ 8 bytes by evicting
         // a (5) then b (6) for 11 bytes freed, leaving c (7) under the cap.
@@ -904,8 +951,14 @@ mod tests {
     #[tokio::test]
     async fn enforce_storage_cap_keeps_referenced_blobs() {
         let (pool, tmp) = test_setup().await;
-        let pinned = write_blob(&pool, tmp.path(), "image/png", b"pinned-large-blob-xxxxxxxxxxxxxxxxxxxxxxxxxx")
-            .await.unwrap();
+        let pinned = write_blob(
+            &pool,
+            tmp.path(),
+            "image/png",
+            b"pinned-large-blob-xxxxxxxxxxxxxxxxxxxxxxxxxx",
+        )
+        .await
+        .unwrap();
         incr_ref(&pool, &pinned.hash).await.unwrap();
 
         // Cap is well under the pinned blob — but it must NOT be evicted
@@ -918,7 +971,9 @@ mod tests {
     #[tokio::test]
     async fn enforce_storage_cap_disabled_when_max_non_positive() {
         let (pool, tmp) = test_setup().await;
-        let r = write_blob(&pool, tmp.path(), "image/png", b"x").await.unwrap();
+        let r = write_blob(&pool, tmp.path(), "image/png", b"x")
+            .await
+            .unwrap();
         assert_eq!(enforce_storage_cap(&pool, tmp.path(), 0).await.unwrap(), 0);
         assert_eq!(enforce_storage_cap(&pool, tmp.path(), -1).await.unwrap(), 0);
         assert!(get_blob_info(&pool, &r.hash).await.unwrap().is_some());
@@ -967,13 +1022,11 @@ mod tests {
 
     async fn seed_output_line(pool: &SqlitePool, line: &str) -> i64 {
         ensure_session(pool).await;
-        sqlx::query(
-            "INSERT INTO output_lines (session_id, line, emitted_at) VALUES ('s', ?, 0)",
-        )
-        .bind(line)
-        .execute(pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO output_lines (session_id, line, emitted_at) VALUES ('s', ?, 0)")
+            .bind(line)
+            .execute(pool)
+            .await
+            .unwrap();
         let row: (i64,) = sqlx::query_as("SELECT last_insert_rowid()")
             .fetch_one(pool)
             .await
@@ -1015,7 +1068,10 @@ mod tests {
         assert_eq!(entry["size"], bytes.len());
         assert!(entry.get("dataBase64").is_none());
 
-        let info = get_blob_info(&pool, &hash_bytes(bytes)).await.unwrap().unwrap();
+        let info = get_blob_info(&pool, &hash_bytes(bytes))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(info.ref_count, 1);
         assert_eq!(info.size, bytes.len() as i64);
     }
@@ -1034,12 +1090,11 @@ mod tests {
         assert_eq!(report.output_lines_migrated, 1);
         assert_eq!(report.blobs_created, 1);
 
-        let (new_line,): (String,) =
-            sqlx::query_as("SELECT line FROM output_lines WHERE id = ?")
-                .bind(id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (new_line,): (String,) = sqlx::query_as("SELECT line FROM output_lines WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_str(&new_line).unwrap();
         let arr = v["attachments"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -1049,7 +1104,10 @@ mod tests {
         assert_eq!(v["text"], "hi");
         assert_eq!(v["type"], "verun_user_message");
 
-        let info = get_blob_info(&pool, &hash_bytes(bytes)).await.unwrap().unwrap();
+        let info = get_blob_info(&pool, &hash_bytes(bytes))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(info.ref_count, 1);
     }
 
@@ -1068,7 +1126,10 @@ mod tests {
         assert_eq!(first.blobs_created, 1);
         assert!(!first.already_done);
 
-        let info_after_first = get_blob_info(&pool, &hash_bytes(bytes)).await.unwrap().unwrap();
+        let info_after_first = get_blob_info(&pool, &hash_bytes(bytes))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(info_after_first.ref_count, 1);
 
         // Second run: sentinel is set → no-op, no double-incr.
@@ -1077,8 +1138,14 @@ mod tests {
         assert_eq!(second.blobs_created, 0);
         assert!(second.already_done);
 
-        let info_after_second = get_blob_info(&pool, &hash_bytes(bytes)).await.unwrap().unwrap();
-        assert_eq!(info_after_second.ref_count, 1, "sentinel must prevent re-incrementing");
+        let info_after_second = get_blob_info(&pool, &hash_bytes(bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            info_after_second.ref_count, 1,
+            "sentinel must prevent re-incrementing"
+        );
     }
 
     #[tokio::test]

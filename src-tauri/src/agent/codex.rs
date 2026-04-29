@@ -146,10 +146,7 @@ impl Agent for Codex {
         // JSON-RPC `thread/started` notification shape:
         //   { "method": "thread/started", "params": { "thread": { "id": "..." } } }
         if v.get("method").and_then(|m| m.as_str()) == Some("thread/started") {
-            if let Some(id) = v
-                .pointer("/params/thread/id")
-                .and_then(|s| s.as_str())
-            {
+            if let Some(id) = v.pointer("/params/thread/id").and_then(|s| s.as_str()) {
                 return Some(id.to_string());
             }
         }

@@ -327,6 +327,18 @@ export interface CiCheck {
   url: string
 }
 
+export interface GitHubOverviewSnapshot {
+  github: GitHubRepo | null
+  branchUrl: string | null
+  pr: PrInfo | null
+  checks: CiCheck[]
+  fetchedAt: number
+  staleAt: number
+  expiresAt: number
+  isStale: boolean
+  fromCache: boolean
+}
+
 export type WorkflowRunState = 'queued' | 'running' | 'success' | 'failure' | 'cancelled' | 'skipped'
 
 export interface WorkflowRun {
@@ -348,6 +360,49 @@ export interface WorkflowJob {
   startedAt: string | null
   completedAt: string | null
   url: string
+}
+
+export interface GitHubActionsSnapshot {
+  runs: WorkflowRun[]
+  fetchedAt: number
+  staleAt: number
+  expiresAt: number
+  isStale: boolean
+  fromCache: boolean
+}
+
+export interface WorkflowJobsSnapshot {
+  runId: number
+  jobs: WorkflowJob[]
+  fetchedAt: number
+  staleAt: number
+  expiresAt: number
+  isStale: boolean
+  fromCache: boolean
+}
+
+export interface WorkflowLogSnapshot {
+  jobId: number
+  text: string
+  fetchedAt: number
+  staleAt: number
+  expiresAt: number
+  isStale: boolean
+  fromCache: boolean
+}
+
+export type RemoteFetchMode = 'cache-first' | 'stale-while-revalidate' | 'network-only'
+
+export interface GitHubDebugEvent {
+  taskId: string
+  scope: string
+  stage: string
+  mode?: RemoteFetchMode | 'event'
+  cacheState?: 'miss' | 'fresh' | 'stale'
+  fromCache?: boolean
+  durationMs?: number
+  detail?: string
+  emittedAt: number
 }
 
 // Terminal / PTY types

@@ -80,10 +80,9 @@ pub fn start_watching(
                 for event in &events {
                     if event.kind == DebouncedEventKind::Any {
                         // Events from the extra git dir (worktree git state) →
-                        // git-status-changed only, never file-tree-changed.
-                        let from_extra_git = extra_git_dirs
-                            .iter()
-                            .any(|gd| event.path.starts_with(gd));
+                        // local git state only, never file-tree-changed.
+                        let from_extra_git =
+                            extra_git_dirs.iter().any(|gd| event.path.starts_with(gd));
                         if from_extra_git {
                             git_changed = true;
                             continue;
@@ -105,9 +104,10 @@ pub fn start_watching(
                 }
                 if git_changed {
                     let _ = app.emit(
-                        "git-status-changed",
+                        "git-local-changed",
                         crate::stream::GitStatusChangedEvent {
                             task_id: tid.clone(),
+                            remote_likely_changed: false,
                         },
                     );
                 }

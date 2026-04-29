@@ -27,7 +27,7 @@ Pluggable agent backend with first-class support for Claude Code and Codex (plan
 - **TypeScript intellisense** - bundled tsgo with autocomplete, diagnostics, hover, go-to-definition, find references, and rename
 - **Problems panel** - project-wide type checking with click-to-navigate and one-click "ask agent to fix"
 - **Side-by-side diffs** - syntax-highlighted diffs for working-tree changes and individual commits
-- **Git workflow** - commit, push, create PR, and merge without leaving the app
+- **Git workflow** - commit, push, create PR, merge, and inspect branch-scoped GitHub Actions/PR state without leaving the app; remote refresh is cached and only invalidated when relevant GitHub state changes
 - **Integrated terminal** - drop into any task's worktree with a built-in shell
 - **File tree & Quick Open** - browse files, fuzzy-find with CMD+P, preview media and markdown inline
 - **Workspace search** - Cmd+Shift+F content search across the task's worktree with case/whole-word/regex toggles and include/exclude globs, powered by embedded ripgrep

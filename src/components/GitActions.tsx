@@ -98,7 +98,8 @@ export const GitActions: Component<Props> = (props) => {
     setOpen(false)
     setConfirming(null)
     closeMergePanel()
-    refreshTaskGit(props.taskId)
+    refreshTaskGit(props.taskId, { local: true, remote: false })
+    refreshTaskGit(props.taskId, { local: false, remote: true })
   }))
 
   const send = (message: string) => {
@@ -136,7 +137,7 @@ export const GitActions: Component<Props> = (props) => {
       await ipc.gitPush(props.taskId)
       addToast('Pushed to remote', 'success')
       invalidateRemote(props.taskId)
-      await refreshTaskGit(props.taskId, { force: true })
+      await refreshTaskGit(props.taskId, { local: true, remote: true, force: true })
     } catch (e: any) {
       send(`push to remote. The error was: ${e}`)
     }
@@ -161,7 +162,7 @@ export const GitActions: Component<Props> = (props) => {
       addToast('PR merged', 'success')
       closeMergePanel()
       invalidateRemote(props.taskId)
-      await refreshTaskGit(props.taskId, { force: true })
+      await refreshTaskGit(props.taskId, { local: true, remote: true, force: true })
     } catch (e: any) {
       if (!force) {
         setMergeFailure(String(e))
@@ -179,7 +180,7 @@ export const GitActions: Component<Props> = (props) => {
       await ipc.markPrReady(props.taskId)
       addToast('PR marked as ready for review', 'success')
       invalidateRemote(props.taskId)
-      await refreshTaskGit(props.taskId, { force: true })
+      await refreshTaskGit(props.taskId, { local: false, remote: true, force: true })
     } catch (e: any) {
       addToast(`Failed to mark PR ready: ${e}`, 'error')
     }

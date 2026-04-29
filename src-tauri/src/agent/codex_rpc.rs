@@ -76,8 +76,7 @@ pub enum CodexRpcEvent {
 }
 
 /// `request_id → oneshot sender waiting for the server's response`.
-pub type PendingRpcResponses =
-    Arc<DashMap<i64, oneshot::Sender<Result<Value, JsonRpcError>>>>;
+pub type PendingRpcResponses = Arc<DashMap<i64, oneshot::Sender<Result<Value, JsonRpcError>>>>;
 
 pub fn new_pending_rpc_responses() -> PendingRpcResponses {
     Arc::new(DashMap::new())
@@ -376,9 +375,7 @@ mod tests {
         let line = r#"{"id":7,"result":{"thread":{"id":"t-1"}}}"#;
         let msg = classify_line(line).unwrap().unwrap();
         match msg {
-            ClassifiedMessage::Response {
-                id, result, ..
-            } => {
+            ClassifiedMessage::Response { id, result, .. } => {
                 assert_eq!(id, Some(7));
                 let val = result.unwrap();
                 assert_eq!(val["thread"]["id"], "t-1");

@@ -2,6 +2,7 @@ import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
 import type { GitStatus, BranchCommit, PrInfo, CiCheck, GitHubRepo } from '../types'
+import { selectedTaskId } from './ui'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,7 +27,7 @@ export interface TaskGitState {
 
 export interface RefreshOpts {
   local?: boolean   // default true
-  remote?: boolean  // default true
+  remote?: boolean  // default false
   force?: boolean   // bypass remote TTL
 }
 
@@ -65,6 +66,7 @@ const inflightLocal = new Map<string, Promise<void>>()
 const inflightRemote = new Map<string, Promise<void>>()
 const localDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const localDebounceResolvers = new Map<string, Array<() => void>>()
+const remoteTrackedTasks = new Set<string>()
 
 const LOCAL_DEBOUNCE_MS = 150
 
@@ -75,10 +77,11 @@ function ensureKey(taskId: string) {
 }
 
 async function refreshLocal(taskId: string): Promise<void> {
-  const [status, commits, branchStatus] = await Promise.all([
+  const [status, commits, branchStatus, github] = await Promise.all([
     ipc.getGitStatus(taskId).catch(() => null),
     ipc.getBranchCommits(taskId).catch(() => [] as BranchCommit[]),
     ipc.getBranchStatus(taskId).catch(() => [0, 0, 0] as [number, number, number]),
+    ipc.checkGithub(taskId).catch(() => null),
   ])
 
   setGitStates(produce(s => {
@@ -91,29 +94,23 @@ async function refreshLocal(taskId: string): Promise<void> {
       behind: branchStatus[1],
       unpushed: branchStatus[2],
     }
+    state.github = github
     state.lastLocalRefresh = Date.now()
   }))
 }
 
 async function refreshRemote(taskId: string): Promise<void> {
-  const [prInfo, branchUrl, github] = await Promise.all([
-    ipc.getPullRequest(taskId).catch(() => null),
-    ipc.getBranchUrl(taskId).catch(() => null),
-    ipc.checkGithub(taskId).catch(() => null),
-  ])
-
-  const ciChecks = prInfo
-    ? await ipc.getCiChecks(taskId).catch(() => [] as CiCheck[])
-    : []
+  const snapshot = await ipc.getGithubOverview(taskId, 'network-only')
 
   setGitStates(produce(s => {
     const state = s[taskId]
     if (!state) return
-    state.pr = prInfo
-    state.checks = ciChecks
-    state.branchUrl = branchUrl
-    state.github = github
-    state.lastRemoteRefresh = Date.now()
+    state.pr = snapshot.pr
+    state.checks = snapshot.checks
+    state.branchUrl = snapshot.branchUrl
+    // Repo detection is local git state; preserve that as the source of truth.
+    if (!state.github) state.github = snapshot.github
+    state.lastRemoteRefresh = snapshot.fetchedAt
   }))
 }
 
@@ -121,7 +118,7 @@ export async function refreshTaskGit(
   taskId: string,
   opts: RefreshOpts = {},
 ): Promise<void> {
-  const { local = true, remote = true, force = false } = opts
+  const { local = true, remote = false, force = false } = opts
 
   ensureKey(taskId)
 
@@ -164,6 +161,7 @@ export async function refreshTaskGit(
   }
 
   if (remote) {
+    remoteTrackedTasks.add(taskId)
     const state = gitStates[taskId]
     const stale = !state || force || Date.now() - state.lastRemoteRefresh > REMOTE_TTL
 
@@ -184,6 +182,7 @@ export async function refreshTaskGit(
 
 /** Reset remote TTL so next refreshTaskGit with remote=true will fetch fresh. */
 export function invalidateRemote(taskId: string): void {
+  remoteTrackedTasks.add(taskId)
   setGitStates(produce(s => {
     const state = s[taskId]
     if (state) state.lastRemoteRefresh = 0
@@ -192,6 +191,7 @@ export function invalidateRemote(taskId: string): void {
 
 /** Remove a task's state entirely (on task deletion). */
 export function clearTaskGitState(taskId: string): void {
+  remoteTrackedTasks.delete(taskId)
   setGitStates(produce(s => { delete s[taskId] }))
 }
 
@@ -205,17 +205,35 @@ export async function initGitListeners(): Promise<void> {
   if (listenersInitialized) return
   listenersInitialized = true
 
-  await listen<{ taskId: string }>('git-status-changed', (event) => {
-    const { taskId } = event.payload
-    invalidateRemote(taskId)
-    refreshTaskGit(taskId, { local: true, remote: true, force: true })
+  await listen<{ taskId: string, remoteLikelyChanged?: boolean }>('git-local-changed', (event) => {
+    const { taskId, remoteLikelyChanged } = event.payload
+    const shouldRefreshRemote = remoteLikelyChanged
+      && (remoteTrackedTasks.has(taskId) || selectedTaskId() === taskId)
+    if (shouldRefreshRemote) {
+      invalidateRemote(taskId)
+      refreshTaskGit(taskId, { local: true, remote: true, force: true })
+      return
+    }
+    refreshTaskGit(taskId, { local: true, remote: false, force: true })
+  })
+
+  await listen<{ taskId: string, path: string }>('file-tree-changed', (event) => {
+    refreshTaskGit(event.payload.taskId, { local: true, remote: false })
+  })
+
+  await listen<{ taskId: string, scopes: string[] }>('github-remote-invalidated', (event) => {
+    const { taskId, scopes } = event.payload
+    if (scopes.includes('overview')) {
+      invalidateRemote(taskId)
+      refreshTaskGit(taskId, { local: false, remote: true, force: true })
+    }
   })
 }
 
 export function initWindowFocusRefresh(): void {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      for (const taskId of Object.keys(gitStates)) {
+      for (const taskId of remoteTrackedTasks) {
         refreshTaskGit(taskId, { local: false, remote: true, force: true })
       }
     }

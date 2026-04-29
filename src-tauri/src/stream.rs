@@ -150,11 +150,35 @@ pub struct TaskNameEvent {
     pub name: String,
 }
 
-/// Emitted to frontend when git status may have changed (session ended)
+/// Emitted to frontend when local git state may have changed.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitStatusChangedEvent {
     pub task_id: String,
+    pub remote_likely_changed: bool,
+}
+
+/// Emitted to frontend when cached GitHub remote state is invalidated.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubRemoteInvalidatedEvent {
+    pub task_id: String,
+    pub scopes: Vec<String>,
+}
+
+/// Emitted to frontend with debug info about GitHub cache/fetch activity.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubRemoteDebugEvent {
+    pub task_id: String,
+    pub scope: String,
+    pub stage: String,
+    pub mode: Option<String>,
+    pub cache_state: Option<String>,
+    pub from_cache: Option<bool>,
+    pub duration_ms: Option<u64>,
+    pub detail: Option<String>,
+    pub emitted_at: i64,
 }
 
 /// Emitted to frontend when a task's hook starts, completes, or fails
@@ -257,10 +281,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                 .and_then(|s| s.as_str())
                 .or_else(|| v.get("status").and_then(|s| s.as_str()))
                 .unwrap_or("unknown");
-            let is_error = v
-                .get("is_error")
-                .and_then(|e| e.as_bool())
-                .unwrap_or(false);
+            let is_error = v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
             let error = v
                 .get("error")
                 .and_then(|e| e.as_str())
@@ -682,10 +703,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
 /// top-level `type` strings; this one maps RPC `method` strings.
 ///
 /// Wire ref: t3code `packages/effect-codex-app-server/src/_generated/meta.gen.ts`.
-pub fn process_codex_rpc_notification(
-    method: &str,
-    params: &serde_json::Value,
-) -> Vec<OutputItem> {
+pub fn process_codex_rpc_notification(method: &str, params: &serde_json::Value) -> Vec<OutputItem> {
     match method {
         // -- Token deltas (streamed into the current assistant / thinking block) --
         "item/agentMessage/delta" => params
@@ -915,7 +933,10 @@ pub fn process_codex_rpc_notification(
 
         // -- Turn completion --
         "turn/completed" => {
-            let turn = params.get("turn").cloned().unwrap_or(serde_json::Value::Null);
+            let turn = params
+                .get("turn")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let status_str = turn
                 .get("status")
                 .and_then(|s| s.as_str())
@@ -981,7 +1002,11 @@ fn format_codex_file_change(item: &serde_json::Value) -> Vec<OutputItem> {
         // not a bare string. Older CLIs emitted a string; accept both.
         let kind = change
             .get("kind")
-            .and_then(|k| k.get("type").and_then(|t| t.as_str()).or_else(|| k.as_str()))
+            .and_then(|k| {
+                k.get("type")
+                    .and_then(|t| t.as_str())
+                    .or_else(|| k.as_str())
+            })
             .unwrap_or("");
         let tool = match kind {
             "add" => "Write",
@@ -1397,6 +1422,52 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn github_remote_scopes_for_tool_start(tool: &str, input: &str) -> Option<Vec<String>> {
+    let tool = tool.trim().to_ascii_lowercase();
+    if tool != "bash" && tool != "commandexecution" && tool != "command_execution" {
+        return None;
+    }
+
+    let input = input.to_ascii_lowercase();
+    let pr_mutation = [
+        "gh pr create",
+        "gh pr reopen",
+        "gh pr close",
+        "gh pr ready",
+        "gh pr merge",
+    ]
+    .iter()
+    .any(|needle| input.contains(needle));
+
+    if pr_mutation {
+        Some(vec!["overview".to_string()])
+    } else {
+        None
+    }
+}
+
+fn process_github_remote_invalidation(
+    pending: &mut Vec<Vec<String>>,
+    item: &OutputItem,
+) -> Option<Vec<String>> {
+    match item {
+        OutputItem::ToolStart { tool, input } => {
+            if let Some(scopes) = github_remote_scopes_for_tool_start(tool, input) {
+                pending.push(scopes);
+            }
+            None
+        }
+        OutputItem::ToolResult { is_error, .. } => {
+            let scopes = pending.first().cloned();
+            if scopes.is_some() {
+                pending.remove(0);
+            }
+            if *is_error { None } else { scopes }
+        }
+        _ => None,
+    }
+}
+
 /// Stream stdout from the claude process, parse NDJSON events, emit
 /// structured items to frontend, persist to DB, and return all captured lines.
 ///
@@ -1433,6 +1504,7 @@ pub async fn stream_and_capture(
     // turn completes, because the rollout file isn't persisted until then.
     let mut pending_resume_id: Option<String> = None;
     let defers_resume = agent.defers_resume_id_until_turn_end();
+    let mut pending_github_invalidations: Vec<Vec<String>> = Vec::new();
 
     loop {
         let deadline = tokio::time::sleep(FLUSH_INTERVAL);
@@ -1548,6 +1620,18 @@ pub async fn stream_and_capture(
                         let mut has_immediate = false;
                         let mut is_turn_end = false;
                         for item in &items {
+                            if let Some(scopes) = process_github_remote_invalidation(
+                                &mut pending_github_invalidations,
+                                item,
+                            ) {
+                                let _ = app.emit(
+                                    "github-remote-invalidated",
+                                    GitHubRemoteInvalidatedEvent {
+                                        task_id: task_id.clone(),
+                                        scopes,
+                                    },
+                                );
+                            }
                             match item {
                                 OutputItem::Text { .. } | OutputItem::Thinking { .. } => {
                                     if !buffer.is_empty() {
@@ -1663,9 +1747,7 @@ pub async fn stream_and_capture(
     }
 
     flush_buffer(&app, &session_id, &mut buffer);
-    StreamResult {
-        error: last_error,
-    }
+    StreamResult { error: last_error }
 }
 
 /// JSON-RPC streaming loop for Codex `app-server`. Mirrors the legacy
@@ -1678,9 +1760,7 @@ pub async fn stream_and_capture_rpc(
     app: AppHandle,
     session_id: String,
     task_id: String,
-    mut events_rx: tokio::sync::mpsc::UnboundedReceiver<
-        crate::agent::codex_rpc::CodexRpcEvent,
-    >,
+    mut events_rx: tokio::sync::mpsc::UnboundedReceiver<crate::agent::codex_rpc::CodexRpcEvent>,
     stdin: Arc<TokioMutex<Option<ChildStdin>>>,
     busy: Arc<AtomicBool>,
     _pending_approvals: PendingApprovals,
@@ -1705,7 +1785,7 @@ pub async fn stream_and_capture_rpc(
     // that fires throughout the turn. Cache the most recent breakdown so we
     // can populate the next `TurnEnd` before emitting it to the UI / db.
     let mut last_token_usage: Option<CodexTokenUsage> = None;
-    let _ = task_id; // reserved for snapshot hook parity with legacy path
+    let mut pending_github_invalidations: Vec<Vec<String>> = Vec::new();
 
     loop {
         let deadline = tokio::time::sleep(FLUSH_INTERVAL);
@@ -1739,6 +1819,18 @@ pub async fn stream_and_capture_rpc(
                         let mut is_turn_end = false;
 
                         for item in &items {
+                            if let Some(scopes) = process_github_remote_invalidation(
+                                &mut pending_github_invalidations,
+                                item,
+                            ) {
+                                let _ = app.emit(
+                                    "github-remote-invalidated",
+                                    GitHubRemoteInvalidatedEvent {
+                                        task_id: task_id.clone(),
+                                        scopes,
+                                    },
+                                );
+                            }
                             match item {
                                 OutputItem::Text { .. }
                                 | OutputItem::Thinking { .. }
@@ -1907,9 +1999,7 @@ pub async fn stream_and_capture_rpc(
     }
 
     flush_buffer(&app, &session_id, &mut buffer);
-    StreamResult {
-        error: last_error,
-    }
+    StreamResult { error: last_error }
 }
 
 /// Check if a line is a `control_request` for tool approval.
@@ -2240,10 +2330,7 @@ pub fn extract_codex_token_usage(params: &serde_json::Value) -> Option<CodexToke
 
 /// Stamp the most recent `thread/tokenUsage/updated` breakdown onto a
 /// `TurnEnd` item. Leaves non-`TurnEnd` items untouched.
-pub fn patch_turn_end_with_usage(
-    item: OutputItem,
-    usage: &Option<CodexTokenUsage>,
-) -> OutputItem {
+pub fn patch_turn_end_with_usage(item: OutputItem, usage: &Option<CodexTokenUsage>) -> OutputItem {
     match (item, usage) {
         (
             OutputItem::TurnEnd {
@@ -2319,9 +2406,7 @@ pub fn persist_codex_plan_if_ready(item: OutputItem, worktree_path: &Path) -> Ou
                 match persist_codex_plan_markdown(worktree_path, &item_id, &text) {
                     Ok(p) => Some(p.to_string_lossy().into_owned()),
                     Err(e) => {
-                        eprintln!(
-                            "[verun][codex-rpc] failed to persist plan markdown: {e}"
-                        );
+                        eprintln!("[verun][codex-rpc] failed to persist plan markdown: {e}");
                         None
                     }
                 }
@@ -2502,8 +2587,12 @@ fn encode_codex_user_input_response(
         let ids = input.get("_codexQuestionIds").and_then(|v| v.as_object());
         if let (Some(answers), Some(ids)) = (answers, ids) {
             for (question_text, answer_val) in answers {
-                let Some(answer_text) = answer_val.as_str() else { continue };
-                let Some(id_val) = ids.get(question_text) else { continue };
+                let Some(answer_text) = answer_val.as_str() else {
+                    continue;
+                };
+                let Some(id_val) = ids.get(question_text) else {
+                    continue;
+                };
                 let Some(id) = id_val.as_str() else { continue };
                 out.insert(
                     id.to_string(),
@@ -2516,8 +2605,8 @@ fn encode_codex_user_input_response(
         "id": server_req_id,
         "result": { "answers": serde_json::Value::Object(out) },
     });
-    let mut bytes = serde_json::to_vec(&frame)
-        .map_err(|e| format!("serialize user input response: {e}"))?;
+    let mut bytes =
+        serde_json::to_vec(&frame).map_err(|e| format!("serialize user input response: {e}"))?;
     bytes.push(b'\n');
     Ok(bytes)
 }
@@ -2721,7 +2810,10 @@ mod tests {
         let (message, raw) = err.expect("expected ErrorMessage item");
         assert_eq!(message, "Prompt is too long");
         let raw = raw.expect("expected raw JSON payload");
-        assert!(raw.contains("\"<synthetic>\""), "raw should carry source JSON: {raw}");
+        assert!(
+            raw.contains("\"<synthetic>\""),
+            "raw should carry source JSON: {raw}"
+        );
         // Should NOT emit a duplicate plain Text item for the same synthetic error.
         assert!(
             !items.iter().any(|i| matches!(i, OutputItem::Text { .. })),
@@ -2824,6 +2916,89 @@ mod tests {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["sessionId"], "s-001");
         assert_eq!(json["status"], "done");
+    }
+
+    #[test]
+    fn git_status_event_serializes_remote_likely_changed_as_camel_case() {
+        let event = GitStatusChangedEvent {
+            task_id: "t-001".into(),
+            remote_likely_changed: true,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["taskId"], "t-001");
+        assert_eq!(json["remoteLikelyChanged"], true);
+    }
+
+    #[test]
+    fn github_remote_debug_event_serializes_as_camel_case() {
+        let event = GitHubRemoteDebugEvent {
+            task_id: "t-001".into(),
+            scope: "overview".into(),
+            stage: "fetch-success".into(),
+            mode: Some("network-only".into()),
+            cache_state: Some("miss".into()),
+            from_cache: Some(false),
+            duration_ms: Some(42),
+            detail: Some("overview".into()),
+            emitted_at: 123,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["taskId"], "t-001");
+        assert_eq!(json["cacheState"], "miss");
+        assert_eq!(json["durationMs"], 42);
+        assert_eq!(json["emittedAt"], 123);
+    }
+
+    #[test]
+    fn github_pr_reopen_triggers_overview_invalidation_after_successful_result() {
+        let mut pending = Vec::new();
+
+        let start = OutputItem::ToolStart {
+            tool: "Bash".into(),
+            input: r#"{"command":"gh pr reopen 5"}"#.into(),
+        };
+        assert!(process_github_remote_invalidation(&mut pending, &start).is_none());
+        assert_eq!(pending, vec![vec!["overview".to_string()]]);
+
+        let result = OutputItem::ToolResult {
+            text: "Reopened the existing PR".into(),
+            is_error: false,
+        };
+        let scopes = process_github_remote_invalidation(&mut pending, &result);
+        assert_eq!(scopes, Some(vec!["overview".to_string()]));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn github_pr_reopen_does_not_invalidate_on_failed_result() {
+        let mut pending = Vec::new();
+
+        let start = OutputItem::ToolStart {
+            tool: "Bash".into(),
+            input: r#"{"command":"gh pr reopen 5"}"#.into(),
+        };
+        process_github_remote_invalidation(&mut pending, &start);
+
+        let result = OutputItem::ToolResult {
+            text: "failed".into(),
+            is_error: true,
+        };
+        let scopes = process_github_remote_invalidation(&mut pending, &result);
+        assert_eq!(scopes, None);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn github_pr_checks_does_not_arm_invalidation() {
+        let mut pending = Vec::new();
+
+        let start = OutputItem::ToolStart {
+            tool: "Bash".into(),
+            input: r#"{"command":"gh pr checks 5"}"#.into(),
+        };
+        let scopes = process_github_remote_invalidation(&mut pending, &start);
+        assert_eq!(scopes, None);
+        assert!(pending.is_empty());
     }
 
     #[test]
@@ -3103,10 +3278,17 @@ mod tests {
         let items = process_codex_rpc_notification("item/completed", &params);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::CodexPlanReady { item_id, text, file_path } => {
+            OutputItem::CodexPlanReady {
+                item_id,
+                text,
+                file_path,
+            } => {
                 assert_eq!(item_id, "p1");
                 assert!(text.contains("design it"));
-                assert!(file_path.is_none(), "filePath is filled by the stream loop after writing");
+                assert!(
+                    file_path.is_none(),
+                    "filePath is filled by the stream loop after writing"
+                );
             }
             other => panic!("expected CodexPlanReady, got {other:?}"),
         }
@@ -3227,9 +3409,7 @@ mod tests {
 
     #[test]
     fn patch_turn_end_preserves_non_turn_end_items() {
-        let item = OutputItem::Text {
-            text: "hi".into(),
-        };
+        let item = OutputItem::Text { text: "hi".into() };
         match patch_turn_end_with_usage(item, &None) {
             OutputItem::Text { text } => assert_eq!(text, "hi"),
             other => panic!("expected Text, got {other:?}"),
@@ -3525,9 +3705,18 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("questions array");
         assert_eq!(qs.len(), 1);
-        assert_eq!(qs[0].get("question").and_then(|v| v.as_str()), Some("Pick a framework"));
-        assert_eq!(qs[0].get("header").and_then(|v| v.as_str()), Some("Frontend"));
-        assert_eq!(qs[0].get("multiSelect").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            qs[0].get("question").and_then(|v| v.as_str()),
+            Some("Pick a framework")
+        );
+        assert_eq!(
+            qs[0].get("header").and_then(|v| v.as_str()),
+            Some("Frontend")
+        );
+        assert_eq!(
+            qs[0].get("multiSelect").and_then(|v| v.as_bool()),
+            Some(false)
+        );
         let opts = qs[0].get("options").and_then(|v| v.as_array()).unwrap();
         assert_eq!(opts.len(), 2);
         assert_eq!(opts[0].get("label").and_then(|v| v.as_str()), Some("Solid"));

@@ -9,9 +9,9 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
 
 const ipcMocks = vi.hoisted(() => ({
-  listWorkflowRuns: vi.fn(),
-  listWorkflowJobs: vi.fn(),
-  getWorkflowFailedLogs: vi.fn(),
+  getGithubActions: vi.fn(),
+  getGithubWorkflowJobs: vi.fn(),
+  getGithubWorkflowLog: vi.fn(),
   rerunWorkflowRun: vi.fn(),
   cancelWorkflowRun: vi.fn(),
   createSession: vi.fn(),
@@ -54,6 +54,24 @@ const gitMocks = vi.hoisted(() => ({
 }))
 vi.mock('../store/git', () => gitMocks)
 
+const githubDebugMocks = vi.hoisted(() => ({
+  githubDebugEntriesForTask: vi.fn(() => [
+    {
+      id: 1,
+      taskId: 't1',
+      scope: 'overview',
+      stage: 'fetch-success',
+      mode: 'network-only',
+      cacheState: 'miss',
+      fromCache: false,
+      durationMs: 42,
+      emittedAt: 1_746_000_000_000,
+      detail: 'overview refreshed',
+    },
+  ]),
+}))
+vi.mock('../store/githubDebug', () => githubDebugMocks)
+
 import { ActionsPanel } from './ActionsPanel'
 import { clearActionsState, stopPolling } from '../store/actions'
 
@@ -81,19 +99,41 @@ async function flush() {
 describe('<ActionsPanel /> layout', () => {
   beforeEach(() => {
     cleanup()
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    })
     stopPolling('t1')
     clearActionsState('t1')
-    ipcMocks.listWorkflowRuns.mockReset()
-    ipcMocks.listWorkflowJobs.mockReset()
+    ipcMocks.getGithubActions.mockReset()
+    ipcMocks.getGithubWorkflowJobs.mockReset()
+    ipcMocks.getGithubWorkflowLog.mockReset()
     ipcMocks.rerunWorkflowRun.mockReset()
   })
 
   test('relative time is rendered after the hover action cluster on both failed and success rows', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([
-      run({ databaseId: 1, state: 'failure', workflowName: 'CI' }),
-      run({ databaseId: 2, state: 'success', workflowName: 'Release' }),
-    ])
-    ipcMocks.listWorkflowJobs.mockResolvedValue([])
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [
+        run({ databaseId: 1, state: 'failure', workflowName: 'CI' }),
+        run({ databaseId: 2, state: 'success', workflowName: 'Release' }),
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+    ipcMocks.getGithubWorkflowJobs.mockResolvedValue({
+      runId: 1,
+      jobs: [],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
 
     const { container } = render(() => <ActionsPanel taskId="t1" />)
     await flush()
@@ -113,13 +153,36 @@ describe('<ActionsPanel /> layout', () => {
   })
 
   test('clicking a failed job expands an inline panel with logs and action buttons', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([
-      run({ databaseId: 1, state: 'failure', workflowName: 'CI' }),
-    ])
-    ipcMocks.listWorkflowJobs.mockResolvedValue([
-      { databaseId: 10, name: 'Type Check', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:12Z', url: 'https://github.com/x/y/runs/10' },
-    ])
-    ipcMocks.getWorkflowFailedLogs.mockResolvedValue('error TS2322: Type mismatch at foo.ts:17')
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [
+        run({ databaseId: 1, state: 'failure', workflowName: 'CI' }),
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+    ipcMocks.getGithubWorkflowJobs.mockResolvedValue({
+      runId: 1,
+      jobs: [
+        { databaseId: 10, name: 'Type Check', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:12Z', url: 'https://github.com/x/y/runs/10' },
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+    ipcMocks.getGithubWorkflowLog.mockResolvedValue({
+      jobId: 10,
+      text: 'error TS2322: Type mismatch at foo.ts:17',
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
 
     const { container } = render(() => <ActionsPanel taskId="t1" />)
     await flush()
@@ -140,7 +203,7 @@ describe('<ActionsPanel /> layout', () => {
 
     // Logs panel appears with the log text
     expect(container.textContent).toContain('error TS2322')
-    expect(ipcMocks.getWorkflowFailedLogs).toHaveBeenCalledWith('t1', 1, 10)
+    expect(ipcMocks.getGithubWorkflowLog).toHaveBeenCalledWith('t1', 10)
 
     // Action buttons are in the expanded panel
     expect(container.querySelector('[title="Re-run this job"]')).not.toBeNull()
@@ -149,12 +212,27 @@ describe('<ActionsPanel /> layout', () => {
   })
 
   test('rerunning a failing run optimistically renders the running (spinner) icon', async () => {
-    ipcMocks.listWorkflowRuns.mockResolvedValue([
-      run({ databaseId: 42, state: 'failure', workflowName: 'CI' }),
-    ])
-    ipcMocks.listWorkflowJobs.mockResolvedValue([
-      { databaseId: 10, name: 'test', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:00Z', url: 'u' },
-    ])
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [
+        run({ databaseId: 42, state: 'failure', workflowName: 'CI' }),
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+    ipcMocks.getGithubWorkflowJobs.mockResolvedValue({
+      runId: 42,
+      jobs: [
+        { databaseId: 10, name: 'test', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:00Z', url: 'u' },
+      ],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
     ipcMocks.rerunWorkflowRun.mockResolvedValue(undefined)
 
     const { container } = render(() => <ActionsPanel taskId="t1" />)
@@ -179,5 +257,47 @@ describe('<ActionsPanel /> layout', () => {
     // Run row should no longer show the red failure X
     const redIcon = rowBtn.querySelector('.text-red-400')
     expect(redIcon).toBeNull()
+  })
+
+  test('dev builds render a GitHub debug panel with recent request activity', async () => {
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [run({ databaseId: 1, state: 'success', workflowName: 'CI' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+
+    const { getByText, container } = render(() => <ActionsPanel taskId="t1" />)
+    await flush()
+
+    expect(getByText('GitHub Debug')).toBeTruthy()
+    expect(container.textContent).toContain('fetch-success')
+    expect(container.textContent).toContain('overview')
+    expect(container.textContent).toContain('network-only')
+  })
+
+  test('dev builds can copy the full GitHub debug log', async () => {
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [run({ databaseId: 1, state: 'success', workflowName: 'CI' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+
+    const { container } = render(() => <ActionsPanel taskId="t1" />)
+    await flush()
+
+    const copyButton = container.querySelector('[title="Copy all debug logs"]') as HTMLButtonElement | null
+    expect(copyButton).toBeTruthy()
+
+    await fireEvent.click(copyButton!)
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0]).toContain('fetch-success')
+    expect(vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0]).toContain('overview')
   })
 })

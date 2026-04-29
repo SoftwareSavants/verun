@@ -82,8 +82,8 @@ mod tests {
     fn caps_at_hard_limit() {
         let hard = current_hard();
         // Ask for more than the hard limit — result must not exceed hard.
-        let (_prev, new_soft) = raise_fd_limit_to(hard.saturating_add(1_000_000))
-            .expect("setrlimit failed");
+        let (_prev, new_soft) =
+            raise_fd_limit_to(hard.saturating_add(1_000_000)).expect("setrlimit failed");
         assert!(new_soft <= hard, "new_soft={new_soft} > hard={hard}");
     }
 

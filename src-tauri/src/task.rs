@@ -21,98 +21,445 @@ use uuid::Uuid;
 
 const ADJECTIVES: &[&str] = &[
     // State/condition
-    "broken", "stale", "null", "dangling", "cursed", "legacy", "flaky", "frozen", "leaky",
-    "panicking", "volatile", "blocked", "corrupt", "unhandled", "undefined", "deprecated",
-    "recursive", "mutating", "thrashing", "fragile", "poisoned", "detached", "overloaded",
+    "broken",
+    "stale",
+    "null",
+    "dangling",
+    "cursed",
+    "legacy",
+    "flaky",
+    "frozen",
+    "leaky",
+    "panicking",
+    "volatile",
+    "blocked",
+    "corrupt",
+    "unhandled",
+    "undefined",
+    "deprecated",
+    "recursive",
+    "mutating",
+    "thrashing",
+    "fragile",
+    "poisoned",
+    "detached",
+    "overloaded",
     "async",
     // Behavior
-    "haunted", "sleeping", "spinning", "crashing", "burning", "exploding", "melting", "drifting",
-    "sneaking", "lurking", "escaping", "leaking", "hanging", "starving", "evicting", "colliding",
+    "haunted",
+    "sleeping",
+    "spinning",
+    "crashing",
+    "burning",
+    "exploding",
+    "melting",
+    "drifting",
+    "sneaking",
+    "lurking",
+    "escaping",
+    "leaking",
+    "hanging",
+    "starving",
+    "evicting",
+    "colliding",
     "flushing",
     // Dev-lifecycle
-    "tangled", "nested", "bloated", "sharded", "cached", "proxied", "forked", "merged",
-    "rebased", "squashed", "reverted", "patched", "shipped", "hotfixed", "hacked", "yolo",
+    "tangled",
+    "nested",
+    "bloated",
+    "sharded",
+    "cached",
+    "proxied",
+    "forked",
+    "merged",
+    "rebased",
+    "squashed",
+    "reverted",
+    "patched",
+    "shipped",
+    "hotfixed",
+    "hacked",
+    "yolo",
     // Modern buzzwords
-    "serverless", "containerized", "orchestrated", "distributed", "eventual", "idempotent",
-    "immutable", "stateless", "reactive", "declarative", "imperative", "functional", "monadic",
-    "curried", "memoized", "lazy",
+    "serverless",
+    "containerized",
+    "orchestrated",
+    "distributed",
+    "eventual",
+    "idempotent",
+    "immutable",
+    "stateless",
+    "reactive",
+    "declarative",
+    "imperative",
+    "functional",
+    "monadic",
+    "curried",
+    "memoized",
+    "lazy",
 ];
 
 const NOUNS_GENERIC: &[&str] = &[
     // Classic CS
-    "pointer", "closure", "semaphore", "deadlock", "segfault", "exception", "footgun",
-    "regression", "monolith", "bottleneck", "timeout", "mutex", "thread", "heap", "pipeline",
-    "iterator", "dependency", "hotfix", "workaround", "refactor", "codebase", "spaghetti",
-    "callback", "stack",
+    "pointer",
+    "closure",
+    "semaphore",
+    "deadlock",
+    "segfault",
+    "exception",
+    "footgun",
+    "regression",
+    "monolith",
+    "bottleneck",
+    "timeout",
+    "mutex",
+    "thread",
+    "heap",
+    "pipeline",
+    "iterator",
+    "dependency",
+    "hotfix",
+    "workaround",
+    "refactor",
+    "codebase",
+    "spaghetti",
+    "callback",
+    "stack",
     // Architecture/infra
-    "microservice", "abstraction", "singleton", "factory", "middleware", "gateway", "proxy",
-    "cache", "queue", "broker", "replica", "sidecar", "loadbalancer", "circuit", "backpressure",
+    "microservice",
+    "abstraction",
+    "singleton",
+    "factory",
+    "middleware",
+    "gateway",
+    "proxy",
+    "cache",
+    "queue",
+    "broker",
+    "replica",
+    "sidecar",
+    "loadbalancer",
+    "circuit",
+    "backpressure",
     "checkpoint",
     // Dev pain
-    "migration", "rollback", "incident", "postmortem", "oncall", "flakiness", "flakytest",
-    "techdebt", "bikeshed", "yagni", "rewrite", "greenfield", "brownfield", "triage", "runbook",
+    "migration",
+    "rollback",
+    "incident",
+    "postmortem",
+    "oncall",
+    "flakiness",
+    "flakytest",
+    "techdebt",
+    "bikeshed",
+    "yagni",
+    "rewrite",
+    "greenfield",
+    "brownfield",
+    "triage",
+    "runbook",
     // Modern concepts
-    "container", "webhook", "cronjob", "sideeffect", "invariant", "predicate", "combinator",
-    "monad", "functor", "reducer", "selector", "observable", "subscription", "serializer",
-    "hydration", "abstraction", "interface",
+    "container",
+    "webhook",
+    "cronjob",
+    "sideeffect",
+    "invariant",
+    "predicate",
+    "combinator",
+    "monad",
+    "functor",
+    "reducer",
+    "selector",
+    "observable",
+    "subscription",
+    "serializer",
+    "hydration",
+    "abstraction",
+    "interface",
 ];
 
 const NOUNS_RUST: &[&str] = &[
-    "borrow", "lifetime", "trait", "ownership", "unsafe", "transmute", "phantom", "future",
-    "executor", "clippy", "linker", "crate", "macro", "reference", "slice", "deriving",
-    "pinbox", "allocator", "borrowchecker", "dropglue", "sendbound", "syncbound", "arcmutex",
-    "refcell", "rwlock", "channel", "tokioruntime", "asynctrait", "pinned", "variance",
-    "covariance", "contravariance", "turbofish", "newtype", "typestate", "destructor", "waker",
-    "poll", "spawntask", "blockingcall", "unsafecode", "rawpointer", "dangler", "useafterfree",
-    "doublefree", "stacksmash", "intoverflow", "datarace", "borrowmut", "movesemantics",
-    "copytype", "cloneimpl", "derefcoercion", "autoref",
+    "borrow",
+    "lifetime",
+    "trait",
+    "ownership",
+    "unsafe",
+    "transmute",
+    "phantom",
+    "future",
+    "executor",
+    "clippy",
+    "linker",
+    "crate",
+    "macro",
+    "reference",
+    "slice",
+    "deriving",
+    "pinbox",
+    "allocator",
+    "borrowchecker",
+    "dropglue",
+    "sendbound",
+    "syncbound",
+    "arcmutex",
+    "refcell",
+    "rwlock",
+    "channel",
+    "tokioruntime",
+    "asynctrait",
+    "pinned",
+    "variance",
+    "covariance",
+    "contravariance",
+    "turbofish",
+    "newtype",
+    "typestate",
+    "destructor",
+    "waker",
+    "poll",
+    "spawntask",
+    "blockingcall",
+    "unsafecode",
+    "rawpointer",
+    "dangler",
+    "useafterfree",
+    "doublefree",
+    "stacksmash",
+    "intoverflow",
+    "datarace",
+    "borrowmut",
+    "movesemantics",
+    "copytype",
+    "cloneimpl",
+    "derefcoercion",
+    "autoref",
 ];
 
 const NOUNS_JS: &[&str] = &[
-    "prototype", "hoisting", "coercion", "bundler", "polyfill", "transpiler", "promise",
-    "hydration", "rerender", "middleware", "lockfile", "semver", "treeshake", "eslint",
-    "tsconfig", "webpack", "vite", "closure", "eventloop", "callstack", "microtask",
-    "macrotask", "settimeout", "npmaudit", "leftpad", "yarnwhy", "nodemodules", "peerconflict",
-    "typewidening", "typenarrowing", "anytype", "assertion", "overload", "memoization",
-    "stalestate", "staleclosure", "useeffect", "infiniteloop", "proptypes", "hookrule",
-    "propdrilling", "reactivity", "solidstore", "sveltestores", "nextrouter", "bundlesize",
-    "chunksplitting", "codesplitting", "lazyload", "suspense", "concurrentmode", "diffing",
-    "treeflattening", "signalapocalypse",
+    "prototype",
+    "hoisting",
+    "coercion",
+    "bundler",
+    "polyfill",
+    "transpiler",
+    "promise",
+    "hydration",
+    "rerender",
+    "middleware",
+    "lockfile",
+    "semver",
+    "treeshake",
+    "eslint",
+    "tsconfig",
+    "webpack",
+    "vite",
+    "closure",
+    "eventloop",
+    "callstack",
+    "microtask",
+    "macrotask",
+    "settimeout",
+    "npmaudit",
+    "leftpad",
+    "yarnwhy",
+    "nodemodules",
+    "peerconflict",
+    "typewidening",
+    "typenarrowing",
+    "anytype",
+    "assertion",
+    "overload",
+    "memoization",
+    "stalestate",
+    "staleclosure",
+    "useeffect",
+    "infiniteloop",
+    "proptypes",
+    "hookrule",
+    "propdrilling",
+    "reactivity",
+    "solidstore",
+    "sveltestores",
+    "nextrouter",
+    "bundlesize",
+    "chunksplitting",
+    "codesplitting",
+    "lazyload",
+    "suspense",
+    "concurrentmode",
+    "diffing",
+    "treeflattening",
+    "signalapocalypse",
 ];
 
 const NOUNS_PYTHON: &[&str] = &[
-    "pickle", "gil", "decorator", "metaclass", "generator", "virtualenv", "dunder", "lambda",
-    "walrus", "asyncio", "celery", "pydantic", "namespace", "unpacking", "dataclass",
-    "comprehension", "typehint", "importerror", "monkeypatch", "mutabledefault", "latebound",
-    "circularimport", "venv", "conda", "poetrylock", "pipfreeze", "pipconflict", "egginfo",
-    "abstractmethod", "classmethod", "staticmethod", "propertydecorator", "slots", "weakref",
-    "finalizer", "garbagecollector", "cyclicref", "asyncgenerator", "coroutine", "threadlocal",
-    "multiprocessing", "pickling", "shelve", "ormquery", "djangomigration", "flaskcontext",
-    "fastapimodel", "pandasframe", "numpybroadcast", "typeerror", "indentationerror",
-    "syntaxwarning", "deprecationwarn", "runtimeerror",
+    "pickle",
+    "gil",
+    "decorator",
+    "metaclass",
+    "generator",
+    "virtualenv",
+    "dunder",
+    "lambda",
+    "walrus",
+    "asyncio",
+    "celery",
+    "pydantic",
+    "namespace",
+    "unpacking",
+    "dataclass",
+    "comprehension",
+    "typehint",
+    "importerror",
+    "monkeypatch",
+    "mutabledefault",
+    "latebound",
+    "circularimport",
+    "venv",
+    "conda",
+    "poetrylock",
+    "pipfreeze",
+    "pipconflict",
+    "egginfo",
+    "abstractmethod",
+    "classmethod",
+    "staticmethod",
+    "propertydecorator",
+    "slots",
+    "weakref",
+    "finalizer",
+    "garbagecollector",
+    "cyclicref",
+    "asyncgenerator",
+    "coroutine",
+    "threadlocal",
+    "multiprocessing",
+    "pickling",
+    "shelve",
+    "ormquery",
+    "djangomigration",
+    "flaskcontext",
+    "fastapimodel",
+    "pandasframe",
+    "numpybroadcast",
+    "typeerror",
+    "indentationerror",
+    "syntaxwarning",
+    "deprecationwarn",
+    "runtimeerror",
 ];
 
 const NOUNS_GO: &[&str] = &[
-    "goroutine", "channel", "interface", "defer", "recover", "embedding", "reflection",
-    "vendor", "context", "waitgroup", "errorf", "nilpointer", "module", "struct", "receiver",
-    "concurrency", "gofmt", "init", "goroutineleak", "channelblock", "selectstmt",
-    "closurecapture", "nilinterface", "goroutinepool", "ticker", "timer", "signalchan",
-    "syncmap", "atomicop", "mutexlock", "rwmutex", "oncefn", "poolreset", "goroutinerace",
-    "datarace", "golangci", "govet", "gomod", "gosum", "buildtag", "cgocall", "unsafeptr",
-    "typeassert", "panicrecovery", "namedreturn", "deferorder", "initorder", "blankimport",
-    "shadowedvar", "shortdecl", "multireturn", "errorwrap", "errortarget", "errorchain",
+    "goroutine",
+    "channel",
+    "interface",
+    "defer",
+    "recover",
+    "embedding",
+    "reflection",
+    "vendor",
+    "context",
+    "waitgroup",
+    "errorf",
+    "nilpointer",
+    "module",
+    "struct",
+    "receiver",
+    "concurrency",
+    "gofmt",
+    "init",
+    "goroutineleak",
+    "channelblock",
+    "selectstmt",
+    "closurecapture",
+    "nilinterface",
+    "goroutinepool",
+    "ticker",
+    "timer",
+    "signalchan",
+    "syncmap",
+    "atomicop",
+    "mutexlock",
+    "rwmutex",
+    "oncefn",
+    "poolreset",
+    "goroutinerace",
+    "datarace",
+    "golangci",
+    "govet",
+    "gomod",
+    "gosum",
+    "buildtag",
+    "cgocall",
+    "unsafeptr",
+    "typeassert",
+    "panicrecovery",
+    "namedreturn",
+    "deferorder",
+    "initorder",
+    "blankimport",
+    "shadowedvar",
+    "shortdecl",
+    "multireturn",
+    "errorwrap",
+    "errortarget",
+    "errorchain",
 ];
 
 const NOUNS_JAVA: &[&str] = &[
-    "nullpointer", "classloader", "reflection", "serializable", "generics", "boilerplate",
-    "singleton", "factory", "enterprise", "inheritance", "bytecode", "jvm", "annotation",
-    "abstraction", "dependency", "injection", "exception", "stackoverflowex", "outofmemory",
-    "classcastex", "arraybounds", "concurrentmod", "deadlockjvm", "threadpool", "executorservice",
-    "springbean", "hibernateproxy", "jpaquery", "lazyload", "eagerfetch", "transactional",
-    "aspectj", "cglibproxy", "lombokdata", "buildergenerator", "mapstruct", "jacksondeser",
-    "gradledep", "mavenplugin", "classpathconflict", "jarconflict", "modulepath", "jigsaw",
-    "recordtype", "sealedclass", "patternmatch", "virtualthread", "loom", "graalvm",
-    "nativeimage", "jitcompile", "g1gc", "zgc",
+    "nullpointer",
+    "classloader",
+    "reflection",
+    "serializable",
+    "generics",
+    "boilerplate",
+    "singleton",
+    "factory",
+    "enterprise",
+    "inheritance",
+    "bytecode",
+    "jvm",
+    "annotation",
+    "abstraction",
+    "dependency",
+    "injection",
+    "exception",
+    "stackoverflowex",
+    "outofmemory",
+    "classcastex",
+    "arraybounds",
+    "concurrentmod",
+    "deadlockjvm",
+    "threadpool",
+    "executorservice",
+    "springbean",
+    "hibernateproxy",
+    "jpaquery",
+    "lazyload",
+    "eagerfetch",
+    "transactional",
+    "aspectj",
+    "cglibproxy",
+    "lombokdata",
+    "buildergenerator",
+    "mapstruct",
+    "jacksondeser",
+    "gradledep",
+    "mavenplugin",
+    "classpathconflict",
+    "jarconflict",
+    "modulepath",
+    "jigsaw",
+    "recordtype",
+    "sealedclass",
+    "patternmatch",
+    "virtualthread",
+    "loom",
+    "graalvm",
+    "nativeimage",
+    "jitcompile",
+    "g1gc",
+    "zgc",
 ];
 
 fn collect_stack_nouns(repo_path: &str) -> Vec<&'static str> {
@@ -1050,11 +1397,10 @@ pub async fn send_message(
                         "Codex RPC session missing request id counter — cannot reuse process"
                             .to_string()
                     })?;
-                    let current_turn_id =
-                        entry.codex_current_turn_id.clone().ok_or_else(|| {
-                            "Codex RPC session missing current-turn slot — cannot reuse process"
-                                .to_string()
-                        })?;
+                    let current_turn_id = entry.codex_current_turn_id.clone().ok_or_else(|| {
+                        "Codex RPC session missing current-turn slot — cannot reuse process"
+                            .to_string()
+                    })?;
                     entry.current_permission_mode = want_permission_mode.to_string();
                     entry.current_model.clone_from(&model);
                     FastPath::GoRpc {
@@ -1595,8 +1941,7 @@ async fn spawn_codex_app_server_session(
 
     let pending = codex_rpc::new_pending_rpc_responses();
     let next_id = Arc::new(AtomicI64::new(1));
-    let (events_tx, events_rx) =
-        tokio::sync::mpsc::unbounded_channel::<codex_rpc::CodexRpcEvent>();
+    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<codex_rpc::CodexRpcEvent>();
     codex_rpc::spawn_reader(stdout, pending.clone(), events_tx);
 
     // -- 1. initialize + initialized --
@@ -1633,12 +1978,30 @@ async fn spawn_codex_app_server_session(
                 eprintln!(
                     "[verun][codex-rpc][{session_id}] thread/resume recoverable, falling back to thread/start: {err}"
                 );
-                start_new_thread(&*agent, &stdin, &pending, &next_id, &worktree_path, trust_level, model.as_deref()).await?
+                start_new_thread(
+                    &*agent,
+                    &stdin,
+                    &pending,
+                    &next_id,
+                    &worktree_path,
+                    trust_level,
+                    model.as_deref(),
+                )
+                .await?
             }
             Err(err) => return Err(format!("codex thread/resume failed: {err}")),
         }
     } else {
-        start_new_thread(&*agent, &stdin, &pending, &next_id, &worktree_path, trust_level, model.as_deref()).await?
+        start_new_thread(
+            &*agent,
+            &stdin,
+            &pending,
+            &next_id,
+            &worktree_path,
+            trust_level,
+            model.as_deref(),
+        )
+        .await?
     };
 
     // Persist the thread id immediately — no waiting for turn end.
@@ -1775,9 +2138,7 @@ async fn spawn_codex_app_server_session(
         let status = if let Some((_, mut proc)) = monitor_active.remove(&monitor_sid) {
             let exit_status = proc.child.wait().await.ok();
             let exit_code = exit_status.as_ref().and_then(|s| s.code());
-            eprintln!(
-                "[verun][codex-rpc][{monitor_sid}] exited code={exit_code:?}"
-            );
+            eprintln!("[verun][codex-rpc][{monitor_sid}] exited code={exit_code:?}");
             stream::map_exit_status(exit_code)
         } else {
             return;
@@ -1785,17 +2146,17 @@ async fn spawn_codex_app_server_session(
 
         let config_path = format!("{wt_for_hooks}/.verun.json");
         if let Some((setup, destroy, start)) = parse_verun_config_file(&config_path) {
-            let auto_start =
-                if let Some(pool) = monitor_app.try_state::<sqlx::sqlite::SqlitePool>() {
-                    db::get_project(pool.inner(), &monitor_pid)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|p| p.auto_start)
-                        .unwrap_or(false)
-                } else {
-                    false
-                };
+            let auto_start = if let Some(pool) = monitor_app.try_state::<sqlx::sqlite::SqlitePool>()
+            {
+                db::get_project(pool.inner(), &monitor_pid)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|p| p.auto_start)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
             let _ = monitor_db_tx
                 .send(db::DbWrite::UpdateProjectHooks {
                     id: monitor_pid.clone(),
@@ -1848,9 +2209,10 @@ async fn spawn_codex_app_server_session(
             },
         );
         let _ = monitor_app.emit(
-            "git-status-changed",
+            "git-local-changed",
             stream::GitStatusChangedEvent {
                 task_id: monitor_tid,
+                remote_likely_changed: true,
             },
         );
     });
@@ -1934,9 +2296,7 @@ fn spawn_turn_start_response_watcher(
         if !busy.load(Ordering::SeqCst) {
             return;
         }
-        eprintln!(
-            "[verun][codex-rpc][{session_id}] turn/start failed: {err_msg}"
-        );
+        eprintln!("[verun][codex-rpc][{session_id}] turn/start failed: {err_msg}");
         busy.store(false, Ordering::SeqCst);
         let _ = app.emit(
             "session-output",
@@ -2293,9 +2653,10 @@ pub async fn spawn_session_process(
 
         // Notify frontend that git status may have changed
         let _ = monitor_app.emit(
-            "git-status-changed",
+            "git-local-changed",
             stream::GitStatusChangedEvent {
                 task_id: monitor_tid,
+                remote_likely_changed: true,
             },
         );
     });
@@ -2381,7 +2742,10 @@ pub async fn abort_message(
                     }
                 }
             } else {
-                (Some(agent.encode_stream_interrupt(&new_control_request_id())?), false)
+                (
+                    Some(agent.encode_stream_interrupt(&new_control_request_id())?),
+                    false,
+                )
             };
             if let Some(bytes) = maybe_bytes {
                 // Best-effort: if stdin is already closed we fall through
@@ -2534,12 +2898,8 @@ pub async fn interrupt_session(active: &ActiveMap, session_id: &str) -> Result<(
         .map(|proc| proc.stdin.clone())
         .ok_or_else(|| "No active session".to_string())?;
 
-    let (_req_id, _rx) = send_control_request(
-        &stdin,
-        None,
-        serde_json::json!({ "subtype": "interrupt" }),
-    )
-    .await?;
+    let (_req_id, _rx) =
+        send_control_request(&stdin, None, serde_json::json!({ "subtype": "interrupt" })).await?;
     Ok(())
 }
 
@@ -3259,8 +3619,7 @@ mod tests {
     fn active_session_ids_for_task_excludes_other_tasks_sessions() {
         // Active sessions: s1, s2 belong to task A; s3, s4 belong to task B.
         // Archiving task B should return only s3, s4 - never s1, s2.
-        let active_ids: Vec<String> =
-            vec!["s1".into(), "s2".into(), "s3".into(), "s4".into()];
+        let active_ids: Vec<String> = vec!["s1".into(), "s2".into(), "s3".into(), "s4".into()];
         let task_b_session_ids = ["s3".to_string(), "s4".to_string()];
         let mut result = active_session_ids_for_task(active_ids, &task_b_session_ids);
         result.sort();

@@ -5,6 +5,8 @@ import { loadAgents, initAgentListeners } from '../store/agents'
 import { initSessionListeners, initSessionWindowFocusRefresh, syncSessionStatuses } from '../store/sessions'
 import { initTerminalListeners } from '../store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from '../store/git'
+import { initGitHubDebugListeners } from '../store/githubDebug'
+import { initActionsListeners } from '../store/actions'
 import { initOpenFilesRefresh } from '../store/fileSync'
 import { initSetupListeners } from '../store/setup'
 import { loadTasks, taskById } from '../store/tasks'
@@ -40,6 +42,8 @@ export async function initListeners() {
     initSessionListeners(),
     initTerminalListeners(),
     initGitListeners(),
+    initGitHubDebugListeners(),
+    initActionsListeners(),
     initProjectListeners(),
     initSetupListeners(),
     initAgentListeners(),

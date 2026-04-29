@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 const seed = () => import('./seedData')
@@ -256,6 +256,21 @@ export const hasConflicts = (taskId: string): Promise<boolean> =>
     ? seed().then(d => d.DEMO_GIT_DATA[taskId]?.pr?.mergeable === 'CONFLICTING')
     : invoke<boolean>('has_conflicts', { taskId })
 
+export const getGithubOverview = (taskId: string, mode?: RemoteFetchMode): Promise<GitHubOverviewSnapshot> =>
+  DEMO
+    ? seed().then(d => ({
+      github: d.DEMO_GIT_DATA[taskId]?.github ?? null,
+      branchUrl: d.DEMO_GIT_DATA[taskId]?.branchUrl ?? null,
+      pr: d.DEMO_GIT_DATA[taskId]?.pr ?? null,
+      checks: d.DEMO_GIT_DATA[taskId]?.checks ?? [],
+      fetchedAt: Date.now(),
+      staleAt: Date.now() + 30_000,
+      expiresAt: Date.now() + 300_000,
+      isStale: false,
+      fromCache: false,
+    }))
+    : invoke<GitHubOverviewSnapshot>('get_github_overview', { taskId, mode })
+
 // GitHub Actions
 export const listWorkflowRuns = (taskId: string, limit?: number): Promise<WorkflowRun[]> =>
   DEMO ? Promise.resolve([]) : invoke<WorkflowRun[]>('list_workflow_runs', { taskId, limit })
@@ -274,6 +289,44 @@ export const rerunWorkflowJob = (taskId: string, jobId: number): Promise<void> =
 
 export const cancelWorkflowRun = (taskId: string, runId: number): Promise<void> =>
   invoke<void>('cancel_workflow_run', { taskId, runId })
+
+export const getGithubActions = (taskId: string, limit?: number, mode?: RemoteFetchMode): Promise<GitHubActionsSnapshot> =>
+  DEMO
+    ? Promise.resolve({
+      runs: [],
+      fetchedAt: Date.now(),
+      staleAt: Date.now() + 10_000,
+      expiresAt: Date.now() + 300_000,
+      isStale: false,
+      fromCache: false,
+    })
+    : invoke<GitHubActionsSnapshot>('get_github_actions', { taskId, limit, mode })
+
+export const getGithubWorkflowJobs = (taskId: string, runId: number, mode?: RemoteFetchMode): Promise<WorkflowJobsSnapshot> =>
+  DEMO
+    ? Promise.resolve({
+      runId,
+      jobs: [],
+      fetchedAt: Date.now(),
+      staleAt: Date.now() + 10_000,
+      expiresAt: Date.now() + 300_000,
+      isStale: false,
+      fromCache: false,
+    })
+    : invoke<WorkflowJobsSnapshot>('get_github_workflow_jobs', { taskId, runId, mode })
+
+export const getGithubWorkflowLog = (taskId: string, jobId: number, maxBytes?: number, mode?: RemoteFetchMode): Promise<WorkflowLogSnapshot> =>
+  DEMO
+    ? Promise.resolve({
+      jobId,
+      text: '',
+      fetchedAt: Date.now(),
+      staleAt: Date.now() + 10_000,
+      expiresAt: Date.now() + 300_000,
+      isStale: false,
+      fromCache: false,
+    })
+    : invoke<WorkflowLogSnapshot>('get_github_workflow_log', { taskId, jobId, maxBytes, mode })
 
 // File listing
 export const listWorktreeFiles = (taskId: string) =>

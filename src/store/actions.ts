@@ -59,7 +59,8 @@ export async function refreshWorkflowRuns(taskId: string, limit = 25): Promise<v
 
   const promise = (async () => {
     try {
-      const runs = await ipc.listWorkflowRuns(taskId, limit)
+      const snapshot = await ipc.getGithubActions(taskId, limit, 'cache-first')
+      const runs = snapshot.runs
       const staleJobRuns: number[] = []
       setActionsState(produce(s => {
         const state = s[taskId]
@@ -85,7 +86,7 @@ export async function refreshWorkflowRuns(taskId: string, limit = 25): Promise<v
             state.runs.push(incoming)
           }
         }
-        state.lastRefresh = Date.now()
+        state.lastRefresh = snapshot.fetchedAt
         state.error = null
         state.loading = false
       }))
@@ -108,7 +109,8 @@ export async function refreshWorkflowRuns(taskId: string, limit = 25): Promise<v
 export async function loadJobsForRun(taskId: string, runId: number): Promise<void> {
   ensure(taskId)
   try {
-    const jobs = await ipc.listWorkflowJobs(taskId, runId)
+    const snapshot = await ipc.getGithubWorkflowJobs(taskId, runId, 'cache-first')
+    const jobs = snapshot.jobs
     setActionsState(produce(s => {
       const state = s[taskId]
       if (!state) return
@@ -132,7 +134,7 @@ export async function loadJobsForRun(taskId: string, runId: number): Promise<voi
 
 const inflightLogs = new Map<string, Promise<void>>()
 
-export async function loadJobLogs(taskId: string, runId: number, jobId: number): Promise<void> {
+export async function loadJobLogs(taskId: string, _runId: number, jobId: number): Promise<void> {
   ensure(taskId)
   const key = `${taskId}:${jobId}`
   const existing = inflightLogs.get(key)
@@ -152,11 +154,12 @@ export async function loadJobLogs(taskId: string, runId: number, jobId: number):
 
   const promise = (async () => {
     try {
-      const text = await ipc.getWorkflowFailedLogs(taskId, runId, jobId)
+      const snapshot = await ipc.getGithubWorkflowLog(taskId, jobId)
+      const text = snapshot.text
       setActionsState(produce(s => {
         const state = s[taskId]
         if (!state) return
-        state.logsByJob[jobId] = { text, loading: false, error: null, fetchedAt: Date.now() }
+        state.logsByJob[jobId] = { text, loading: false, error: null, fetchedAt: snapshot.fetchedAt }
       }))
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -281,7 +284,7 @@ export async function buildFixPrompt(taskId: string, ctx: FixContext): Promise<s
   let raw: string | null = cached ?? null
   if (raw == null) {
     try {
-      raw = await ipc.getWorkflowFailedLogs(taskId, ctx.runId, ctx.jobId)
+      raw = (await ipc.getGithubWorkflowLog(taskId, ctx.jobId)).text
     } catch {
       raw = null
     }
@@ -354,9 +357,9 @@ let listenersInitialized = false
 export async function initActionsListeners(): Promise<void> {
   if (listenersInitialized) return
   listenersInitialized = true
-  await listen<{ taskId: string }>('git-status-changed', (event) => {
-    const { taskId } = event.payload
-    if (actionsState[taskId]) {
+  await listen<{ taskId: string, scopes: string[] }>('github-remote-invalidated', (event) => {
+    const { taskId, scopes } = event.payload
+    if (actionsState[taskId] && scopes.includes('actions')) {
       refreshWorkflowRuns(taskId)
     }
   })
