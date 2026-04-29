@@ -28,6 +28,7 @@ fn emit_git_local_changed(app: &AppHandle, task_id: &str) {
         "git-local-changed",
         crate::stream::GitStatusChangedEvent {
             task_id: task_id.to_string(),
+            remote_likely_changed: false,
         },
     );
 }
@@ -51,6 +52,13 @@ fn github_remote_invalidator(
             "github-remote-invalidated",
             crate::stream::GitHubRemoteInvalidatedEvent { task_id, scopes },
         );
+    })
+}
+
+fn github_remote_debugger(app: &AppHandle) -> github_remote::DebugFn {
+    let app = app.clone();
+    Arc::new(move |event| {
+        let _ = app.emit("github-remote-debug", event);
     })
 }
 
@@ -1763,6 +1771,7 @@ pub async fn get_github_overview(
         &t.worktree_path,
         mode,
         Some(github_remote_invalidator(&app)),
+        Some(github_remote_debugger(&app)),
     )
     .await
 }
@@ -1792,6 +1801,7 @@ pub async fn get_github_actions(
         limit,
         mode,
         Some(github_remote_invalidator(&app)),
+        Some(github_remote_debugger(&app)),
     )
     .await
 }
@@ -1816,6 +1826,7 @@ pub async fn get_github_workflow_jobs(
         run_id,
         mode,
         Some(github_remote_invalidator(&app)),
+        Some(github_remote_debugger(&app)),
     )
     .await
 }
@@ -1842,6 +1853,7 @@ pub async fn get_github_workflow_log(
         max_bytes.unwrap_or(0) as usize,
         mode,
         Some(github_remote_invalidator(&app)),
+        Some(github_remote_debugger(&app)),
     )
     .await
 }

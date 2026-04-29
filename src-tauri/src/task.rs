@@ -2212,6 +2212,7 @@ async fn spawn_codex_app_server_session(
             "git-local-changed",
             stream::GitStatusChangedEvent {
                 task_id: monitor_tid,
+                remote_likely_changed: true,
             },
         );
     });
@@ -2655,6 +2656,7 @@ pub async fn spawn_session_process(
             "git-local-changed",
             stream::GitStatusChangedEvent {
                 task_id: monitor_tid,
+                remote_likely_changed: true,
             },
         );
     });

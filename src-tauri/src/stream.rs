@@ -155,6 +155,7 @@ pub struct TaskNameEvent {
 #[serde(rename_all = "camelCase")]
 pub struct GitStatusChangedEvent {
     pub task_id: String,
+    pub remote_likely_changed: bool,
 }
 
 /// Emitted to frontend when cached GitHub remote state is invalidated.
@@ -163,6 +164,21 @@ pub struct GitStatusChangedEvent {
 pub struct GitHubRemoteInvalidatedEvent {
     pub task_id: String,
     pub scopes: Vec<String>,
+}
+
+/// Emitted to frontend with debug info about GitHub cache/fetch activity.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubRemoteDebugEvent {
+    pub task_id: String,
+    pub scope: String,
+    pub stage: String,
+    pub mode: Option<String>,
+    pub cache_state: Option<String>,
+    pub from_cache: Option<bool>,
+    pub duration_ms: Option<u64>,
+    pub detail: Option<String>,
+    pub emitted_at: i64,
 }
 
 /// Emitted to frontend when a task's hook starts, completes, or fails
@@ -1406,6 +1422,52 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn github_remote_scopes_for_tool_start(tool: &str, input: &str) -> Option<Vec<String>> {
+    let tool = tool.trim().to_ascii_lowercase();
+    if tool != "bash" && tool != "commandexecution" && tool != "command_execution" {
+        return None;
+    }
+
+    let input = input.to_ascii_lowercase();
+    let pr_mutation = [
+        "gh pr create",
+        "gh pr reopen",
+        "gh pr close",
+        "gh pr ready",
+        "gh pr merge",
+    ]
+    .iter()
+    .any(|needle| input.contains(needle));
+
+    if pr_mutation {
+        Some(vec!["overview".to_string()])
+    } else {
+        None
+    }
+}
+
+fn process_github_remote_invalidation(
+    pending: &mut Vec<Vec<String>>,
+    item: &OutputItem,
+) -> Option<Vec<String>> {
+    match item {
+        OutputItem::ToolStart { tool, input } => {
+            if let Some(scopes) = github_remote_scopes_for_tool_start(tool, input) {
+                pending.push(scopes);
+            }
+            None
+        }
+        OutputItem::ToolResult { is_error, .. } => {
+            let scopes = pending.first().cloned();
+            if scopes.is_some() {
+                pending.remove(0);
+            }
+            if *is_error { None } else { scopes }
+        }
+        _ => None,
+    }
+}
+
 /// Stream stdout from the claude process, parse NDJSON events, emit
 /// structured items to frontend, persist to DB, and return all captured lines.
 ///
@@ -1442,6 +1504,7 @@ pub async fn stream_and_capture(
     // turn completes, because the rollout file isn't persisted until then.
     let mut pending_resume_id: Option<String> = None;
     let defers_resume = agent.defers_resume_id_until_turn_end();
+    let mut pending_github_invalidations: Vec<Vec<String>> = Vec::new();
 
     loop {
         let deadline = tokio::time::sleep(FLUSH_INTERVAL);
@@ -1557,6 +1620,18 @@ pub async fn stream_and_capture(
                         let mut has_immediate = false;
                         let mut is_turn_end = false;
                         for item in &items {
+                            if let Some(scopes) = process_github_remote_invalidation(
+                                &mut pending_github_invalidations,
+                                item,
+                            ) {
+                                let _ = app.emit(
+                                    "github-remote-invalidated",
+                                    GitHubRemoteInvalidatedEvent {
+                                        task_id: task_id.clone(),
+                                        scopes,
+                                    },
+                                );
+                            }
                             match item {
                                 OutputItem::Text { .. } | OutputItem::Thinking { .. } => {
                                     if !buffer.is_empty() {
@@ -1710,7 +1785,7 @@ pub async fn stream_and_capture_rpc(
     // that fires throughout the turn. Cache the most recent breakdown so we
     // can populate the next `TurnEnd` before emitting it to the UI / db.
     let mut last_token_usage: Option<CodexTokenUsage> = None;
-    let _ = task_id; // reserved for snapshot hook parity with legacy path
+    let mut pending_github_invalidations: Vec<Vec<String>> = Vec::new();
 
     loop {
         let deadline = tokio::time::sleep(FLUSH_INTERVAL);
@@ -1744,6 +1819,18 @@ pub async fn stream_and_capture_rpc(
                         let mut is_turn_end = false;
 
                         for item in &items {
+                            if let Some(scopes) = process_github_remote_invalidation(
+                                &mut pending_github_invalidations,
+                                item,
+                            ) {
+                                let _ = app.emit(
+                                    "github-remote-invalidated",
+                                    GitHubRemoteInvalidatedEvent {
+                                        task_id: task_id.clone(),
+                                        scopes,
+                                    },
+                                );
+                            }
                             match item {
                                 OutputItem::Text { .. }
                                 | OutputItem::Thinking { .. }
@@ -2829,6 +2916,89 @@ mod tests {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["sessionId"], "s-001");
         assert_eq!(json["status"], "done");
+    }
+
+    #[test]
+    fn git_status_event_serializes_remote_likely_changed_as_camel_case() {
+        let event = GitStatusChangedEvent {
+            task_id: "t-001".into(),
+            remote_likely_changed: true,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["taskId"], "t-001");
+        assert_eq!(json["remoteLikelyChanged"], true);
+    }
+
+    #[test]
+    fn github_remote_debug_event_serializes_as_camel_case() {
+        let event = GitHubRemoteDebugEvent {
+            task_id: "t-001".into(),
+            scope: "overview".into(),
+            stage: "fetch-success".into(),
+            mode: Some("network-only".into()),
+            cache_state: Some("miss".into()),
+            from_cache: Some(false),
+            duration_ms: Some(42),
+            detail: Some("overview".into()),
+            emitted_at: 123,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["taskId"], "t-001");
+        assert_eq!(json["cacheState"], "miss");
+        assert_eq!(json["durationMs"], 42);
+        assert_eq!(json["emittedAt"], 123);
+    }
+
+    #[test]
+    fn github_pr_reopen_triggers_overview_invalidation_after_successful_result() {
+        let mut pending = Vec::new();
+
+        let start = OutputItem::ToolStart {
+            tool: "Bash".into(),
+            input: r#"{"command":"gh pr reopen 5"}"#.into(),
+        };
+        assert!(process_github_remote_invalidation(&mut pending, &start).is_none());
+        assert_eq!(pending, vec![vec!["overview".to_string()]]);
+
+        let result = OutputItem::ToolResult {
+            text: "Reopened the existing PR".into(),
+            is_error: false,
+        };
+        let scopes = process_github_remote_invalidation(&mut pending, &result);
+        assert_eq!(scopes, Some(vec!["overview".to_string()]));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn github_pr_reopen_does_not_invalidate_on_failed_result() {
+        let mut pending = Vec::new();
+
+        let start = OutputItem::ToolStart {
+            tool: "Bash".into(),
+            input: r#"{"command":"gh pr reopen 5"}"#.into(),
+        };
+        process_github_remote_invalidation(&mut pending, &start);
+
+        let result = OutputItem::ToolResult {
+            text: "failed".into(),
+            is_error: true,
+        };
+        let scopes = process_github_remote_invalidation(&mut pending, &result);
+        assert_eq!(scopes, None);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn github_pr_checks_does_not_arm_invalidation() {
+        let mut pending = Vec::new();
+
+        let start = OutputItem::ToolStart {
+            tool: "Bash".into(),
+            input: r#"{"command":"gh pr checks 5"}"#.into(),
+        };
+        let scopes = process_github_remote_invalidation(&mut pending, &start);
+        assert_eq!(scopes, None);
+        assert!(pending.is_empty());
     }
 
     #[test]

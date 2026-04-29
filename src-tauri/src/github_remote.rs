@@ -1,10 +1,12 @@
 use crate::db;
 use crate::github::{self, CiCheck, GitHubRepo, PrInfo, WorkflowJob, WorkflowRun};
+use crate::stream::GitHubRemoteDebugEvent;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinError;
 
@@ -18,6 +20,7 @@ const LOGS_STALE_MS: i64 = 24 * 60 * 60_000;
 const LOGS_EXPIRE_MS: i64 = 7 * 24 * 60 * 60_000;
 
 pub type InvalidateFn = Arc<dyn Fn(String, Vec<String>) + Send + Sync + 'static>;
+pub type DebugFn = Arc<dyn Fn(GitHubRemoteDebugEvent) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteFetchMode {
@@ -143,6 +146,41 @@ fn flatten_join<T>(result: Result<Result<T, String>, JoinError>) -> Result<T, St
     result.map_err(|e| format!("Task join error: {e}"))?
 }
 
+fn mode_label(mode: RemoteFetchMode) -> String {
+    match mode {
+        RemoteFetchMode::CacheFirst => "cache-first",
+        RemoteFetchMode::StaleWhileRevalidate => "stale-while-revalidate",
+        RemoteFetchMode::NetworkOnly => "network-only",
+    }
+    .to_string()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_debug(
+    debug: Option<&DebugFn>,
+    task_id: &str,
+    scope: &str,
+    stage: &str,
+    mode: Option<RemoteFetchMode>,
+    cache_state: Option<&str>,
+    from_cache: Option<bool>,
+    duration_ms: Option<u64>,
+    detail: Option<String>,
+) {
+    let Some(debug) = debug else { return };
+    debug(GitHubRemoteDebugEvent {
+        task_id: task_id.to_string(),
+        scope: scope.to_string(),
+        stage: stage.to_string(),
+        mode: mode.map(mode_label),
+        cache_state: cache_state.map(|value| value.to_string()),
+        from_cache,
+        duration_ms,
+        detail,
+        emitted_at: now_ms(),
+    });
+}
+
 fn singleflight_gates() -> &'static TokioMutex<HashMap<String, Arc<TokioMutex<()>>>> {
     static GATES: OnceLock<TokioMutex<HashMap<String, Arc<TokioMutex<()>>>>> = OnceLock::new();
     GATES.get_or_init(|| TokioMutex::new(HashMap::new()))
@@ -185,21 +223,67 @@ fn schedule_revalidate<F, Fut>(
     cache_key: String,
     scope: &'static str,
     notifier: Option<InvalidateFn>,
+    debug: Option<DebugFn>,
     work: F,
 ) where
     F: FnOnce(SqlitePool) -> Fut + Send + 'static,
     Fut: Future<Output = Result<bool, String>> + Send + 'static,
 {
     tokio::spawn(async move {
+        emit_debug(
+            debug.as_ref(),
+            &task_id,
+            scope,
+            "revalidate-start",
+            Some(RemoteFetchMode::StaleWhileRevalidate),
+            Some("stale"),
+            Some(true),
+            None,
+            Some(cache_key.clone()),
+        );
         match with_singleflight(&cache_key, move || work(pool)).await {
             Ok(true) => {
+                emit_debug(
+                    debug.as_ref(),
+                    &task_id,
+                    scope,
+                    "revalidate-success",
+                    Some(RemoteFetchMode::StaleWhileRevalidate),
+                    Some("stale"),
+                    Some(false),
+                    None,
+                    Some(cache_key.clone()),
+                );
                 if let Some(notify) = notifier {
                     notify(task_id, vec![scope.to_string()]);
                 }
             }
-            Ok(false) => {}
+            Ok(false) => {
+                emit_debug(
+                    debug.as_ref(),
+                    &task_id,
+                    scope,
+                    "revalidate-skip",
+                    Some(RemoteFetchMode::StaleWhileRevalidate),
+                    Some("fresh"),
+                    Some(true),
+                    None,
+                    Some(cache_key.clone()),
+                );
+            }
             Err(err) => {
                 eprintln!("[verun][github-remote] revalidate {cache_key} failed: {err}");
+                emit_debug(
+                    debug.as_ref(),
+                    &task_id,
+                    scope,
+                    "revalidate-error",
+                    Some(RemoteFetchMode::StaleWhileRevalidate),
+                    Some("stale"),
+                    Some(true),
+                    None,
+                    Some(err),
+                );
             }
         }
     });
@@ -463,26 +547,64 @@ pub async fn get_overview(
     worktree_path: &str,
     mode: RemoteFetchMode,
     on_invalidate: Option<InvalidateFn>,
+    on_debug: Option<DebugFn>,
 ) -> Result<GitHubOverviewSnapshot, String> {
     let cache_key = make_cache_key(task_id, "overview", None);
     match cached_payload::<OverviewPayload>(pool, &cache_key, mode).await? {
-        CacheState::Fresh(payload, entry) => return Ok(overview_snapshot(payload, &entry, true)),
+        CacheState::Fresh(payload, entry) => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "overview",
+                "cache-hit",
+                Some(mode),
+                Some("fresh"),
+                Some(true),
+                None,
+                Some(cache_key.clone()),
+            );
+            return Ok(overview_snapshot(payload, &entry, true));
+        }
         CacheState::Stale(payload, entry) if mode == RemoteFetchMode::CacheFirst => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "overview",
+                "cache-hit",
+                Some(mode),
+                Some("stale"),
+                Some(true),
+                None,
+                Some(cache_key.clone()),
+            );
             return Ok(overview_snapshot(payload, &entry, true));
         }
         CacheState::Stale(payload, entry) if mode == RemoteFetchMode::StaleWhileRevalidate => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "overview",
+                "cache-hit",
+                Some(mode),
+                Some("stale"),
+                Some(true),
+                None,
+                Some(cache_key.clone()),
+            );
             let pool = pool.clone();
             let fetch_task_id = task_id.to_string();
             let notify_task_id = task_id.to_string();
             let worktree_path = worktree_path.to_string();
             let refresh_key = cache_key.clone();
             let notifier = on_invalidate.clone();
+            let debug = on_debug.clone();
             schedule_revalidate(
                 pool,
                 notify_task_id,
                 refresh_key.clone(),
                 "overview",
                 notifier,
+                debug,
                 move |pool| async move {
                     match cached_payload::<OverviewPayload>(
                         &pool,
@@ -501,6 +623,19 @@ pub async fn get_overview(
             );
             return Ok(overview_snapshot(payload, &entry, true));
         }
+        CacheState::Miss => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "overview",
+                "cache-miss",
+                Some(mode),
+                Some("miss"),
+                Some(false),
+                None,
+                Some(cache_key.clone()),
+            );
+        }
         _ => {}
     }
 
@@ -510,10 +645,62 @@ pub async fn get_overview(
                 cached_payload::<OverviewPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst)
                     .await?
             {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "overview",
+                    "cache-hit",
+                    Some(mode),
+                    Some("fresh"),
+                    Some(true),
+                    None,
+                    Some(cache_key.clone()),
+                );
                 return Ok(overview_snapshot(payload, &entry, true));
             }
         }
-        fetch_overview_and_store(pool, task_id, worktree_path).await
+        emit_debug(
+            on_debug.as_ref(),
+            task_id,
+            "overview",
+            "fetch-start",
+            Some(mode),
+            None,
+            Some(false),
+            None,
+            Some(cache_key.clone()),
+        );
+        let started = Instant::now();
+        match fetch_overview_and_store(pool, task_id, worktree_path).await {
+            Ok(snapshot) => {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "overview",
+                    "fetch-success",
+                    Some(mode),
+                    Some("miss"),
+                    Some(false),
+                    Some(started.elapsed().as_millis() as u64),
+                    Some(cache_key.clone()),
+                );
+                Ok(snapshot)
+            }
+            Err(err) => {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "overview",
+                    "fetch-error",
+                    Some(mode),
+                    None,
+                    Some(false),
+                    Some(started.elapsed().as_millis() as u64),
+                    Some(err.clone()),
+                );
+                Err(err)
+            }
+        }
     })
     .await
 }
@@ -525,27 +712,62 @@ pub async fn get_actions(
     limit: u32,
     mode: RemoteFetchMode,
     on_invalidate: Option<InvalidateFn>,
+    on_debug: Option<DebugFn>,
 ) -> Result<GitHubActionsSnapshot, String> {
     let cache_key = make_cache_key(task_id, "actions", None);
     match cached_payload::<ActionsPayload>(pool, &cache_key, mode).await? {
         CacheState::Fresh(payload, entry) if payload.cached_limit >= limit => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "actions",
+                "cache-hit",
+                Some(mode),
+                Some("fresh"),
+                Some(true),
+                None,
+                Some(format!("{cache_key} limit={limit}")),
+            );
             return Ok(actions_snapshot(payload, &entry, limit, true));
         }
         CacheState::Stale(payload, entry)
             if payload.cached_limit >= limit && mode == RemoteFetchMode::CacheFirst =>
         {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "actions",
+                "cache-hit",
+                Some(mode),
+                Some("stale"),
+                Some(true),
+                None,
+                Some(format!("{cache_key} limit={limit}")),
+            );
             return Ok(actions_snapshot(payload, &entry, limit, true));
         }
         CacheState::Stale(payload, entry)
             if payload.cached_limit >= limit
                 && mode == RemoteFetchMode::StaleWhileRevalidate =>
         {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "actions",
+                "cache-hit",
+                Some(mode),
+                Some("stale"),
+                Some(true),
+                None,
+                Some(format!("{cache_key} limit={limit}")),
+            );
             let pool = pool.clone();
             let fetch_task_id = task_id.to_string();
             let notify_task_id = task_id.to_string();
             let worktree_path = worktree_path.to_string();
             let refresh_key = cache_key.clone();
             let notifier = on_invalidate.clone();
+            let debug = on_debug.clone();
             let keep_limit = payload.cached_limit.max(limit);
             schedule_revalidate(
                 pool,
@@ -553,6 +775,7 @@ pub async fn get_actions(
                 refresh_key.clone(),
                 "actions",
                 notifier,
+                debug,
                 move |pool| async move {
                     match cached_payload::<ActionsPayload>(
                         &pool,
@@ -581,6 +804,19 @@ pub async fn get_actions(
             );
             return Ok(actions_snapshot(payload, &entry, limit, true));
         }
+        CacheState::Miss => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "actions",
+                "cache-miss",
+                Some(mode),
+                Some("miss"),
+                Some(false),
+                None,
+                Some(format!("{cache_key} limit={limit}")),
+            );
+        }
         _ => {}
     }
 
@@ -590,6 +826,17 @@ pub async fn get_actions(
                 .await?
             {
                 CacheState::Fresh(payload, entry) if payload.cached_limit >= limit => {
+                    emit_debug(
+                        on_debug.as_ref(),
+                        task_id,
+                        "actions",
+                        "cache-hit",
+                        Some(mode),
+                        Some("fresh"),
+                        Some(true),
+                        None,
+                        Some(format!("{cache_key} limit={limit}")),
+                    );
                     return Ok(actions_snapshot(payload, &entry, limit, true));
                 }
                 CacheState::Fresh(payload, _) | CacheState::Stale(payload, _) => {
@@ -600,7 +847,48 @@ pub async fn get_actions(
         } else {
             None
         };
-        fetch_actions_and_store(pool, task_id, worktree_path, limit, existing_limit).await
+        emit_debug(
+            on_debug.as_ref(),
+            task_id,
+            "actions",
+            "fetch-start",
+            Some(mode),
+            None,
+            Some(false),
+            None,
+            Some(format!("{cache_key} limit={limit}")),
+        );
+        let started = Instant::now();
+        match fetch_actions_and_store(pool, task_id, worktree_path, limit, existing_limit).await {
+            Ok(snapshot) => {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "actions",
+                    "fetch-success",
+                    Some(mode),
+                    Some("miss"),
+                    Some(false),
+                    Some(started.elapsed().as_millis() as u64),
+                    Some(format!("{cache_key} limit={limit}")),
+                );
+                Ok(snapshot)
+            }
+            Err(err) => {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "actions",
+                    "fetch-error",
+                    Some(mode),
+                    None,
+                    Some(false),
+                    Some(started.elapsed().as_millis() as u64),
+                    Some(err.clone()),
+                );
+                Err(err)
+            }
+        }
     })
     .await
 }
@@ -612,27 +900,65 @@ pub async fn get_workflow_jobs(
     run_id: u64,
     mode: RemoteFetchMode,
     on_invalidate: Option<InvalidateFn>,
+    on_debug: Option<DebugFn>,
 ) -> Result<WorkflowJobsSnapshot, String> {
     let run_key = run_id.to_string();
     let cache_key = make_cache_key(task_id, "jobs", Some(&run_key));
     match cached_payload::<JobsPayload>(pool, &cache_key, mode).await? {
-        CacheState::Fresh(payload, entry) => return Ok(jobs_snapshot(payload, &entry, true)),
+        CacheState::Fresh(payload, entry) => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "jobs",
+                "cache-hit",
+                Some(mode),
+                Some("fresh"),
+                Some(true),
+                None,
+                Some(format!("{cache_key} runId={run_id}")),
+            );
+            return Ok(jobs_snapshot(payload, &entry, true));
+        }
         CacheState::Stale(payload, entry) if mode == RemoteFetchMode::CacheFirst => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "jobs",
+                "cache-hit",
+                Some(mode),
+                Some("stale"),
+                Some(true),
+                None,
+                Some(format!("{cache_key} runId={run_id}")),
+            );
             return Ok(jobs_snapshot(payload, &entry, true));
         }
         CacheState::Stale(payload, entry) if mode == RemoteFetchMode::StaleWhileRevalidate => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "jobs",
+                "cache-hit",
+                Some(mode),
+                Some("stale"),
+                Some(true),
+                None,
+                Some(format!("{cache_key} runId={run_id}")),
+            );
             let pool = pool.clone();
             let fetch_task_id = task_id.to_string();
             let notify_task_id = task_id.to_string();
             let worktree_path = worktree_path.to_string();
             let refresh_key = cache_key.clone();
             let notifier = on_invalidate.clone();
+            let debug = on_debug.clone();
             schedule_revalidate(
                 pool,
                 notify_task_id,
                 refresh_key.clone(),
                 "jobs",
                 notifier,
+                debug,
                 move |pool| async move {
                     match cached_payload::<JobsPayload>(
                         &pool,
@@ -652,6 +978,19 @@ pub async fn get_workflow_jobs(
             );
             return Ok(jobs_snapshot(payload, &entry, true));
         }
+        CacheState::Miss => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "jobs",
+                "cache-miss",
+                Some(mode),
+                Some("miss"),
+                Some(false),
+                None,
+                Some(format!("{cache_key} runId={run_id}")),
+            );
+        }
         _ => {}
     }
 
@@ -660,14 +999,67 @@ pub async fn get_workflow_jobs(
             if let CacheState::Fresh(payload, entry) =
                 cached_payload::<JobsPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst).await?
             {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "jobs",
+                    "cache-hit",
+                    Some(mode),
+                    Some("fresh"),
+                    Some(true),
+                    None,
+                    Some(format!("{cache_key} runId={run_id}")),
+                );
                 return Ok(jobs_snapshot(payload, &entry, true));
             }
         }
-        fetch_jobs_and_store(pool, task_id, worktree_path, run_id).await
+        emit_debug(
+            on_debug.as_ref(),
+            task_id,
+            "jobs",
+            "fetch-start",
+            Some(mode),
+            None,
+            Some(false),
+            None,
+            Some(format!("{cache_key} runId={run_id}")),
+        );
+        let started = Instant::now();
+        match fetch_jobs_and_store(pool, task_id, worktree_path, run_id).await {
+            Ok(snapshot) => {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "jobs",
+                    "fetch-success",
+                    Some(mode),
+                    Some("miss"),
+                    Some(false),
+                    Some(started.elapsed().as_millis() as u64),
+                    Some(format!("{cache_key} runId={run_id}")),
+                );
+                Ok(snapshot)
+            }
+            Err(err) => {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "jobs",
+                    "fetch-error",
+                    Some(mode),
+                    None,
+                    Some(false),
+                    Some(started.elapsed().as_millis() as u64),
+                    Some(err.clone()),
+                );
+                Err(err)
+            }
+        }
     })
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn get_workflow_log(
     pool: &SqlitePool,
     task_id: &str,
@@ -676,29 +1068,65 @@ pub async fn get_workflow_log(
     max_bytes: usize,
     mode: RemoteFetchMode,
     on_invalidate: Option<InvalidateFn>,
+    on_debug: Option<DebugFn>,
 ) -> Result<WorkflowLogSnapshot, String> {
     let job_key = job_id.to_string();
     let cache_key = make_cache_key(task_id, "logs", Some(&job_key));
     match cached_payload::<LogPayload>(pool, &cache_key, mode).await? {
         CacheState::Fresh(payload, entry) => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "logs",
+                "cache-hit",
+                Some(mode),
+                Some("fresh"),
+                Some(true),
+                None,
+                Some(format!("{cache_key} jobId={job_id}")),
+            );
             return Ok(log_snapshot(payload, &entry, max_bytes, true));
         }
         CacheState::Stale(payload, entry) if mode == RemoteFetchMode::CacheFirst => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "logs",
+                "cache-hit",
+                Some(mode),
+                Some("stale"),
+                Some(true),
+                None,
+                Some(format!("{cache_key} jobId={job_id}")),
+            );
             return Ok(log_snapshot(payload, &entry, max_bytes, true));
         }
         CacheState::Stale(payload, entry) if mode == RemoteFetchMode::StaleWhileRevalidate => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "logs",
+                "cache-hit",
+                Some(mode),
+                Some("stale"),
+                Some(true),
+                None,
+                Some(format!("{cache_key} jobId={job_id}")),
+            );
             let pool = pool.clone();
             let fetch_task_id = task_id.to_string();
             let notify_task_id = task_id.to_string();
             let worktree_path = worktree_path.to_string();
             let refresh_key = cache_key.clone();
             let notifier = on_invalidate.clone();
+            let debug = on_debug.clone();
             schedule_revalidate(
                 pool,
                 notify_task_id,
                 refresh_key.clone(),
                 "logs",
                 notifier,
+                debug,
                 move |pool| async move {
                     match cached_payload::<LogPayload>(
                         &pool,
@@ -718,6 +1146,19 @@ pub async fn get_workflow_log(
             );
             return Ok(log_snapshot(payload, &entry, max_bytes, true));
         }
+        CacheState::Miss => {
+            emit_debug(
+                on_debug.as_ref(),
+                task_id,
+                "logs",
+                "cache-miss",
+                Some(mode),
+                Some("miss"),
+                Some(false),
+                None,
+                Some(format!("{cache_key} jobId={job_id}")),
+            );
+        }
         _ => {}
     }
 
@@ -726,10 +1167,62 @@ pub async fn get_workflow_log(
             if let CacheState::Fresh(payload, entry) =
                 cached_payload::<LogPayload>(pool, &cache_key, RemoteFetchMode::CacheFirst).await?
             {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "logs",
+                    "cache-hit",
+                    Some(mode),
+                    Some("fresh"),
+                    Some(true),
+                    None,
+                    Some(format!("{cache_key} jobId={job_id}")),
+                );
                 return Ok(log_snapshot(payload, &entry, max_bytes, true));
             }
         }
-        fetch_log_and_store(pool, task_id, worktree_path, job_id, max_bytes).await
+        emit_debug(
+            on_debug.as_ref(),
+            task_id,
+            "logs",
+            "fetch-start",
+            Some(mode),
+            None,
+            Some(false),
+            None,
+            Some(format!("{cache_key} jobId={job_id}")),
+        );
+        let started = Instant::now();
+        match fetch_log_and_store(pool, task_id, worktree_path, job_id, max_bytes).await {
+            Ok(snapshot) => {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "logs",
+                    "fetch-success",
+                    Some(mode),
+                    Some("miss"),
+                    Some(false),
+                    Some(started.elapsed().as_millis() as u64),
+                    Some(format!("{cache_key} jobId={job_id}")),
+                );
+                Ok(snapshot)
+            }
+            Err(err) => {
+                emit_debug(
+                    on_debug.as_ref(),
+                    task_id,
+                    "logs",
+                    "fetch-error",
+                    Some(mode),
+                    None,
+                    Some(false),
+                    Some(started.elapsed().as_millis() as u64),
+                    Some(err.clone()),
+                );
+                Err(err)
+            }
+        }
     })
     .await
 }
@@ -921,6 +1414,7 @@ mod tests {
             3,
             RemoteFetchMode::CacheFirst,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -933,6 +1427,7 @@ mod tests {
             repo.to_str().unwrap(),
             1,
             RemoteFetchMode::CacheFirst,
+            None,
             None,
         )
         .await
@@ -964,6 +1459,7 @@ mod tests {
             1,
             RemoteFetchMode::CacheFirst,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -993,6 +1489,7 @@ mod tests {
             1,
             RemoteFetchMode::StaleWhileRevalidate,
             Some(notify),
+            None,
         )
         .await
         .unwrap();
@@ -1017,6 +1514,7 @@ mod tests {
             repo.to_str().unwrap(),
             1,
             RemoteFetchMode::CacheFirst,
+            None,
             None,
         )
         .await
@@ -1048,6 +1546,7 @@ mod tests {
             2,
             RemoteFetchMode::CacheFirst,
             None,
+            None,
         );
         let second = get_actions(
             &pool,
@@ -1055,6 +1554,7 @@ mod tests {
             repo.to_str().unwrap(),
             2,
             RemoteFetchMode::CacheFirst,
+            None,
             None,
         );
         let (first, second) = tokio::join!(first, second);
@@ -1085,6 +1585,7 @@ mod tests {
             1,
             RemoteFetchMode::CacheFirst,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1096,6 +1597,7 @@ mod tests {
             repo.to_str().unwrap(),
             1,
             RemoteFetchMode::NetworkOnly,
+            None,
             None,
         )
         .await
@@ -1127,6 +1629,7 @@ mod tests {
             1,
             RemoteFetchMode::CacheFirst,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1146,6 +1649,7 @@ mod tests {
             repo.to_str().unwrap(),
             1,
             RemoteFetchMode::CacheFirst,
+            None,
             None,
         )
         .await

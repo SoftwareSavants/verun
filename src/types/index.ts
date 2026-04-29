@@ -393,6 +393,18 @@ export interface WorkflowLogSnapshot {
 
 export type RemoteFetchMode = 'cache-first' | 'stale-while-revalidate' | 'network-only'
 
+export interface GitHubDebugEvent {
+  taskId: string
+  scope: string
+  stage: string
+  mode?: RemoteFetchMode | 'event'
+  cacheState?: 'miss' | 'fresh' | 'stale'
+  fromCache?: boolean
+  durationMs?: number
+  detail?: string
+  emittedAt: number
+}
+
 // Terminal / PTY types
 
 export interface TerminalInstance {

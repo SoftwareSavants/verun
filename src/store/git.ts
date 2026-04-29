@@ -2,6 +2,7 @@ import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
 import type { GitStatus, BranchCommit, PrInfo, CiCheck, GitHubRepo } from '../types'
+import { selectedTaskId } from './ui'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -204,9 +205,20 @@ export async function initGitListeners(): Promise<void> {
   if (listenersInitialized) return
   listenersInitialized = true
 
-  await listen<{ taskId: string }>('git-local-changed', (event) => {
-    const { taskId } = event.payload
+  await listen<{ taskId: string, remoteLikelyChanged?: boolean }>('git-local-changed', (event) => {
+    const { taskId, remoteLikelyChanged } = event.payload
+    const shouldRefreshRemote = remoteLikelyChanged
+      && (remoteTrackedTasks.has(taskId) || selectedTaskId() === taskId)
+    if (shouldRefreshRemote) {
+      invalidateRemote(taskId)
+      refreshTaskGit(taskId, { local: true, remote: true, force: true })
+      return
+    }
     refreshTaskGit(taskId, { local: true, remote: false, force: true })
+  })
+
+  await listen<{ taskId: string, path: string }>('file-tree-changed', (event) => {
+    refreshTaskGit(event.payload.taskId, { local: true, remote: false })
   })
 
   await listen<{ taskId: string, scopes: string[] }>('github-remote-invalidated', (event) => {

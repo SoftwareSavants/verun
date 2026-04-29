@@ -1,9 +1,30 @@
 import { describe, test, expect, beforeEach, vi, afterEach } from 'vitest'
 
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn().mockResolvedValue(() => {}),
-  emit: vi.fn(),
-}))
+const eventMocks = vi.hoisted(() => {
+  const listeners = new Map<string, (event: { payload: any }) => void>()
+  return {
+    listeners,
+    listen: vi.fn(async (name: string, cb: (event: { payload: any }) => void) => {
+      listeners.set(name, cb)
+      return () => listeners.delete(name)
+    }),
+    emit: vi.fn(),
+  }
+})
+
+vi.mock('@tauri-apps/api/event', () => eventMocks)
+
+const uiMocks = vi.hoisted(() => {
+  let selectedTask: string | null = null
+  return {
+    selectedTaskId: () => selectedTask,
+    __setSelectedTaskId: (taskId: string | null) => {
+      selectedTask = taskId
+    },
+  }
+})
+
+vi.mock('./ui', () => uiMocks)
 
 vi.mock('../lib/ipc', () => ({
   getGitStatus: vi.fn().mockResolvedValue({ files: [], summary: '' }),
@@ -23,12 +44,13 @@ vi.mock('../lib/ipc', () => ({
   }),
 }))
 
-import { clearTaskGitState, refreshTaskGit, taskGit } from './git'
+import { clearTaskGitState, initGitListeners, refreshTaskGit, taskGit } from './git'
 import * as ipc from '../lib/ipc'
 
 describe('refreshTaskGit', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    uiMocks.__setSelectedTaskId(null)
     clearTaskGitState('t-debounce')
     clearTaskGitState('t-force')
     clearTaskGitState('t-local-default')
@@ -131,5 +153,67 @@ describe('refreshTaskGit', () => {
       name: 'repo',
       url: 'https://github.com/local/repo',
     })
+  })
+
+  test('git-local-changed with remoteLikelyChanged refreshes remote overview for tracked tasks', async () => {
+    await refreshTaskGit('t-remote', { local: false, remote: true, force: true })
+    expect(ipc.getGithubOverview).toHaveBeenCalledTimes(1)
+
+    await initGitListeners()
+    eventMocks.listeners.get('git-local-changed')?.({ payload: { taskId: 't-remote', remoteLikelyChanged: true } })
+
+    await vi.runAllTimersAsync()
+
+    expect(ipc.getGitStatus).toHaveBeenCalledTimes(1)
+    expect(ipc.getGithubOverview).toHaveBeenCalledTimes(2)
+  })
+
+  test('git-local-changed without remoteLikelyChanged stays local-only', async () => {
+    await refreshTaskGit('t-remote', { local: false, remote: true, force: true })
+    expect(ipc.getGithubOverview).toHaveBeenCalledTimes(1)
+
+    await initGitListeners()
+    eventMocks.listeners.get('git-local-changed')?.({ payload: { taskId: 't-remote' } })
+
+    await vi.runAllTimersAsync()
+
+    expect(ipc.getGitStatus).toHaveBeenCalledTimes(1)
+    expect(ipc.getGithubOverview).toHaveBeenCalledTimes(1)
+  })
+
+  test('git-local-changed with remoteLikelyChanged refreshes remote overview for the selected task even before remote tracking', async () => {
+    uiMocks.__setSelectedTaskId('t-selected')
+
+    await initGitListeners()
+    eventMocks.listeners.get('git-local-changed')?.({ payload: { taskId: 't-selected', remoteLikelyChanged: true } })
+
+    await vi.runAllTimersAsync()
+
+    expect(ipc.getGitStatus).toHaveBeenCalledTimes(1)
+    expect(ipc.getGithubOverview).toHaveBeenCalledTimes(1)
+    expect(ipc.getGithubOverview).toHaveBeenCalledWith('t-selected', 'network-only')
+  })
+
+  test('file-tree-changed refreshes local git state without remote overview', async () => {
+    await initGitListeners()
+    eventMocks.listeners.get('file-tree-changed')?.({ payload: { taskId: 't-file-edit', path: 'src' } })
+
+    await vi.runAllTimersAsync()
+
+    expect(ipc.getGitStatus).toHaveBeenCalledTimes(1)
+    expect(ipc.getGitStatus).toHaveBeenCalledWith('t-file-edit')
+    expect(ipc.getGithubOverview).not.toHaveBeenCalled()
+  })
+
+  test('file-tree-changed bursts debounce into one local git refresh', async () => {
+    await initGitListeners()
+    eventMocks.listeners.get('file-tree-changed')?.({ payload: { taskId: 't-file-edit', path: 'src' } })
+    eventMocks.listeners.get('file-tree-changed')?.({ payload: { taskId: 't-file-edit', path: 'src/components' } })
+    eventMocks.listeners.get('file-tree-changed')?.({ payload: { taskId: 't-file-edit', path: 'src/store' } })
+
+    await vi.runAllTimersAsync()
+
+    expect(ipc.getGitStatus).toHaveBeenCalledTimes(1)
+    expect(ipc.getGithubOverview).not.toHaveBeenCalled()
   })
 })

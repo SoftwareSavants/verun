@@ -54,6 +54,24 @@ const gitMocks = vi.hoisted(() => ({
 }))
 vi.mock('../store/git', () => gitMocks)
 
+const githubDebugMocks = vi.hoisted(() => ({
+  githubDebugEntriesForTask: vi.fn(() => [
+    {
+      id: 1,
+      taskId: 't1',
+      scope: 'overview',
+      stage: 'fetch-success',
+      mode: 'network-only',
+      cacheState: 'miss',
+      fromCache: false,
+      durationMs: 42,
+      emittedAt: 1_746_000_000_000,
+      detail: 'overview refreshed',
+    },
+  ]),
+}))
+vi.mock('../store/githubDebug', () => githubDebugMocks)
+
 import { ActionsPanel } from './ActionsPanel'
 import { clearActionsState, stopPolling } from '../store/actions'
 
@@ -81,6 +99,12 @@ async function flush() {
 describe('<ActionsPanel /> layout', () => {
   beforeEach(() => {
     cleanup()
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    })
     stopPolling('t1')
     clearActionsState('t1')
     ipcMocks.getGithubActions.mockReset()
@@ -233,5 +257,47 @@ describe('<ActionsPanel /> layout', () => {
     // Run row should no longer show the red failure X
     const redIcon = rowBtn.querySelector('.text-red-400')
     expect(redIcon).toBeNull()
+  })
+
+  test('dev builds render a GitHub debug panel with recent request activity', async () => {
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [run({ databaseId: 1, state: 'success', workflowName: 'CI' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+
+    const { getByText, container } = render(() => <ActionsPanel taskId="t1" />)
+    await flush()
+
+    expect(getByText('GitHub Debug')).toBeTruthy()
+    expect(container.textContent).toContain('fetch-success')
+    expect(container.textContent).toContain('overview')
+    expect(container.textContent).toContain('network-only')
+  })
+
+  test('dev builds can copy the full GitHub debug log', async () => {
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [run({ databaseId: 1, state: 'success', workflowName: 'CI' })],
+      fetchedAt: 1,
+      staleAt: 2,
+      expiresAt: 3,
+      isStale: false,
+      fromCache: false,
+    })
+
+    const { container } = render(() => <ActionsPanel taskId="t1" />)
+    await flush()
+
+    const copyButton = container.querySelector('[title="Copy all debug logs"]') as HTMLButtonElement | null
+    expect(copyButton).toBeTruthy()
+
+    await fireEvent.click(copyButton!)
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0]).toContain('fetch-success')
+    expect(vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0]).toContain('overview')
   })
 })

@@ -12,6 +12,7 @@ import {
   rerunFailedJobsForRun, rerunSingleJob,
 } from '../store/actions'
 import { taskGit } from '../store/git'
+import { githubDebugEntriesForTask } from '../store/githubDebug'
 import { taskById } from '../store/tasks'
 import { sessionsForTask, sendMessage } from '../store/sessions'
 import { selectedSessionForTask } from '../store/taskContext'
@@ -25,6 +26,23 @@ import { Popover } from './Popover'
 
 interface Props {
   taskId: string
+}
+
+function formatGitHubDebugEntries(entries: ReturnType<typeof githubDebugEntriesForTask>): string {
+  return entries
+    .map((entry) => {
+      const parts = [
+        new Date(entry.emittedAt).toISOString(),
+        entry.scope,
+        entry.stage,
+      ]
+      if (entry.mode) parts.push(`mode=${entry.mode}`)
+      if (entry.cacheState) parts.push(`cache=${entry.cacheState}`)
+      if (entry.fromCache !== undefined) parts.push(`source=${entry.fromCache ? 'cache' : 'network'}`)
+      if (entry.durationMs !== undefined) parts.push(`duration=${entry.durationMs}ms`)
+      return entry.detail ? `${parts.join(' | ')}\n${entry.detail}` : parts.join(' | ')
+    })
+    .join('\n\n')
 }
 
 function stateIcon(state: WorkflowRunState): Component<{ size: number; class?: string }> {
@@ -644,6 +662,7 @@ export const ActionsPanel: Component<Props> = (props) => {
   const state = () => actionsState[props.taskId]
   const git = () => taskGit(props.taskId)
   const task = () => taskById(props.taskId)
+  const [debugCopied, setDebugCopied] = createSignal(false)
 
   const branch = () => task()?.branch ?? ''
   const repo = () => git().github
@@ -696,6 +715,16 @@ export const ActionsPanel: Component<Props> = (props) => {
   })
 
   const polling = () => !!state() && isAnyRunActive(props.taskId)
+  const debugEntries = () => githubDebugEntriesForTask(props.taskId).slice(-20).reverse()
+  const copyDebugLogs = async () => {
+    try {
+      await navigator.clipboard.writeText(formatGitHubDebugEntries(debugEntries()))
+      setDebugCopied(true)
+      window.setTimeout(() => setDebugCopied(false), 1200)
+    } catch (e) {
+      addToast(`Copy failed: ${e}`, 'error')
+    }
+  }
 
   return (
     <div class="flex flex-col h-full">
@@ -767,6 +796,57 @@ export const ActionsPanel: Component<Props> = (props) => {
                 {run => <ActionsRunRow taskId={props.taskId} run={run} />}
               </For>
             </Show>
+          </div>
+        </Show>
+
+        <Show when={import.meta.env.DEV && debugEntries().length > 0}>
+          <div class="mt-2 border-t-1 border-t-solid border-t-outline/8">
+            <div class="px-3 py-2">
+              <div class="flex items-center gap-2">
+                <div class="text-[10px] font-semibold uppercase tracking-wide text-text-dim/80">
+                  GitHub Debug
+                </div>
+                <button
+                  class="ml-auto h-5 rounded px-1.5 flex items-center gap-1 text-[10px] text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                  onClick={copyDebugLogs}
+                  title="Copy all debug logs"
+                >
+                  <Show when={debugCopied()} fallback={<Copy size={11} />}>
+                    <Check size={11} />
+                  </Show>
+                  <span>{debugCopied() ? 'Copied' : 'Copy all'}</span>
+                </button>
+              </div>
+              <div class="mt-2 flex flex-col gap-1.5">
+                <For each={debugEntries()}>
+                  {(entry) => (
+                    <div class="rounded-md bg-surface-2/70 px-2 py-1.5 text-[10px] leading-4 text-text-dim">
+                      <div class="flex items-center gap-1.5 text-text-secondary">
+                        <span class="font-medium">{entry.stage}</span>
+                        <span class="text-text-dim/70">{entry.scope}</span>
+                        <Show when={entry.mode}>
+                          <span class="text-accent/80">{entry.mode}</span>
+                        </Show>
+                        <Show when={entry.cacheState}>
+                          <span class="text-text-dim/70">{entry.cacheState}</span>
+                        </Show>
+                        <Show when={entry.fromCache !== undefined}>
+                          <span class={entry.fromCache ? 'text-emerald-400/90' : 'text-amber-400/90'}>
+                            {entry.fromCache ? 'cache' : 'network'}
+                          </span>
+                        </Show>
+                        <Show when={entry.durationMs !== undefined}>
+                          <span class="tabular-nums text-text-dim/70">{entry.durationMs}ms</span>
+                        </Show>
+                      </div>
+                      <Show when={entry.detail}>
+                        <div class="mt-0.5 break-all text-text-dim/75">{entry.detail}</div>
+                      </Show>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </div>
           </div>
         </Show>
       </div>

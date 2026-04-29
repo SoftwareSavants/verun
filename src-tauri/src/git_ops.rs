@@ -11,6 +11,13 @@ fn git(cwd: &str) -> Command {
     cmd
 }
 
+/// Create a read-only git Command that avoids optional index writes.
+fn git_read_only(cwd: &str) -> Command {
+    let mut cmd = git(cwd);
+    cmd.arg("--no-optional-locks");
+    cmd
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -102,7 +109,7 @@ pub fn get_git_status(worktree_path: &str) -> Result<GitStatus, String> {
 }
 
 fn parse_porcelain_status(worktree_path: &str) -> Result<Vec<FileStatus>, String> {
-    let output = git(worktree_path)
+    let output = git_read_only(worktree_path)
         .args(["status", "--porcelain"])
         .output()
         .map_err(|e| format!("Failed to run git status: {e}"))?;
@@ -171,14 +178,14 @@ fn parse_porcelain_status(worktree_path: &str) -> Result<Vec<FileStatus>, String
 
 fn parse_numstat(worktree_path: &str) -> Result<Vec<FileDiffStats>, String> {
     // Get stats for both staged and unstaged changes
-    let output = git(worktree_path)
+    let output = git_read_only(worktree_path)
         .args(["diff", "HEAD", "--numstat"])
         .output()
         .map_err(|e| format!("Failed to run git diff --numstat: {e}"))?;
 
     // HEAD might not exist yet (no commits) — fall back to diff of staged
     let stdout = if !output.status.success() {
-        let fallback = git(worktree_path)
+        let fallback = git_read_only(worktree_path)
             .args(["diff", "--cached", "--numstat"])
             .output()
             .map_err(|e| format!("Failed to run git diff --cached --numstat: {e}"))?;
@@ -230,7 +237,7 @@ pub fn get_file_diff(
     }
     args.extend(["HEAD", "--", file_path]);
 
-    let output = git(worktree_path)
+    let output = git_read_only(worktree_path)
         .args(&args)
         .output()
         .map_err(|e| format!("Failed to get file diff: {e}"))?;
@@ -243,7 +250,7 @@ pub fn get_file_diff(
         }
         fallback_args.extend(["--cached", "--", file_path]);
 
-        let fallback = git(worktree_path)
+        let fallback = git_read_only(worktree_path)
             .args(&fallback_args)
             .output()
             .map_err(|e| format!("Failed to get file diff: {e}"))?;
@@ -317,7 +324,7 @@ pub fn get_file_context(
 ) -> Result<Vec<String>, String> {
     let content = if version == "old" {
         // Read from HEAD
-        let output = git(worktree_path)
+        let output = git_read_only(worktree_path)
             .args(["show", &format!("HEAD:{file_path}")])
             .output()
             .map_err(|e| format!("Failed to read file from HEAD: {e}"))?;
@@ -491,7 +498,7 @@ pub struct BranchCommit {
 /// Returns `None` if no merge-base can be found.
 pub fn find_merge_base(worktree_path: &str, base_branch: &str) -> Option<String> {
     let remote = format!("origin/{base_branch}");
-    let remote_out = git(worktree_path)
+    let remote_out = git_read_only(worktree_path)
         .args(["merge-base", &remote, "HEAD"])
         .output()
         .ok()?;
@@ -504,7 +511,7 @@ pub fn find_merge_base(worktree_path: &str, base_branch: &str) -> Option<String>
         );
     }
 
-    let local = git(worktree_path)
+    let local = git_read_only(worktree_path)
         .args(["merge-base", base_branch, "HEAD"])
         .output()
         .ok()?;
@@ -532,7 +539,7 @@ pub fn get_branch_commits(
         },
     };
 
-    let output = git(worktree_path)
+    let output = git_read_only(worktree_path)
         .args([
             "log",
             &format!("{merge_base}..HEAD"),
@@ -552,7 +559,7 @@ pub fn get_branch_commits(
 /// Get files changed in a specific commit (as a GitStatus-like structure).
 pub fn get_commit_files(worktree_path: &str, commit_hash: &str) -> Result<GitStatus, String> {
     // Get file list with status
-    let output = git(worktree_path)
+    let output = git_read_only(worktree_path)
         .args([
             "diff-tree",
             "--no-commit-id",
@@ -587,7 +594,7 @@ pub fn get_commit_files(worktree_path: &str, commit_hash: &str) -> Result<GitSta
     }
 
     // Get stats
-    let stat_output = git(worktree_path)
+    let stat_output = git_read_only(worktree_path)
         .args([
             "diff-tree",
             "--no-commit-id",
@@ -643,7 +650,7 @@ pub fn get_commit_file_diff(
     }
     args.extend([commit_hash, "--", file_path]);
 
-    let output = git(worktree_path)
+    let output = git_read_only(worktree_path)
         .args(&args)
         .output()
         .map_err(|e| format!("Failed to get commit file diff: {e}"))?;
@@ -701,7 +708,7 @@ pub fn get_commit_file_diff(
 /// Read a file from a git revision via `git show <rev>:<path>`.
 /// Returns `(text, exists)`. Missing files are returned as empty + false.
 fn read_at_rev(worktree_path: &str, rev: &str, file_path: &str) -> (String, bool) {
-    let output = match git(worktree_path)
+    let output = match git_read_only(worktree_path)
         .args(["show", &format!("{rev}:{file_path}")])
         .output()
     {
@@ -716,7 +723,7 @@ fn read_at_rev(worktree_path: &str, rev: &str, file_path: &str) -> (String, bool
 
 /// Quick binary check — git's own --numstat marker is "-\t-".
 fn is_binary_diff(worktree_path: &str, args: &[&str]) -> bool {
-    let output = match git(worktree_path).args(args).output() {
+    let output = match git_read_only(worktree_path).args(args).output() {
         Ok(o) => o,
         Err(_) => return false,
     };
@@ -816,7 +823,7 @@ pub fn get_commit_file_contents(
 }
 
 fn get_all_commits(worktree_path: &str) -> Result<Vec<BranchCommit>, String> {
-    let output = git(worktree_path)
+    let output = git_read_only(worktree_path)
         .args(["log", "--format=%H%n%h%n%s%n%an%n%at", "--shortstat"])
         .output()
         .map_err(|e| format!("Failed to get commits: {e}"))?;
@@ -968,7 +975,7 @@ pub fn commit(worktree_path: &str, message: &str) -> Result<String, String> {
     }
 
     // Get the commit hash
-    let hash_output = git(worktree_path)
+    let hash_output = git_read_only(worktree_path)
         .args(["rev-parse", "HEAD"])
         .output()
         .map_err(|e| format!("Failed to get commit hash: {e}"))?;
@@ -981,7 +988,7 @@ pub fn commit(worktree_path: &str, message: &str) -> Result<String, String> {
 /// Push branch to remote. Uses -u to set upstream on first push.
 pub fn push_branch(worktree_path: &str) -> Result<(), String> {
     // Get current branch name
-    let output = git(worktree_path)
+    let output = git_read_only(worktree_path)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .map_err(|e| format!("Failed to get branch: {e}"))?;
@@ -1023,6 +1030,7 @@ pub fn pull_branch(worktree_path: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::time::{Duration, SystemTime};
 
     fn init_test_repo() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();
@@ -1045,6 +1053,13 @@ mod tests {
         git(rp).args(["commit", "-m", "init"]).output().unwrap();
 
         (dir, rp.to_string())
+    }
+
+    fn index_mtime(repo_path: &str) -> SystemTime {
+        fs::metadata(format!("{repo_path}/.git/index"))
+            .unwrap()
+            .modified()
+            .unwrap()
     }
 
     #[test]
@@ -1085,6 +1100,20 @@ mod tests {
             .unwrap();
         assert_eq!(staged.staging, "staged");
         assert_eq!(staged.status, "A");
+    }
+
+    #[test]
+    fn get_git_status_does_not_touch_git_index() {
+        let (_dir, rp) = init_test_repo();
+
+        fs::write(format!("{rp}/README.md"), "# updated\n").unwrap();
+        let before = index_mtime(&rp);
+
+        std::thread::sleep(Duration::from_secs(1));
+        get_git_status(&rp).unwrap();
+        let after = index_mtime(&rp);
+
+        assert_eq!(after, before);
     }
 
     #[test]

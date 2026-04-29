@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- File edits detected by the worktree watcher now trigger a debounced local git refresh, so status/commits/branch state update automatically as you change code without hitting GitHub
+- Local git refresh now uses non-locking read-only git commands, so viewing status no longer rewrites `.git/index` and self-triggers endless `git-local-changed` watcher loops
+- Successful in-chat `gh pr create/reopen/close/ready/merge` commands now invalidate GitHub overview immediately, so PR state updates without waiting for process exit or background refresh
+- Selected tasks now refresh GitHub overview at session end when an agent likely changed remote state, and dev builds show a live GitHub debug panel with cache/fetch activity
+- Session-created pull requests now trigger a scoped GitHub overview refresh when the task is already tracking remote state, so the PR badge/link appears without a manual refresh
 - GitHub sidebar/PR/Actions refresh now uses cached Rust-side snapshots with scope-based invalidation, so local git changes stop fan-out refreshing GitHub and Actions/PR data refresh only when their remote state actually changes
 
 ## 0.10.0 — 2026-04-28

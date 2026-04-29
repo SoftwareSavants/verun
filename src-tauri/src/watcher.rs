@@ -107,6 +107,7 @@ pub fn start_watching(
                         "git-local-changed",
                         crate::stream::GitStatusChangedEvent {
                             task_id: tid.clone(),
+                            remote_likely_changed: false,
                         },
                     );
                 }
