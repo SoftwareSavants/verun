@@ -15,9 +15,28 @@ vi.mock('@tauri-apps/api/event', () => ({
   emit: vi.fn(),
 }))
 
+type DropPayload =
+  | { type: 'enter' | 'over' | 'leave'; position: { x: number; y: number }; paths?: string[] }
+  | { type: 'drop'; position: { x: number; y: number }; paths: string[] }
+type DropHandler = (ev: { payload: DropPayload }) => void
+const dropHandlers: DropHandler[] = []
+
+vi.mock('@tauri-apps/api/webview', () => ({
+  getCurrentWebview: () => ({
+    onDragDropEvent: (handler: DropHandler) => {
+      dropHandlers.push(handler)
+      return Promise.resolve(() => {
+        const i = dropHandlers.indexOf(handler)
+        if (i !== -1) dropHandlers.splice(i, 1)
+      })
+    },
+  }),
+}))
+
 const ipcMocks = vi.hoisted(() => ({
   claudeTerminalOpen: vi.fn(),
   claudeTerminalClose: vi.fn(() => Promise.resolve()),
+  ptyWrite: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('../lib/ipc', () => ipcMocks)
 
@@ -42,9 +61,12 @@ async function flush() {
 
 beforeEach(() => {
   ptyExitedHandlers.length = 0
+  dropHandlers.length = 0
   ipcMocks.claudeTerminalOpen.mockReset()
   ipcMocks.claudeTerminalClose.mockReset()
+  ipcMocks.ptyWrite.mockReset()
   ipcMocks.claudeTerminalClose.mockResolvedValue(undefined)
+  ipcMocks.ptyWrite.mockResolvedValue(undefined)
   cleanup()
 })
 
@@ -122,6 +144,63 @@ describe('SessionTerminal', () => {
     await flush()
     unmount()
     expect(ipcMocks.claudeTerminalClose).toHaveBeenCalledWith('s-1')
+  })
+
+  test('drag-drop inside the terminal writes quoted paths to the PTY', async () => {
+    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
+    const { container } = render(() => <SessionTerminal sessionId="s-1" />)
+    await flush()
+
+    // Force a deterministic bounding rect; jsdom returns zero by default.
+    const root = container.firstElementChild as HTMLElement
+    root.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+
+    for (const h of dropHandlers) {
+      h({
+        payload: {
+          type: 'drop',
+          position: { x: 400, y: 300 },
+          paths: ['/tmp/a.png', '/tmp/My Pictures/b.png'],
+        },
+      })
+    }
+    await flush()
+
+    expect(ipcMocks.ptyWrite).toHaveBeenCalledTimes(1)
+    expect(ipcMocks.ptyWrite).toHaveBeenCalledWith('term-1', "'/tmp/a.png' '/tmp/My Pictures/b.png' ")
+  })
+
+  test('drag-drop outside the terminal bbox does not write to the PTY', async () => {
+    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
+    const { container } = render(() => <SessionTerminal sessionId="s-1" />)
+    await flush()
+
+    const root = container.firstElementChild as HTMLElement
+    root.getBoundingClientRect = () =>
+      ({ left: 100, top: 100, right: 200, bottom: 200, width: 100, height: 100, x: 100, y: 100, toJSON: () => ({}) }) as DOMRect
+
+    for (const h of dropHandlers) {
+      h({ payload: { type: 'drop', position: { x: 50, y: 50 }, paths: ['/tmp/a.png'] } })
+    }
+    await flush()
+
+    expect(ipcMocks.ptyWrite).not.toHaveBeenCalled()
+  })
+
+  test('non-drop drag-drop events are ignored', async () => {
+    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
+    render(() => <SessionTerminal sessionId="s-1" />)
+    await flush()
+
+    for (const h of dropHandlers) {
+      h({ payload: { type: 'over', position: { x: 0, y: 0 }, paths: ['/tmp/a.png'] } })
+      h({ payload: { type: 'enter', position: { x: 0, y: 0 } } })
+      h({ payload: { type: 'leave', position: { x: 0, y: 0 } } })
+    }
+    await flush()
+
+    expect(ipcMocks.ptyWrite).not.toHaveBeenCalled()
   })
 
   test('clicking reconnect re-invokes claudeTerminalOpen and mounts a fresh ShellTerminal', async () => {

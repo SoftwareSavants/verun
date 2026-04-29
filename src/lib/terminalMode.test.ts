@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { canUseTerminalView } from './terminalMode'
+import { canUseTerminalView, formatDroppedPathsForTerminal } from './terminalMode'
 import type { Session } from '../types'
 
 function session(overrides: Partial<Session> = {}): Session {
@@ -42,5 +42,33 @@ describe('canUseTerminalView', () => {
   test('false for null / undefined session', () => {
     expect(canUseTerminalView(null)).toBe(false)
     expect(canUseTerminalView(undefined)).toBe(false)
+  })
+})
+
+describe('formatDroppedPathsForTerminal', () => {
+  test('single path with no special chars', () => {
+    expect(formatDroppedPathsForTerminal(['/tmp/img.png'])).toBe("'/tmp/img.png' ")
+  })
+
+  test('path with spaces is single-quoted', () => {
+    expect(formatDroppedPathsForTerminal(['/tmp/My Pictures/a b.png'])).toBe(
+      "'/tmp/My Pictures/a b.png' ",
+    )
+  })
+
+  test("embedded single quote escapes via '\\''", () => {
+    expect(formatDroppedPathsForTerminal(["/tmp/it's mine.png"])).toBe(
+      "'/tmp/it'\\''s mine.png' ",
+    )
+  })
+
+  test('multiple paths join with spaces', () => {
+    expect(formatDroppedPathsForTerminal(['/a/b.png', '/c d/e.png'])).toBe(
+      "'/a/b.png' '/c d/e.png' ",
+    )
+  })
+
+  test('empty list returns empty string', () => {
+    expect(formatDroppedPathsForTerminal([])).toBe('')
   })
 })

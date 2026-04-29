@@ -1,7 +1,9 @@
 import { Component, createSignal, onMount, onCleanup, Show } from 'solid-js'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { ShellTerminal } from './ShellTerminal'
 import * as ipc from '../lib/ipc'
+import { formatDroppedPathsForTerminal } from '../lib/terminalMode'
 import type { PtyExitedEvent } from '../types'
 
 interface Props {
@@ -18,6 +20,7 @@ export const SessionTerminal: Component<Props> = (props) => {
   const [terminalId, setTerminalId] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [exited, setExited] = createSignal(false)
+  let containerRef: HTMLDivElement | undefined
 
   async function openTerminal() {
     setError(null)
@@ -45,13 +48,31 @@ export const SessionTerminal: Component<Props> = (props) => {
     unlisten = fn
   })
 
+  let unlistenDrop: UnlistenFn | undefined
+  void getCurrentWebview()
+    .onDragDropEvent((event) => {
+      if (event.payload.type !== 'drop') return
+      const tid = terminalId()
+      if (!tid || !containerRef) return
+      const paths = event.payload.paths ?? []
+      if (paths.length === 0) return
+      const rect = containerRef.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      const x = event.payload.position.x / dpr
+      const y = event.payload.position.y / dpr
+      if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return
+      ipc.ptyWrite(tid, formatDroppedPathsForTerminal(paths)).catch(() => {})
+    })
+    .then((fn) => { unlistenDrop = fn })
+
   onCleanup(() => {
     unlisten?.()
+    unlistenDrop?.()
     ipc.claudeTerminalClose(props.sessionId).catch(() => {})
   })
 
   return (
-    <div class="w-full h-full flex flex-col bg-surface-0">
+    <div ref={containerRef} class="w-full h-full flex flex-col bg-surface-0">
       <Show
         when={!error()}
         fallback={
