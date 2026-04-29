@@ -192,6 +192,12 @@ export const ShellTerminal: Component<Props> = (props) => {
     }
 
     const fontCfg = getXtermFontConfig()
+    // Renderer config: `customGlyphs` + `rescaleOverlappingGlyphs` combined
+    // with the WebGL addon are known to leave stale glyphs after mid-session
+    // content reflow (TUIs like Claude Code, vim, fzf trigger this). The
+    // artifacts only clear on a window resize because that re-blits every
+    // cell. VS Code hit the same bug and disables both flags by default.
+    // Keep WebGL for performance, drop the fragile glyph flags.
     const term = new XTerm({
       theme: getXtermTheme(),
       fontFamily: fontCfg.fontFamily,
@@ -203,8 +209,6 @@ export const ShellTerminal: Component<Props> = (props) => {
       scrollback: 10000,
       allowProposedApi: true,
       macOptionIsMeta: isMac,
-      customGlyphs: true,
-      rescaleOverlappingGlyphs: true,
       drawBoldTextInBrightColors: false,
     })
 
