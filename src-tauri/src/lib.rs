@@ -352,7 +352,6 @@ pub fn run() {
             ipc::claude_terminal_close,
             // Clipboard
             ipc::read_clipboard,
-            ipc::read_clipboard_image_to_path,
             ipc::copy_image_to_clipboard,
             ipc::write_binary_file,
             // Utility

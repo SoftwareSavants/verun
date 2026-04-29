@@ -24,18 +24,17 @@ const ipcMocks = vi.hoisted(() => ({
   claudeTerminalOpen: vi.fn(),
   claudeTerminalClose: vi.fn(() => Promise.resolve()),
   ptyWrite: vi.fn(() => Promise.resolve()),
-  readClipboard: vi.fn(() => Promise.resolve('')),
-  readClipboardImageToPath: vi.fn((): Promise<string | null> => Promise.resolve(null)),
 }))
 vi.mock('../lib/ipc', () => ipcMocks)
 
 // xterm is inert in jsdom; replace ShellTerminal with a marker div so we can
 // assert whether it rendered.
 vi.mock('./ShellTerminal', () => ({
-  ShellTerminal: (props: { terminalId: string }) => {
+  ShellTerminal: (props: { terminalId: string; disableCmdVIntercept?: boolean }) => {
     const el = document.createElement('div')
     el.setAttribute('data-testid', 'shell-terminal')
     el.setAttribute('data-terminal-id', props.terminalId)
+    if (props.disableCmdVIntercept) el.setAttribute('data-disable-cmd-v', 'true')
     return el
   },
 }))
@@ -54,12 +53,8 @@ beforeEach(() => {
   ipcMocks.claudeTerminalOpen.mockReset()
   ipcMocks.claudeTerminalClose.mockReset()
   ipcMocks.ptyWrite.mockReset()
-  ipcMocks.readClipboard.mockReset()
-  ipcMocks.readClipboardImageToPath.mockReset()
   ipcMocks.claudeTerminalClose.mockResolvedValue(undefined)
   ipcMocks.ptyWrite.mockResolvedValue(undefined as unknown as void)
-  ipcMocks.readClipboard.mockResolvedValue('')
-  ipcMocks.readClipboardImageToPath.mockResolvedValue(null)
   cleanup()
 })
 
@@ -71,6 +66,17 @@ describe('SessionTerminal', () => {
     expect(ipcMocks.claudeTerminalOpen).toHaveBeenCalledWith('s-1', 24, 80)
     const shell = getByTestId('shell-terminal')
     expect(shell.getAttribute('data-terminal-id')).toBe('term-1')
+  })
+
+  // Lock in that Claude terminal mode disables the manual Cmd+V intercept so
+  // xterm's native paste flow forwards the bracketed-paste sequence to the
+  // PTY. Claude Code's TUI then polls NSPasteboard itself for image bytes.
+  test('passes disableCmdVIntercept so xterm handles paste natively', async () => {
+    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
+    const { getByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
+    await flush()
+    const shell = getByTestId('shell-terminal')
+    expect(shell.getAttribute('data-disable-cmd-v')).toBe('true')
   })
 
   test('shows a reconnect button when the matching pty-exited event fires', async () => {
@@ -173,55 +179,6 @@ describe('SessionTerminal', () => {
     expect(ipcMocks.ptyWrite).toHaveBeenNthCalledWith(1, 'term-1', "'/tmp/first.png' ")
     expect(ipcMocks.ptyWrite).toHaveBeenNthCalledWith(2, 'term-1', "'/tmp/second.png' ")
     expect(ipcMocks.ptyWrite).toHaveBeenNthCalledWith(3, 'term-1', "'/tmp/third.png' ")
-  })
-
-  test('cmd+V with image in clipboard writes the saved temp path to the PTY', async () => {
-    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
-    ipcMocks.readClipboardImageToPath.mockResolvedValue('/tmp/paste_tmp/clip-abc.png')
-    const { container } = render(() => <SessionTerminal sessionId="s-1" />)
-    await flush()
-
-    const root = container.firstElementChild as HTMLElement
-    const ev = new KeyboardEvent('keydown', { key: 'v', metaKey: true, bubbles: true, cancelable: true })
-    root.dispatchEvent(ev)
-    await flush()
-
-    expect(ipcMocks.readClipboardImageToPath).toHaveBeenCalledTimes(1)
-    expect(ipcMocks.readClipboard).not.toHaveBeenCalled()
-    expect(ipcMocks.ptyWrite).toHaveBeenCalledWith('term-1', "'/tmp/paste_tmp/clip-abc.png' ")
-  })
-
-  test('cmd+V with no image falls back to text clipboard and writes it to the PTY', async () => {
-    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
-    ipcMocks.readClipboardImageToPath.mockResolvedValue(null)
-    ipcMocks.readClipboard.mockResolvedValue('hello world')
-    const { container } = render(() => <SessionTerminal sessionId="s-1" />)
-    await flush()
-
-    const root = container.firstElementChild as HTMLElement
-    const ev = new KeyboardEvent('keydown', { key: 'v', metaKey: true, bubbles: true, cancelable: true })
-    root.dispatchEvent(ev)
-    await flush()
-
-    expect(ipcMocks.readClipboardImageToPath).toHaveBeenCalledTimes(1)
-    expect(ipcMocks.readClipboard).toHaveBeenCalledTimes(1)
-    expect(ipcMocks.ptyWrite).toHaveBeenCalledWith('term-1', 'hello world')
-  })
-
-  test('keys other than cmd+V do not trigger clipboard reads', async () => {
-    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
-    const { container } = render(() => <SessionTerminal sessionId="s-1" />)
-    await flush()
-
-    const root = container.firstElementChild as HTMLElement
-    root.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true, cancelable: true }))
-    root.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true, cancelable: true }))
-    root.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true }))
-    await flush()
-
-    expect(ipcMocks.readClipboardImageToPath).not.toHaveBeenCalled()
-    expect(ipcMocks.readClipboard).not.toHaveBeenCalled()
-    expect(ipcMocks.ptyWrite).not.toHaveBeenCalled()
   })
 
   test('empty paths list does not write to the PTY', async () => {

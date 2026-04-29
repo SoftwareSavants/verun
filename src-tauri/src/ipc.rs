@@ -2234,62 +2234,6 @@ pub async fn write_binary_file(request: tauri::ipc::Request<'_>) -> Result<(), S
         .map_err(|e| format!("Failed to write file: {e}"))
 }
 
-/// Dump a clipboard image to a temp file under `<app_data>/paste_tmp/`. Returns
-/// the absolute path on success, or `None` if the clipboard holds no image.
-/// Used by the Claude terminal view to forward Cmd+V images to the PTY as
-/// file paths (the TUI can't accept raw bytes through stdin).
-#[tauri::command]
-pub async fn read_clipboard_image_to_path(app: AppHandle) -> Result<Option<String>, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("app_data_dir: {e}"))?
-            .join("paste_tmp");
-        tokio::fs::create_dir_all(&dir)
-            .await
-            .map_err(|e| format!("create paste_tmp: {e}"))?;
-        let path = dir.join(format!("clip-{}.png", Uuid::new_v4()));
-        let posix = path.to_string_lossy().replace('"', "\\\"");
-        let script = format!(
-            r#"try
-    set theFile to POSIX file "{posix}"
-    set theImage to the clipboard as «class PNGf»
-    set f to open for access theFile with write permission
-    set eof of f to 0
-    write theImage to f
-    close access f
-    return "ok"
-on error
-    try
-        close access (POSIX file "{posix}")
-    end try
-    return ""
-end try"#
-        );
-        let output = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .output()
-            .map_err(|e| format!("osascript: {e}"))?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if output.status.success() && stdout.trim() == "ok" {
-            if let Ok(meta) = tokio::fs::metadata(&path).await {
-                if meta.len() > 0 {
-                    return Ok(Some(path.to_string_lossy().into_owned()));
-                }
-            }
-        }
-        let _ = tokio::fs::remove_file(&path).await;
-        Ok(None)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        Ok(None)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------

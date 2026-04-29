@@ -13,7 +13,7 @@ import { getXtermTheme, getXtermFontConfig, subscribeXtermToAppearance } from '.
 import '@xterm/xterm/css/xterm.css'
 
 /** Capture-phase keydown on the container — fires before xterm's textarea gets it */
-function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>, onToggleSearch?: () => void) {
+function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>, onToggleSearch?: () => void, disableCmdVIntercept?: boolean) {
   container.addEventListener('keydown', (e: KeyboardEvent) => {
     const mod = modPressed(e)
     const inInput = (e.target as HTMLElement).tagName === 'INPUT'
@@ -40,7 +40,7 @@ function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId:
     if (mod && e.key === 'ArrowDown') { e.preventDefault(); term.scrollToBottom(); return }
     // Block PTY writes when stopped
     if (isStopped?.()) return
-    if (mod && e.key === 'v') {
+    if (mod && e.key === 'v' && !disableCmdVIntercept) {
       e.preventDefault()
       e.stopImmediatePropagation()
       ipc.readClipboard().then(text => { if (text) term.paste(text) })
@@ -93,6 +93,13 @@ interface Props {
   terminalId: string
   /** Reactive accessor — when true, keyboard input to the PTY is blocked (scrolling still works) */
   isStopped?: Accessor<boolean>
+  /**
+   * Skip our manual Cmd+V intercept (which only handles text via pbpaste) and
+   * let xterm.js's native paste flow forward the bracketed paste to the PTY.
+   * Used by Claude terminal mode so Claude Code's TUI sees the paste sequence
+   * and can poll NSPasteboard itself for image bytes.
+   */
+  disableCmdVIntercept?: boolean
 }
 
 const SEARCH_DECORATIONS = {
@@ -177,7 +184,7 @@ export const ShellTerminal: Component<Props> = (props) => {
       if (el) terminalRef.appendChild(el)
       searchAddonRef = existing.searchAddon
       if (searchAddonRef) attachResultsListener(searchAddonRef)
-      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped, toggleSearch)
+      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped, toggleSearch, props.disableCmdVIntercept)
       initialFit(existing, props.terminalId)
       resizeObserver = attachResizeObserver(terminalRef, existing, props.terminalId)
       unsubAppearance = subscribeXtermToAppearance(existing.term, () => existing.fitAddon.fit())
@@ -212,7 +219,7 @@ export const ShellTerminal: Component<Props> = (props) => {
     term.loadAddon(unicode11)
     term.unicode.activeVersion = '11'
     setupXtermPassthrough(term)
-    setupCaptureKeyHandler(containerRef, term, props.terminalId, props.isStopped, toggleSearch)
+    setupCaptureKeyHandler(containerRef, term, props.terminalId, props.isStopped, toggleSearch, props.disableCmdVIntercept)
     term.onData((data) => {
       if (props.isStopped?.()) return
       ipc.ptyWrite(props.terminalId, data)
