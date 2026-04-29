@@ -2022,6 +2022,13 @@ async fn spawn_codex_app_server_session(
             resume_session_id: thread_id.clone(),
         })
         .await;
+    let _ = app.emit(
+        "session-resume-id",
+        stream::SessionResumeIdEvent {
+            session_id: session_id.clone(),
+            resume_session_id: thread_id.clone(),
+        },
+    );
 
     let busy = Arc::new(AtomicBool::new(!prewarm));
     let current_turn_id: Arc<TokioMutex<Option<String>>> = Arc::new(TokioMutex::new(None));

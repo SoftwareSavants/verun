@@ -10,6 +10,7 @@
 - GitHub sidebar/PR/Actions refresh now uses cached Rust-side snapshots with scope-based invalidation, so local git changes stop fan-out refreshing GitHub and Actions/PR data refresh only when their remote state actually changes
 - Claude Code sessions now offer a UI / Terminal toggle: Terminal runs `claude --resume <id>` in a real PTY so you get the unmodified TUI, while still tailing `~/.claude/projects/.../<session>.jsonl` so history, fork, branch, and search keep working with no data gap. The mode is sticky per session, with a Settings default under General → Claude Code, and survives app restarts. Ctrl+D / `/exit` / crash exposes a one-click Reconnect
 - Claude Code terminal sessions now capture pasted images: the JSONL transcript tail decodes `image` content blocks, writes the bytes to the blob store, and persists the user message as a `verun_user_message` line with attachment refs - so when you toggle back to UI view the chat shows the same image bubble you'd get from the in-app composer. Refcount tracking + GC keep storage bounded
+- Fix Terminal toggle staying disabled after the first message: the resume_session_id was written to the DB but no Tauri event was emitted, so the live `Session` object's `resumeSessionId` stayed null until the session was reloaded. A new `session-resume-id` event now fires alongside every `SetResumeSessionId` write (Claude immediate, Codex turn-end, Codex thread/start, clear_session), and the frontend store updates the session in place
 
 ## 0.10.0 — 2026-04-28
 

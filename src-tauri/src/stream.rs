@@ -162,6 +162,13 @@ pub struct SessionNameEvent {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SessionResumeIdEvent {
+    pub session_id: String,
+    pub resume_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskNameEvent {
     pub task_id: String,
     pub name: String,
@@ -1608,8 +1615,15 @@ pub async fn stream_and_capture(
                                 } else {
                                     let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
                                         id: session_id.clone(),
-                                        resume_session_id: sid,
+                                        resume_session_id: sid.clone(),
                                     }).await;
+                                    let _ = app.emit(
+                                        "session-resume-id",
+                                        SessionResumeIdEvent {
+                                            session_id: session_id.clone(),
+                                            resume_session_id: sid,
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -1680,8 +1694,15 @@ pub async fn stream_and_capture(
                             if let Some(sid) = pending_resume_id.take() {
                                 let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
                                     id: session_id.clone(),
-                                    resume_session_id: sid,
+                                    resume_session_id: sid.clone(),
                                 }).await;
+                                let _ = app.emit(
+                                    "session-resume-id",
+                                    SessionResumeIdEvent {
+                                        session_id: session_id.clone(),
+                                        resume_session_id: sid,
+                                    },
+                                );
                             }
                         }
 

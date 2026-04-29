@@ -866,6 +866,7 @@ pub async fn close_session(
 /// Clear a session's Claude context (reset session_id + delete output lines)
 #[tauri::command]
 pub async fn clear_session(
+    app: AppHandle,
     active: State<'_, ActiveMap>,
     db_tx: State<'_, DbWriteTx>,
     session_id: String,
@@ -884,6 +885,13 @@ pub async fn clear_session(
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
+    let _ = app.emit(
+        "session-resume-id",
+        crate::stream::SessionResumeIdEvent {
+            session_id: session_id.clone(),
+            resume_session_id: String::new(),
+        },
+    );
 
     // Clear persisted output lines
     db_tx
