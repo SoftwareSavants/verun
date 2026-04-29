@@ -42,9 +42,6 @@ vi.mock('./ShellTerminal', () => ({
 import { SessionTerminal } from './SessionTerminal'
 
 async function flush() {
-  // Tick once to advance any pending rAF (jsdom polyfills it onto setTimeout
-  // with a 16ms delay), then drain microtasks.
-  await new Promise((r) => setTimeout(r, 20))
   await Promise.resolve()
   await Promise.resolve()
   await new Promise((r) => setTimeout(r, 0))
@@ -66,8 +63,7 @@ describe('SessionTerminal', () => {
     ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
     const { getByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
-    expect(ipcMocks.claudeTerminalOpen).toHaveBeenCalledTimes(1)
-    expect(ipcMocks.claudeTerminalOpen.mock.calls[0][0]).toBe('s-1')
+    expect(ipcMocks.claudeTerminalOpen).toHaveBeenCalledWith('s-1', 24, 80)
     const shell = getByTestId('shell-terminal')
     expect(shell.getAttribute('data-terminal-id')).toBe('term-1')
   })

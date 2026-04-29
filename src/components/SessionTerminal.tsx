@@ -2,8 +2,7 @@ import { Component, createSignal, onMount, onCleanup, Show } from 'solid-js'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { ShellTerminal } from './ShellTerminal'
 import * as ipc from '../lib/ipc'
-import { formatDroppedPathsForTerminal, estimatePtyDimensions } from '../lib/terminalMode'
-import { getXtermFontConfig } from '../lib/terminalTheme'
+import { formatDroppedPathsForTerminal } from '../lib/terminalMode'
 import type { PtyExitedEvent } from '../types'
 
 interface TauriDragDropPayload {
@@ -25,37 +24,21 @@ export const SessionTerminal: Component<Props> = (props) => {
   const [terminalId, setTerminalId] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [exited, setExited] = createSignal(false)
-  let containerRef: HTMLDivElement | undefined
 
   async function openTerminal() {
     setError(null)
     setExited(false)
     setTerminalId(null)
     try {
-      const { rows, cols } = measureContainer()
-      const res = await ipc.claudeTerminalOpen(props.sessionId, rows, cols)
+      const res = await ipc.claudeTerminalOpen(props.sessionId, 24, 80)
       setTerminalId(res.terminalId)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
   }
 
-  // Pre-size the PTY to match the visible container so Claude's first frame
-  // renders at the right dimensions. Without this, Claude paints at the
-  // hardcoded 24x80 spawn size, then xterm fits to the real size and emits
-  // SIGWINCH - but residual content from the smaller frame stays in the
-  // scrollback until the user resizes the window.
-  function measureContainer(): { rows: number; cols: number } {
-    if (!containerRef) return { rows: 24, cols: 80 }
-    const rect = containerRef.getBoundingClientRect()
-    const fontSize = getXtermFontConfig().fontSize
-    return estimatePtyDimensions(rect.width, rect.height, fontSize)
-  }
-
   onMount(() => {
-    // Defer to the next paint so flex layout has computed our container
-    // size before we measure it for the initial PTY dimensions.
-    requestAnimationFrame(() => { void openTerminal() })
+    void openTerminal()
   })
 
   let unlisten: UnlistenFn | undefined
@@ -88,7 +71,7 @@ export const SessionTerminal: Component<Props> = (props) => {
   })
 
   return (
-    <div ref={containerRef} class="w-full h-full flex flex-col bg-surface-0">
+    <div class="w-full h-full flex flex-col bg-surface-0">
       <Show
         when={!error()}
         fallback={

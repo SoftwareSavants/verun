@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { canUseTerminalView, formatDroppedPathsForTerminal, estimatePtyDimensions } from './terminalMode'
+import { canUseTerminalView, formatDroppedPathsForTerminal } from './terminalMode'
 import type { Session } from '../types'
 
 function session(overrides: Partial<Session> = {}): Session {
@@ -70,25 +70,5 @@ describe('formatDroppedPathsForTerminal', () => {
 
   test('empty list returns empty string', () => {
     expect(formatDroppedPathsForTerminal([])).toBe('')
-  })
-})
-
-describe('estimatePtyDimensions', () => {
-  test('typical 1200x800 container at 14px font', () => {
-    const { rows, cols } = estimatePtyDimensions(1200, 800, 14)
-    expect(cols).toBeGreaterThan(120)
-    expect(rows).toBeGreaterThan(40)
-  })
-
-  test('falls back to 24x80 on zero/negative inputs', () => {
-    expect(estimatePtyDimensions(0, 800, 14)).toEqual({ rows: 24, cols: 80 })
-    expect(estimatePtyDimensions(1200, 0, 14)).toEqual({ rows: 24, cols: 80 })
-    expect(estimatePtyDimensions(1200, 800, 0)).toEqual({ rows: 24, cols: 80 })
-  })
-
-  test('clamps to a sensible minimum on tiny containers', () => {
-    const { rows, cols } = estimatePtyDimensions(50, 50, 14)
-    expect(rows).toBeGreaterThanOrEqual(10)
-    expect(cols).toBeGreaterThanOrEqual(20)
   })
 })

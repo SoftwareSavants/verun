@@ -20,19 +20,3 @@ export function formatDroppedPathsForTerminal(paths: string[]): string {
   if (paths.length === 0) return ''
   return paths.map(p => `'${p.replace(/'/g, "'\\''")}' `).join('')
 }
-
-/**
- * Approximate cell dimensions for a monospace xterm at the given font size.
- * Used to pre-size a PTY before xterm has had a chance to mount and measure
- * exact metrics. The numbers come from typical macOS monospace fonts
- * (SF Mono / Menlo at lineHeight: 1.0).
- */
-export function estimatePtyDimensions(width: number, height: number, fontSize: number): { rows: number; cols: number } {
-  if (width <= 0 || height <= 0 || fontSize <= 0) return { rows: 24, cols: 80 }
-  const cellWidth = fontSize * 0.6
-  const cellHeight = fontSize * 1.2
-  return {
-    rows: Math.max(10, Math.floor(height / cellHeight)),
-    cols: Math.max(20, Math.floor(width / cellWidth)),
-  }
-}
