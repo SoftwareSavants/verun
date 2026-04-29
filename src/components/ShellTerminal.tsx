@@ -89,6 +89,33 @@ function initialFit(entry: XtermEntry, terminalId: string) {
   })
 }
 
+/**
+ * Force-redraw triggers that fix WebGL texture-atlas drift without relying on
+ * the user resizing the window. VS Code (`xtermTerminal.ts: forceRedraw()`)
+ * and Tabby (`xtermFrontend.ts: displayMetricsChanged$`) both wire these.
+ *
+ * - **DPR change**: dragging the window between Retina and non-Retina displays
+ *   invalidates the cached glyph bitmaps.
+ * - **visibilitychange**: WebKit may suspend the WebGL context when the
+ *   window is hidden; on return the atlas can be stale.
+ *
+ * `clearTextureAtlas()` is safe even when WebGL never loaded - it's a no-op
+ * for the DOM renderer.
+ */
+function attachAtlasLifecycle(term: XTerm): () => void {
+  const onVisibility = () => { if (!document.hidden) term.clearTextureAtlas() }
+  document.addEventListener('visibilitychange', onVisibility)
+
+  const dprMql = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+  const onDpr = () => term.clearTextureAtlas()
+  dprMql.addEventListener('change', onDpr)
+
+  return () => {
+    document.removeEventListener('visibilitychange', onVisibility)
+    dprMql.removeEventListener('change', onDpr)
+  }
+}
+
 interface Props {
   terminalId: string
   /** Reactive accessor — when true, keyboard input to the PTY is blocked (scrolling still works) */
@@ -118,6 +145,7 @@ export const ShellTerminal: Component<Props> = (props) => {
   let searchAddonRef: SearchAddon | undefined
   let resultsDisposable: { dispose(): void } | undefined
   let unsubAppearance: (() => void) | undefined
+  let unsubLifecycle: (() => void) | undefined
 
   const [showSearch, setShowSearch] = createSignal(false)
   const [searchQuery, setSearchQuery] = createSignal('')
@@ -187,7 +215,11 @@ export const ShellTerminal: Component<Props> = (props) => {
       setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped, toggleSearch, props.disableCmdVIntercept)
       initialFit(existing, props.terminalId)
       resizeObserver = attachResizeObserver(terminalRef, existing, props.terminalId)
-      unsubAppearance = subscribeXtermToAppearance(existing.term, () => existing.fitAddon.fit())
+      unsubAppearance = subscribeXtermToAppearance(existing.term, () => {
+        existing.fitAddon.fit()
+        existing.term.clearTextureAtlas()
+      })
+      unsubLifecycle = attachAtlasLifecycle(existing.term)
       return
     }
 
@@ -242,21 +274,32 @@ export const ShellTerminal: Component<Props> = (props) => {
     registerXterm(props.terminalId, term, fitAddon, searchAddon)
 
     try {
-      term.loadAddon(new WebglAddon())
+      const webgl = new WebglAddon()
+      // VS Code pattern: dispose on context loss so xterm falls back to the
+      // DOM renderer instead of leaving a dead GL context behind. Critical
+      // on macOS WebKit (Tauri) where the OS occasionally drops contexts on
+      // sleep / Mission Control / display switches.
+      webgl.onContextLoss(() => webgl.dispose())
+      term.loadAddon(webgl)
     } catch {
-      // WebGL not available
+      // WebGL not available — xterm auto-falls back to the DOM renderer.
     }
 
     const entry = { term, fitAddon, searchAddon }
     initialFit(entry, props.terminalId)
     resizeObserver = attachResizeObserver(terminalRef, entry, props.terminalId)
-    unsubAppearance = subscribeXtermToAppearance(term, () => fitAddon.fit())
+    unsubAppearance = subscribeXtermToAppearance(term, () => {
+      fitAddon.fit()
+      term.clearTextureAtlas()
+    })
+    unsubLifecycle = attachAtlasLifecycle(term)
   })
 
   onCleanup(() => {
     resizeObserver?.disconnect()
     resultsDisposable?.dispose()
     unsubAppearance?.()
+    unsubLifecycle?.()
   })
 
   return (
