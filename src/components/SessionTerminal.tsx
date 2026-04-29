@@ -1,10 +1,14 @@
 import { Component, createSignal, onMount, onCleanup, Show } from 'solid-js'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { ShellTerminal } from './ShellTerminal'
 import * as ipc from '../lib/ipc'
 import { formatDroppedPathsForTerminal } from '../lib/terminalMode'
 import type { PtyExitedEvent } from '../types'
+
+interface TauriDragDropPayload {
+  paths: string[]
+  position?: { x: number; y: number }
+}
 
 interface Props {
   sessionId: string
@@ -20,7 +24,6 @@ export const SessionTerminal: Component<Props> = (props) => {
   const [terminalId, setTerminalId] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [exited, setExited] = createSignal(false)
-  let containerRef: HTMLDivElement | undefined
 
   async function openTerminal() {
     setError(null)
@@ -48,22 +51,18 @@ export const SessionTerminal: Component<Props> = (props) => {
     unlisten = fn
   })
 
+  // Drop handler: SessionTerminal is the only drop target visible in Terminal
+  // view (MessageInput is unmounted), so any drop on the window forwards its
+  // paths to the PTY. No bbox hit-test — Tauri's drop position is in physical
+  // pixels which doesn't reliably match getBoundingClientRect's CSS pixels
+  // across displays / window moves.
   let unlistenDrop: UnlistenFn | undefined
-  void getCurrentWebview()
-    .onDragDropEvent((event) => {
-      if (event.payload.type !== 'drop') return
-      const tid = terminalId()
-      if (!tid || !containerRef) return
-      const paths = event.payload.paths ?? []
-      if (paths.length === 0) return
-      const rect = containerRef.getBoundingClientRect()
-      const dpr = window.devicePixelRatio || 1
-      const x = event.payload.position.x / dpr
-      const y = event.payload.position.y / dpr
-      if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return
-      ipc.ptyWrite(tid, formatDroppedPathsForTerminal(paths)).catch(() => {})
-    })
-    .then((fn) => { unlistenDrop = fn })
+  void listen<TauriDragDropPayload>('tauri://drag-drop', (event) => {
+    const tid = terminalId()
+    const paths = event.payload.paths ?? []
+    if (!tid || paths.length === 0) return
+    ipc.ptyWrite(tid, formatDroppedPathsForTerminal(paths)).catch(() => {})
+  }).then((fn) => { unlistenDrop = fn })
 
   onCleanup(() => {
     unlisten?.()
@@ -72,7 +71,7 @@ export const SessionTerminal: Component<Props> = (props) => {
   })
 
   return (
-    <div ref={containerRef} class="w-full h-full flex flex-col bg-surface-0">
+    <div class="w-full h-full flex flex-col bg-surface-0">
       <Show
         when={!error()}
         fallback={
