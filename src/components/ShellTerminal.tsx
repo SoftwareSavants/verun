@@ -81,31 +81,31 @@ function attachResizeObserver(container: HTMLElement, entry: XtermEntry, termina
 }
 
 function initialFit(entry: XtermEntry, terminalId: string) {
-  const refit = () => {
-    entry.fitAddon.fit()
-    ipc.ptyResize(terminalId, entry.term.rows, entry.term.cols)
-  }
-  requestAnimationFrame(() => {
-    refit()
-    // Position the viewport at the latest content BEFORE refresh() paints,
-    // so the first frame the user sees is already at the bottom. Doing it
-    // after refresh produces a one-frame flash of the top of the scrollback.
-    entry.term.scrollToBottom()
-    entry.term.refresh(0, entry.term.rows - 1)
-    entry.term.focus()
-  })
-  // Web fonts (SF Mono / Menlo) often haven't loaded when the first fit
-  // runs; xterm then measures cell metrics off the fallback font, comes up
-  // with a tiny cols count, and the PTY ends up sized for ~10 columns -
-  // visible as wrap-every-character output. Re-fit once fonts are ready.
-  if (typeof document !== 'undefined' && document.fonts?.ready) {
-    document.fonts.ready
-      .then(() => {
-        refit()
-        entry.term.refresh(0, entry.term.rows - 1)
-      })
-      .catch(() => {})
-  }
+  // Wait for the monospace web font to load before doing the first fit -
+  // otherwise xterm measures cell metrics off the fallback font, comes up
+  // with a tiny cols count, sends a bad ptyResize, and the TUI inside the
+  // PTY (Claude Code) reflows its output to that narrow width. Subsequent
+  // refits don't unwrap the already-rendered history.
+  //
+  // 250ms timeout fallback: don't block forever if the font promise stalls.
+  const FONT_TIMEOUT_MS = 250
+  const fontsReady: Promise<unknown> =
+    typeof document !== 'undefined' && document.fonts?.ready
+      ? Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, FONT_TIMEOUT_MS))])
+      : Promise.resolve()
+
+  fontsReady
+    .then(() => requestAnimationFrame(() => {
+      entry.fitAddon.fit()
+      ipc.ptyResize(terminalId, entry.term.rows, entry.term.cols)
+      // Position the viewport at the latest content BEFORE refresh() paints,
+      // so the first frame the user sees is already at the bottom. Doing it
+      // after refresh produces a one-frame flash of the top of the scrollback.
+      entry.term.scrollToBottom()
+      entry.term.refresh(0, entry.term.rows - 1)
+      entry.term.focus()
+    }))
+    .catch(() => {})
 }
 
 /**
