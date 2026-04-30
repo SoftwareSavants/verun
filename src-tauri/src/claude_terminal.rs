@@ -112,6 +112,7 @@ pub async fn open_claude_terminal(
     let validated = validate_session_for_terminal(pool, &session_id).await?;
     let task = validated.task;
     let resume_id_opt = validated.resume_id;
+    let model = validated.model;
     let is_fresh = resume_id_opt.is_none();
 
     let repo_path = db::get_repo_path_for_task(pool, &task.id).await?;
@@ -136,11 +137,13 @@ pub async fn open_claude_terminal(
                 .ok_or_else(|| "$HOME not set; cannot locate Claude transcript".to_string())?;
             // Skip whatever's already on disk (already in output_lines).
             let offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            (path, offset, build_claude_shell_command(ClaudeSpawnMode::Resume, rid))
+            let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, rid, model.as_deref());
+            (path, offset, cmd)
         }
         None => {
             // Fresh: tail will switch to the discovered file once it appears.
-            (PathBuf::new(), 0, build_claude_shell_command(ClaudeSpawnMode::Fresh, ""))
+            let cmd = build_claude_shell_command(ClaudeSpawnMode::Fresh, "", model.as_deref());
+            (PathBuf::new(), 0, cmd)
         }
     };
     let worktree_path = task.worktree_path.clone();
@@ -251,10 +254,12 @@ pub async fn close_claude_terminal(
 pub(crate) struct ValidatedTerminalSession {
     pub task: crate::db::Task,
     /// `Some(id)` if the session has been used before (use `--resume <id>`).
-    /// `None` for a fresh session: the caller must generate a UUID and pass it
-    /// via `--session-id <uuid>` so Claude creates the conversation with that
-    /// id (which we then persist as the session's resume_session_id).
+    /// `None` for a fresh session: spawn plain `claude` and watch the
+    /// projects dir to discover the UUID Claude generates on first turn.
     pub resume_id: Option<String>,
+    /// Per-session model alias or full id (e.g. "sonnet" / "claude-sonnet-4-6").
+    /// `None` falls back to the user's Claude default.
+    pub model: Option<String>,
 }
 
 /// Look up the session, ensure it's a Claude session, and return the task
@@ -283,6 +288,7 @@ pub(crate) async fn validate_session_for_terminal(
     Ok(ValidatedTerminalSession {
         task,
         resume_id: session.resume_session_id.clone(),
+        model: session.model.clone(),
     })
 }
 
@@ -571,11 +577,26 @@ pub(crate) enum ClaudeSpawnMode {
 /// Build the shell command passed to `sh -lic "<cmd>"` that spawns Claude.
 /// `exec` ensures the PTY dies with Claude instead of dropping to a login
 /// shell prompt when the user exits with Ctrl+D.
-pub(crate) fn build_claude_shell_command(mode: ClaudeSpawnMode, id: &str) -> String {
-    match mode {
-        ClaudeSpawnMode::Resume => format!("exec claude --resume {}", shell_quote(id)),
-        ClaudeSpawnMode::Fresh => "exec claude".to_string(),
+///
+/// `model` is the value of `sessions.model` (alias like "sonnet"/"opus" or
+/// a full id like "claude-sonnet-4-6"); when set, threads it through as
+/// `--model <name>` so the TUI honors the per-session model the same way
+/// our SDK-backed UI mode does.
+pub(crate) fn build_claude_shell_command(
+    mode: ClaudeSpawnMode,
+    id: &str,
+    model: Option<&str>,
+) -> String {
+    let mut cmd = String::from("exec claude");
+    if let Some(m) = model.filter(|s| !s.is_empty()) {
+        cmd.push_str(" --model ");
+        cmd.push_str(&shell_quote(m));
     }
+    if let ClaudeSpawnMode::Resume = mode {
+        cmd.push_str(" --resume ");
+        cmd.push_str(&shell_quote(id));
+    }
+    cmd
 }
 
 /// Snapshot the set of session UUIDs Claude has already written for `cwd`.
@@ -749,7 +770,7 @@ mod tests {
     fn build_claude_shell_command_quotes_weird_ids_for_resume() {
         // A future CLI might accept ids with shell metachars; the quoting
         // must neutralise them even though today's UUIDs don't need it.
-        let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, "$(rm -rf /)");
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, "$(rm -rf /)", None);
         assert_eq!(cmd, "exec claude --resume '$(rm -rf /)'");
     }
 
@@ -1024,19 +1045,66 @@ mod tests {
         assert_eq!(validated.resume_id, Some("resume-uuid-abc".into()));
     }
 
+    #[tokio::test]
+    async fn validate_session_for_terminal_propagates_session_model() {
+        // Per-session model needs to flow into the spawn command so the TUI
+        // honors the user's model pick.
+        let pool = test_pool().await;
+        process_write_for_tests(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write_for_tests(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        let mut s = make_session("t-001");
+        s.model = Some("opus".into());
+        process_write_for_tests(&pool, DbWrite::CreateSession(s)).await.unwrap();
+
+        let validated = validate_session_for_terminal(&pool, "s-001").await.unwrap();
+        assert_eq!(validated.model, Some("opus".into()));
+    }
+
     #[test]
     fn build_claude_shell_command_spawns_plain_claude_for_fresh_sessions() {
         // Fresh sessions: spawn plain `claude` and let it create its own
         // UUID. The id arg is ignored in this mode (we discover the id by
         // watching ~/.claude/projects/<encoded-cwd>/ for a new file).
-        let cmd = build_claude_shell_command(ClaudeSpawnMode::Fresh, "ignored");
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::Fresh, "ignored", None);
         assert_eq!(cmd, "exec claude");
     }
 
     #[test]
     fn build_claude_shell_command_uses_resume_flag_for_existing_sessions() {
-        let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, "abc-123");
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, "abc-123", None);
         assert_eq!(cmd, "exec claude --resume 'abc-123'");
+    }
+
+    #[test]
+    fn build_claude_shell_command_passes_model_for_fresh_spawns() {
+        // The toggle's "create with this model" path: terminal mode honors
+        // the per-session model the same way the SDK-backed UI does.
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::Fresh, "", Some("opus"));
+        assert_eq!(cmd, "exec claude --model 'opus'");
+    }
+
+    #[test]
+    fn build_claude_shell_command_passes_model_for_resumes() {
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, "abc-123", Some("sonnet"));
+        assert_eq!(cmd, "exec claude --model 'sonnet' --resume 'abc-123'");
+    }
+
+    #[test]
+    fn build_claude_shell_command_treats_empty_model_as_unset() {
+        // Defensive: a stored "" should not produce `--model ''`, which
+        // Claude would reject.
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::Fresh, "", Some(""));
+        assert_eq!(cmd, "exec claude");
+    }
+
+    #[test]
+    fn build_claude_shell_command_quotes_weird_model_names() {
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::Fresh, "", Some("$(rm -rf /)"));
+        assert_eq!(cmd, "exec claude --model '$(rm -rf /)'");
     }
 
     #[tokio::test]
