@@ -1,9 +1,10 @@
 import { Component, createSignal, onMount, onCleanup, Show } from 'solid-js'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { Loader2 } from 'lucide-solid'
 import { ShellTerminal } from './ShellTerminal'
 import * as ipc from '../lib/ipc'
 import { formatDroppedPathsForTerminal } from '../lib/terminalMode'
-import type { PtyExitedEvent } from '../types'
+import type { PtyExitedEvent, PtyOutputEvent } from '../types'
 
 interface TauriDragDropPayload {
   paths: string[]
@@ -24,11 +25,16 @@ export const SessionTerminal: Component<Props> = (props) => {
   const [terminalId, setTerminalId] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [exited, setExited] = createSignal(false)
+  // True once we've seen any non-empty pty-output for the current terminal.
+  // Drives a centered spinner overlay so the user gets feedback during the
+  // gap between PTY spawn and Claude printing its first frame.
+  const [ready, setReady] = createSignal(false)
 
   async function openTerminal() {
     setError(null)
     setExited(false)
     setTerminalId(null)
+    setReady(false)
     try {
       const res = await ipc.claudeTerminalOpen(props.sessionId, 24, 80)
       setTerminalId(res.terminalId)
@@ -51,6 +57,16 @@ export const SessionTerminal: Component<Props> = (props) => {
     unlisten = fn
   })
 
+  let unlistenOutput: UnlistenFn | undefined
+  void listen<PtyOutputEvent>('pty-output', (event) => {
+    if (ready()) return
+    if (event.payload.terminalId !== terminalId()) return
+    if (!event.payload.data) return
+    setReady(true)
+  }).then((fn) => {
+    unlistenOutput = fn
+  })
+
   // Drop handler: SessionTerminal is the only drop target visible in Terminal
   // view (MessageInput is unmounted), so any drop on the window forwards its
   // paths to the PTY. No bbox hit-test — Tauri's drop position is in physical
@@ -67,6 +83,7 @@ export const SessionTerminal: Component<Props> = (props) => {
   onCleanup(() => {
     unlisten?.()
     unlistenDrop?.()
+    unlistenOutput?.()
     // Don't close the Claude PTY on unmount. The backend's `claude_terminal_open`
     // is idempotent per session (returns the existing handle when called again),
     // and ShellTerminal rejoins the existing xterm via the terminals registry —
@@ -109,8 +126,19 @@ export const SessionTerminal: Component<Props> = (props) => {
             }
           >
             {(id) => (
-              <div class="flex-1 min-h-0">
+              <div class="flex-1 min-h-0 relative">
                 <ShellTerminal terminalId={id()} disableCmdVIntercept />
+                <Show when={!ready()}>
+                  <div
+                    data-testid="claude-terminal-loading"
+                    class="absolute inset-0 grid place-items-center bg-surface-0 pointer-events-none transition-opacity duration-200"
+                  >
+                    <div class="flex items-center gap-2 text-text-dim text-sm">
+                      <Loader2 size={14} class="animate-spin" />
+                      <span>Starting Claude Code…</span>
+                    </div>
+                  </div>
+                </Show>
               </div>
             )}
           </Show>

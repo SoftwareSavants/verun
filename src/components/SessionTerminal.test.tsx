@@ -5,16 +5,21 @@ type Handler = (ev: { payload: { terminalId: string; exitCode: number | null } }
 const ptyExitedHandlers: Handler[] = []
 type DropHandler = (ev: { payload: { paths: string[]; position?: { x: number; y: number } } }) => void
 const dropHandlers: DropHandler[] = []
+type OutputHandler = (ev: { payload: { terminalId: string; data: string; seq: number } }) => void
+const ptyOutputHandlers: OutputHandler[] = []
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn((event: string, handler: Handler | DropHandler) => {
+  listen: vi.fn((event: string, handler: Handler | DropHandler | OutputHandler) => {
     if (event === 'pty-exited') ptyExitedHandlers.push(handler as Handler)
     if (event === 'tauri://drag-drop') dropHandlers.push(handler as DropHandler)
+    if (event === 'pty-output') ptyOutputHandlers.push(handler as OutputHandler)
     return Promise.resolve(() => {
       const a = ptyExitedHandlers.indexOf(handler as Handler)
       if (a !== -1) ptyExitedHandlers.splice(a, 1)
       const b = dropHandlers.indexOf(handler as DropHandler)
       if (b !== -1) dropHandlers.splice(b, 1)
+      const c = ptyOutputHandlers.indexOf(handler as OutputHandler)
+      if (c !== -1) ptyOutputHandlers.splice(c, 1)
     })
   }),
   emit: vi.fn(),
@@ -50,6 +55,7 @@ async function flush() {
 beforeEach(() => {
   ptyExitedHandlers.length = 0
   dropHandlers.length = 0
+  ptyOutputHandlers.length = 0
   ipcMocks.claudeTerminalOpen.mockReset()
   ipcMocks.claudeTerminalClose.mockReset()
   ipcMocks.ptyWrite.mockReset()
@@ -148,6 +154,54 @@ describe('SessionTerminal', () => {
     await flush()
     unmount()
     expect(ipcMocks.claudeTerminalClose).not.toHaveBeenCalled()
+  })
+
+  test('shows the booting-claude overlay until the first pty-output arrives', async () => {
+    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
+    const { queryByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
+    await flush()
+
+    // ShellTerminal mounts; the overlay sits on top until claude prints.
+    expect(queryByTestId('shell-terminal')).toBeTruthy()
+    expect(queryByTestId('claude-terminal-loading')).toBeTruthy()
+
+    // First byte from claude.
+    for (const h of ptyOutputHandlers) {
+      h({ payload: { terminalId: 'term-1', data: 'Welcome to Claude Code\n', seq: 22 } })
+    }
+    await flush()
+
+    expect(queryByTestId('claude-terminal-loading')).toBeNull()
+  })
+
+  test('overlay ignores pty-output for unrelated terminals', async () => {
+    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
+    const { queryByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
+    await flush()
+    expect(queryByTestId('claude-terminal-loading')).toBeTruthy()
+
+    for (const h of ptyOutputHandlers) {
+      h({ payload: { terminalId: 'other-term', data: 'noise', seq: 5 } })
+    }
+    await flush()
+
+    // Still loading - the byte was for a different PTY.
+    expect(queryByTestId('claude-terminal-loading')).toBeTruthy()
+  })
+
+  test('overlay treats empty-data events as not-yet-arrived', async () => {
+    // Some keepalive / no-op pty-output payloads carry an empty data string.
+    // Don't false-trigger the "ready" state on those.
+    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
+    const { queryByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
+    await flush()
+
+    for (const h of ptyOutputHandlers) {
+      h({ payload: { terminalId: 'term-1', data: '', seq: 0 } })
+    }
+    await flush()
+
+    expect(queryByTestId('claude-terminal-loading')).toBeTruthy()
   })
 
   test('drag-drop forwards quoted paths to the PTY', async () => {
