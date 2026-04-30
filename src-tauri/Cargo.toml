@@ -9,6 +9,14 @@ edition = "2021"
 name = "verun_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Thin stdio<->Unix-socket relay launched per Claude Code session as the
+# MCP server entry point. Reads VERUN_TASK_ID + VERUN_MCP_SOCKET, writes
+# the identity frame, and bidirectionally pipes ndjson between Claude's
+# stdio and the in-app host socket.
+[[bin]]
+name = "verun-mcp-relay"
+path = "src/bin/verun_mcp_relay.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

@@ -121,7 +121,7 @@ pub enum OutputItem {
     /// tailing the on-disk transcript for a PTY-backed session.
     #[serde(rename_all = "camelCase")]
     #[allow(dead_code)] // constructed by the transcript tailer in the next phase
-    UserMessage { text: String },
+    TranscriptUserMessage { text: String },
 
     /// Pasted-image attachment carried alongside a transcript user message.
     /// Holds the still-base64 data straight from the JSONL so the driver can

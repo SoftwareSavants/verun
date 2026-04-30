@@ -1,5 +1,7 @@
 use crate::agent::AgentKind;
 use crate::db::{self, DbWriteTx, Session, Task};
+#[cfg(unix)]
+use crate::mcp;
 use crate::policy::TrustLevel;
 use crate::stream;
 use crate::worktree;
@@ -958,6 +960,29 @@ pub async fn create_task(
             .await
             .map_err(|e| format!("Join error: {e}"))?
     }?;
+
+    // Inject .mcp.json so Claude Code in this worktree can call back into
+    // Verun via the relay binary. Failure is non-fatal — task creation
+    // shouldn't break if the relay/socket can't be resolved. Unix only:
+    // the MCP server uses Unix domain sockets, so we skip on Windows.
+    #[cfg(unix)]
+    {
+        let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
+        let socket_path = app_data.join("mcp.sock");
+        match mcp::relay_binary_path() {
+            Ok(relay) => {
+                if let Err(e) = mcp::write_mcp_config(
+                    std::path::Path::new(&worktree_path),
+                    &id,
+                    &socket_path,
+                    &relay,
+                ) {
+                    eprintln!("[verun] failed to write .mcp.json for task {id}: {e}");
+                }
+            }
+            Err(e) => eprintln!("[verun] could not resolve relay binary path: {e}"),
+        }
+    }
 
     let task = Task {
         id,

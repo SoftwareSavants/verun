@@ -14,6 +14,8 @@ mod github_remote;
 mod ipc;
 mod lsp;
 mod markdown_skills;
+#[cfg(unix)]
+pub mod mcp;
 mod policy;
 mod pty;
 mod snapshots;
@@ -172,9 +174,35 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let _ = reset_tx.send(db::DbWrite::ResetRunningSessions).await;
             });
+            #[cfg(unix)]
+            let mcp_action_tx = {
+                let (tx, rx) = tokio::sync::mpsc::channel(32);
+                let mcp_pool = pool.clone();
+                let mcp_socket_path = app_data_dir.join("mcp.sock");
+                let mcp_actions_for_socket = tx.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) =
+                        mcp::serve_socket(mcp_pool, mcp_socket_path, Some(mcp_actions_for_socket))
+                            .await
+                    {
+                        eprintln!("[verun] MCP socket failed: {e}");
+                    }
+                });
+                (tx, rx)
+            };
+
             app.manage(pool);
             app.manage(db_tx);
             app.manage(blob::AppDataDir(app_data_dir));
+
+            #[cfg(unix)]
+            {
+                let (_tx, rx) = mcp_action_tx;
+                let mcp_worker_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    mcp::run_action_worker(mcp_worker_handle, rx).await;
+                });
+            }
 
             // Auto-check for updates after a short delay
             let update_handle = app.handle().clone();
