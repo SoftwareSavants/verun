@@ -138,6 +138,29 @@ describe('ClaudeViewToggle', () => {
     expect(getByTestId('claude-view-toggle-terminal').getAttribute('title')).toBe('Terminal view')
   })
 
+  test('clicking a segment updates the global default so new sessions inherit it', async () => {
+    // Sticky last-used: the global default is the user's most recent choice
+    // so newly-created sessions in any task default to it without anyone
+    // hunting for a setting. Settings → General → Claude Code can still pin
+    // an explicit default.
+    const { sessionViewMode, claudeDefaultViewMode, setClaudeDefaultViewMode } = await import('../store/sessionViewMode')
+    setClaudeDefaultViewMode('ui')
+    expect(claudeDefaultViewMode()).toBe('ui')
+
+    const { getByTestId } = render(() => (
+      <ClaudeViewToggle session={session()} sessionId="s-1" active />
+    ))
+    fireEvent.click(getByTestId('claude-view-toggle-terminal'))
+
+    expect(sessionViewMode('s-1')).toBe('terminal')
+    expect(claudeDefaultViewMode()).toBe('terminal')
+    expect(localStorage.getItem('verun:claudeDefaultViewMode')).toBe('terminal')
+
+    fireEvent.click(getByTestId('claude-view-toggle-ui'))
+    expect(claudeDefaultViewMode()).toBe('ui')
+    expect(localStorage.getItem('verun:claudeDefaultViewMode')).toBe('ui')
+  })
+
   test('clicks do not bubble to the parent tab handler', () => {
     const onParentClick = vi.fn()
     const { getByTestId } = render(() => (

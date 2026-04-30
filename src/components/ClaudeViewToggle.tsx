@@ -1,7 +1,7 @@
 import { Component, Show } from 'solid-js'
 import { clsx } from 'clsx'
 import { Terminal, MessageSquare } from 'lucide-solid'
-import { sessionViewMode, setSessionViewMode } from '../store/sessionViewMode'
+import { sessionViewMode, setSessionViewMode, setClaudeDefaultViewMode } from '../store/sessionViewMode'
 import { canUseTerminalView } from '../lib/terminalMode'
 import type { Session } from '../types'
 
@@ -35,7 +35,13 @@ export const ClaudeViewToggle: Component<Props> = (props) => {
   const select = (next: 'ui' | 'terminal') => (e: MouseEvent) => {
     e.stopPropagation()
     const sid = props.sessionId
-    if (sid) setSessionViewMode(sid, next)
+    if (!sid) return
+    setSessionViewMode(sid, next)
+    // Sticky last-used: bump the global default so newly-created sessions
+    // inherit the user's most recent choice. They can still override per
+    // session, and Settings → General → Claude Code remains the place to
+    // pin a specific default if they want to opt out of the learning.
+    setClaudeDefaultViewMode(next)
   }
 
   return (
