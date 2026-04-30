@@ -148,11 +148,12 @@ describe('ClaudeViewToggle', () => {
     expect(getByTestId('claude-view-toggle-terminal').getAttribute('title')).toBe('Terminal view')
   })
 
-  test('clicking a segment updates the global default so new sessions inherit it', async () => {
-    // Sticky last-used: the global default is the user's most recent choice
-    // so newly-created sessions in any task default to it without anyone
-    // hunting for a setting. Settings → General → Claude Code can still pin
-    // an explicit default.
+  test('clicking a segment is a per-session override only and never changes the global default', async () => {
+    // Regression: the toggle previously bumped the global default on every
+    // click ("sticky last-used"). That made a one-off toggle on a single
+    // session quietly retrain what every newly-created session opens as.
+    // Now the global default is only editable via Settings → General →
+    // Claude Code.
     const { sessionViewMode, claudeDefaultViewMode, setClaudeDefaultViewMode } = await import('../store/sessionViewMode')
     setClaudeDefaultViewMode('ui')
     expect(claudeDefaultViewMode()).toBe('ui')
@@ -163,10 +164,6 @@ describe('ClaudeViewToggle', () => {
     fireEvent.click(getByTestId('claude-view-toggle-terminal'))
 
     expect(sessionViewMode('s-1')).toBe('terminal')
-    expect(claudeDefaultViewMode()).toBe('terminal')
-    expect(localStorage.getItem('verun:claudeDefaultViewMode')).toBe('terminal')
-
-    fireEvent.click(getByTestId('claude-view-toggle-ui'))
     expect(claudeDefaultViewMode()).toBe('ui')
     expect(localStorage.getItem('verun:claudeDefaultViewMode')).toBe('ui')
   })
