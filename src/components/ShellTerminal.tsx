@@ -232,7 +232,18 @@ export const ShellTerminal: Component<Props> = (props) => {
       searchAddonRef = existing.searchAddon
       if (searchAddonRef) attachResultsListener(searchAddonRef)
       setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped, toggleSearch, props.disableCmdVIntercept)
-      initialFit(existing, props.terminalId)
+      // Don't re-fit on rejoin. The xterm and PTY were already correctly
+      // sized when this terminal was first mounted; calling fitAddon.fit()
+      // here measures the just-attached container before its flex layout
+      // has settled, computes a tiny cols count, and emits a narrow
+      // ptyResize. The TUI inside (Claude Code) reflows to that narrow
+      // width, writes the narrow output into xterm's scrollback, and the
+      // history stays wrapped forever. Let the ResizeObserver handle any
+      // real size changes instead.
+      requestAnimationFrame(() => {
+        existing.term.scrollToBottom()
+        existing.term.focus()
+      })
       resizeObserver = attachResizeObserver(terminalRef, existing, props.terminalId)
       unsubAppearance = subscribeXtermToAppearance(existing.term, () => {
         existing.fitAddon.fit()
