@@ -146,9 +146,6 @@ importers:
       '@tauri-apps/plugin-updater':
         specifier: ^2.10.1
         version: 2.10.1
-      '@xterm/addon-canvas':
-        specifier: ^0.7.0
-        version: 0.7.0(@xterm/xterm@6.0.0)
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
@@ -1393,11 +1390,6 @@ packages:
 
   '@vitest/utils@4.1.2':
     resolution: {integrity: sha512-xw2/TiX82lQHA06cgbqRKFb5lCAy3axQ4H4SoUFhUsg+wztiet+co86IAMDtF6Vm1hc7J6j09oh/rgDn+JdKIQ==}
-
-  '@xterm/addon-canvas@0.7.0':
-    resolution: {integrity: sha512-LF5LYcfvefJuJ7QotNRdRSPc9YASAVDeoT5uyXS/nZshZXjYplGXRECBGiznwvhNL2I8bq1Lf5MzRwstsYQ2Iw==}
-    peerDependencies:
-      '@xterm/xterm': ^5.0.0
 
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
@@ -3747,10 +3739,6 @@ snapshots:
       '@vitest/pretty-format': 4.1.2
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
-
-  '@xterm/addon-canvas@0.7.0(@xterm/xterm@6.0.0)':
-    dependencies:
-      '@xterm/xterm': 6.0.0
 
   '@xterm/addon-fit@0.11.0': {}
 
