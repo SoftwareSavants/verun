@@ -273,7 +273,7 @@ export const SettingsPage: Component = () => {
                 <div>
                   <div class="text-sm text-text-primary">Default session view</div>
                   <div class="text-xs text-text-dim mt-0.5">
-                    Terminal runs <code>claude --resume</code> in a real PTY; UI uses Verun's chat interface. Each session can still override this.
+                    How new Claude sessions open. Terminal shows the native Claude Code interface; UI shows Verun's chat with diffs, plans, and approvals. You can switch any session at any time.
                   </div>
                 </div>
                 <ClaudeDefaultViewPicker />
