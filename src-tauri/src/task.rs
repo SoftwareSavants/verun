@@ -968,7 +968,7 @@ pub async fn create_task(
     #[cfg(unix)]
     {
         let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
-        let socket_path = app_data.join("mcp.sock");
+        let socket_path = mcp::socket_path(&app_data);
         match mcp::relay_binary_path() {
             Ok(relay) => {
                 if let Err(e) = mcp::write_mcp_config(
@@ -1336,6 +1336,11 @@ pub struct SendMessageParams {
     pub fast_mode: bool,
     pub task_name: Option<String>,
     pub agent_type: String,
+    /// `true` when the message did NOT originate from the UI (e.g. an
+    /// agent calling `verun_send_message` over MCP). The UI optimistically
+    /// inserts its own user message on submit; external messages need an
+    /// explicit `session-output` event so the active view picks them up.
+    pub external: bool,
 }
 
 /// Send a message to the agent's CLI in this session's worktree.
@@ -1373,6 +1378,7 @@ pub async fn send_message(
         fast_mode,
         task_name,
         agent_type,
+        external,
     } = params;
     let agent = AgentKind::parse(&agent_type).implementation();
     let is_first_turn = resume_session_id.as_ref().is_none_or(|s| s.is_empty());
@@ -1478,6 +1484,7 @@ pub async fn send_message(
             } => {
                 let user_bytes = agent.encode_stream_user_message(&message, &attachments)?;
                 persist_verun_user_message(
+                    &app,
                     db_tx,
                     &session_id,
                     &message,
@@ -1485,6 +1492,7 @@ pub async fn send_message(
                     plan_mode,
                     thinking_mode,
                     fast_mode,
+                    external,
                 )
                 .await;
                 spawn_session_title_generation(
@@ -1554,6 +1562,7 @@ pub async fn send_message(
             } => {
                 use crate::agent::codex_rpc;
                 persist_verun_user_message(
+                    &app,
                     db_tx,
                     &session_id,
                     &message,
@@ -1561,6 +1570,7 @@ pub async fn send_message(
                     plan_mode,
                     thinking_mode,
                     fast_mode,
+                    external,
                 )
                 .await;
                 spawn_session_title_generation(
@@ -1662,6 +1672,7 @@ pub async fn send_message(
     );
 
     persist_verun_user_message(
+        &app,
         db_tx,
         &session_id,
         &message,
@@ -1669,6 +1680,7 @@ pub async fn send_message(
         plan_mode,
         thinking_mode,
         fast_mode,
+        external,
     )
     .await;
 
@@ -1707,7 +1719,9 @@ pub async fn send_message(
 /// Embeds full attachment refs (hash + mime + name + size), not just names —
 /// the frontend's reload path lazy-loads bytes from the blob store via
 /// `get_blob(hash)` so images survive a session reopen.
+#[allow(clippy::too_many_arguments)]
 async fn persist_verun_user_message(
+    app: &AppHandle,
     db_tx: &DbWriteTx,
     session_id: &str,
     message: &str,
@@ -1715,6 +1729,7 @@ async fn persist_verun_user_message(
     plan_mode: bool,
     thinking_mode: bool,
     fast_mode: bool,
+    external: bool,
 ) {
     let refs: Vec<AttachmentRef> = attachments
         .iter()
@@ -1725,6 +1740,7 @@ async fn persist_verun_user_message(
             size: a.size,
         })
         .collect();
+    let now = epoch_ms();
     let user_line = serde_json::json!({
         "type": "verun_user_message",
         "text": message,
@@ -1737,9 +1753,25 @@ async fn persist_verun_user_message(
     let _ = db_tx
         .send(db::DbWrite::InsertOutputLines {
             session_id: session_id.to_string(),
-            lines: vec![(user_line, epoch_ms())],
+            lines: vec![(user_line, now)],
         })
         .await;
+    // UI sends are already inserted optimistically by the frontend before
+    // this runs; emitting again would duplicate the message. External
+    // sends (MCP `verun_send_message`) need the push so the live view
+    // updates without a session reload.
+    if external {
+        let _ = app.emit(
+            "session-output",
+            stream::SessionOutputEvent {
+                session_id: session_id.to_string(),
+                items: vec![stream::OutputItem::UserMessage {
+                    text: message.to_string(),
+                    timestamp: Some(now),
+                }],
+            },
+        );
+    }
 }
 
 /// Kick off the background Haiku call that names the session and task.
