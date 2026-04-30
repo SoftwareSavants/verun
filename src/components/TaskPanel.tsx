@@ -548,6 +548,7 @@ export const TaskPanel: Component = () => {
                             <Show when={sessionCosts[session.id] > 0}>
                               <span class="text-text-dim">${sessionCosts[session.id] < 1 ? sessionCosts[session.id].toFixed(3) : sessionCosts[session.id].toFixed(2)}</span>
                             </Show>
+                            <ClaudeViewToggle session={session} sessionId={session.id} />
 
                             <Show when={session.status === 'running'}>
                               <button
@@ -645,7 +646,6 @@ export const TaskPanel: Component = () => {
                       when={mainView(t().id) !== 'session'}
                       fallback={
                         <>
-                          <ClaudeViewToggle session={currentSession()} sessionId={selectedSessionId()} />
                           <Show
                             when={canUseTerminalView(currentSession()) && sessionViewMode(selectedSessionId()) === 'terminal' && selectedSessionId()}
                             fallback={
