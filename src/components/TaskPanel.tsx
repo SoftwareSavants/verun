@@ -698,7 +698,13 @@ export const TaskPanel: Component = () => {
                             }
                           >
                             <div class="flex-1 overflow-hidden">
-                              <SessionTerminal sessionId={selectedSessionId()!} />
+                              {/* `keyed` so switching between two terminal-mode
+                                  sessions in the same task remounts SessionTerminal
+                                  - otherwise its onMount only fires once and the
+                                  visible PTY stays bound to the first session. */}
+                              <Show when={selectedSessionId()} keyed>
+                                {(sid) => <SessionTerminal sessionId={sid} />}
+                              </Show>
                             </div>
                           </Show>
                         </>
