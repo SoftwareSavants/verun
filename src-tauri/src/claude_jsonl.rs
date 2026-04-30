@@ -214,7 +214,9 @@ pub fn parse_transcript_line(line: &str) -> Vec<OutputItem> {
 /// them as a normal user message - filter them at parse time.
 fn is_local_command_envelope(text: &str) -> bool {
     let trimmed = text.trim_start();
-    trimmed.starts_with("<local-command-caveat>") || trimmed.starts_with("<command-name>")
+    trimmed.starts_with("<local-command-caveat>")
+        || trimmed.starts_with("<command-name>")
+        || trimmed.starts_with("<local-command-stdout>")
 }
 
 #[allow(dead_code)]
@@ -502,6 +504,15 @@ mod tests {
     #[test]
     fn transcript_user_local_command_envelope_is_filtered_string_form() {
         let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: foo.</local-command-caveat>\n<command-name>/model</command-name>\n<local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>"},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_bare_local_command_stdout_envelope_is_filtered() {
+        // Some commands (subsequent /model invocations, etc.) emit just the
+        // stdout block with no caveat or command-name preamble. Same family
+        // of TUI scaffolding - filter it too.
+        let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to Haiku 4.5</local-command-stdout>"},"uuid":"u1"}"#;
         assert!(parse_transcript_line(line).is_empty());
     }
 
