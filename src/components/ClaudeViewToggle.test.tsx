@@ -51,14 +51,30 @@ describe('ClaudeViewToggle', () => {
     expect(queryByTestId('claude-view-toggle')).toBeNull()
   })
 
-  test('renders nothing when the session tab is not the active one', () => {
-    // Toggling the view mode of a non-visible session has no observable
-    // effect (the user is looking at a different session), so the control
-    // hides on inactive tabs to avoid the dead-click confusion.
-    const { queryByTestId } = render(() => (
+  test('collapses to zero width on inactive tabs and re-expands when active', () => {
+    // The control stays in the DOM so it can animate in/out smoothly, but
+    // collapses to zero width + zero opacity + non-interactive when the tab
+    // is not selected. Otherwise the tab width would snap when the user
+    // changes selection.
+    const { getByTestId } = render(() => (
       <ClaudeViewToggle session={session()} sessionId="s-1" active={false} />
     ))
-    expect(queryByTestId('claude-view-toggle')).toBeNull()
+    const inactive = getByTestId('claude-view-toggle')
+    expect(inactive.getAttribute('data-active')).toBe('false')
+    expect(inactive.getAttribute('aria-hidden')).toBe('true')
+    expect(inactive.className).toMatch(/max-w-0/)
+    expect(inactive.className).toMatch(/opacity-0/)
+    expect(inactive.className).toMatch(/pointer-events-none/)
+    cleanup()
+
+    const { getByTestId: getActive } = render(() => (
+      <ClaudeViewToggle session={session()} sessionId="s-1" active />
+    ))
+    const active = getActive('claude-view-toggle')
+    expect(active.getAttribute('data-active')).toBe('true')
+    expect(active.getAttribute('aria-hidden')).toBe('false')
+    expect(active.className).toMatch(/max-w-12/)
+    expect(active.className).toMatch(/opacity-100/)
   })
 
   test('renders nothing when the session has no resume id (first turn not yet reached)', () => {
