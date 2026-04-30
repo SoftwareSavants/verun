@@ -67,7 +67,13 @@ export const SessionTerminal: Component<Props> = (props) => {
   onCleanup(() => {
     unlisten?.()
     unlistenDrop?.()
-    ipc.claudeTerminalClose(props.sessionId).catch(() => {})
+    // Don't close the Claude PTY on unmount. The backend's `claude_terminal_open`
+    // is idempotent per session (returns the existing handle when called again),
+    // and ShellTerminal rejoins the existing xterm via the terminals registry —
+    // so switching session tabs / toggling UI↔Terminal preserves the running
+    // TUI instead of respawning `claude --resume` each time. Real cleanup
+    // happens when the session itself is closed (`close_all_for_task`) or when
+    // the PTY exits (`drop_if_stale`).
   })
 
   return (

@@ -137,12 +137,17 @@ describe('SessionTerminal', () => {
     expect(() => findByTestId('shell-terminal')).rejects
   })
 
-  test('cleanup invokes claudeTerminalClose on unmount', async () => {
+  // Regression: SessionTerminal used to close the Claude PTY on unmount,
+  // which made every session-tab switch respawn `claude --resume` and lose
+  // the running TUI's scrollback. Now we leave the PTY alive — backend
+  // `claude_terminal_open` is idempotent so the next mount rejoins it,
+  // and real cleanup happens at session-close (`close_all_for_task`).
+  test('does NOT close the Claude PTY on unmount (preserves running TUI across remounts)', async () => {
     ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
     const { unmount } = render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
     unmount()
-    expect(ipcMocks.claudeTerminalClose).toHaveBeenCalledWith('s-1')
+    expect(ipcMocks.claudeTerminalClose).not.toHaveBeenCalled()
   })
 
   test('drag-drop forwards quoted paths to the PTY', async () => {
