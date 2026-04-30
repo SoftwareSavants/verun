@@ -242,6 +242,12 @@ fn classify_envelope(text: &str) -> EnvelopeAction {
     if trimmed.starts_with("<local-command-stdout>") {
         return EnvelopeAction::Drop;
     }
+    // System-reminder context injections (Verun's harness, /loop tickers,
+    // tool-result post-instructions, etc.) - the model needs them, the
+    // user doesn't.
+    if trimmed.starts_with("<system-reminder>") {
+        return EnvelopeAction::Drop;
+    }
 
     let is_envelope = trimmed.starts_with("<local-command-caveat>")
         || trimmed.starts_with("<command-name>")
@@ -613,6 +619,15 @@ mod tests {
         // Defensive: an envelope that's somehow missing the <command-name>
         // tag should drop rather than leak the raw XML into the chat.
         let line = r#"{"type":"user","message":{"role":"user","content":"<command-message>just-this</command-message>"},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_system_reminder_injection_is_filtered() {
+        // Verun's harness (and /loop, tool-result post-instructions, etc.)
+        // injects <system-reminder> blocks as fake user messages to nudge
+        // the model. They're scaffolding, not user-facing content.
+        let line = r#"{"type":"user","message":{"role":"user","content":"<system-reminder>Respond with just the action or changes and without a thinking block, unless this is a redesign or requires fresh reasoning.</system-reminder>"},"uuid":"u1"}"#;
         assert!(parse_transcript_line(line).is_empty());
     }
 
