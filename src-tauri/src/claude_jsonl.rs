@@ -200,8 +200,8 @@ pub fn parse_transcript_line(line: &str) -> Vec<OutputItem> {
 }
 
 /// Claude Code's TUI injects fake "user" messages into the transcript when a
-/// slash command runs (e.g. `/model`, `/exit`, `/clear`) so the model sees
-/// what local commands the human ran. They look like:
+/// slash command runs (e.g. `/model`, `/exit`, `/clear`, `/adapt`) so the
+/// model sees what local commands the human ran. The envelope shape varies:
 ///
 ///     <local-command-caveat>Caveat: ...</local-command-caveat>
 ///     <command-name>/model</command-name>
@@ -209,14 +209,18 @@ pub fn parse_transcript_line(line: &str) -> Vec<OutputItem> {
 ///     <command-args></command-args>
 ///     <local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>
 ///
-/// The XML-ish envelope plus embedded ANSI escapes are scaffolding for the
-/// model, not user-facing content. Verun's UI mode would otherwise render
-/// them as a normal user message - filter them at parse time.
+/// Skills (slash commands that load a markdown body) ALSO inject their
+/// body as a separate user message starting with the canonical preamble
+/// "Base directory for this skill: <path>". Native Claude TUI hides both
+/// classes of injection from the chat - we do the same.
 fn is_local_command_envelope(text: &str) -> bool {
     let trimmed = text.trim_start();
     trimmed.starts_with("<local-command-caveat>")
         || trimmed.starts_with("<command-name>")
+        || trimmed.starts_with("<command-message>")
+        || trimmed.starts_with("<command-args>")
         || trimmed.starts_with("<local-command-stdout>")
+        || trimmed.starts_with("Base directory for this skill:")
 }
 
 #[allow(dead_code)]
@@ -504,6 +508,23 @@ mod tests {
     #[test]
     fn transcript_user_local_command_envelope_is_filtered_string_form() {
         let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: foo.</local-command-caveat>\n<command-name>/model</command-name>\n<local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>"},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_envelope_starting_with_command_message_is_filtered() {
+        // Some slash-command invocations (e.g. /adapt) lead with
+        // <command-message> instead of <command-name> or <local-command-caveat>.
+        let line = r#"{"type":"user","message":{"role":"user","content":"<command-message>adapt</command-message>\n<command-name>/adapt</command-name>\n<command-args>wassup</command-args>"},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_skill_body_injection_is_filtered() {
+        // Skills (slash commands with a markdown body) inject the body as
+        // its own user message starting with "Base directory for this
+        // skill: <path>". Native Claude TUI hides this; we do the same.
+        let line = r#"{"type":"user","message":{"role":"user","content":"Base directory for this skill: /Users/x/.claude/skills/adapt\n\nAdapt existing designs ..."},"uuid":"u1"}"#;
         assert!(parse_transcript_line(line).is_empty());
     }
 
