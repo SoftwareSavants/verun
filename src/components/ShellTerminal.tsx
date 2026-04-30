@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
-import { WebglAddon } from '@xterm/addon-webgl'
+import { CanvasAddon } from '@xterm/addon-canvas'
 import { registerXterm, getXtermEntry, consumeInitialReplay, markSeqWritten } from '../store/terminals'
 import type { XtermEntry } from '../store/terminals'
 import * as ipc from '../lib/ipc'
@@ -274,15 +274,16 @@ export const ShellTerminal: Component<Props> = (props) => {
     registerXterm(props.terminalId, term, fitAddon, searchAddon)
 
     try {
-      const webgl = new WebglAddon()
-      // VS Code pattern: dispose on context loss so xterm falls back to the
-      // DOM renderer instead of leaving a dead GL context behind. Critical
-      // on macOS WebKit (Tauri) where the OS occasionally drops contexts on
-      // sleep / Mission Control / display switches.
-      webgl.onContextLoss(() => webgl.dispose())
-      term.loadAddon(webgl)
+      // CanvasAddon instead of WebglAddon: WebGL's texture-atlas drifts under
+      // mid-stream content reflow on macOS WebKit (Tauri), leaving stale
+      // glyphs at old cell positions until a manual window resize re-blits
+      // every cell. The canvas renderer rebuilds the visible grid on every
+      // dirty-cell update, so it's immune. VS Code falls back to canvas for
+      // exactly this reason. Slightly higher CPU on huge scrollback, no
+      // other downsides.
+      term.loadAddon(new CanvasAddon())
     } catch {
-      // WebGL not available — xterm auto-falls back to the DOM renderer.
+      // Canvas not available — xterm auto-falls back to the DOM renderer.
     }
 
     const entry = { term, fitAddon, searchAddon }
