@@ -85,6 +85,11 @@ function initialFit(entry: XtermEntry, terminalId: string) {
     entry.fitAddon.fit()
     entry.term.refresh(0, entry.term.rows - 1)
     ipc.ptyResize(terminalId, entry.term.rows, entry.term.cols)
+    // Land at the latest content - matches every native terminal. Without
+    // this, switching back to a task with an existing PTY shows the top of
+    // the scrollback (where the xterm viewport was after the rejoin's
+    // re-fit) instead of where Claude is currently rendering.
+    entry.term.scrollToBottom()
     entry.term.focus()
   })
 }
