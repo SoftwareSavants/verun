@@ -81,16 +81,31 @@ function attachResizeObserver(container: HTMLElement, entry: XtermEntry, termina
 }
 
 function initialFit(entry: XtermEntry, terminalId: string) {
-  requestAnimationFrame(() => {
+  const refit = () => {
     entry.fitAddon.fit()
+    ipc.ptyResize(terminalId, entry.term.rows, entry.term.cols)
+  }
+  requestAnimationFrame(() => {
+    refit()
     // Position the viewport at the latest content BEFORE refresh() paints,
     // so the first frame the user sees is already at the bottom. Doing it
     // after refresh produces a one-frame flash of the top of the scrollback.
     entry.term.scrollToBottom()
     entry.term.refresh(0, entry.term.rows - 1)
-    ipc.ptyResize(terminalId, entry.term.rows, entry.term.cols)
     entry.term.focus()
   })
+  // Web fonts (SF Mono / Menlo) often haven't loaded when the first fit
+  // runs; xterm then measures cell metrics off the fallback font, comes up
+  // with a tiny cols count, and the PTY ends up sized for ~10 columns -
+  // visible as wrap-every-character output. Re-fit once fonts are ready.
+  if (typeof document !== 'undefined' && document.fonts?.ready) {
+    document.fonts.ready
+      .then(() => {
+        refit()
+        entry.term.refresh(0, entry.term.rows - 1)
+      })
+      .catch(() => {})
+  }
 }
 
 /**
