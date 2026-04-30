@@ -203,7 +203,7 @@ mod tests {
 
     fn assert_user_text(item: &OutputItem, expected: &str) {
         match item {
-            OutputItem::UserMessage { text } => assert_eq!(text, expected),
+            OutputItem::TranscriptUserMessage { text } => assert_eq!(text, expected),
             other => panic!("expected UserMessage, got {other:?}"),
         }
     }
@@ -474,7 +474,7 @@ mod tests {
                 .expect("timed out before all 200 items arrived")
                 .expect("channel closed mid-burst");
             match item {
-                OutputItem::UserMessage { text } => received.push(text),
+                OutputItem::TranscriptUserMessage { text } => received.push(text),
                 other => panic!("unexpected item kind: {other:?}"),
             }
         }
@@ -507,7 +507,7 @@ mod tests {
                 .expect("timed out waiting for tick item")
                 .expect("channel closed");
             match item {
-                OutputItem::UserMessage { text } => received.push(text),
+                OutputItem::TranscriptUserMessage { text } => received.push(text),
                 other => panic!("unexpected: {other:?}"),
             }
         }

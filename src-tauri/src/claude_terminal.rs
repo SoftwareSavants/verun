@@ -346,7 +346,7 @@ pub(crate) fn partition_tail_batch(items: &[OutputItem]) -> Vec<TailSegment> {
 
     for item in items {
         match item {
-            OutputItem::UserMessage { text } => {
+            OutputItem::TranscriptUserMessage { text } => {
                 if !in_user_segment {
                     flush_other(&mut segments, &mut other);
                     in_user_segment = true;
@@ -1146,7 +1146,7 @@ mod tests {
     fn partition_tail_batch_groups_user_content_into_a_single_segment() {
         let items = vec![
             OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "AAAA".into() },
-            OutputItem::UserMessage { text: "look".into() },
+            OutputItem::TranscriptUserMessage { text: "look".into() },
             OutputItem::Text { text: "ok".into() },
             OutputItem::ToolStart { tool: "Read".into(), input: "{}".into() },
         ];
@@ -1176,7 +1176,7 @@ mod tests {
         // A batch with just a UserMessage (no UserAttachment) is still a
         // user-turn segment so persistence routes through verun_user_message.
         // Doing this consistently avoids two parallel persistence shapes.
-        let items = vec![OutputItem::UserMessage { text: "hi".into() }];
+        let items = vec![OutputItem::TranscriptUserMessage { text: "hi".into() }];
         let segs = partition_tail_batch(&items);
         assert_eq!(segs.len(), 1);
         match &segs[0] {
@@ -1210,9 +1210,9 @@ mod tests {
         // If a tick captures two distinct user turns separated by an
         // assistant chunk, each should be its own segment.
         let items = vec![
-            OutputItem::UserMessage { text: "first".into() },
+            OutputItem::TranscriptUserMessage { text: "first".into() },
             OutputItem::Text { text: "reply".into() },
-            OutputItem::UserMessage { text: "second".into() },
+            OutputItem::TranscriptUserMessage { text: "second".into() },
         ];
         let segs = partition_tail_batch(&items);
         assert_eq!(segs.len(), 3);
@@ -1226,8 +1226,8 @@ mod tests {
         // Claude can emit multiple text blocks in a single user content array;
         // keep them in one verun_user_message line by joining with newlines.
         let items = vec![
-            OutputItem::UserMessage { text: "one".into() },
-            OutputItem::UserMessage { text: "two".into() },
+            OutputItem::TranscriptUserMessage { text: "one".into() },
+            OutputItem::TranscriptUserMessage { text: "two".into() },
         ];
         let segs = partition_tail_batch(&items);
         assert_eq!(segs.len(), 1);
@@ -1241,12 +1241,12 @@ mod tests {
     fn live_items_for_emit_filters_user_attachments() {
         let items = vec![
             OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "AAAA".into() },
-            OutputItem::UserMessage { text: "hi".into() },
+            OutputItem::TranscriptUserMessage { text: "hi".into() },
             OutputItem::Text { text: "ok".into() },
         ];
         let live = live_items_for_emit(&items);
         assert_eq!(live.len(), 2);
-        assert!(matches!(live[0], OutputItem::UserMessage { .. }));
+        assert!(matches!(live[0], OutputItem::TranscriptUserMessage { .. }));
         assert!(matches!(live[1], OutputItem::Text { .. }));
     }
 
@@ -1260,7 +1260,7 @@ mod tests {
 
         let items = vec![
             OutputItem::UserAttachment { mime: "image/png".into(), data_b64: data_b64.clone() },
-            OutputItem::UserMessage { text: "look at this".into() },
+            OutputItem::TranscriptUserMessage { text: "look at this".into() },
         ];
 
         let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
@@ -1287,7 +1287,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let items = vec![
             OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "not!!base64".into() },
-            OutputItem::UserMessage { text: "still text".into() },
+            OutputItem::TranscriptUserMessage { text: "still text".into() },
         ];
         let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
         assert_eq!(lines.len(), 1);
@@ -1324,7 +1324,7 @@ mod tests {
         let png_b64 = STANDARD.encode(b"img");
         let items = vec![
             OutputItem::UserAttachment { mime: "image/png".into(), data_b64: png_b64 },
-            OutputItem::UserMessage { text: "what's this".into() },
+            OutputItem::TranscriptUserMessage { text: "what's this".into() },
             OutputItem::Text { text: "an image".into() },
         ];
         let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
