@@ -1071,6 +1071,7 @@ async fn perform_send_user_message(
             fast_mode: false,
             task_name: task.name,
             agent_type: session.agent_type,
+            external: true,
         },
     )
     .await
@@ -1096,6 +1097,10 @@ async fn perform_spawn_task(
         .ok_or_else(|| format!("Project {project_id} not found"))?;
     let port_offset = db::next_port_offset(pool.inner(), &project_id).await?;
     let branch = base_branch.unwrap_or(project.base_branch);
+    // Hold on to the project's repo_path for the optional initial_message
+    // path below - looking it up via `db::get_repo_path_for_task` would
+    // race the InsertTask write that's still draining through the queue.
+    let repo_path = project.repo_path.clone();
 
     let (task, session) = crate::task::create_task(
         app,
@@ -1118,7 +1123,45 @@ async fn perform_spawn_task(
 
     let mut delivered = false;
     if let Some(msg) = initial_message {
-        match perform_send_user_message(app, &session.id, &msg).await {
+        // Construct SendMessageParams from the in-memory task/session that
+        // create_task just returned. Going through perform_send_user_message
+        // would `db::get_session` / `db::get_repo_path_for_task` against rows
+        // still queued on the async DB writer and fail with "no project found
+        // for task". A fresh task has no trust_level row, so the default
+        // ("normal") matches what get_trust_level would return anyway.
+        let active = app.state::<crate::task::ActiveMap>();
+        let pending = app.state::<crate::task::PendingApprovals>();
+        let pending_meta = app.state::<crate::task::PendingApprovalMeta>();
+        let pending_ctrl = app.state::<crate::task::PendingControlResponses>();
+        let result = crate::task::send_message(
+            app.clone(),
+            db_tx.inner(),
+            active.inner().clone(),
+            pending.inner().clone(),
+            pending_meta.inner().clone(),
+            pending_ctrl.inner().clone(),
+            crate::task::SendMessageParams {
+                session_id: session.id.clone(),
+                task_id: task.id.clone(),
+                project_id: project_id.clone(),
+                worktree_path: task.worktree_path.clone(),
+                repo_path,
+                port_offset,
+                trust_level: crate::policy::TrustLevel::from_str("normal"),
+                message: msg,
+                resume_session_id: None,
+                attachments: Vec::new(),
+                model: None,
+                plan_mode: false,
+                thinking_mode: false,
+                fast_mode: false,
+                task_name: task.name.clone(),
+                agent_type: agent_type.clone(),
+                external: true,
+            },
+        )
+        .await;
+        match result {
             Ok(()) => delivered = true,
             Err(e) => eprintln!("[verun-mcp] spawn_task: initial_message failed: {e}"),
         }
@@ -1350,7 +1393,132 @@ pub fn write_mcp_config(
 
     let mut pretty = serde_json::to_string_pretty(&root).map_err(std::io::Error::other)?;
     pretty.push('\n');
+    std::fs::write(&path, pretty)?;
+
+    // Pre-approve our server in `.claude/settings.local.json` so Claude Code
+    // doesn't prompt for trust on first launch. Best-effort: failure here
+    // just means the user gets a one-time approval prompt.
+    let _ = pre_approve_verun_in_claude_settings(worktree_path);
+
+    // Hide our generated files from `git status` for this worktree by
+    // appending to .git/info/exclude. No-op if the project already commits
+    // them (gitignore rules don't apply to tracked files). Best-effort: a
+    // missing or unwritable git dir shouldn't fail task creation.
+    let _ = ensure_mcp_excluded(worktree_path);
+    Ok(())
+}
+
+/// Add `verun` to `.claude/settings.local.json::enabledMcpjsonServers` so
+/// Claude Code auto-trusts it. Project-scope `.mcp.json` servers default
+/// to untrusted; pre-approving here lets new tasks "just work" without a
+/// per-task user gesture. Merges into an existing settings file (and
+/// recovers gracefully from garbage).
+fn pre_approve_verun_in_claude_settings(worktree_path: &Path) -> std::io::Result<()> {
+    let dir = worktree_path.join(".claude");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("settings.local.json");
+
+    let mut root: Value = if path.exists() {
+        match std::fs::read_to_string(&path) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| json!({})),
+            Err(_) => json!({}),
+        }
+    } else {
+        json!({})
+    };
+    if !root.is_object() {
+        root = json!({});
+    }
+    let obj = root.as_object_mut().expect("root is object");
+
+    let entry = obj
+        .entry("enabledMcpjsonServers".to_string())
+        .or_insert_with(|| json!([]));
+    if !entry.is_array() {
+        *entry = json!([]);
+    }
+    let arr = entry.as_array_mut().expect("entry is array");
+    if !arr.iter().any(|v| v.as_str() == Some("verun")) {
+        arr.push(json!("verun"));
+    }
+
+    let mut pretty = serde_json::to_string_pretty(&root).map_err(std::io::Error::other)?;
+    pretty.push('\n');
     std::fs::write(&path, pretty)
+}
+
+/// Idempotently add `.mcp.json` to the repo's `.git/info/exclude` so our
+/// injected file doesn't pollute the user's `git status`. `info/exclude`
+/// lives in the *common* git dir - per-worktree `info/` directories are
+/// not consulted by git for ignore rules - so for a linked worktree we
+/// walk from `<main>/.git/worktrees/<n>` back up to `<main>/.git`.
+fn ensure_mcp_excluded(worktree_path: &Path) -> std::io::Result<()> {
+    let git_path = worktree_path.join(".git");
+    if !git_path.exists() {
+        return Ok(());
+    }
+    let linked_git_dir = if git_path.is_file() {
+        let contents = std::fs::read_to_string(&git_path)?;
+        let line = contents
+            .lines()
+            .find_map(|l| l.strip_prefix("gitdir:"))
+            .ok_or_else(|| std::io::Error::other("gitfile has no gitdir line"))?;
+        let raw = PathBuf::from(line.trim());
+        if raw.is_absolute() {
+            raw
+        } else {
+            worktree_path.join(raw)
+        }
+    } else {
+        git_path
+    };
+
+    // For a linked worktree, walk `<main>/.git/worktrees/<name>` back up to
+    // `<main>/.git`. For a regular checkout, `linked_git_dir` already is the
+    // common dir.
+    let common_git_dir = linked_git_dir
+        .parent()
+        .filter(|p| p.file_name().is_some_and(|n| n == "worktrees"))
+        .and_then(|p| p.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or(linked_git_dir);
+
+    let info_dir = common_git_dir.join("info");
+    std::fs::create_dir_all(&info_dir)?;
+    let exclude_path = info_dir.join("exclude");
+    let existing = std::fs::read_to_string(&exclude_path).unwrap_or_default();
+    let want = [".mcp.json", ".claude/settings.local.json"];
+    let mut content = existing.clone();
+    let mut changed = false;
+    for entry in want {
+        if existing.lines().any(|l| l.trim() == entry) {
+            continue;
+        }
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(entry);
+        content.push('\n');
+        changed = true;
+    }
+    if !changed {
+        return Ok(());
+    }
+    std::fs::write(&exclude_path, content)
+}
+
+/// Canonical Unix socket path for the in-app MCP host. macOS caps
+/// `sockaddr_un.sun_path` at 104 bytes, so the obvious choice
+/// (`<app_data>/mcp.sock`) blows past the limit on the default install
+/// (`~/Library/Application Support/com.softwaresavants.verun.dev.<branch>/`
+/// alone is ~98 chars). Hash the app data dir, drop the result in
+/// `$TMPDIR`, and pass that through `VERUN_MCP_SOCKET` so the host and
+/// relay agree without depending on the long path.
+pub fn socket_path(app_data_dir: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(app_data_dir.to_string_lossy().as_bytes());
+    let short = format!("{hash:x}");
+    std::env::temp_dir().join(format!("verun-{}.sock", &short[..12]))
 }
 
 /// Resolve the relay binary path: sibling of the running executable. In
@@ -2385,6 +2553,241 @@ mod tests {
 
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["mcpServers"]["verun"]["command"], "/relay");
+    }
+
+    #[test]
+    fn write_mcp_config_appends_to_git_info_exclude_for_dir_gitdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = dir.path().join(".git").join("info");
+        std::fs::create_dir_all(&info).unwrap();
+
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+
+        let exclude = std::fs::read_to_string(info.join("exclude")).unwrap();
+        assert!(exclude.lines().any(|l| l.trim() == ".mcp.json"));
+    }
+
+    #[test]
+    fn write_mcp_config_appends_to_common_git_info_exclude_for_gitfile_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let main_repo = dir.path().join("main");
+        let worktree = dir.path().join("wt");
+        let worktree_gitdir = main_repo.join(".git/worktrees/wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&worktree_gitdir).unwrap();
+        // Linked worktrees use .git as a *file* with `gitdir: <path>`.
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", worktree_gitdir.display()),
+        )
+        .unwrap();
+
+        write_mcp_config(
+            &worktree,
+            "t-2",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+
+        // Git only consults info/exclude in the *common* git dir, not the
+        // per-worktree one - so we must write to <main>/.git/info/exclude.
+        let common_exclude =
+            std::fs::read_to_string(main_repo.join(".git/info/exclude")).unwrap();
+        assert!(common_exclude.lines().any(|l| l.trim() == ".mcp.json"));
+        // Per-worktree info/ should NOT have been used.
+        assert!(!worktree_gitdir.join("info/exclude").exists());
+    }
+
+    #[test]
+    fn write_mcp_config_does_not_duplicate_exclude_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = dir.path().join(".git").join("info");
+        std::fs::create_dir_all(&info).unwrap();
+        std::fs::write(info.join("exclude"), "# user notes\n.mcp.json\n").unwrap();
+
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+
+        let exclude = std::fs::read_to_string(info.join("exclude")).unwrap();
+        let count = exclude.lines().filter(|l| l.trim() == ".mcp.json").count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn write_mcp_config_no_op_when_no_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        // No .git inside the worktree.
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+        // .mcp.json was still written successfully.
+        assert!(dir.path().join(".mcp.json").exists());
+    }
+
+    #[test]
+    fn write_mcp_config_pre_approves_verun_in_claude_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+        let settings_path = dir.path().join(".claude/settings.local.json");
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let enabled = v["enabledMcpjsonServers"].as_array().unwrap();
+        assert!(enabled.iter().any(|s| s.as_str() == Some("verun")));
+    }
+
+    #[test]
+    fn write_mcp_config_merges_into_existing_claude_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        // User already has settings with another enabled server + an unrelated
+        // top-level field; both must survive.
+        std::fs::write(
+            settings_dir.join("settings.local.json"),
+            r#"{"enabledMcpjsonServers":["other"],"theme":"dark"}"#,
+        )
+        .unwrap();
+
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_dir.join("settings.local.json")).unwrap(),
+        )
+        .unwrap();
+        let enabled = v["enabledMcpjsonServers"].as_array().unwrap();
+        let names: Vec<&str> = enabled.iter().filter_map(|s| s.as_str()).collect();
+        assert!(names.contains(&"other"));
+        assert!(names.contains(&"verun"));
+        assert_eq!(v["theme"], "dark");
+    }
+
+    #[test]
+    fn write_mcp_config_does_not_duplicate_verun_in_claude_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        std::fs::write(
+            settings_dir.join("settings.local.json"),
+            r#"{"enabledMcpjsonServers":["verun"]}"#,
+        )
+        .unwrap();
+
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_dir.join("settings.local.json")).unwrap(),
+        )
+        .unwrap();
+        let enabled = v["enabledMcpjsonServers"].as_array().unwrap();
+        let count = enabled
+            .iter()
+            .filter(|s| s.as_str() == Some("verun"))
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn write_mcp_config_recovers_when_claude_settings_is_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        std::fs::write(settings_dir.join("settings.local.json"), "not json").unwrap();
+
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_dir.join("settings.local.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(v["enabledMcpjsonServers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s.as_str() == Some("verun")));
+    }
+
+    #[test]
+    fn write_mcp_config_excludes_claude_settings_local_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = dir.path().join(".git").join("info");
+        std::fs::create_dir_all(&info).unwrap();
+
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+
+        let exclude = std::fs::read_to_string(info.join("exclude")).unwrap();
+        assert!(exclude
+            .lines()
+            .any(|l| l.trim() == ".claude/settings.local.json"));
+    }
+
+    #[test]
+    fn socket_path_stays_under_macos_104_byte_limit() {
+        // Default install puts the app data dir under ~/Library/Application Support/
+        // and tacks on a per-worktree identifier; this is a realistic worst case.
+        let long = std::path::Path::new(
+            "/Users/abdulrahman/Library/Application Support/com.softwaresavants.verun.dev.fragile-stalestate-29",
+        );
+        let p = socket_path(long);
+        assert!(
+            p.to_string_lossy().len() < 104,
+            "got {} chars: {}",
+            p.to_string_lossy().len(),
+            p.display()
+        );
+    }
+
+    #[test]
+    fn socket_path_is_deterministic_per_app_data_dir() {
+        let a = std::path::Path::new("/some/dir/a");
+        let b = std::path::Path::new("/some/dir/b");
+        assert_eq!(socket_path(a), socket_path(a));
+        assert_ne!(socket_path(a), socket_path(b));
     }
 
     #[test]

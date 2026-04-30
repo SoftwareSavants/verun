@@ -743,6 +743,7 @@ pub async fn send_message(
             fast_mode: fast_mode.unwrap_or(false),
             task_name: t.name,
             agent_type: session.agent_type.clone(),
+            external: false,
         },
     )
     .await

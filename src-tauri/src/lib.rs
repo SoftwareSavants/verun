@@ -178,7 +178,7 @@ pub fn run() {
             let mcp_action_tx = {
                 let (tx, rx) = tokio::sync::mpsc::channel(32);
                 let mcp_pool = pool.clone();
-                let mcp_socket_path = app_data_dir.join("mcp.sock");
+                let mcp_socket_path = mcp::socket_path(&app_data_dir);
                 let mcp_actions_for_socket = tx.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) =
