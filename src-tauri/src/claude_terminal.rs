@@ -17,13 +17,15 @@
 //! The PTY is managed by `crate::pty` (shared with shell/dev-server PTYs);
 //! this module only owns the tail + mapping from session_id -> terminal_id.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use serde::Serialize;
+use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::claude_jsonl;
 use crate::claude_transcript_tail::{spawn_transcript_tail, TranscriptTail};
@@ -119,6 +121,13 @@ pub async fn open_claude_terminal(
     let pty_map_clone = pty_map.clone();
     let app_for_pty = app.clone();
     let task_id_for_pty = task.id.clone();
+
+    // Pre-trust this worktree in ~/.claude.json so the TUI doesn't prompt on
+    // first spawn. Errors are non-fatal: at worst the user answers the
+    // trust prompt once for this folder.
+    if let Err(e) = pre_trust_worktree(&worktree_path).await {
+        eprintln!("[verun][claude-terminal] pre_trust_worktree failed: {e}");
+    }
 
     let spawn = tokio::task::spawn_blocking(move || {
         pty::spawn_pty(
@@ -418,6 +427,86 @@ pub fn close_all_for_task(pty_map: &ActivePtyMap, ct_map: &ClaudeTerminalMap, ta
     pty::close_all_for_task(pty_map, task_id);
 }
 
+/// Pre-mark a worktree as trusted in `~/.claude.json` so the Claude TUI
+/// doesn't prompt with the "Do you trust this folder?" dialog on first
+/// spawn. Verun owns the worktree (we created it, we picked the branch,
+/// we're the one running `claude` in it) so the dialog is pure friction.
+///
+/// Reads the existing config (or starts from `{}` if missing), merges in
+/// `projects[<abs_path>].hasTrustDialogAccepted = true` plus
+/// `hasCompletedProjectOnboarding = true` to skip the onboarding splash,
+/// and writes atomically via temp + rename to avoid corrupting the file
+/// if Claude crashes mid-write or another spawn races us. A module-level
+/// mutex serializes our own concurrent merges.
+///
+/// Errors are non-fatal at the call site - if we can't pre-trust, the
+/// user just sees the trust prompt once. Worth the extra robustness.
+pub(crate) async fn pre_trust_worktree(worktree_path: &str) -> Result<(), String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME env var not set".to_string())?;
+    let config_path = home.join(".claude.json");
+    pre_trust_worktree_at(&config_path, worktree_path).await
+}
+
+/// Test-friendly variant that accepts an explicit config path.
+async fn pre_trust_worktree_at(config_path: &Path, worktree_path: &str) -> Result<(), String> {
+    static MUTEX: Mutex<()> = Mutex::const_new(());
+    let _guard = MUTEX.lock().await;
+
+    let mut config: Value = match tokio::fs::read(config_path).await {
+        Ok(bytes) if bytes.is_empty() => json!({}),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| format!("parse {}: {e}", config_path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(format!("read {}: {e}", config_path.display())),
+    };
+
+    let projects = config
+        .as_object_mut()
+        .ok_or_else(|| format!("{} is not a JSON object", config_path.display()))?
+        .entry("projects")
+        .or_insert_with(|| json!({}));
+    let projects_obj = projects
+        .as_object_mut()
+        .ok_or_else(|| "`projects` is not a JSON object".to_string())?;
+
+    let entry = projects_obj
+        .entry(worktree_path.to_string())
+        .or_insert_with(|| json!({}));
+    let entry_obj = entry
+        .as_object_mut()
+        .ok_or_else(|| format!("`projects[{worktree_path}]` is not a JSON object"))?;
+
+    // Idempotent: skip the disk write if both flags already match.
+    if entry_obj.get("hasTrustDialogAccepted") == Some(&Value::Bool(true))
+        && entry_obj.get("hasCompletedProjectOnboarding") == Some(&Value::Bool(true))
+    {
+        return Ok(());
+    }
+
+    entry_obj.insert("hasTrustDialogAccepted".to_string(), Value::Bool(true));
+    entry_obj.insert("hasCompletedProjectOnboarding".to_string(), Value::Bool(true));
+
+    let serialized = serde_json::to_vec_pretty(&config)
+        .map_err(|e| format!("serialize claude config: {e}"))?;
+
+    // Atomic write: temp file in the same directory, then rename. If something
+    // crashes between write and rename, the user's existing config is intact.
+    let dir = config_path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent dir", config_path.display()))?;
+    let tmp_path = dir.join(format!(".claude.json.verun-tmp.{}", std::process::id()));
+    tokio::fs::write(&tmp_path, &serialized)
+        .await
+        .map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
+    tokio::fs::rename(&tmp_path, config_path)
+        .await
+        .map_err(|e| format!("rename {} -> {}: {e}", tmp_path.display(), config_path.display()))?;
+
+    Ok(())
+}
+
 /// Build the shell command passed to `sh -lic "<cmd>"` that spawns Claude.
 /// `exec` ensures the PTY dies with Claude instead of dropping to a login
 /// shell prompt when the user exits with Ctrl+D.
@@ -529,6 +618,101 @@ mod tests {
         // must neutralise them even though today's UUIDs don't need it.
         let cmd = build_claude_resume_shell_command("$(rm -rf /)");
         assert_eq!(cmd, "exec claude --resume '$(rm -rf /)'");
+    }
+
+    #[tokio::test]
+    async fn pre_trust_creates_config_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        assert!(!config.exists());
+
+        pre_trust_worktree_at(&config, "/repo/wt").await.unwrap();
+
+        let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
+        assert_eq!(v["projects"]["/repo/wt"]["hasCompletedProjectOnboarding"], true);
+    }
+
+    #[tokio::test]
+    async fn pre_trust_preserves_existing_top_level_fields() {
+        // Claude stores user prefs, MCP servers, history pointers etc. at the
+        // top level alongside `projects`. Clobbering the file would nuke all
+        // of that. Lock in that we only touch the entry we care about.
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        let starting = json!({
+            "userId": "u-1",
+            "mcpServers": { "github": { "command": "gh" } },
+            "projects": {
+                "/repo/wt": { "allowedTools": ["bash"], "projectOnboardingSeenCount": 1 }
+            }
+        });
+        std::fs::write(&config, serde_json::to_vec_pretty(&starting).unwrap()).unwrap();
+
+        pre_trust_worktree_at(&config, "/repo/wt").await.unwrap();
+
+        let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(v["userId"], "u-1");
+        assert_eq!(v["mcpServers"]["github"]["command"], "gh");
+        assert_eq!(v["projects"]["/repo/wt"]["allowedTools"], json!(["bash"]));
+        assert_eq!(v["projects"]["/repo/wt"]["projectOnboardingSeenCount"], 1);
+        assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
+        assert_eq!(v["projects"]["/repo/wt"]["hasCompletedProjectOnboarding"], true);
+    }
+
+    #[tokio::test]
+    async fn pre_trust_adds_new_project_without_touching_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        let starting = json!({
+            "projects": {
+                "/repo/other": { "hasTrustDialogAccepted": true, "allowedTools": ["bash"] }
+            }
+        });
+        std::fs::write(&config, serde_json::to_vec_pretty(&starting).unwrap()).unwrap();
+
+        pre_trust_worktree_at(&config, "/repo/wt").await.unwrap();
+
+        let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(v["projects"]["/repo/other"]["allowedTools"], json!(["bash"]));
+        assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
+    }
+
+    #[tokio::test]
+    async fn pre_trust_is_idempotent_when_flags_already_set() {
+        // Skipping the disk write when there's nothing to change avoids
+        // racing with a live Claude process for the same project.
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        let starting = json!({
+            "projects": {
+                "/repo/wt": {
+                    "hasTrustDialogAccepted": true,
+                    "hasCompletedProjectOnboarding": true,
+                }
+            }
+        });
+        std::fs::write(&config, serde_json::to_vec_pretty(&starting).unwrap()).unwrap();
+        let mtime_before = std::fs::metadata(&config).unwrap().modified().unwrap();
+
+        // Tiny sleep so a write would produce a different mtime.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        pre_trust_worktree_at(&config, "/repo/wt").await.unwrap();
+
+        let mtime_after = std::fs::metadata(&config).unwrap().modified().unwrap();
+        assert_eq!(mtime_before, mtime_after, "should be a no-op when already trusted");
+    }
+
+    #[tokio::test]
+    async fn pre_trust_handles_corrupt_existing_file() {
+        // We refuse to clobber a file we can't parse - safer to surface the
+        // error and let the user keep their settings than to wipe them.
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        std::fs::write(&config, b"not json").unwrap();
+
+        let err = pre_trust_worktree_at(&config, "/repo/wt").await.unwrap_err();
+        assert!(err.contains("parse"));
     }
 
     fn test_handle(task_id: &str, session_id: &str, terminal_id: &str) -> ClaudeTerminalHandle {
