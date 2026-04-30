@@ -32,7 +32,6 @@ use crate::claude_transcript_tail::{spawn_transcript_tail, TranscriptTail};
 use crate::db::{self, DbWrite, DbWriteTx};
 use crate::pty::{self, ActivePtyMap};
 use crate::stream::{self, OutputItem, SessionOutputEvent};
-use uuid::Uuid;
 
 /// Display name for the Claude PTY tab/tooltip.
 const TERMINAL_DISPLAY_NAME: &str = "Claude Code";
@@ -41,8 +40,14 @@ pub struct ClaudeTerminalHandle {
     pub task_id: String,
     pub session_id: String,
     pub terminal_id: String,
-    /// Drops to stop the transcript poll loop.
+    /// Drops to stop the transcript poll loop. `None` for fresh sessions
+    /// where the tail is owned by `_watcher` (which spawns it once it
+    /// discovers the new session UUID Claude wrote).
     _tail: Option<TranscriptTail>,
+    /// Fresh-session-only: watcher task that polls the projects dir for a
+    /// new UUID, persists+emits it, then spawns the actual transcript tail.
+    /// Aborting it drops the inner tail handle, cancelling that loop too.
+    _watcher: Option<tokio::task::JoinHandle<()>>,
     /// Driver task that forwards OutputItems to the app event stream + DB.
     /// Owned here so we can abort it if needed.
     driver: Option<tokio::task::JoinHandle<()>>,
@@ -50,6 +55,9 @@ pub struct ClaudeTerminalHandle {
 
 impl Drop for ClaudeTerminalHandle {
     fn drop(&mut self) {
+        if let Some(w) = self._watcher.take() {
+            w.abort();
+        }
         // Dropping `_tail` stops the file poll loop, which closes the mpsc
         // sender, which makes the driver task exit on its next recv. The
         // abort is a belt-and-braces safeguard in case the driver stalls.
@@ -103,29 +111,38 @@ pub async fn open_claude_terminal(
 
     let validated = validate_session_for_terminal(pool, &session_id).await?;
     let task = validated.task;
-
-    // Fresh session (no resume id yet): pre-generate a UUID, persist it as
-    // the session's resume_session_id, and spawn `claude --session-id <uuid>`
-    // so Claude creates the conversation with that id. Subsequent reopens
-    // for the same session use the existing `--resume <uuid>` path.
-    let (id, mode, is_fresh) = match validated.resume_id {
-        Some(rid) => (rid, ClaudeSpawnMode::Resume, false),
-        None => (Uuid::new_v4().to_string(), ClaudeSpawnMode::NewWithId, true),
-    };
+    let resume_id_opt = validated.resume_id;
+    let is_fresh = resume_id_opt.is_none();
 
     let repo_path = db::get_repo_path_for_task(pool, &task.id).await?;
     let env_vars = crate::worktree::verun_env_vars(task.port_offset, &repo_path);
 
     let cwd_path = std::path::PathBuf::from(&task.worktree_path);
-    let jsonl_path = claude_jsonl::session_path(&cwd_path, &id)
-        .ok_or_else(|| "$HOME not set; cannot locate Claude transcript".to_string())?;
 
-    // For resumes: skip whatever's already on disk (already in output_lines).
-    // For fresh sessions: file doesn't exist yet; metadata fails and we get 0,
-    // which is what we want - tail from byte 0 once Claude creates it.
-    let start_offset = std::fs::metadata(&jsonl_path).map(|m| m.len()).unwrap_or(0);
+    // For fresh sessions we don't know the UUID yet (Claude generates it
+    // when the user sends the first turn). Snapshot the directory now so
+    // the watcher can detect "the new one" against this baseline.
+    let projects_dir = claude_jsonl::projects_dir(&cwd_path)
+        .ok_or_else(|| "$HOME not set; cannot locate Claude projects dir".to_string())?;
+    let baseline_ids: std::collections::HashSet<String> = if is_fresh {
+        list_session_ids(&projects_dir).await
+    } else {
+        std::collections::HashSet::new()
+    };
 
-    let command = build_claude_shell_command(mode, &id);
+    let (jsonl_path, start_offset, command) = match &resume_id_opt {
+        Some(rid) => {
+            let path = claude_jsonl::session_path(&cwd_path, rid)
+                .ok_or_else(|| "$HOME not set; cannot locate Claude transcript".to_string())?;
+            // Skip whatever's already on disk (already in output_lines).
+            let offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            (path, offset, build_claude_shell_command(ClaudeSpawnMode::Resume, rid))
+        }
+        None => {
+            // Fresh: tail will switch to the discovered file once it appears.
+            (PathBuf::new(), 0, build_claude_shell_command(ClaudeSpawnMode::Fresh, ""))
+        }
+    };
     let worktree_path = task.worktree_path.clone();
     let pty_map_clone = pty_map.clone();
     let app_for_pty = app.clone();
@@ -157,27 +174,29 @@ pub async fn open_claude_terminal(
     .await
     .map_err(|e| format!("spawn_pty join: {e}"))??;
 
-    // Persist the pre-generated id for fresh spawns so subsequent reopens
-    // use the `--resume` path and the rest of the app (chat view, fork,
-    // session-tab toggle) sees the session as having a resumable id.
-    if is_fresh {
-        let _ = db_tx
-            .send(db::DbWrite::SetResumeSessionId {
-                id: session_id.clone(),
-                resume_session_id: id.clone(),
-            })
-            .await;
-        let _ = app.emit(
-            "session-resume-id",
-            stream::SessionResumeIdEvent {
+    let (item_tx, item_rx) = mpsc::unbounded_channel::<OutputItem>();
+
+    // For resumes: tail the known JSONL immediately.
+    // For fresh sessions: the watcher polls projects_dir until Claude writes
+    // a new <uuid>.jsonl, persists the discovered id + emits the event, then
+    // spawns the tail itself (and parks). Aborting the watcher drops the
+    // inner tail handle, cancelling everything.
+    let (tail, watcher) = if is_fresh {
+        let w = spawn_fresh_session_watcher_and_tail(
+            projects_dir.clone(),
+            cwd_path.clone(),
+            baseline_ids,
+            item_tx,
+            FreshDiscoverySink {
+                app: app.clone(),
+                db_tx: db_tx.clone(),
                 session_id: session_id.clone(),
-                resume_session_id: id.clone(),
             },
         );
-    }
-
-    let (item_tx, item_rx) = mpsc::unbounded_channel::<OutputItem>();
-    let tail = spawn_transcript_tail(&jsonl_path, start_offset, item_tx);
+        (None, Some(w))
+    } else {
+        (Some(spawn_transcript_tail(&jsonl_path, start_offset, item_tx)), None)
+    };
 
     let driver_session_id = session_id.clone();
     let driver_app = app.clone();
@@ -200,7 +219,8 @@ pub async fn open_claude_terminal(
         task_id: task.id.clone(),
         session_id: session_id.clone(),
         terminal_id: spawn.terminal_id.clone(),
-        _tail: Some(tail),
+        _tail: tail,
+        _watcher: watcher,
         driver: Some(driver),
     };
     ct_map.insert(session_id.clone(), handle);
@@ -542,21 +562,97 @@ async fn pre_trust_worktree_at(config_path: &Path, worktree_path: &str) -> Resul
 pub(crate) enum ClaudeSpawnMode {
     /// Existing session - pass `--resume <id>`.
     Resume,
-    /// Fresh session - pass `--session-id <uuid>` so Claude creates the
-    /// conversation with the id we pre-generated (which we've already
-    /// persisted as the session's resume_session_id).
-    NewWithId,
+    /// Fresh session - spawn plain `claude`. Claude generates its own UUID
+    /// and writes a new `.jsonl` in `~/.claude/projects/<encoded-cwd>/`;
+    /// the caller watches that directory to discover the id and persist it.
+    Fresh,
 }
 
 /// Build the shell command passed to `sh -lic "<cmd>"` that spawns Claude.
 /// `exec` ensures the PTY dies with Claude instead of dropping to a login
 /// shell prompt when the user exits with Ctrl+D.
 pub(crate) fn build_claude_shell_command(mode: ClaudeSpawnMode, id: &str) -> String {
-    let flag = match mode {
-        ClaudeSpawnMode::Resume => "--resume",
-        ClaudeSpawnMode::NewWithId => "--session-id",
+    match mode {
+        ClaudeSpawnMode::Resume => format!("exec claude --resume {}", shell_quote(id)),
+        ClaudeSpawnMode::Fresh => "exec claude".to_string(),
+    }
+}
+
+/// Snapshot the set of session UUIDs Claude has already written for `cwd`.
+/// Used as a baseline so the watcher can identify the file Claude creates
+/// when the user sends their first turn.
+async fn list_session_ids(dir: &Path) -> std::collections::HashSet<String> {
+    let mut ids = std::collections::HashSet::new();
+    let Ok(mut rd) = tokio::fs::read_dir(dir).await else {
+        return ids;
     };
-    format!("exec claude {flag} {}", shell_quote(id))
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        if let Some(name) = entry.file_name().to_str() {
+            if let Some(stem) = name.strip_suffix(".jsonl") {
+                ids.insert(stem.to_string());
+            }
+        }
+    }
+    ids
+}
+
+/// Side-effect handler for fresh-session discovery: persists the discovered
+/// UUID to the DB and emits `session-resume-id` so the rest of the app
+/// instantly sees the session as resumable.
+pub(crate) struct FreshDiscoverySink {
+    pub app: AppHandle,
+    pub db_tx: DbWriteTx,
+    pub session_id: String,
+}
+
+/// Spawn a watcher that polls `projects_dir` for a new session UUID
+/// (relative to `baseline_ids`), persists+emits when found, then starts a
+/// `spawn_transcript_tail` on the discovered file. Returns the watcher
+/// JoinHandle; abort it to cancel both the watcher and (transitively) its
+/// inner tail when the parent terminal handle is dropped.
+fn spawn_fresh_session_watcher_and_tail(
+    projects_dir: PathBuf,
+    cwd: PathBuf,
+    baseline_ids: std::collections::HashSet<String>,
+    sender: mpsc::UnboundedSender<OutputItem>,
+    sink: FreshDiscoverySink,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+        let new_id = loop {
+            interval.tick().await;
+            let current = list_session_ids(&projects_dir).await;
+            if let Some(id) = current.difference(&baseline_ids).next().cloned() {
+                break id;
+            }
+        };
+
+        let _ = sink
+            .db_tx
+            .send(db::DbWrite::SetResumeSessionId {
+                id: sink.session_id.clone(),
+                resume_session_id: new_id.clone(),
+            })
+            .await;
+        let _ = sink.app.emit(
+            "session-resume-id",
+            stream::SessionResumeIdEvent {
+                session_id: sink.session_id.clone(),
+                resume_session_id: new_id.clone(),
+            },
+        );
+
+        let Some(path) = claude_jsonl::session_path(&cwd, &new_id) else {
+            return;
+        };
+        // The inner tail handle is dropped when this task exits (or is
+        // aborted). Drop fires its stop channel, which cancels the tail
+        // loop. So one abort on `_watcher` cleans everything up.
+        let _tail = spawn_transcript_tail(&path, 0, sender);
+        // Park forever; the parent aborts us when the terminal handle is
+        // dropped (close_claude_terminal / close_all_for_task).
+        std::future::pending::<()>().await;
+    })
 }
 
 
@@ -758,6 +854,7 @@ mod tests {
             session_id: session_id.to_string(),
             terminal_id: terminal_id.to_string(),
             _tail: None,
+            _watcher: None,
             driver: None,
         }
     }
@@ -928,18 +1025,41 @@ mod tests {
     }
 
     #[test]
-    fn build_claude_shell_command_uses_session_id_flag_for_fresh_spawns() {
-        // Fresh sessions: pass the pre-generated UUID via `--session-id` so
-        // Claude creates the conversation with our id (no `--resume`, which
-        // would error on a non-existent session).
-        let cmd = build_claude_shell_command(ClaudeSpawnMode::NewWithId, "abc-123");
-        assert_eq!(cmd, "exec claude --session-id 'abc-123'");
+    fn build_claude_shell_command_spawns_plain_claude_for_fresh_sessions() {
+        // Fresh sessions: spawn plain `claude` and let it create its own
+        // UUID. The id arg is ignored in this mode (we discover the id by
+        // watching ~/.claude/projects/<encoded-cwd>/ for a new file).
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::Fresh, "ignored");
+        assert_eq!(cmd, "exec claude");
     }
 
     #[test]
     fn build_claude_shell_command_uses_resume_flag_for_existing_sessions() {
         let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, "abc-123");
         assert_eq!(cmd, "exec claude --resume 'abc-123'");
+    }
+
+    #[tokio::test]
+    async fn list_session_ids_returns_uuids_from_jsonl_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("aaaa-1111.jsonl"), b"").unwrap();
+        std::fs::write(dir.path().join("bbbb-2222.jsonl"), b"").unwrap();
+        // Non-jsonl files and subdirectories are ignored.
+        std::fs::write(dir.path().join("notes.txt"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        let ids = list_session_ids(dir.path()).await;
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("aaaa-1111"));
+        assert!(ids.contains("bbbb-2222"));
+    }
+
+    #[tokio::test]
+    async fn list_session_ids_returns_empty_for_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        let ids = list_session_ids(&missing).await;
+        assert!(ids.is_empty());
     }
 
     // ---------------------- attachment plumbing ---------------------------

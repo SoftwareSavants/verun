@@ -52,14 +52,16 @@ impl std::error::Error for JsonlError {}
 /// where `<encoded-cwd>` is the absolute path of the cwd with all path
 /// separators replaced by `-`.
 pub fn session_path(cwd: &Path, session_id: &str) -> Option<PathBuf> {
+    projects_dir(cwd).map(|d| d.join(format!("{session_id}.jsonl")))
+}
+
+/// Compute the per-cwd directory under `~/.claude/projects/` where Claude
+/// writes transcripts for sessions started in `cwd`. Used to watch for newly
+/// created sessions when we spawn `claude` without a known id.
+pub fn projects_dir(cwd: &Path) -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let encoded = encode_cwd(cwd);
-    Some(
-        home.join(".claude")
-            .join("projects")
-            .join(encoded)
-            .join(format!("{session_id}.jsonl")),
-    )
+    Some(home.join(".claude").join("projects").join(encoded))
 }
 
 fn encode_cwd(cwd: &Path) -> String {
