@@ -199,28 +199,89 @@ pub fn parse_transcript_line(line: &str) -> Vec<OutputItem> {
     }
 }
 
-/// Claude Code's TUI injects fake "user" messages into the transcript when a
-/// slash command runs (e.g. `/model`, `/exit`, `/clear`, `/adapt`) so the
-/// model sees what local commands the human ran. The envelope shape varies:
+/// What to do with a fake "user" message Claude TUI injected into the
+/// transcript when a slash command (or skill) ran.
+#[derive(Debug, PartialEq, Eq)]
+enum EnvelopeAction {
+    /// Not a Claude-injected envelope - render as a normal user message.
+    Keep,
+    /// Drop entirely: skill bodies, bare stdout-only envelopes, etc.
+    Drop,
+    /// Replace the message text with this clean form (e.g. "/adapt wassup")
+    /// so the chat shows the command the user ran instead of the raw XML.
+    Replace(String),
+}
+
+/// Classify a user-message text against Claude TUI's slash-command envelope
+/// shapes. Native Claude TUI hides this scaffolding; we either hide or
+/// summarise it depending on the shape:
 ///
-///     <local-command-caveat>Caveat: ...</local-command-caveat>
-///     <command-name>/model</command-name>
-///     <command-message>model</command-message>
-///     <command-args></command-args>
+///     <command-message>adapt</command-message>
+///     <command-name>/adapt</command-name>
+///     <command-args>wassup</command-args>
+///
+/// → Replace("/adapt wassup")
+///
 ///     <local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>
 ///
-/// Skills (slash commands that load a markdown body) ALSO inject their
-/// body as a separate user message starting with the canonical preamble
-/// "Base directory for this skill: <path>". Native Claude TUI hides both
-/// classes of injection from the chat - we do the same.
-fn is_local_command_envelope(text: &str) -> bool {
+/// → Drop (post-execution side-effect; the command itself was already shown
+///   when the user typed it).
+///
+///     Base directory for this skill: /Users/x/.claude/skills/adapt
+///     ...skill markdown body...
+///
+/// → Drop (skill-body injection - the model needs it but the user doesn't).
+fn classify_envelope(text: &str) -> EnvelopeAction {
     let trimmed = text.trim_start();
-    trimmed.starts_with("<local-command-caveat>")
+
+    // Skill body injection: drop entirely.
+    if trimmed.starts_with("Base directory for this skill:") {
+        return EnvelopeAction::Drop;
+    }
+    // Bare post-execution stdout (e.g. /model result): drop.
+    if trimmed.starts_with("<local-command-stdout>") {
+        return EnvelopeAction::Drop;
+    }
+
+    let is_envelope = trimmed.starts_with("<local-command-caveat>")
         || trimmed.starts_with("<command-name>")
         || trimmed.starts_with("<command-message>")
-        || trimmed.starts_with("<command-args>")
-        || trimmed.starts_with("<local-command-stdout>")
-        || trimmed.starts_with("Base directory for this skill:")
+        || trimmed.starts_with("<command-args>");
+    if !is_envelope {
+        return EnvelopeAction::Keep;
+    }
+
+    // Envelope: try to extract command-name (already includes the slash)
+    // and command-args, render as "/<name> <args>".
+    if let Some(name) = extract_tag(text, "command-name") {
+        let name = name.trim();
+        let args = extract_tag(text, "command-args").unwrap_or_default();
+        let args = args.trim();
+        let line = if args.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name} {args}")
+        };
+        return EnvelopeAction::Replace(line);
+    }
+
+    // Envelope without a parseable command-name: drop the raw XML rather
+    // than letting it leak into the chat.
+    EnvelopeAction::Drop
+}
+
+/// Pull the contents of `<tag>...</tag>` out of `text`, if present. Returns
+/// `None` when either the open or close tag is missing. Inner content is
+/// returned verbatim (no HTML decoding) - Claude's envelopes don't entity-
+/// encode and the only contents we extract are command names and arg
+/// strings the user typed.
+fn extract_tag(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let rest = &text[start..];
+    let end = rest.find(&close)?;
+    Some(rest[..end].to_string())
 }
 
 #[allow(dead_code)]
@@ -234,12 +295,16 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
     // text blocks. Tool results always come as an array with `tool_result`
     // blocks.
     if let Some(s) = content.as_str() {
-        if s.is_empty() || is_local_command_envelope(s) {
+        if s.is_empty() {
             return Vec::new();
         }
-        return vec![OutputItem::UserMessage {
-            text: s.to_string(),
-        }];
+        match classify_envelope(s) {
+            EnvelopeAction::Drop => return Vec::new(),
+            EnvelopeAction::Replace(text) => return vec![OutputItem::UserMessage { text }],
+            EnvelopeAction::Keep => {
+                return vec![OutputItem::UserMessage { text: s.to_string() }];
+            }
+        }
     }
 
     let blocks = match content.as_array() {
@@ -253,10 +318,15 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
         match kind {
             "text" => {
                 if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                    if !text.is_empty() && !is_local_command_envelope(text) {
-                        items.push(OutputItem::UserMessage {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    match classify_envelope(text) {
+                        EnvelopeAction::Drop => continue,
+                        EnvelopeAction::Replace(t) => items.push(OutputItem::UserMessage { text: t }),
+                        EnvelopeAction::Keep => items.push(OutputItem::UserMessage {
                             text: text.to_string(),
-                        });
+                        }),
                     }
                 }
             }
@@ -504,18 +574,45 @@ mod tests {
     // Regression: Claude TUI injects fake `user` messages wrapping local
     // slash-command invocations (e.g. /model, /exit) so the model knows the
     // human ran them. The XML envelope + ANSI escapes leak into UI mode
-    // when the user toggles back from terminal. Drop them at parse time.
+    // when the user toggles back from terminal. Transform them into a
+    // clean "/<name> [args]" line so the chat shows what the user ran.
     #[test]
-    fn transcript_user_local_command_envelope_is_filtered_string_form() {
-        let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: foo.</local-command-caveat>\n<command-name>/model</command-name>\n<local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>"},"uuid":"u1"}"#;
-        assert!(parse_transcript_line(line).is_empty());
+    fn transcript_user_command_envelope_is_transformed_to_slash_command_form() {
+        let line = r#"{"type":"user","message":{"role":"user","content":"<command-message>adapt</command-message>\n<command-name>/adapt</command-name>\n<command-args>wassup</command-args>"},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert_eq!(text, "/adapt wassup"),
+            other => panic!("expected one transformed UserMessage, got {other:?}"),
+        }
     }
 
     #[test]
-    fn transcript_user_envelope_starting_with_command_message_is_filtered() {
-        // Some slash-command invocations (e.g. /adapt) lead with
-        // <command-message> instead of <command-name> or <local-command-caveat>.
-        let line = r#"{"type":"user","message":{"role":"user","content":"<command-message>adapt</command-message>\n<command-name>/adapt</command-name>\n<command-args>wassup</command-args>"},"uuid":"u1"}"#;
+    fn transcript_user_command_envelope_with_no_args_drops_the_trailing_space() {
+        let line = r#"{"type":"user","message":{"role":"user","content":"<command-name>/exit</command-name>\n<command-args></command-args>"},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert_eq!(text, "/exit"),
+            other => panic!("expected /exit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_envelope_with_caveat_preamble_still_transforms() {
+        // The /model envelope leads with <local-command-caveat> but still
+        // carries a <command-name> we can extract.
+        let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: foo.</local-command-caveat>\n<command-name>/model</command-name>\n<command-args>opus</command-args>"},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert_eq!(text, "/model opus"),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_envelope_without_command_name_is_dropped() {
+        // Defensive: an envelope that's somehow missing the <command-name>
+        // tag should drop rather than leak the raw XML into the chat.
+        let line = r#"{"type":"user","message":{"role":"user","content":"<command-message>just-this</command-message>"},"uuid":"u1"}"#;
         assert!(parse_transcript_line(line).is_empty());
     }
 
@@ -538,9 +635,13 @@ mod tests {
     }
 
     #[test]
-    fn transcript_user_local_command_envelope_is_filtered_array_form() {
-        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-name>/exit</command-name>\n<local-command-stdout></local-command-stdout>"}]},"uuid":"u1"}"#;
-        assert!(parse_transcript_line(line).is_empty());
+    fn transcript_user_command_envelope_in_array_form_also_transforms() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-name>/exit</command-name>\n<command-args></command-args>"}]},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert_eq!(text, "/exit"),
+            other => panic!("got {other:?}"),
+        }
     }
 
     #[test]
