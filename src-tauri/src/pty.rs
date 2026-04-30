@@ -280,12 +280,20 @@ pub fn spawn_pty(
     let reader_buffer = buffer;
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        // Trailing partial UTF-8 bytes from the previous read get prepended
+        // to the next chunk before decoding. PTY reads can split a multi-byte
+        // codepoint across boundaries; without this, `from_utf8_lossy` would
+        // emit U+FFFD on each side of the split and corrupt the stream.
+        let mut pending: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     env_path::record_pty_output();
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let data = decode_pty_chunk(&mut pending, &buf[..n]);
+                    if data.is_empty() {
+                        continue;
+                    }
                     let seq = match reader_buffer.lock() {
                         Ok(mut b) => {
                             b.append(&data);
@@ -444,6 +452,37 @@ pub fn list_for_task(map: &ActivePtyMap, task_id: &str) -> Vec<PtyListEntry> {
     entries
 }
 
+/// Decode a PTY read chunk as UTF-8, holding back any trailing bytes that
+/// look like the start of an unfinished multi-byte codepoint. The held-back
+/// bytes are stored in `pending` and prepended to the next chunk before
+/// decoding. Genuinely invalid bytes (not a split, real garbage) are still
+/// replaced with U+FFFD per the standard, but split codepoints round-trip
+/// cleanly across read boundaries.
+fn decode_pty_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
+    pending.extend_from_slice(chunk);
+
+    // Length of the longest valid UTF-8 prefix.
+    let valid_up_to = match std::str::from_utf8(pending) {
+        Ok(_) => pending.len(),
+        Err(e) => match e.error_len() {
+            // Invalid sequence inside the buffer — decode the prefix up to the
+            // bad byte; the remaining bytes (including the invalid one) get
+            // handled by from_utf8_lossy below as U+FFFD.
+            Some(_) => pending.len(),
+            // Buffer ends mid-codepoint — emit only the valid prefix and keep
+            // the trailing partial bytes for the next read.
+            None => e.valid_up_to(),
+        },
+    };
+
+    if valid_up_to == 0 {
+        return String::new();
+    }
+
+    let to_emit: Vec<u8> = pending.drain(..valid_up_to).collect();
+    String::from_utf8_lossy(&to_emit).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,5 +537,79 @@ mod tests {
         buf.append("bb"); // 4
         buf.append("cc"); // 6 → evict "aa"
         assert_eq!(buf.total_written(), 6);
+    }
+
+    #[test]
+    fn decode_pty_chunk_passes_pure_ascii() {
+        let mut pending = Vec::new();
+        let s = decode_pty_chunk(&mut pending, b"hello world");
+        assert_eq!(s, "hello world");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_pty_chunk_holds_back_split_emoji() {
+        // 😄 is U+1F604 — 4 bytes: F0 9F 98 84
+        let bytes = "😄".as_bytes();
+        let mut pending = Vec::new();
+        // First read: only the first 2 bytes arrive — buffer should hold them.
+        let s1 = decode_pty_chunk(&mut pending, &bytes[..2]);
+        assert_eq!(s1, "");
+        assert_eq!(pending.len(), 2);
+        // Second read: the remaining 2 bytes complete the codepoint.
+        let s2 = decode_pty_chunk(&mut pending, &bytes[2..]);
+        assert_eq!(s2, "😄");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_pty_chunk_holds_back_split_em_dash() {
+        // — is U+2014 — 3 bytes: E2 80 94
+        let bytes = "—".as_bytes();
+        let mut pending = Vec::new();
+        let s1 = decode_pty_chunk(&mut pending, &bytes[..1]);
+        assert_eq!(s1, "");
+        let s2 = decode_pty_chunk(&mut pending, &bytes[1..]);
+        assert_eq!(s2, "—");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_pty_chunk_emits_text_before_partial_tail() {
+        // Mixed: ASCII text followed by the start of a multi-byte codepoint.
+        // The ASCII prefix should emit immediately; the partial tail should be
+        // held back. Otherwise interactive output would stutter.
+        let bytes = "abc😄".as_bytes();
+        let mut pending = Vec::new();
+        // First read covers "abc" + first 2 bytes of the emoji.
+        let s1 = decode_pty_chunk(&mut pending, &bytes[..5]);
+        assert_eq!(s1, "abc");
+        assert_eq!(pending.len(), 2);
+        // Second read completes the emoji.
+        let s2 = decode_pty_chunk(&mut pending, &bytes[5..]);
+        assert_eq!(s2, "😄");
+    }
+
+    #[test]
+    fn decode_pty_chunk_replaces_genuinely_invalid_bytes() {
+        // 0xFF is never valid UTF-8 anywhere - shouldn't be held back forever.
+        let mut pending = Vec::new();
+        let s = decode_pty_chunk(&mut pending, &[b'a', 0xFF, b'b']);
+        assert_eq!(s, "a\u{FFFD}b");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_pty_chunk_handles_consecutive_split_codepoints() {
+        // Realistic stream: PTY emits "Razzle…" but the … gets split across
+        // chunks. Lock in that the next read still completes correctly.
+        // … is U+2026 (E2 80 A6).
+        let bytes = "Razzle…dazzling".as_bytes();
+        let mut pending = Vec::new();
+        // 7 bytes = "Razzle" + first byte of …
+        let s1 = decode_pty_chunk(&mut pending, &bytes[..7]);
+        assert_eq!(s1, "Razzle");
+        let s2 = decode_pty_chunk(&mut pending, &bytes[7..]);
+        assert_eq!(s2, "…dazzling");
     }
 }
