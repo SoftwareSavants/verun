@@ -8,6 +8,13 @@ import type { Session } from '../types'
 interface Props {
   session: Session | undefined | null
   sessionId: string | null | undefined
+  /**
+   * Only render when this session tab is the active one. Toggling the view
+   * mode of a non-visible session has no observable effect (the user is
+   * looking at a different session), so we hide the control there to avoid
+   * the dead-click confusion.
+   */
+  active: boolean
 }
 
 /**
@@ -31,7 +38,7 @@ export const ClaudeViewToggle: Component<Props> = (props) => {
   }
 
   return (
-    <Show when={props.session?.agentType === 'claude' && props.sessionId && enabled()}>
+    <Show when={props.active && props.session?.agentType === 'claude' && props.sessionId && enabled()}>
       <div
         data-testid="claude-view-toggle"
         class="shrink-0 inline-flex items-center rounded bg-surface-2 ring-1 ring-outline/8"

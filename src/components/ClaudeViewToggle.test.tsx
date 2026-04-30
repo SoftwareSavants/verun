@@ -39,28 +39,38 @@ function session(overrides: Partial<Session> = {}): Session {
 describe('ClaudeViewToggle', () => {
   test('renders nothing for non-claude sessions', () => {
     const { queryByTestId } = render(() => (
-      <ClaudeViewToggle session={session({ agentType: 'codex' })} sessionId="s-1" />
+      <ClaudeViewToggle session={session({ agentType: 'codex' })} sessionId="s-1" active />
     ))
     expect(queryByTestId('claude-view-toggle')).toBeNull()
   })
 
   test('renders nothing when sessionId is null', () => {
     const { queryByTestId } = render(() => (
-      <ClaudeViewToggle session={session()} sessionId={null} />
+      <ClaudeViewToggle session={session()} sessionId={null} active />
+    ))
+    expect(queryByTestId('claude-view-toggle')).toBeNull()
+  })
+
+  test('renders nothing when the session tab is not the active one', () => {
+    // Toggling the view mode of a non-visible session has no observable
+    // effect (the user is looking at a different session), so the control
+    // hides on inactive tabs to avoid the dead-click confusion.
+    const { queryByTestId } = render(() => (
+      <ClaudeViewToggle session={session()} sessionId="s-1" active={false} />
     ))
     expect(queryByTestId('claude-view-toggle')).toBeNull()
   })
 
   test('renders nothing when the session has no resume id (first turn not yet reached)', () => {
     const { queryByTestId } = render(() => (
-      <ClaudeViewToggle session={session({ resumeSessionId: null })} sessionId="s-1" />
+      <ClaudeViewToggle session={session({ resumeSessionId: null })} sessionId="s-1" active />
     ))
     expect(queryByTestId('claude-view-toggle')).toBeNull()
   })
 
   test('renders both segments when the session can use terminal view', () => {
     const { getByTestId } = render(() => (
-      <ClaudeViewToggle session={session()} sessionId="s-1" />
+      <ClaudeViewToggle session={session()} sessionId="s-1" active />
     ))
     expect(getByTestId('claude-view-toggle-ui')).toBeTruthy()
     expect(getByTestId('claude-view-toggle-terminal')).toBeTruthy()
@@ -68,7 +78,7 @@ describe('ClaudeViewToggle', () => {
 
   test('UI segment is highlighted when in UI mode', () => {
     const { getByTestId } = render(() => (
-      <ClaudeViewToggle session={session()} sessionId="s-1" />
+      <ClaudeViewToggle session={session()} sessionId="s-1" active />
     ))
     expect(getByTestId('claude-view-toggle-ui').className).toMatch(/bg-accent/)
     expect(getByTestId('claude-view-toggle-terminal').className).not.toMatch(/bg-accent/)
@@ -77,7 +87,7 @@ describe('ClaudeViewToggle', () => {
   test('terminal segment is highlighted when in terminal mode', () => {
     setSessionViewMode('s-1', 'terminal')
     const { getByTestId } = render(() => (
-      <ClaudeViewToggle session={session()} sessionId="s-1" />
+      <ClaudeViewToggle session={session()} sessionId="s-1" active />
     ))
     expect(getByTestId('claude-view-toggle-terminal').className).toMatch(/bg-accent/)
     expect(getByTestId('claude-view-toggle-ui').className).not.toMatch(/bg-accent/)
@@ -86,7 +96,7 @@ describe('ClaudeViewToggle', () => {
   test('clicking the terminal segment switches to terminal mode and persists', async () => {
     const { sessionViewMode } = await import('../store/sessionViewMode')
     const { getByTestId } = render(() => (
-      <ClaudeViewToggle session={session()} sessionId="s-1" />
+      <ClaudeViewToggle session={session()} sessionId="s-1" active />
     ))
     fireEvent.click(getByTestId('claude-view-toggle-terminal'))
     expect(sessionViewMode('s-1')).toBe('terminal')
@@ -97,7 +107,7 @@ describe('ClaudeViewToggle', () => {
     const { sessionViewMode } = await import('../store/sessionViewMode')
     setSessionViewMode('s-1', 'terminal')
     const { getByTestId } = render(() => (
-      <ClaudeViewToggle session={session()} sessionId="s-1" />
+      <ClaudeViewToggle session={session()} sessionId="s-1" active />
     ))
     fireEvent.click(getByTestId('claude-view-toggle-ui'))
     expect(sessionViewMode('s-1')).toBe('ui')
@@ -106,7 +116,7 @@ describe('ClaudeViewToggle', () => {
 
   test('tooltips are short and free of CLI jargon', () => {
     const { getByTestId } = render(() => (
-      <ClaudeViewToggle session={session()} sessionId="s-1" />
+      <ClaudeViewToggle session={session()} sessionId="s-1" active />
     ))
     expect(getByTestId('claude-view-toggle-ui').getAttribute('title')).toBe('UI view')
     expect(getByTestId('claude-view-toggle-terminal').getAttribute('title')).toBe('Terminal view')
@@ -116,7 +126,7 @@ describe('ClaudeViewToggle', () => {
     const onParentClick = vi.fn()
     const { getByTestId } = render(() => (
       <div onClick={onParentClick}>
-        <ClaudeViewToggle session={session()} sessionId="s-1" />
+        <ClaudeViewToggle session={session()} sessionId="s-1" active />
       </div>
     ))
     fireEvent.click(getByTestId('claude-view-toggle-ui'))
