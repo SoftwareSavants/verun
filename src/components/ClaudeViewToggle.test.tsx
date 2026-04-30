@@ -58,60 +58,69 @@ describe('ClaudeViewToggle', () => {
     expect(queryByTestId('claude-view-toggle')).toBeNull()
   })
 
-  test('renders the icon button when the session can use terminal view', () => {
+  test('renders both segments when the session can use terminal view', () => {
     const { getByTestId } = render(() => (
       <ClaudeViewToggle session={session()} sessionId="s-1" />
     ))
-    expect(getByTestId('claude-view-toggle')).toBeTruthy()
+    expect(getByTestId('claude-view-toggle-ui')).toBeTruthy()
+    expect(getByTestId('claude-view-toggle-terminal')).toBeTruthy()
   })
 
-  test('shows the terminal-target tooltip and Terminal icon when in UI mode', () => {
+  test('UI segment is highlighted when in UI mode', () => {
     const { getByTestId } = render(() => (
       <ClaudeViewToggle session={session()} sessionId="s-1" />
     ))
-    const btn = getByTestId('claude-view-toggle')
-    expect(btn.getAttribute('title')).toMatch(/switch to terminal/i)
+    expect(getByTestId('claude-view-toggle-ui').className).toMatch(/bg-accent/)
+    expect(getByTestId('claude-view-toggle-terminal').className).not.toMatch(/bg-accent/)
   })
 
-  test('shows the ui-target tooltip when in terminal mode', () => {
+  test('terminal segment is highlighted when in terminal mode', () => {
     setSessionViewMode('s-1', 'terminal')
     const { getByTestId } = render(() => (
       <ClaudeViewToggle session={session()} sessionId="s-1" />
     ))
-    expect(getByTestId('claude-view-toggle').getAttribute('title')).toMatch(/switch to ui/i)
+    expect(getByTestId('claude-view-toggle-terminal').className).toMatch(/bg-accent/)
+    expect(getByTestId('claude-view-toggle-ui').className).not.toMatch(/bg-accent/)
   })
 
-  test('clicking flips ui → terminal and persists to localStorage', async () => {
+  test('clicking the terminal segment switches to terminal mode and persists', async () => {
     const { sessionViewMode } = await import('../store/sessionViewMode')
     const { getByTestId } = render(() => (
       <ClaudeViewToggle session={session()} sessionId="s-1" />
     ))
-    expect(sessionViewMode('s-1')).toBe('ui')
-
-    fireEvent.click(getByTestId('claude-view-toggle'))
+    fireEvent.click(getByTestId('claude-view-toggle-terminal'))
     expect(sessionViewMode('s-1')).toBe('terminal')
     expect(localStorage.getItem('verun:claudeViewMode:s-1')).toBe('terminal')
   })
 
-  test('clicking again flips terminal → ui', async () => {
+  test('clicking the UI segment switches back to UI mode and persists', async () => {
     const { sessionViewMode } = await import('../store/sessionViewMode')
     setSessionViewMode('s-1', 'terminal')
     const { getByTestId } = render(() => (
       <ClaudeViewToggle session={session()} sessionId="s-1" />
     ))
-    fireEvent.click(getByTestId('claude-view-toggle'))
+    fireEvent.click(getByTestId('claude-view-toggle-ui'))
     expect(sessionViewMode('s-1')).toBe('ui')
     expect(localStorage.getItem('verun:claudeViewMode:s-1')).toBe('ui')
   })
 
-  test('click does not bubble (so the parent tab handler does not fire)', () => {
+  test('tooltips are short and free of CLI jargon', () => {
+    const { getByTestId } = render(() => (
+      <ClaudeViewToggle session={session()} sessionId="s-1" />
+    ))
+    expect(getByTestId('claude-view-toggle-ui').getAttribute('title')).toBe('UI view')
+    expect(getByTestId('claude-view-toggle-terminal').getAttribute('title')).toBe('Terminal view')
+  })
+
+  test('clicks do not bubble to the parent tab handler', () => {
     const onParentClick = vi.fn()
     const { getByTestId } = render(() => (
       <div onClick={onParentClick}>
         <ClaudeViewToggle session={session()} sessionId="s-1" />
       </div>
     ))
-    fireEvent.click(getByTestId('claude-view-toggle'))
+    fireEvent.click(getByTestId('claude-view-toggle-ui'))
+    fireEvent.click(getByTestId('claude-view-toggle-terminal'))
     expect(onParentClick).not.toHaveBeenCalled()
   })
 })

@@ -11,37 +11,59 @@ interface Props {
 }
 
 /**
- * Tiny icon toggle that lives inside the Claude session tab. The icon shows
- * the *target* mode (what you'll switch to on click), matching the macOS
- * convention where the icon represents the action, not the current state.
- * Renders nothing for non-Claude sessions or when the session lacks a
- * resumable id (terminal view requires `claude --resume <id>`).
+ * Tiny 2-segment icon control inside the Claude session tab. Both icons are
+ * always visible so it reads as a toggle at a glance; the active mode gets
+ * an accent background, the other is muted. Click either to switch.
+ *
+ * Renders nothing for non-Claude sessions or sessions without a resumable id
+ * (the terminal view spawns `claude --resume <id>`, so first-turn sessions
+ * have nothing to resume yet).
  */
 export const ClaudeViewToggle: Component<Props> = (props) => {
   const enabled = () => canUseTerminalView(props.session)
   const mode = () => sessionViewMode(props.sessionId)
-  const isTerminal = () => mode() === 'terminal'
+
+  const stop = (e: MouseEvent) => e.stopPropagation()
+  const select = (next: 'ui' | 'terminal') => (e: MouseEvent) => {
+    e.stopPropagation()
+    const sid = props.sessionId
+    if (sid) setSessionViewMode(sid, next)
+  }
 
   return (
     <Show when={props.session?.agentType === 'claude' && props.sessionId && enabled()}>
-      <button
+      <div
         data-testid="claude-view-toggle"
-        class={clsx(
-          'shrink-0 p-0.5 rounded transition-colors',
-          isTerminal()
-            ? 'text-accent hover:text-accent-hover'
-            : 'text-text-dim hover:text-text-secondary',
-        )}
-        title={isTerminal() ? 'Switch to UI view' : 'Switch to terminal view (claude --resume)'}
-        onClick={(e) => {
-          e.stopPropagation()
-          const sid = props.sessionId
-          if (!sid) return
-          setSessionViewMode(sid, isTerminal() ? 'ui' : 'terminal')
-        }}
+        class="shrink-0 inline-flex items-center rounded bg-surface-2 ring-1 ring-outline/8"
+        onClick={stop}
       >
-        {isTerminal() ? <MessageSquare size={10} /> : <Terminal size={10} />}
-      </button>
+        <button
+          data-testid="claude-view-toggle-ui"
+          class={clsx(
+            'flex items-center justify-center w-4 h-4 rounded-l transition-colors',
+            mode() === 'ui'
+              ? 'bg-accent/20 text-accent'
+              : 'text-text-dim hover:text-text-secondary',
+          )}
+          title="UI view"
+          onClick={select('ui')}
+        >
+          <MessageSquare size={9} />
+        </button>
+        <button
+          data-testid="claude-view-toggle-terminal"
+          class={clsx(
+            'flex items-center justify-center w-4 h-4 rounded-r transition-colors',
+            mode() === 'terminal'
+              ? 'bg-accent/20 text-accent'
+              : 'text-text-dim hover:text-text-secondary',
+          )}
+          title="Terminal view"
+          onClick={select('terminal')}
+        >
+          <Terminal size={9} />
+        </button>
+      </div>
     </Show>
   )
 }
