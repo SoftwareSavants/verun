@@ -5,12 +5,15 @@ import type { Session } from '../types'
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(() => Promise.resolve(() => {})), emit: vi.fn() }))
 
 import { ClaudeViewToggle } from './ClaudeViewToggle'
-import { setSessionViewMode } from '../store/sessionViewMode'
+import { setSessionViewMode, setClaudeDefaultViewMode } from '../store/sessionViewMode'
 
 beforeEach(() => {
   cleanup()
   localStorage.clear()
   setSessionViewMode('s-1', null)
+  // Reset the global default so the sticky-last-used test can't leak across
+  // test cases (clicking a segment now bumps the default).
+  setClaudeDefaultViewMode('ui')
 })
 
 function session(overrides: Partial<Session> = {}): Session {
@@ -77,11 +80,18 @@ describe('ClaudeViewToggle', () => {
     expect(active.className).toMatch(/opacity-100/)
   })
 
-  test('renders nothing when the session has no resume id (first turn not yet reached)', () => {
-    const { queryByTestId } = render(() => (
+  test('renders for fresh Claude sessions without a resume id so the user can pre-set their preference', async () => {
+    // The actual swap to the terminal view is gated by canUseTerminalView in
+    // TaskPanel and only flips on once the first message creates a resume id.
+    // The toggle just captures intent until then so a freshly-created task
+    // can opt in to terminal mode before sending the first message.
+    const { sessionViewMode } = await import('../store/sessionViewMode')
+    const { getByTestId } = render(() => (
       <ClaudeViewToggle session={session({ resumeSessionId: null })} sessionId="s-1" active />
     ))
-    expect(queryByTestId('claude-view-toggle')).toBeNull()
+    expect(getByTestId('claude-view-toggle')).toBeTruthy()
+    fireEvent.click(getByTestId('claude-view-toggle-terminal'))
+    expect(sessionViewMode('s-1')).toBe('terminal')
   })
 
   test('renders both segments when the session can use terminal view', () => {

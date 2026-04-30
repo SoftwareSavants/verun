@@ -2,7 +2,6 @@ import { Component, Show } from 'solid-js'
 import { clsx } from 'clsx'
 import { Terminal, MessageSquare } from 'lucide-solid'
 import { sessionViewMode, setSessionViewMode, setClaudeDefaultViewMode } from '../store/sessionViewMode'
-import { canUseTerminalView } from '../lib/terminalMode'
 import type { Session } from '../types'
 
 interface Props {
@@ -21,14 +20,17 @@ interface Props {
  * always visible so it reads as a toggle at a glance; the active mode gets
  * an accent background, the other is muted. Click either to switch.
  *
- * Eligibility (Claude agent + resumable session id) controls whether the
- * outer slot exists at all - non-Claude or first-turn sessions render
- * nothing. Among eligible sessions, the `active` prop drives an animated
- * collapse so the tab width slides smoothly when the user changes which
- * session is selected, instead of snapping.
+ * Renders for any Claude session (including fresh ones with no resume id
+ * yet) so the user can pre-set their preference. The actual view swap to
+ * the PTY-backed terminal is gated by `canUseTerminalView` in TaskPanel
+ * and only happens once the first message creates a resumable id; until
+ * then the user keeps interacting with the UI composer and Verun
+ * auto-switches to the terminal view as soon as the id arrives.
+ *
+ * The `active` prop drives an animated collapse so the tab width slides
+ * smoothly when the user changes which session is selected.
  */
 export const ClaudeViewToggle: Component<Props> = (props) => {
-  const enabled = () => canUseTerminalView(props.session)
   const mode = () => sessionViewMode(props.sessionId)
 
   const stop = (e: MouseEvent) => e.stopPropagation()
@@ -45,7 +47,7 @@ export const ClaudeViewToggle: Component<Props> = (props) => {
   }
 
   return (
-    <Show when={props.session?.agentType === 'claude' && props.sessionId && enabled()}>
+    <Show when={props.session?.agentType === 'claude' && props.sessionId}>
       <div
         data-testid="claude-view-toggle"
         data-active={props.active}
