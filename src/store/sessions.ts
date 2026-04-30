@@ -506,6 +506,11 @@ export async function initSessionListeners() {
     setSessions(s => s.id === sessionId, 'name', name)
   })
 
+  await listen<{ sessionId: string; resumeSessionId: string }>('session-resume-id', (event) => {
+    const { sessionId, resumeSessionId } = event.payload
+    setSessions(s => s.id === sessionId, 'resumeSessionId', resumeSessionId || null)
+  })
+
   await listen<string>('session-aborted', (event) => {
     const sid = event.payload
     setAbortingSessions(produce(store => { delete store[sid] }))

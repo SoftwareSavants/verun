@@ -4,6 +4,7 @@ use crate::git_ops;
 use crate::github;
 use crate::github_remote;
 use crate::lsp::LspMap;
+use crate::claude_terminal::{self, ClaudeTerminalMap, OpenClaudeTerminalResult};
 use crate::pty::{self, ActivePtyMap};
 use crate::task::{
     self, ActiveMap, ApprovalResponse, HookPtyMap, PendingApprovalEntry, PendingApprovalMeta,
@@ -865,6 +866,7 @@ pub async fn close_session(
 /// Clear a session's Claude context (reset session_id + delete output lines)
 #[tauri::command]
 pub async fn clear_session(
+    app: AppHandle,
     active: State<'_, ActiveMap>,
     db_tx: State<'_, DbWriteTx>,
     session_id: String,
@@ -883,6 +885,13 @@ pub async fn clear_session(
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
+    let _ = app.emit(
+        "session-resume-id",
+        crate::stream::SessionResumeIdEvent {
+            session_id: session_id.clone(),
+            resume_session_id: String::new(),
+        },
+    );
 
     // Clear persisted output lines
     db_tx
@@ -2080,6 +2089,56 @@ pub async fn pty_list_for_task(
 ) -> Result<Vec<pty::PtyListEntry>, String> {
     let map = pty_map.inner().clone();
     flatten_join(tokio::task::spawn_blocking(move || Ok(pty::list_for_task(&map, &task_id))).await)
+}
+
+// ---------------------------------------------------------------------------
+// Claude terminal mode
+// ---------------------------------------------------------------------------
+
+/// Open a Claude Code PTY for a session. Spawns `claude --resume <id>` in a
+/// real terminal and starts tailing the on-disk JSONL so new messages still
+/// reach the DB-backed UI view.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn claude_terminal_open(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    app_data: State<'_, crate::blob::AppDataDir>,
+    db_tx: State<'_, DbWriteTx>,
+    pty_map: State<'_, ActivePtyMap>,
+    ct_map: State<'_, ClaudeTerminalMap>,
+    session_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<OpenClaudeTerminalResult, String> {
+    claude_terminal::open_claude_terminal(
+        app,
+        pool.inner(),
+        app_data.0.clone(),
+        db_tx.inner().clone(),
+        pty_map.inner().clone(),
+        ct_map.inner().clone(),
+        session_id,
+        rows,
+        cols,
+    )
+    .await
+}
+
+/// Close the Claude PTY for a session: kill the child process and stop the
+/// transcript tailer. Idempotent.
+#[tauri::command]
+pub async fn claude_terminal_close(
+    pty_map: State<'_, ActivePtyMap>,
+    ct_map: State<'_, ClaudeTerminalMap>,
+    session_id: String,
+) -> Result<(), String> {
+    claude_terminal::close_claude_terminal(
+        pty_map.inner().clone(),
+        ct_map.inner().clone(),
+        session_id,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

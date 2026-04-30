@@ -115,6 +115,23 @@ pub enum OutputItem {
         file_path: Option<String>,
     },
 
+    /// User message replayed from a Claude JSONL transcript (terminal mode).
+    /// Normal sends go through `persist_verun_user_message` and the frontend
+    /// adds the bubble optimistically, so Rust only emits this variant when
+    /// tailing the on-disk transcript for a PTY-backed session.
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)] // constructed by the transcript tailer in the next phase
+    UserMessage { text: String },
+
+    /// Pasted-image attachment carried alongside a transcript user message.
+    /// Holds the still-base64 data straight from the JSONL so the driver can
+    /// decode it once and write it to the blob store. The driver consumes
+    /// these locally — they are filtered out before the live `session-output`
+    /// emit so the frontend never sees the raw payload over IPC.
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)] // constructed by the transcript tailer
+    UserAttachment { mime: String, data_b64: String },
+
     /// Raw line (fallback for unrecognized events)
     #[serde(rename_all = "camelCase")]
     Raw { text: String },
@@ -141,6 +158,13 @@ pub struct SessionStatusEvent {
 pub struct SessionNameEvent {
     pub session_id: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionResumeIdEvent {
+    pub session_id: String,
+    pub resume_session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1591,8 +1615,15 @@ pub async fn stream_and_capture(
                                 } else {
                                     let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
                                         id: session_id.clone(),
-                                        resume_session_id: sid,
+                                        resume_session_id: sid.clone(),
                                     }).await;
+                                    let _ = app.emit(
+                                        "session-resume-id",
+                                        SessionResumeIdEvent {
+                                            session_id: session_id.clone(),
+                                            resume_session_id: sid,
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -1663,8 +1694,15 @@ pub async fn stream_and_capture(
                             if let Some(sid) = pending_resume_id.take() {
                                 let _ = db_tx.send(crate::db::DbWrite::SetResumeSessionId {
                                     id: session_id.clone(),
-                                    resume_session_id: sid,
+                                    resume_session_id: sid.clone(),
                                 }).await;
+                                let _ = app.emit(
+                                    "session-resume-id",
+                                    SessionResumeIdEvent {
+                                        session_id: session_id.clone(),
+                                        resume_session_id: sid,
+                                    },
+                                );
                             }
                         }
 

@@ -13,7 +13,7 @@ import { getXtermTheme, getXtermFontConfig, subscribeXtermToAppearance } from '.
 import '@xterm/xterm/css/xterm.css'
 
 /** Capture-phase keydown on the container — fires before xterm's textarea gets it */
-function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>, onToggleSearch?: () => void) {
+function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>, onToggleSearch?: () => void, disableCmdVIntercept?: boolean) {
   container.addEventListener('keydown', (e: KeyboardEvent) => {
     const mod = modPressed(e)
     const inInput = (e.target as HTMLElement).tagName === 'INPUT'
@@ -40,7 +40,7 @@ function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId:
     if (mod && e.key === 'ArrowDown') { e.preventDefault(); term.scrollToBottom(); return }
     // Block PTY writes when stopped
     if (isStopped?.()) return
-    if (mod && e.key === 'v') {
+    if (mod && e.key === 'v' && !disableCmdVIntercept) {
       e.preventDefault()
       e.stopImmediatePropagation()
       ipc.readClipboard().then(text => { if (text) term.paste(text) })
@@ -81,18 +81,71 @@ function attachResizeObserver(container: HTMLElement, entry: XtermEntry, termina
 }
 
 function initialFit(entry: XtermEntry, terminalId: string) {
-  requestAnimationFrame(() => {
-    entry.fitAddon.fit()
-    entry.term.refresh(0, entry.term.rows - 1)
-    ipc.ptyResize(terminalId, entry.term.rows, entry.term.cols)
-    entry.term.focus()
-  })
+  // Wait for the monospace web font to load before doing the first fit -
+  // otherwise xterm measures cell metrics off the fallback font, comes up
+  // with a tiny cols count, sends a bad ptyResize, and the TUI inside the
+  // PTY (Claude Code) reflows its output to that narrow width. Subsequent
+  // refits don't unwrap the already-rendered history.
+  //
+  // 250ms timeout fallback: don't block forever if the font promise stalls.
+  const FONT_TIMEOUT_MS = 250
+  const fontsReady: Promise<unknown> =
+    typeof document !== 'undefined' && document.fonts?.ready
+      ? Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, FONT_TIMEOUT_MS))])
+      : Promise.resolve()
+
+  fontsReady
+    .then(() => requestAnimationFrame(() => {
+      entry.fitAddon.fit()
+      ipc.ptyResize(terminalId, entry.term.rows, entry.term.cols)
+      // Position the viewport at the latest content BEFORE refresh() paints,
+      // so the first frame the user sees is already at the bottom. Doing it
+      // after refresh produces a one-frame flash of the top of the scrollback.
+      entry.term.scrollToBottom()
+      entry.term.refresh(0, entry.term.rows - 1)
+      entry.term.focus()
+    }))
+    .catch(() => {})
+}
+
+/**
+ * Force-redraw triggers that fix WebGL texture-atlas drift without relying on
+ * the user resizing the window. VS Code (`xtermTerminal.ts: forceRedraw()`)
+ * and Tabby (`xtermFrontend.ts: displayMetricsChanged$`) both wire these.
+ *
+ * - **DPR change**: dragging the window between Retina and non-Retina displays
+ *   invalidates the cached glyph bitmaps.
+ * - **visibilitychange**: WebKit may suspend the WebGL context when the
+ *   window is hidden; on return the atlas can be stale.
+ *
+ * `clearTextureAtlas()` is safe even when WebGL never loaded - it's a no-op
+ * for the DOM renderer.
+ */
+function attachAtlasLifecycle(term: XTerm): () => void {
+  const onVisibility = () => { if (!document.hidden) term.clearTextureAtlas() }
+  document.addEventListener('visibilitychange', onVisibility)
+
+  const dprMql = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+  const onDpr = () => term.clearTextureAtlas()
+  dprMql.addEventListener('change', onDpr)
+
+  return () => {
+    document.removeEventListener('visibilitychange', onVisibility)
+    dprMql.removeEventListener('change', onDpr)
+  }
 }
 
 interface Props {
   terminalId: string
   /** Reactive accessor — when true, keyboard input to the PTY is blocked (scrolling still works) */
   isStopped?: Accessor<boolean>
+  /**
+   * Skip our manual Cmd+V intercept (which only handles text via pbpaste) and
+   * let xterm.js's native paste flow forward the bracketed paste to the PTY.
+   * Used by Claude terminal mode so Claude Code's TUI sees the paste sequence
+   * and can poll NSPasteboard itself for image bytes.
+   */
+  disableCmdVIntercept?: boolean
 }
 
 const SEARCH_DECORATIONS = {
@@ -111,6 +164,7 @@ export const ShellTerminal: Component<Props> = (props) => {
   let searchAddonRef: SearchAddon | undefined
   let resultsDisposable: { dispose(): void } | undefined
   let unsubAppearance: (() => void) | undefined
+  let unsubLifecycle: (() => void) | undefined
 
   const [showSearch, setShowSearch] = createSignal(false)
   const [searchQuery, setSearchQuery] = createSignal('')
@@ -177,14 +231,35 @@ export const ShellTerminal: Component<Props> = (props) => {
       if (el) terminalRef.appendChild(el)
       searchAddonRef = existing.searchAddon
       if (searchAddonRef) attachResultsListener(searchAddonRef)
-      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped, toggleSearch)
-      initialFit(existing, props.terminalId)
+      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped, toggleSearch, props.disableCmdVIntercept)
+      // Don't re-fit on rejoin. The xterm and PTY were already correctly
+      // sized when this terminal was first mounted; calling fitAddon.fit()
+      // here measures the just-attached container before its flex layout
+      // has settled, computes a tiny cols count, and emits a narrow
+      // ptyResize. The TUI inside (Claude Code) reflows to that narrow
+      // width, writes the narrow output into xterm's scrollback, and the
+      // history stays wrapped forever. Let the ResizeObserver handle any
+      // real size changes instead.
+      requestAnimationFrame(() => {
+        existing.term.scrollToBottom()
+        existing.term.focus()
+      })
       resizeObserver = attachResizeObserver(terminalRef, existing, props.terminalId)
-      unsubAppearance = subscribeXtermToAppearance(existing.term, () => existing.fitAddon.fit())
+      unsubAppearance = subscribeXtermToAppearance(existing.term, () => {
+        existing.fitAddon.fit()
+        existing.term.clearTextureAtlas()
+      })
+      unsubLifecycle = attachAtlasLifecycle(existing.term)
       return
     }
 
     const fontCfg = getXtermFontConfig()
+    // Renderer config: `customGlyphs` + `rescaleOverlappingGlyphs` combined
+    // with the WebGL addon are known to leave stale glyphs after mid-session
+    // content reflow (TUIs like Claude Code, vim, fzf trigger this). The
+    // artifacts only clear on a window resize because that re-blits every
+    // cell. VS Code hit the same bug and disables both flags by default.
+    // Keep WebGL for performance, drop the fragile glyph flags.
     const term = new XTerm({
       theme: getXtermTheme(),
       fontFamily: fontCfg.fontFamily,
@@ -196,8 +271,6 @@ export const ShellTerminal: Component<Props> = (props) => {
       scrollback: 10000,
       allowProposedApi: true,
       macOptionIsMeta: isMac,
-      customGlyphs: true,
-      rescaleOverlappingGlyphs: true,
       drawBoldTextInBrightColors: false,
     })
 
@@ -212,7 +285,7 @@ export const ShellTerminal: Component<Props> = (props) => {
     term.loadAddon(unicode11)
     term.unicode.activeVersion = '11'
     setupXtermPassthrough(term)
-    setupCaptureKeyHandler(containerRef, term, props.terminalId, props.isStopped, toggleSearch)
+    setupCaptureKeyHandler(containerRef, term, props.terminalId, props.isStopped, toggleSearch, props.disableCmdVIntercept)
     term.onData((data) => {
       if (props.isStopped?.()) return
       ipc.ptyWrite(props.terminalId, data)
@@ -231,21 +304,32 @@ export const ShellTerminal: Component<Props> = (props) => {
     registerXterm(props.terminalId, term, fitAddon, searchAddon)
 
     try {
-      term.loadAddon(new WebglAddon())
+      const webgl = new WebglAddon()
+      // VS Code pattern: dispose on context loss so xterm falls back to the
+      // DOM renderer instead of leaving a dead GL context behind. Critical
+      // on macOS WebKit (Tauri) where the OS occasionally drops contexts on
+      // sleep / Mission Control / display switches.
+      webgl.onContextLoss(() => webgl.dispose())
+      term.loadAddon(webgl)
     } catch {
-      // WebGL not available
+      // WebGL not available — xterm auto-falls back to the DOM renderer.
     }
 
     const entry = { term, fitAddon, searchAddon }
     initialFit(entry, props.terminalId)
     resizeObserver = attachResizeObserver(terminalRef, entry, props.terminalId)
-    unsubAppearance = subscribeXtermToAppearance(term, () => fitAddon.fit())
+    unsubAppearance = subscribeXtermToAppearance(term, () => {
+      fitAddon.fit()
+      term.clearTextureAtlas()
+    })
+    unsubLifecycle = attachAtlasLifecycle(term)
   })
 
   onCleanup(() => {
     resizeObserver?.disconnect()
     resultsDisposable?.dispose()
     unsubAppearance?.()
+    unsubLifecycle?.()
   })
 
   return (

@@ -8,6 +8,7 @@ import {
   type ThemeMode, type Density, type ThemePreset, type PaletteOverrides,
 } from '../lib/theme'
 import { setShowSettings, setSelectedTaskId, setSelectedSessionIdForTask, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist, sidebarWidth } from '../store/ui'
+import { ClaudeDefaultViewPicker } from './ClaudeDefaultViewPicker'
 import { notificationsEnabled, setNotificationsEnabledAndPersist } from '../lib/notifications'
 import { projects, updateHooks, updateStoreHooks, updateBaseBranch } from '../store/projects'
 import { createTask, activeTasksForProject } from '../store/tasks'
@@ -262,6 +263,20 @@ export const SettingsPage: Component = () => {
                   </div>
                   <Toggle checked={defaultHideWhitespace()} onChange={(v) => setDefaultHideWhitespaceAndPersist(v)} />
                 </div>
+              </div>
+            </div>
+
+            {/* Claude Code section */}
+            <div class="mb-8">
+              <h2 class="section-title mb-4">Claude Code</h2>
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="text-sm text-text-primary">Default session view</div>
+                  <div class="text-xs text-text-dim mt-0.5">
+                    How new Claude sessions open. Terminal shows the native Claude Code interface; UI shows Verun's chat with diffs, plans, and approvals. You can switch any session at any time.
+                  </div>
+                </div>
+                <ClaudeDefaultViewPicker />
               </div>
             </div>
 

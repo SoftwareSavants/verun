@@ -9,6 +9,10 @@ import { loadSteps } from '../store/steps'
 import { StepList } from './StepList'
 import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
+import { SessionTerminal } from './SessionTerminal'
+import { ClaudeViewToggle } from './ClaudeViewToggle'
+import { sessionViewMode } from '../store/sessionViewMode'
+import { canUseTerminalView } from '../lib/terminalMode'
 import { RightPanel } from './RightPanel'
 import { QuickOpen } from './QuickOpen'
 import { FileViewer } from './FileViewer'
@@ -544,6 +548,7 @@ export const TaskPanel: Component = () => {
                             <Show when={sessionCosts[session.id] > 0}>
                               <span class="text-text-dim">${sessionCosts[session.id] < 1 ? sessionCosts[session.id].toFixed(3) : sessionCosts[session.id].toFixed(2)}</span>
                             </Show>
+                            <ClaudeViewToggle session={session} sessionId={session.id} active={isActive()} />
 
                             <Show when={session.status === 'running'}>
                               <button
@@ -641,48 +646,65 @@ export const TaskPanel: Component = () => {
                       when={mainView(t().id) !== 'session'}
                       fallback={
                         <>
-                          <div class="flex-1 overflow-hidden">
-                            <Show when={selectedSessionId()} keyed>
-                              {(sid) => {
-                                const session = () => sessionById(sid)
-                                return (
-                                  <ChatView
-                                    output={outputItems[sid] || []}
-                                    sessionStatus={session()?.status}
-                                    sessionId={sid}
-                                    taskId={t().id}
-                                    agentType={session()?.agentType}
-                                    model={session()?.model}
-                                  />
-                                )
-                              }}
-                            </Show>
-                          </div>
                           <Show
-                            when={t().archived}
+                            when={canUseTerminalView(currentSession()) && sessionViewMode(selectedSessionId()) === 'terminal' && selectedSessionId()}
                             fallback={
                               <>
-                                <StepList
-                                  sessionId={selectedSessionId()}
-                                  isRunning={currentSession()?.status === 'running'}
-                                />
-                                <MessageInput
-                                  sessionId={selectedSessionId()}
-                                  isRunning={currentSession()?.status === 'running'}
-                                />
+                                <div class="flex-1 overflow-hidden">
+                                  <Show when={selectedSessionId()} keyed>
+                                    {(sid) => {
+                                      const session = () => sessionById(sid)
+                                      return (
+                                        <ChatView
+                                          output={outputItems[sid] || []}
+                                          sessionStatus={session()?.status}
+                                          sessionId={sid}
+                                          taskId={t().id}
+                                          agentType={session()?.agentType}
+                                          model={session()?.model}
+                                        />
+                                      )
+                                    }}
+                                  </Show>
+                                </div>
+                                <Show
+                                  when={t().archived}
+                                  fallback={
+                                    <>
+                                      <StepList
+                                        sessionId={selectedSessionId()}
+                                        isRunning={currentSession()?.status === 'running'}
+                                      />
+                                      <MessageInput
+                                        sessionId={selectedSessionId()}
+                                        isRunning={currentSession()?.status === 'running'}
+                                      />
+                                    </>
+                                  }
+                                >
+                                  <div class="px-4 py-3 border-t border-border-subtle bg-surface-1 flex items-center gap-3">
+                                    <Archive size={16} class="shrink-0 text-text-dim" />
+                                    <span class="flex-1 text-sm text-text-muted">This task is archived</span>
+                                    <button
+                                      class="px-3 py-1.5 text-xs font-medium rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors flex items-center gap-1.5"
+                                      onClick={() => restoreTask(t().id)}
+                                    >
+                                      <RotateCcw size={12} />
+                                      Restore
+                                    </button>
+                                  </div>
+                                </Show>
                               </>
                             }
                           >
-                            <div class="px-4 py-3 border-t border-border-subtle bg-surface-1 flex items-center gap-3">
-                              <Archive size={16} class="shrink-0 text-text-dim" />
-                              <span class="flex-1 text-sm text-text-muted">This task is archived</span>
-                              <button
-                                class="px-3 py-1.5 text-xs font-medium rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors flex items-center gap-1.5"
-                                onClick={() => restoreTask(t().id)}
-                              >
-                                <RotateCcw size={12} />
-                                Restore
-                              </button>
+                            <div class="flex-1 overflow-hidden">
+                              {/* `keyed` so switching between two terminal-mode
+                                  sessions in the same task remounts SessionTerminal
+                                  - otherwise its onMount only fires once and the
+                                  visible PTY stays bound to the first session. */}
+                              <Show when={selectedSessionId()} keyed>
+                                {(sid) => <SessionTerminal sessionId={sid} />}
+                              </Show>
                             </div>
                           </Show>
                         </>

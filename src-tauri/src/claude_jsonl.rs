@@ -52,14 +52,16 @@ impl std::error::Error for JsonlError {}
 /// where `<encoded-cwd>` is the absolute path of the cwd with all path
 /// separators replaced by `-`.
 pub fn session_path(cwd: &Path, session_id: &str) -> Option<PathBuf> {
+    projects_dir(cwd).map(|d| d.join(format!("{session_id}.jsonl")))
+}
+
+/// Compute the per-cwd directory under `~/.claude/projects/` where Claude
+/// writes transcripts for sessions started in `cwd`. Used to watch for newly
+/// created sessions when we spawn `claude` without a known id.
+pub fn projects_dir(cwd: &Path) -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let encoded = encode_cwd(cwd);
-    Some(
-        home.join(".claude")
-            .join("projects")
-            .join(encoded)
-            .join(format!("{session_id}.jsonl")),
-    )
+    Some(home.join(".claude").join("projects").join(encoded))
 }
 
 fn encode_cwd(cwd: &Path) -> String {
@@ -150,6 +152,319 @@ pub fn truncate_after_message(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Transcript line parsing (terminal mode)
+// ---------------------------------------------------------------------------
+//
+// When a Claude session is being driven through a real PTY (terminal mode),
+// we tail the on-disk JSONL transcript rather than stdout. The shape of
+// transcript lines is a superset of stream-json: each line is one JSON object
+// with a top-level `type` field, plus wrapping metadata (uuid, parentUuid,
+// timestamp, sessionId). The message payloads under `.message.content` are
+// identical to the Anthropic API shape.
+//
+// `parse_transcript_line` maps a single line to zero or more OutputItems
+// ready to be emitted to the frontend and persisted via the existing
+// `verun_items` / `verun_user_message` paths. Lines that carry internal
+// bookkeeping (queue-operation, ai-title, last-prompt, attachment) are
+// ignored.
+
+use crate::stream::OutputItem;
+
+/// Parse a single Claude JSONL transcript line into zero or more OutputItems.
+///
+/// Returns an empty vec for internal/bookkeeping line types and for any line
+/// that fails to parse as JSON. Callers that need to distinguish "ignored"
+/// from "malformed" should inspect the input themselves - here we favour
+/// forward compatibility with CLI version bumps that might introduce new
+/// passthrough line types.
+#[allow(dead_code)] // wired up by the transcript tailer in the next phase
+pub fn parse_transcript_line(line: &str) -> Vec<OutputItem> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let value: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match msg_type {
+        "user" => parse_transcript_user(&value),
+        "assistant" => parse_transcript_assistant(&value),
+        // Everything else is either bookkeeping (queue-operation, ai-title,
+        // last-prompt) or contextual system injections (attachment) that the
+        // frontend does not render.
+        _ => Vec::new(),
+    }
+}
+
+/// What to do with a fake "user" message Claude TUI injected into the
+/// transcript when a slash command (or skill) ran.
+#[derive(Debug, PartialEq, Eq)]
+enum EnvelopeAction {
+    /// Not a Claude-injected envelope - render as a normal user message.
+    Keep,
+    /// Drop entirely: skill bodies, bare stdout-only envelopes, etc.
+    Drop,
+    /// Replace the message text with this clean form (e.g. "/adapt wassup")
+    /// so the chat shows the command the user ran instead of the raw XML.
+    Replace(String),
+}
+
+/// Classify a user-message text against Claude TUI's slash-command envelope
+/// shapes. Native Claude TUI hides this scaffolding; we either hide or
+/// summarise it depending on the shape:
+///
+///     <command-message>adapt</command-message>
+///     <command-name>/adapt</command-name>
+///     <command-args>wassup</command-args>
+///
+/// → Replace("/adapt wassup")
+///
+///     <local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>
+///
+/// → Drop (post-execution side-effect; the command itself was already shown
+///   when the user typed it).
+///
+///     Base directory for this skill: /Users/x/.claude/skills/adapt
+///     ...skill markdown body...
+///
+/// → Drop (skill-body injection - the model needs it but the user doesn't).
+fn classify_envelope(text: &str) -> EnvelopeAction {
+    let trimmed = text.trim_start();
+
+    // Skill body injection: drop entirely.
+    if trimmed.starts_with("Base directory for this skill:") {
+        return EnvelopeAction::Drop;
+    }
+    // Bare post-execution stdout (e.g. /model result): drop.
+    if trimmed.starts_with("<local-command-stdout>") {
+        return EnvelopeAction::Drop;
+    }
+    // System-reminder context injections (Verun's harness, /loop tickers,
+    // tool-result post-instructions, etc.) - the model needs them, the
+    // user doesn't.
+    if trimmed.starts_with("<system-reminder>") {
+        return EnvelopeAction::Drop;
+    }
+
+    let is_envelope = trimmed.starts_with("<local-command-caveat>")
+        || trimmed.starts_with("<command-name>")
+        || trimmed.starts_with("<command-message>")
+        || trimmed.starts_with("<command-args>");
+    if !is_envelope {
+        return EnvelopeAction::Keep;
+    }
+
+    // Envelope: try to extract command-name (already includes the slash)
+    // and command-args, render as "/<name> <args>".
+    if let Some(name) = extract_tag(text, "command-name") {
+        let name = name.trim();
+        let args = extract_tag(text, "command-args").unwrap_or_default();
+        let args = args.trim();
+        let line = if args.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name} {args}")
+        };
+        return EnvelopeAction::Replace(line);
+    }
+
+    // Envelope without a parseable command-name: drop the raw XML rather
+    // than letting it leak into the chat.
+    EnvelopeAction::Drop
+}
+
+/// Pull the contents of `<tag>...</tag>` out of `text`, if present. Returns
+/// `None` when either the open or close tag is missing. Inner content is
+/// returned verbatim (no HTML decoding) - Claude's envelopes don't entity-
+/// encode and the only contents we extract are command names and arg
+/// strings the user typed.
+fn extract_tag(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let rest = &text[start..];
+    let end = rest.find(&close)?;
+    Some(rest[..end].to_string())
+}
+
+#[allow(dead_code)]
+fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
+    let content = match value.get("message").and_then(|m| m.get("content")) {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+
+    // The user prompt form comes as either a raw string or as an array of
+    // text blocks. Tool results always come as an array with `tool_result`
+    // blocks.
+    if let Some(s) = content.as_str() {
+        if s.is_empty() {
+            return Vec::new();
+        }
+        match classify_envelope(s) {
+            EnvelopeAction::Drop => return Vec::new(),
+            EnvelopeAction::Replace(text) => return vec![OutputItem::UserMessage { text }],
+            EnvelopeAction::Keep => {
+                return vec![OutputItem::UserMessage { text: s.to_string() }];
+            }
+        }
+    }
+
+    let blocks = match content.as_array() {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+
+    let mut items = Vec::new();
+    for block in blocks {
+        let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match kind {
+            "text" => {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    match classify_envelope(text) {
+                        EnvelopeAction::Drop => continue,
+                        EnvelopeAction::Replace(t) => items.push(OutputItem::UserMessage { text: t }),
+                        EnvelopeAction::Keep => items.push(OutputItem::UserMessage {
+                            text: text.to_string(),
+                        }),
+                    }
+                }
+            }
+            "tool_result" => {
+                let is_error = block
+                    .get("is_error")
+                    .and_then(|e| e.as_bool())
+                    .unwrap_or(false);
+                let text = extract_tool_result_text(block.get("content"));
+                if !text.is_empty() {
+                    items.push(OutputItem::ToolResult { text, is_error });
+                }
+            }
+            "image" => {
+                if let Some(att) = parse_image_block(block) {
+                    items.push(att);
+                }
+            }
+            _ => {}
+        }
+    }
+    items
+}
+
+/// Parse a transcript `image` content block into `OutputItem::UserAttachment`.
+/// Returns `None` for malformed blocks (missing/empty data, non-base64 source).
+/// Falls back to `application/octet-stream` when `media_type` is omitted, so
+/// the caller can still round-trip the bytes into the blob store even though
+/// the chat UI's image-only filter will probably drop the resulting ref.
+#[allow(dead_code)]
+fn parse_image_block(block: &serde_json::Value) -> Option<OutputItem> {
+    let source = block.get("source")?;
+    if source.get("type").and_then(|t| t.as_str()) != Some("base64") {
+        return None;
+    }
+    let data = source.get("data").and_then(|d| d.as_str())?;
+    if data.is_empty() {
+        return None;
+    }
+    let mime = source
+        .get("media_type")
+        .and_then(|m| m.as_str())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    Some(OutputItem::UserAttachment {
+        mime,
+        data_b64: data.to_string(),
+    })
+}
+
+#[allow(dead_code)]
+fn parse_transcript_assistant(value: &serde_json::Value) -> Vec<OutputItem> {
+    let content = match value
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+
+    let mut items = Vec::new();
+    for block in content {
+        let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match kind {
+            "text" => {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        items.push(OutputItem::Text {
+                            text: text.to_string(),
+                        });
+                    }
+                }
+            }
+            "thinking" => {
+                if let Some(text) = block.get("thinking").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        items.push(OutputItem::Thinking {
+                            text: text.to_string(),
+                        });
+                    }
+                }
+            }
+            "tool_use" | "server_tool_use" | "mcp_tool_use" => {
+                let tool = block
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("tool")
+                    .to_string();
+                let input_value = block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                let is_empty_obj = input_value
+                    .as_object()
+                    .map(|o| o.is_empty())
+                    .unwrap_or(false);
+                let input = if is_empty_obj {
+                    String::new()
+                } else {
+                    serde_json::to_string_pretty(&input_value).unwrap_or_default()
+                };
+                items.push(OutputItem::ToolStart { tool, input });
+            }
+            _ => {}
+        }
+    }
+    items
+}
+
+#[allow(dead_code)]
+fn extract_tool_result_text(content: Option<&serde_json::Value>) -> String {
+    match content {
+        None => String::new(),
+        Some(v) => {
+            if let Some(s) = v.as_str() {
+                return s.to_string();
+            }
+            if let Some(arr) = v.as_array() {
+                let mut out = String::new();
+                for block in arr {
+                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                        out.push_str(text);
+                    }
+                }
+                return out;
+            }
+            String::new()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +518,319 @@ mod tests {
         let err = truncate_after_message(&src, &dest, "new-id", "missing").unwrap_err();
         assert!(matches!(err, JsonlError::MessageUuidNotFound(_)));
         assert!(!dest.exists(), "dest should be cleaned up on error");
+    }
+
+    // -----------------------------------------------------------------------
+    // Transcript line parsing (terminal mode)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn transcript_skips_empty_and_malformed_lines() {
+        assert!(parse_transcript_line("").is_empty());
+        assert!(parse_transcript_line("   ").is_empty());
+        assert!(parse_transcript_line("not json").is_empty());
+        assert!(parse_transcript_line("{broken").is_empty());
+    }
+
+    #[test]
+    fn transcript_skips_bookkeeping_line_types() {
+        for line in [
+            r#"{"type":"queue-operation","operation":"enqueue"}"#,
+            r#"{"type":"ai-title","aiTitle":"x"}"#,
+            r#"{"type":"last-prompt","lastPrompt":"hello"}"#,
+            r#"{"type":"attachment","attachment":{"type":"deferred_tools_delta","addedNames":[]}}"#,
+            r#"{"type":"attachment","attachment":{"type":"mcp_instructions_delta"}}"#,
+            r#"{"type":"attachment","attachment":{"type":"todo_reminder","content":[]}}"#,
+        ] {
+            assert!(
+                parse_transcript_line(line).is_empty(),
+                "expected empty for line {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn transcript_user_text_prompt_as_array_becomes_user_message() {
+        let line = r#"{"parentUuid":null,"type":"user","message":{"role":"user","content":[{"text":"hello claude","type":"text"}]},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert_eq!(text, "hello claude"),
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_text_prompt_as_string_becomes_user_message() {
+        let line = r#"{"type":"user","message":{"role":"user","content":"inline prompt"},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert_eq!(text, "inline prompt"),
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_empty_text_produces_nothing() {
+        let line = r#"{"type":"user","message":{"role":"user","content":""},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+        let line_arr = r#"{"type":"user","message":{"role":"user","content":[{"text":"","type":"text"}]},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line_arr).is_empty());
+    }
+
+    // Regression: Claude TUI injects fake `user` messages wrapping local
+    // slash-command invocations (e.g. /model, /exit) so the model knows the
+    // human ran them. The XML envelope + ANSI escapes leak into UI mode
+    // when the user toggles back from terminal. Transform them into a
+    // clean "/<name> [args]" line so the chat shows what the user ran.
+    #[test]
+    fn transcript_user_command_envelope_is_transformed_to_slash_command_form() {
+        let line = r#"{"type":"user","message":{"role":"user","content":"<command-message>adapt</command-message>\n<command-name>/adapt</command-name>\n<command-args>wassup</command-args>"},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert_eq!(text, "/adapt wassup"),
+            other => panic!("expected one transformed UserMessage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_command_envelope_with_no_args_drops_the_trailing_space() {
+        let line = r#"{"type":"user","message":{"role":"user","content":"<command-name>/exit</command-name>\n<command-args></command-args>"},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert_eq!(text, "/exit"),
+            other => panic!("expected /exit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_envelope_with_caveat_preamble_still_transforms() {
+        // The /model envelope leads with <local-command-caveat> but still
+        // carries a <command-name> we can extract.
+        let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: foo.</local-command-caveat>\n<command-name>/model</command-name>\n<command-args>opus</command-args>"},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert_eq!(text, "/model opus"),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_envelope_without_command_name_is_dropped() {
+        // Defensive: an envelope that's somehow missing the <command-name>
+        // tag should drop rather than leak the raw XML into the chat.
+        let line = r#"{"type":"user","message":{"role":"user","content":"<command-message>just-this</command-message>"},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_system_reminder_injection_is_filtered() {
+        // Verun's harness (and /loop, tool-result post-instructions, etc.)
+        // injects <system-reminder> blocks as fake user messages to nudge
+        // the model. They're scaffolding, not user-facing content.
+        let line = r#"{"type":"user","message":{"role":"user","content":"<system-reminder>Respond with just the action or changes and without a thinking block, unless this is a redesign or requires fresh reasoning.</system-reminder>"},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_skill_body_injection_is_filtered() {
+        // Skills (slash commands with a markdown body) inject the body as
+        // its own user message starting with "Base directory for this
+        // skill: <path>". Native Claude TUI hides this; we do the same.
+        let line = r#"{"type":"user","message":{"role":"user","content":"Base directory for this skill: /Users/x/.claude/skills/adapt\n\nAdapt existing designs ..."},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_bare_local_command_stdout_envelope_is_filtered() {
+        // Some commands (subsequent /model invocations, etc.) emit just the
+        // stdout block with no caveat or command-name preamble. Same family
+        // of TUI scaffolding - filter it too.
+        let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to Haiku 4.5</local-command-stdout>"},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_command_envelope_in_array_form_also_transforms() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-name>/exit</command-name>\n<command-args></command-args>"}]},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert_eq!(text, "/exit"),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_normal_text_with_xml_lookalike_in_middle_still_renders() {
+        // Only filter when the envelope marker is at the *start* of the
+        // text, so a real user message that happens to discuss the syntax
+        // (e.g. a question about `<command-name>` tags) is still shown.
+        let line = r#"{"type":"user","message":{"role":"user","content":"how do i write <command-name>foo</command-name>?"},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert!(text.contains("how do i write")),
+            other => panic!("expected UserMessage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_tool_result_string_content() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu_1","type":"tool_result","content":"file1.txt\nfile2.txt","is_error":false}]},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::ToolResult { text, is_error }] => {
+                assert_eq!(text, "file1.txt\nfile2.txt");
+                assert!(!is_error);
+            }
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_tool_result_array_content_with_error() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu_1","type":"tool_result","content":[{"type":"text","text":"permission denied"}],"is_error":true}]},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::ToolResult { text, is_error }] => {
+                assert_eq!(text, "permission denied");
+                assert!(*is_error);
+            }
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_assistant_text_becomes_text_item() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi there!"}]},"uuid":"a1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::Text { text }] => assert_eq!(text, "Hi there!"),
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_assistant_thinking_becomes_thinking_item_nonempty_only() {
+        let empty = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig"}]},"uuid":"a1"}"#;
+        assert!(parse_transcript_line(empty).is_empty());
+        let full = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me reason","signature":"sig"}]},"uuid":"a2"}"#;
+        match parse_transcript_line(full).as_slice() {
+            [OutputItem::Thinking { text }] => assert_eq!(text, "let me reason"),
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_assistant_tool_use_becomes_tool_start() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls","description":"List files"}}]},"uuid":"a1"}"#;
+        match parse_transcript_line(line).as_slice() {
+            [OutputItem::ToolStart { tool, input }] => {
+                assert_eq!(tool, "Bash");
+                assert!(input.contains("\"command\""));
+                assert!(input.contains("\"ls\""));
+            }
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_assistant_empty_tool_use_input_yields_empty_string() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"NoArg","input":{}}]},"uuid":"a1"}"#;
+        match parse_transcript_line(line).as_slice() {
+            [OutputItem::ToolStart { tool, input }] => {
+                assert_eq!(tool, "NoArg");
+                assert_eq!(input, "");
+            }
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_assistant_multiple_blocks_in_order() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm","signature":"s"},{"type":"text","text":"running tool"},{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}]},"uuid":"a1"}"#;
+        let items = parse_transcript_line(line);
+        assert_eq!(items.len(), 3);
+        assert!(matches!(&items[0], OutputItem::Thinking { text } if text == "hm"));
+        assert!(matches!(&items[1], OutputItem::Text { text } if text == "running tool"));
+        assert!(matches!(&items[2], OutputItem::ToolStart { tool, .. } if tool == "Bash"));
+    }
+
+    #[test]
+    fn transcript_user_image_block_yields_attachment_item() {
+        // Claude writes pasted images as content blocks of type=image with a
+        // base64 data URL inline. The terminal-mode parser must surface those
+        // so the driver can write them to the blob store alongside the text.
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserAttachment { mime, data_b64 }] => {
+                assert_eq!(mime, "image/png");
+                assert_eq!(data_b64, "iVBORw0KGgo=");
+            }
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_text_and_image_block_yields_both_items_in_order() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"AAAA"}},{"text":"check this","type":"text"}]},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        assert_eq!(items.len(), 2, "items: {items:#?}");
+        assert!(matches!(&items[0], OutputItem::UserAttachment { mime, data_b64 } if mime == "image/jpeg" && data_b64 == "AAAA"));
+        assert!(matches!(&items[1], OutputItem::UserMessage { text } if text == "check this"));
+    }
+
+    #[test]
+    fn transcript_user_image_block_skipped_when_data_missing_or_empty() {
+        // Malformed: missing source.data — drop silently so the rest of the
+        // line still flows through.
+        let no_data = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png"}}]},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(no_data).is_empty());
+        let empty_data = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":""}}]},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(empty_data).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_image_block_defaults_mime_when_missing() {
+        // We've seen older transcript lines omit `media_type`. Falling back to
+        // application/octet-stream keeps the blob round-trippable even if the
+        // chat UI's image-only filter ends up dropping it.
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"AAAA"}}]},"uuid":"u1"}"#;
+        match parse_transcript_line(line).as_slice() {
+            [OutputItem::UserAttachment { mime, data_b64 }] => {
+                assert_eq!(mime, "application/octet-stream");
+                assert_eq!(data_b64, "AAAA");
+            }
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_fixture_file_end_to_end() {
+        let fixture = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_jsonl/sample.jsonl"
+        ))
+        .expect("fixture file should be readable");
+
+        let mut items = Vec::new();
+        for line in fixture.lines() {
+            items.extend(parse_transcript_line(line));
+        }
+
+        // The fixture produces 6 items: user prompt, thinking, assistant text,
+        // tool_use, tool_result (string), tool_result (array, error). The
+        // remaining 6 lines (queue-operation, 3 attachments, ai-title,
+        // last-prompt) are all bookkeeping and produce nothing.
+        assert_eq!(items.len(), 6, "items: {items:#?}");
+        assert!(matches!(&items[0], OutputItem::UserMessage { text } if text == "hello claude"));
+        assert!(matches!(&items[1], OutputItem::Thinking { text } if text == "let me think about this"));
+        assert!(matches!(&items[2], OutputItem::Text { text } if text.starts_with("Hi!")));
+        assert!(matches!(&items[3], OutputItem::ToolStart { tool, .. } if tool == "Bash"));
+        assert!(
+            matches!(&items[4], OutputItem::ToolResult { text, is_error } if text.contains("file1.txt") && !is_error)
+        );
+        assert!(
+            matches!(&items[5], OutputItem::ToolResult { text, is_error } if text == "permission denied" && *is_error)
+        );
     }
 }

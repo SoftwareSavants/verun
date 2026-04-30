@@ -1671,7 +1671,7 @@ pub async fn connect(app_data_dir: &std::path::Path) -> Result<SqlitePool, Strin
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1694,7 +1694,7 @@ mod tests {
         insta::assert_snapshot!("migration_v1_sql", m[0].sql);
     }
 
-    async fn test_pool() -> SqlitePool {
+    pub(crate) async fn test_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         for m in migrations() {
             sqlx::query(m.sql).execute(&pool).await.unwrap();
@@ -1702,7 +1702,14 @@ mod tests {
         pool
     }
 
-    fn make_project() -> Project {
+    pub(crate) async fn process_write_for_tests(
+        pool: &SqlitePool,
+        w: DbWrite,
+    ) -> Result<(), sqlx::Error> {
+        process_write(pool, w).await
+    }
+
+    pub(crate) fn make_project() -> Project {
         Project {
             id: "p-001".into(),
             name: "My App".into(),
@@ -1717,7 +1724,7 @@ mod tests {
         }
     }
 
-    fn make_task(project_id: &str) -> Task {
+    pub(crate) fn make_task(project_id: &str) -> Task {
         Task {
             id: "t-001".into(),
             project_id: project_id.into(),
@@ -1736,7 +1743,7 @@ mod tests {
         }
     }
 
-    fn make_session(task_id: &str) -> Session {
+    pub(crate) fn make_session(task_id: &str) -> Session {
         Session {
             id: "s-001".into(),
             task_id: task_id.into(),
