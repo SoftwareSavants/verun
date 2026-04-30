@@ -199,6 +199,24 @@ pub fn parse_transcript_line(line: &str) -> Vec<OutputItem> {
     }
 }
 
+/// Claude Code's TUI injects fake "user" messages into the transcript when a
+/// slash command runs (e.g. `/model`, `/exit`, `/clear`) so the model sees
+/// what local commands the human ran. They look like:
+///
+///     <local-command-caveat>Caveat: ...</local-command-caveat>
+///     <command-name>/model</command-name>
+///     <command-message>model</command-message>
+///     <command-args></command-args>
+///     <local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>
+///
+/// The XML-ish envelope plus embedded ANSI escapes are scaffolding for the
+/// model, not user-facing content. Verun's UI mode would otherwise render
+/// them as a normal user message - filter them at parse time.
+fn is_local_command_envelope(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with("<local-command-caveat>") || trimmed.starts_with("<command-name>")
+}
+
 #[allow(dead_code)]
 fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
     let content = match value.get("message").and_then(|m| m.get("content")) {
@@ -210,7 +228,7 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
     // text blocks. Tool results always come as an array with `tool_result`
     // blocks.
     if let Some(s) = content.as_str() {
-        if s.is_empty() {
+        if s.is_empty() || is_local_command_envelope(s) {
             return Vec::new();
         }
         return vec![OutputItem::UserMessage {
@@ -229,7 +247,7 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
         match kind {
             "text" => {
                 if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                    if !text.is_empty() {
+                    if !text.is_empty() && !is_local_command_envelope(text) {
                         items.push(OutputItem::UserMessage {
                             text: text.to_string(),
                         });
@@ -475,6 +493,35 @@ mod tests {
         assert!(parse_transcript_line(line).is_empty());
         let line_arr = r#"{"type":"user","message":{"role":"user","content":[{"text":"","type":"text"}]},"uuid":"u1"}"#;
         assert!(parse_transcript_line(line_arr).is_empty());
+    }
+
+    // Regression: Claude TUI injects fake `user` messages wrapping local
+    // slash-command invocations (e.g. /model, /exit) so the model knows the
+    // human ran them. The XML envelope + ANSI escapes leak into UI mode
+    // when the user toggles back from terminal. Drop them at parse time.
+    #[test]
+    fn transcript_user_local_command_envelope_is_filtered_string_form() {
+        let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: foo.</local-command-caveat>\n<command-name>/model</command-name>\n<local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>"},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_local_command_envelope_is_filtered_array_form() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-name>/exit</command-name>\n<local-command-stdout></local-command-stdout>"}]},"uuid":"u1"}"#;
+        assert!(parse_transcript_line(line).is_empty());
+    }
+
+    #[test]
+    fn transcript_user_normal_text_with_xml_lookalike_in_middle_still_renders() {
+        // Only filter when the envelope marker is at the *start* of the
+        // text, so a real user message that happens to discuss the syntax
+        // (e.g. a question about `<command-name>` tags) is still shown.
+        let line = r#"{"type":"user","message":{"role":"user","content":"how do i write <command-name>foo</command-name>?"},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::UserMessage { text }] => assert!(text.contains("how do i write")),
+            other => panic!("expected UserMessage, got {other:?}"),
+        }
     }
 
     #[test]
