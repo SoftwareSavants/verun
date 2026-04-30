@@ -83,13 +83,12 @@ function attachResizeObserver(container: HTMLElement, entry: XtermEntry, termina
 function initialFit(entry: XtermEntry, terminalId: string) {
   requestAnimationFrame(() => {
     entry.fitAddon.fit()
+    // Position the viewport at the latest content BEFORE refresh() paints,
+    // so the first frame the user sees is already at the bottom. Doing it
+    // after refresh produces a one-frame flash of the top of the scrollback.
+    entry.term.scrollToBottom()
     entry.term.refresh(0, entry.term.rows - 1)
     ipc.ptyResize(terminalId, entry.term.rows, entry.term.cols)
-    // Land at the latest content - matches every native terminal. Without
-    // this, switching back to a task with an existing PTY shows the top of
-    // the scrollback (where the xterm viewport was after the rejoin's
-    // re-fit) instead of where Claude is currently rendering.
-    entry.term.scrollToBottom()
     entry.term.focus()
   })
 }
