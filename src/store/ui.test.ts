@@ -24,6 +24,7 @@ import {
   pickAndAddProject,
   setSelectedSessionIdForTask,
   siblingTaskInList,
+  nextSessionIdInTask,
 } from './ui'
 import { selectedSessionForTask, clearTaskContext } from './taskContext'
 import * as ipc from '../lib/ipc'
@@ -142,6 +143,40 @@ describe('siblingTaskInList', () => {
   test('falls back to first/last when current id is not in list', () => {
     expect(siblingTaskInList(tasks, 'gone', 'down')?.id).toBe('t-a')
     expect(siblingTaskInList(tasks, 'gone', 'up')?.id).toBe('t-c')
+  })
+})
+
+describe('nextSessionIdInTask', () => {
+  beforeEach(() => {
+    clearTaskContext('t-A')
+    setSelectedTaskId(null)
+  })
+
+  test('returns null when the task has no sessions', () => {
+    expect(nextSessionIdInTask('t-A', 'next', [])).toBeNull()
+    expect(nextSessionIdInTask('t-A', 'prev', [])).toBeNull()
+  })
+
+  test('next picks first session when none is selected', () => {
+    expect(nextSessionIdInTask('t-A', 'next', [{ id: 's1' }, { id: 's2' }])).toBe('s1')
+  })
+
+  test('prev picks last session when none is selected', () => {
+    expect(nextSessionIdInTask('t-A', 'prev', [{ id: 's1' }, { id: 's2' }])).toBe('s2')
+  })
+
+  test('cycles forward and wraps', () => {
+    setSelectedSessionIdForTask('t-A', 's1')
+    expect(nextSessionIdInTask('t-A', 'next', [{ id: 's1' }, { id: 's2' }, { id: 's3' }])).toBe('s2')
+    setSelectedSessionIdForTask('t-A', 's3')
+    expect(nextSessionIdInTask('t-A', 'next', [{ id: 's1' }, { id: 's2' }, { id: 's3' }])).toBe('s1')
+  })
+
+  test('cycles backward and wraps', () => {
+    setSelectedSessionIdForTask('t-A', 's2')
+    expect(nextSessionIdInTask('t-A', 'prev', [{ id: 's1' }, { id: 's2' }, { id: 's3' }])).toBe('s1')
+    setSelectedSessionIdForTask('t-A', 's1')
+    expect(nextSessionIdInTask('t-A', 'prev', [{ id: 's1' }, { id: 's2' }, { id: 's3' }])).toBe('s3')
   })
 })
 

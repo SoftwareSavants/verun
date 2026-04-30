@@ -312,6 +312,22 @@ export function focusOrSelectTask(task: { id: string; projectId: string; name: s
   setShowArchived(false)
 }
 
+// Cycle the selected session within a task. Mirrors siblingTaskInList:
+// wraps at edges, and when nothing is selected, 'next' picks first and
+// 'prev' picks last so the shortcut still moves to something.
+export function nextSessionIdInTask(
+  taskId: string,
+  direction: 'next' | 'prev',
+  sessions: { id: string }[],
+): string | null {
+  const sib = siblingTaskInList(
+    sessions,
+    selectedSessionForTask(taskId),
+    direction === 'next' ? 'down' : 'up',
+  )
+  return sib?.id ?? null
+}
+
 // Pure helper for Cmd+Alt+Up/Down sidebar navigation. Wraps around at the
 // edges. When nothing is selected, Down picks the first task and Up picks the
 // last so the shortcut still does something useful.

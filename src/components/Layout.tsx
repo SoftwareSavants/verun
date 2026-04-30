@@ -7,7 +7,7 @@ import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { AddProjectDialog } from './AddProjectDialog'
 import { BtsBuilderDialog } from './BtsBuilderDialog'
-import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId, siblingTaskInList } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId, siblingTaskInList, nextSessionIdInTask } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
 import { activeTasksForProject, taskById } from '../store/tasks'
@@ -205,14 +205,21 @@ export const Layout: Component = () => {
           })
         }
       }
-      // Cmd+Alt+Right / Cmd+Alt+Left — switch editor tabs
-      if (modPressed(e) && e.altKey && e.key === 'ArrowRight') {
+      // Cmd+Alt+Right / Cmd+Alt+Left — cycle sessions in session view,
+      // cycle editor tabs in file view (mirrors Ctrl+Tab below).
+      if (modPressed(e) && e.altKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
         const tid = selectedTaskId()
-        if (tid) { e.preventDefault(); nextTab(tid) }
-      }
-      if (modPressed(e) && e.altKey && e.key === 'ArrowLeft') {
-        const tid = selectedTaskId()
-        if (tid) { e.preventDefault(); prevTab(tid) }
+        if (tid) {
+          e.preventDefault()
+          const dir = e.key === 'ArrowRight' ? 'next' : 'prev'
+          if (mainView(tid) !== 'session') {
+            if (dir === 'next') nextTab(tid); else prevTab(tid)
+          } else {
+            const list = sessionsForTask(tid)
+            const next = nextSessionIdInTask(tid, dir, list)
+            if (next) setSelectedSessionIdForTask(tid, next)
+          }
+        }
       }
       // Cmd+Alt+Down / Cmd+Alt+Up — move to next/previous task in the sidebar
       if (modPressed(e) && e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
