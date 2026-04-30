@@ -30,8 +30,8 @@ describe('canUseTerminalView', () => {
     expect(canUseTerminalView(session())).toBe(true)
   })
 
-  test('false when resumeSessionId is missing (first turn not yet reached)', () => {
-    expect(canUseTerminalView(session({ resumeSessionId: null }))).toBe(false)
+  test('true even when resumeSessionId is missing (fresh session: backend pre-generates a UUID and spawns with --session-id)', () => {
+    expect(canUseTerminalView(session({ resumeSessionId: null }))).toBe(true)
   })
 
   test('false for non-claude agents', () => {

@@ -31,7 +31,8 @@ use crate::claude_jsonl;
 use crate::claude_transcript_tail::{spawn_transcript_tail, TranscriptTail};
 use crate::db::{self, DbWrite, DbWriteTx};
 use crate::pty::{self, ActivePtyMap};
-use crate::stream::{OutputItem, SessionOutputEvent};
+use crate::stream::{self, OutputItem, SessionOutputEvent};
+use uuid::Uuid;
 
 /// Display name for the Claude PTY tab/tooltip.
 const TERMINAL_DISPLAY_NAME: &str = "Claude Code";
@@ -102,21 +103,29 @@ pub async fn open_claude_terminal(
 
     let validated = validate_session_for_terminal(pool, &session_id).await?;
     let task = validated.task;
-    let resume_id = validated.resume_id;
+
+    // Fresh session (no resume id yet): pre-generate a UUID, persist it as
+    // the session's resume_session_id, and spawn `claude --session-id <uuid>`
+    // so Claude creates the conversation with that id. Subsequent reopens
+    // for the same session use the existing `--resume <uuid>` path.
+    let (id, mode, is_fresh) = match validated.resume_id {
+        Some(rid) => (rid, ClaudeSpawnMode::Resume, false),
+        None => (Uuid::new_v4().to_string(), ClaudeSpawnMode::NewWithId, true),
+    };
 
     let repo_path = db::get_repo_path_for_task(pool, &task.id).await?;
     let env_vars = crate::worktree::verun_env_vars(task.port_offset, &repo_path);
 
     let cwd_path = std::path::PathBuf::from(&task.worktree_path);
-    let jsonl_path = claude_jsonl::session_path(&cwd_path, &resume_id)
+    let jsonl_path = claude_jsonl::session_path(&cwd_path, &id)
         .ok_or_else(|| "$HOME not set; cannot locate Claude transcript".to_string())?;
 
-    // We only want NEW JSONL lines added while this PTY is alive. Everything
-    // already in the file is already in our output_lines from the previous
-    // streamed run.
+    // For resumes: skip whatever's already on disk (already in output_lines).
+    // For fresh sessions: file doesn't exist yet; metadata fails and we get 0,
+    // which is what we want - tail from byte 0 once Claude creates it.
     let start_offset = std::fs::metadata(&jsonl_path).map(|m| m.len()).unwrap_or(0);
 
-    let command = build_claude_resume_shell_command(&resume_id);
+    let command = build_claude_shell_command(mode, &id);
     let worktree_path = task.worktree_path.clone();
     let pty_map_clone = pty_map.clone();
     let app_for_pty = app.clone();
@@ -147,6 +156,25 @@ pub async fn open_claude_terminal(
     })
     .await
     .map_err(|e| format!("spawn_pty join: {e}"))??;
+
+    // Persist the pre-generated id for fresh spawns so subsequent reopens
+    // use the `--resume` path and the rest of the app (chat view, fork,
+    // session-tab toggle) sees the session as having a resumable id.
+    if is_fresh {
+        let _ = db_tx
+            .send(db::DbWrite::SetResumeSessionId {
+                id: session_id.clone(),
+                resume_session_id: id.clone(),
+            })
+            .await;
+        let _ = app.emit(
+            "session-resume-id",
+            stream::SessionResumeIdEvent {
+                session_id: session_id.clone(),
+                resume_session_id: id.clone(),
+            },
+        );
+    }
 
     let (item_tx, item_rx) = mpsc::unbounded_channel::<OutputItem>();
     let tail = spawn_transcript_tail(&jsonl_path, start_offset, item_tx);
@@ -202,13 +230,17 @@ pub async fn close_claude_terminal(
 #[derive(Debug)]
 pub(crate) struct ValidatedTerminalSession {
     pub task: crate::db::Task,
-    pub resume_id: String,
+    /// `Some(id)` if the session has been used before (use `--resume <id>`).
+    /// `None` for a fresh session: the caller must generate a UUID and pass it
+    /// via `--session-id <uuid>` so Claude creates the conversation with that
+    /// id (which we then persist as the session's resume_session_id).
+    pub resume_id: Option<String>,
 }
 
-/// Look up the session, ensure it's a Claude session that has reached
-/// `system:init` (so `claude --resume <id>` will work), and return the task
-/// it belongs to. Pure DB validation extracted from `open_claude_terminal`
-/// so the error paths can be unit-tested without an `AppHandle`.
+/// Look up the session, ensure it's a Claude session, and return the task
+/// it belongs to plus its existing resume id (if any). Pure DB validation
+/// extracted from `open_claude_terminal` so the error paths can be unit-
+/// tested without an `AppHandle`.
 pub(crate) async fn validate_session_for_terminal(
     pool: &SqlitePool,
     session_id: &str,
@@ -224,16 +256,14 @@ pub(crate) async fn validate_session_for_terminal(
         ));
     }
 
-    let resume_id = session
-        .resume_session_id
-        .clone()
-        .ok_or_else(|| "Session has no resumable id yet - send a message first".to_string())?;
-
     let task = db::get_task(pool, &session.task_id)
         .await?
         .ok_or_else(|| format!("Task {} not found", session.task_id))?;
 
-    Ok(ValidatedTerminalSession { task, resume_id })
+    Ok(ValidatedTerminalSession {
+        task,
+        resume_id: session.resume_session_id.clone(),
+    })
 }
 
 /// Build the JSON line we persist into `output_lines` for a batch of items
@@ -507,15 +537,28 @@ async fn pre_trust_worktree_at(config_path: &Path, worktree_path: &str) -> Resul
     Ok(())
 }
 
+/// Spawn-mode for the Claude PTY.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaudeSpawnMode {
+    /// Existing session - pass `--resume <id>`.
+    Resume,
+    /// Fresh session - pass `--session-id <uuid>` so Claude creates the
+    /// conversation with the id we pre-generated (which we've already
+    /// persisted as the session's resume_session_id).
+    NewWithId,
+}
+
 /// Build the shell command passed to `sh -lic "<cmd>"` that spawns Claude.
 /// `exec` ensures the PTY dies with Claude instead of dropping to a login
 /// shell prompt when the user exits with Ctrl+D.
-pub(crate) fn build_claude_resume_shell_command(resume_session_id: &str) -> String {
-    // resume_session_id is always a UUID we generated or received from the
-    // Claude CLI; hex+dashes only. Still, defensively quote in case a future
-    // CLI version widens the id shape.
-    format!("exec claude --resume {}", shell_quote(resume_session_id))
+pub(crate) fn build_claude_shell_command(mode: ClaudeSpawnMode, id: &str) -> String {
+    let flag = match mode {
+        ClaudeSpawnMode::Resume => "--resume",
+        ClaudeSpawnMode::NewWithId => "--session-id",
+    };
+    format!("exec claude {flag} {}", shell_quote(id))
 }
+
 
 /// Minimal POSIX single-quote wrapping. Single-quotes inside the input are
 /// replaced with `'\''` (close quote, escaped quote, open quote).
@@ -607,16 +650,10 @@ mod tests {
     }
 
     #[test]
-    fn build_claude_resume_shell_command_execs_claude_resume() {
-        let cmd = build_claude_resume_shell_command("abc-123");
-        assert_eq!(cmd, "exec claude --resume 'abc-123'");
-    }
-
-    #[test]
-    fn build_claude_resume_shell_command_quotes_weird_ids() {
+    fn build_claude_shell_command_quotes_weird_ids_for_resume() {
         // A future CLI might accept ids with shell metachars; the quoting
         // must neutralise them even though today's UUIDs don't need it.
-        let cmd = build_claude_resume_shell_command("$(rm -rf /)");
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, "$(rm -rf /)");
         assert_eq!(cmd, "exec claude --resume '$(rm -rf /)'");
     }
 
@@ -851,7 +888,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_session_for_terminal_rejects_session_without_resume_id() {
+    async fn validate_session_for_terminal_returns_none_resume_id_for_fresh_session() {
+        // Fresh sessions (resume_session_id = None) are valid - the caller
+        // generates a UUID and spawns `claude --session-id <uuid>`. The
+        // validator just shouldn't reject them.
         let pool = test_pool().await;
         process_write_for_tests(&pool, DbWrite::InsertProject(make_project()))
             .await
@@ -864,8 +904,9 @@ mod tests {
             .await
             .unwrap();
 
-        let err = validate_session_for_terminal(&pool, "s-001").await.unwrap_err();
-        assert!(err.contains("resumable id"), "got: {err}");
+        let validated = validate_session_for_terminal(&pool, "s-001").await.unwrap();
+        assert_eq!(validated.task.id, "t-001");
+        assert_eq!(validated.resume_id, None);
     }
 
     #[tokio::test]
@@ -883,7 +924,22 @@ mod tests {
 
         let validated = validate_session_for_terminal(&pool, "s-001").await.unwrap();
         assert_eq!(validated.task.id, "t-001");
-        assert_eq!(validated.resume_id, "resume-uuid-abc");
+        assert_eq!(validated.resume_id, Some("resume-uuid-abc".into()));
+    }
+
+    #[test]
+    fn build_claude_shell_command_uses_session_id_flag_for_fresh_spawns() {
+        // Fresh sessions: pass the pre-generated UUID via `--session-id` so
+        // Claude creates the conversation with our id (no `--resume`, which
+        // would error on a non-existent session).
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::NewWithId, "abc-123");
+        assert_eq!(cmd, "exec claude --session-id 'abc-123'");
+    }
+
+    #[test]
+    fn build_claude_shell_command_uses_resume_flag_for_existing_sessions() {
+        let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, "abc-123");
+        assert_eq!(cmd, "exec claude --resume 'abc-123'");
     }
 
     // ---------------------- attachment plumbing ---------------------------

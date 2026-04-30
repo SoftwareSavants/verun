@@ -1,12 +1,13 @@
 import type { Session } from '../types'
 
 /**
- * Whether we can spawn a Claude PTY for this session. Terminal mode requires
- * a claude agent and a resumable session id — the first turn must have
- * reached `system:init` before `claude --resume <id>` will work.
+ * Whether we can spawn a Claude PTY for this session. Any Claude session
+ * qualifies — fresh ones spawn `claude --session-id <pre-generated-uuid>`
+ * (the backend generates the UUID and persists it so subsequent reopens
+ * use `--resume <uuid>`), and existing ones use `--resume`.
  */
 export function canUseTerminalView(session: Session | null | undefined): boolean {
-  return !!session && session.agentType === 'claude' && !!session.resumeSessionId
+  return !!session && session.agentType === 'claude'
 }
 
 /**
