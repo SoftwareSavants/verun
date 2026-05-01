@@ -73,6 +73,32 @@ pub fn is_supported() -> bool {
         .unwrap_or(false)
 }
 
+fn run_capture(args: &[&str]) -> Result<String, String> {
+    let output = Command::new("claude")
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to spawn `claude {}`: {e}", args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        return Err(format!("`claude {}` failed: {detail}", args.join(" ")));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// `claude plugin list --json --available`
+pub fn list_catalog() -> Result<PluginCatalog, String> {
+    let out = run_capture(&["plugin", "list", "--json", "--available"])?;
+    serde_json::from_str(&out).map_err(|e| format!("parse catalog json: {e}"))
+}
+
+/// `claude plugin marketplace list --json`
+pub fn list_marketplaces() -> Result<Vec<MarketplaceInfo>, String> {
+    let out = run_capture(&["plugin", "marketplace", "list", "--json"])?;
+    serde_json::from_str(&out).map_err(|e| format!("parse marketplaces json: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +108,61 @@ mod tests {
         // Smoke test: function returns without panicking. We can't assert
         // true/false because CI may or may not have `claude` on PATH.
         let _ = is_supported();
+    }
+
+    #[test]
+    fn parses_catalog_json() {
+        let raw = r#"{
+          "installed": [{
+            "id": "superpowers@claude-plugins-official",
+            "version": "5.0.7",
+            "scope": "user",
+            "enabled": true,
+            "installPath": "/x/y/z",
+            "installedAt": "2026-05-01T00:00:00Z",
+            "lastUpdated": "2026-05-01T00:00:00Z"
+          }],
+          "available": [{
+            "pluginId": "asana@claude-plugins-official",
+            "name": "asana",
+            "description": "Asana integration",
+            "marketplaceName": "claude-plugins-official",
+            "source": "./external_plugins/asana",
+            "installCount": 8126
+          },{
+            "pluginId": "alloydb@claude-plugins-official",
+            "name": "alloydb",
+            "description": "AlloyDB",
+            "marketplaceName": "claude-plugins-official",
+            "source": {"source":"url","url":"https://example.com/x.git"}
+          }]
+        }"#;
+        let cat: PluginCatalog = serde_json::from_str(raw).unwrap();
+        assert_eq!(cat.installed.len(), 1);
+        assert_eq!(cat.installed[0].id, "superpowers@claude-plugins-official");
+        assert!(cat.installed[0].enabled);
+        assert_eq!(cat.available.len(), 2);
+        assert_eq!(cat.available[0].name, "asana");
+        assert_eq!(cat.available[0].install_count, Some(8126));
+        assert!(cat.available[0].source.is_string());
+        assert!(cat.available[1].source.is_object());
+    }
+
+    #[test]
+    fn parses_marketplaces_json() {
+        let raw = r#"[{
+          "name": "claude-plugins-official",
+          "source": "github",
+          "repo": "anthropics/claude-plugins-official",
+          "installLocation": "/Users/x/.claude/plugins/marketplaces/claude-plugins-official"
+        }]"#;
+        let list: Vec<MarketplaceInfo> = serde_json::from_str(raw).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "claude-plugins-official");
+        assert_eq!(list[0].source.as_deref(), Some("github"));
+        assert_eq!(
+            list[0].repo.as_deref(),
+            Some("anthropics/claude-plugins-official")
+        );
     }
 }
