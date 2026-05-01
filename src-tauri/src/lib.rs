@@ -410,6 +410,13 @@ pub fn run() {
             ipc::get_storage_stats,
             ipc::run_blob_gc,
             ipc::migrate_legacy_attachments,
+            // Plugin marketplace
+            ipc::plugin_is_supported,
+            ipc::plugin_list_catalog,
+            ipc::plugin_list_marketplaces,
+            ipc::plugin_install,
+            ipc::plugin_uninstall,
+            ipc::plugin_set_enabled,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

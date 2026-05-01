@@ -3148,6 +3148,68 @@ pub async fn migrate_legacy_attachments(
     blob::migrate_legacy_attachments(pool.inner(), &app_data.0).await
 }
 
+// ---------------------------------------------------------------------------
+// Plugin marketplace
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn plugin_is_supported() -> Result<bool, String> {
+    tokio::task::spawn_blocking(crate::plugin_marketplace::is_supported)
+        .await
+        .map_err(|e| format!("Task join error: {e}"))
+}
+
+#[tauri::command]
+pub async fn plugin_list_catalog() -> Result<crate::plugin_marketplace::PluginCatalog, String> {
+    flatten_join(tokio::task::spawn_blocking(crate::plugin_marketplace::list_catalog).await)
+}
+
+#[tauri::command]
+pub async fn plugin_list_marketplaces(
+) -> Result<Vec<crate::plugin_marketplace::MarketplaceInfo>, String> {
+    flatten_join(tokio::task::spawn_blocking(crate::plugin_marketplace::list_marketplaces).await)
+}
+
+#[tauri::command]
+pub async fn plugin_install(
+    plugin_id: String,
+    scope: String,
+    cwd: String,
+) -> Result<(), String> {
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            crate::plugin_marketplace::install(&plugin_id, &scope, &cwd)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn plugin_uninstall(plugin_id: String, cwd: String) -> Result<(), String> {
+    flatten_join(
+        tokio::task::spawn_blocking(move || crate::plugin_marketplace::uninstall(&plugin_id, &cwd))
+            .await,
+    )
+}
+
+#[tauri::command]
+pub async fn plugin_set_enabled(
+    plugin_id: String,
+    enabled: bool,
+    cwd: String,
+) -> Result<(), String> {
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            if enabled {
+                crate::plugin_marketplace::enable(&plugin_id, &cwd)
+            } else {
+                crate::plugin_marketplace::disable(&plugin_id, &cwd)
+            }
+        })
+        .await,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
