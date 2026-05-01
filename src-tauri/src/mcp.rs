@@ -1442,10 +1442,48 @@ fn pre_approve_verun_in_claude_settings(worktree_path: &Path) -> std::io::Result
         arr.push(json!("verun"));
     }
 
+    // Auto-approve the read-only and worktree-scoped lifecycle tools so sibling
+    // agents don't have to prompt for them on every call. Mutating tools
+    // (verun_send_message, verun_create_task) stay gated.
+    let perms = obj
+        .entry("permissions".to_string())
+        .or_insert_with(|| json!({}));
+    if !perms.is_object() {
+        *perms = json!({});
+    }
+    let perms_obj = perms.as_object_mut().expect("permissions is object");
+    let allow = perms_obj
+        .entry("allow".to_string())
+        .or_insert_with(|| json!([]));
+    if !allow.is_array() {
+        *allow = json!([]);
+    }
+    let allow_arr = allow.as_array_mut().expect("allow is array");
+    for tool in SAFE_AUTO_APPROVED_TOOLS {
+        let pattern = format!("mcp__verun__{tool}");
+        if !allow_arr.iter().any(|v| v.as_str() == Some(&pattern)) {
+            allow_arr.push(json!(pattern));
+        }
+    }
+
     let mut pretty = serde_json::to_string_pretty(&root).map_err(std::io::Error::other)?;
     pretty.push('\n');
     std::fs::write(&path, pretty)
 }
+
+/// Tools we pre-approve in `.claude/settings.local.json::permissions.allow`.
+/// Read-only inspection (`verun_app_logs`, `verun_list_tasks`) and lifecycle
+/// for the dev server inside the task's own worktree (`verun_app_*`) are
+/// reversible and contained. `verun_send_message` and `verun_create_task`
+/// have larger blast radius (token spend, new worktrees, setup hooks) and
+/// stay gated behind the per-call approval prompt.
+const SAFE_AUTO_APPROVED_TOOLS: &[&str] = &[
+    "verun_app_logs",
+    "verun_list_tasks",
+    "verun_app_start",
+    "verun_app_stop",
+    "verun_app_restart",
+];
 
 /// Idempotently add `.mcp.json` to the repo's `.git/info/exclude` so our
 /// injected file doesn't pollute the user's `git status`. `info/exclude`
@@ -2744,6 +2782,112 @@ mod tests {
             .unwrap()
             .iter()
             .any(|s| s.as_str() == Some("verun")));
+    }
+
+    #[test]
+    fn write_mcp_config_pre_approves_safe_verun_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".claude/settings.local.json")).unwrap(),
+        )
+        .unwrap();
+        let allow: Vec<&str> = v["permissions"]["allow"]
+            .as_array()
+            .expect("permissions.allow exists")
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        for tool in [
+            "mcp__verun__verun_app_logs",
+            "mcp__verun__verun_list_tasks",
+            "mcp__verun__verun_app_start",
+            "mcp__verun__verun_app_stop",
+            "mcp__verun__verun_app_restart",
+        ] {
+            assert!(allow.contains(&tool), "missing {tool} in {allow:?}");
+        }
+        // High-blast-radius tools must NOT be auto-approved.
+        assert!(!allow.contains(&"mcp__verun__verun_send_message"));
+        assert!(!allow.contains(&"mcp__verun__verun_create_task"));
+    }
+
+    #[test]
+    fn write_mcp_config_merges_allow_into_existing_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        std::fs::write(
+            settings_dir.join("settings.local.json"),
+            r#"{"permissions":{"allow":["Bash(ls:*)"],"deny":["Bash(rm:*)"]}}"#,
+        )
+        .unwrap();
+
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_dir.join("settings.local.json")).unwrap(),
+        )
+        .unwrap();
+        let allow: Vec<&str> = v["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        assert!(allow.contains(&"Bash(ls:*)"), "preserved existing entry");
+        assert!(allow.contains(&"mcp__verun__verun_app_logs"));
+        let deny: Vec<&str> = v["permissions"]["deny"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        assert!(deny.contains(&"Bash(rm:*)"), "preserved sibling deny list");
+    }
+
+    #[test]
+    fn write_mcp_config_does_not_duplicate_safe_tool_allows() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        std::fs::write(
+            settings_dir.join("settings.local.json"),
+            r#"{"permissions":{"allow":["mcp__verun__verun_app_logs"]}}"#,
+        )
+        .unwrap();
+
+        write_mcp_config(
+            dir.path(),
+            "t-1",
+            std::path::Path::new("/sock"),
+            std::path::Path::new("/relay"),
+        )
+        .unwrap();
+
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(settings_dir.join("settings.local.json")).unwrap(),
+        )
+        .unwrap();
+        let count = v["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s.as_str() == Some("mcp__verun__verun_app_logs"))
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[test]
