@@ -45,6 +45,15 @@ describe('ipc', () => {
     expect(typeof ipc.openInFinder).toBe('function')
   })
 
+  test('all plugin functions are exported', () => {
+    expect(typeof ipc.pluginIsSupported).toBe('function')
+    expect(typeof ipc.pluginListCatalog).toBe('function')
+    expect(typeof ipc.pluginListMarketplaces).toBe('function')
+    expect(typeof ipc.pluginInstall).toBe('function')
+    expect(typeof ipc.pluginUninstall).toBe('function')
+    expect(typeof ipc.pluginSetEnabled).toBe('function')
+  })
+
   test('blob store wrappers are exported', () => {
     expect(typeof ipc.uploadAttachment).toBe('function')
     expect(typeof ipc.getBlob).toBe('function')
