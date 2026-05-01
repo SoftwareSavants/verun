@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Task right-click menu now has Start App / Stop App, mirroring the toolbar's start-command toggle so you can run/kill a task's dev server without opening it. Disabled while the setup hook is running; if no start command is configured the entry becomes "Set Up Start Command..." and jumps straight to project settings
 - Auto-allow `git push --force-with-lease` and `--force-if-includes` in Normal trust (the safe variants used after rebase). Bare `--force` / `-f` and `--delete` still require approval
 - Auto-allow Read/Glob/Grep/LSP under `~/.claude` (skill caches, plugin assets, settings) so Claude can load its own skills without prompting
 - Cmd+Alt+Left/Right now cycles between sessions in the current task when viewing a session (wraps at edges). The shortcut still cycles editor tabs when a file is open, mirroring Ctrl+Tab's view-aware behavior
