@@ -1071,7 +1071,6 @@ pub fn pull_branch(worktree_path: &str) -> Result<String, String> {
 /// Discard a list of paths.
 /// - Tracked files are reverted via `git checkout HEAD -- <paths>`.
 /// - Untracked files are removed from disk.
-#[allow(dead_code)]
 pub fn discard_files(worktree_path: &str, paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
@@ -1117,7 +1116,6 @@ pub fn discard_files(worktree_path: &str, paths: &[String]) -> Result<(), String
 }
 
 /// Discard every unstaged change: revert tracked, clean untracked.
-#[allow(dead_code)]
 pub fn discard_all_unstaged(worktree_path: &str) -> Result<(), String> {
     let out = git(worktree_path)
         .args(["checkout", "HEAD", "--", "."])
@@ -1144,7 +1142,6 @@ pub fn discard_all_unstaged(worktree_path: &str) -> Result<(), String> {
 }
 
 /// Unstage everything in the index (equivalent to `git reset HEAD --`).
-#[allow(dead_code)]
 pub fn unstage_all(worktree_path: &str) -> Result<(), String> {
     let out = git(worktree_path)
         .args(["reset", "HEAD", "--"])
@@ -1160,7 +1157,6 @@ pub fn unstage_all(worktree_path: &str) -> Result<(), String> {
 }
 
 /// Amend the last commit with a new message (and any currently staged changes).
-#[allow(dead_code)]
 pub fn commit_amend(worktree_path: &str, message: &str) -> Result<String, String> {
     let out = git(worktree_path)
         .args(["commit", "--amend", "-m", message])
@@ -1181,7 +1177,6 @@ pub fn commit_amend(worktree_path: &str, message: &str) -> Result<String, String
 
 /// Resolve a conflict by taking either side, then stage the file.
 /// `choice` must be "ours" or "theirs".
-#[allow(dead_code)]
 pub fn resolve_conflict(
     worktree_path: &str,
     file_path: &str,
@@ -1218,7 +1213,6 @@ pub fn resolve_conflict(
 }
 
 /// Diff between HEAD and the staging index for a file.
-#[allow(dead_code)]
 pub fn get_staged_diff(
     worktree_path: &str,
     file_path: &str,
@@ -1229,7 +1223,6 @@ pub fn get_staged_diff(
 }
 
 /// Diff between the staging index and the worktree for a file.
-#[allow(dead_code)]
 pub fn get_unstaged_diff(
     worktree_path: &str,
     file_path: &str,
@@ -1305,7 +1298,6 @@ fn scoped_diff(
 }
 
 /// Side-by-side: HEAD text vs index text for a file.
-#[allow(dead_code)]
 pub fn get_staged_diff_contents(
     worktree_path: &str,
     file_path: &str,
@@ -1337,7 +1329,6 @@ pub fn get_staged_diff_contents(
 }
 
 /// Side-by-side: index text vs worktree file for a file.
-#[allow(dead_code)]
 pub fn get_unstaged_diff_contents(
     worktree_path: &str,
     file_path: &str,
