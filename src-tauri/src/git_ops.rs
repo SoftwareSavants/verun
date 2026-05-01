@@ -187,15 +187,22 @@ pub(crate) fn parse_porcelain_status_line(line: &str) -> Option<FileStatus> {
     })
 }
 
+const UNTRACKED_LINE_CAP: usize = 50_000;
+
 fn parse_numstat(worktree_path: &str) -> Result<Vec<FileDiffStats>, String> {
-    // Get stats for both staged and unstaged changes
+    let mut stats = parse_tracked_numstat(worktree_path)?;
+    stats.extend(parse_untracked_numstat(worktree_path)?);
+    Ok(stats)
+}
+
+fn parse_tracked_numstat(worktree_path: &str) -> Result<Vec<FileDiffStats>, String> {
     let output = git_read_only(worktree_path)
         .args(["diff", "HEAD", "--numstat"])
         .output()
         .map_err(|e| format!("Failed to run git diff --numstat: {e}"))?;
 
-    // HEAD might not exist yet (no commits) — fall back to diff of staged
     let stdout = if !output.status.success() {
+        // HEAD might not exist yet (no commits) — fall back to staged diff
         let fallback = git_read_only(worktree_path)
             .args(["diff", "--cached", "--numstat"])
             .output()
@@ -206,25 +213,58 @@ fn parse_numstat(worktree_path: &str) -> Result<Vec<FileDiffStats>, String> {
     };
 
     let mut stats = Vec::new();
-
     for line in stdout.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
         if parts.len() < 3 {
             continue;
         }
-
-        // Binary files show "-" for insertions/deletions
+        // Binary files show "-" — treat as 0/0.
         let insertions = parts[0].parse::<u32>().unwrap_or(0);
         let deletions = parts[1].parse::<u32>().unwrap_or(0);
-        let path = parts[2].to_string();
-
         stats.push(FileDiffStats {
-            path,
+            path: parts[2].to_string(),
             insertions,
             deletions,
         });
     }
+    Ok(stats)
+}
 
+fn parse_untracked_numstat(worktree_path: &str) -> Result<Vec<FileDiffStats>, String> {
+    let output = git_read_only(worktree_path)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()
+        .map_err(|e| format!("Failed to run git ls-files --others: {e}"))?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let mut stats = Vec::new();
+    let raw = output.stdout;
+    for chunk in raw.split(|b| *b == 0u8) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let path = match std::str::from_utf8(chunk) {
+            Ok(s) => s.to_string(),
+            Err(_) => continue,
+        };
+        let full = std::path::Path::new(worktree_path).join(&path);
+        // Read content; if file is binary (read fails) or oversize, return 0/0.
+        let insertions = match std::fs::read_to_string(&full) {
+            Ok(content) => {
+                let count = content.lines().count();
+                if count > UNTRACKED_LINE_CAP { 0 } else { count as u32 }
+            }
+            Err(_) => 0,
+        };
+        stats.push(FileDiffStats {
+            path,
+            insertions,
+            deletions: 0,
+        });
+    }
     Ok(stats)
 }
 
@@ -1284,6 +1324,30 @@ mod tests {
 
         let ud = parse_porcelain_status_line("UD file.txt").expect("parses");
         assert_eq!(ud.conflict, Some(ConflictKind::DeletedByThem));
+    }
+
+    #[test]
+    fn numstat_includes_untracked_line_counts() {
+        let (_dir, rp) = init_test_repo();
+        fs::write(format!("{rp}/new.txt"), "line1\nline2\nline3\n").unwrap();
+
+        let status = get_git_status(&rp).unwrap();
+        let new_stats = status.stats.iter().find(|s| s.path == "new.txt").unwrap();
+        assert_eq!(new_stats.insertions, 3);
+        assert_eq!(new_stats.deletions, 0);
+        assert_eq!(status.total_insertions >= 3, true);
+    }
+
+    #[test]
+    fn numstat_caps_pathological_untracked_files() {
+        let (_dir, rp) = init_test_repo();
+        let big = "x\n".repeat(60_000);
+        fs::write(format!("{rp}/big.txt"), big).unwrap();
+
+        let status = get_git_status(&rp).unwrap();
+        let big_stats = status.stats.iter().find(|s| s.path == "big.txt").unwrap();
+        assert_eq!(big_stats.insertions, 0);
+        assert_eq!(big_stats.deletions, 0);
     }
 
     #[test]
