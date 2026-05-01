@@ -22,12 +22,28 @@ fn git_read_only(cwd: &str) -> Command {
 // Types
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictKind {
+    BothModified,    // UU
+    BothAdded,       // AA
+    BothDeleted,     // DD
+    AddedByUs,       // AU
+    AddedByThem,     // UA
+    DeletedByUs,     // DU
+    DeletedByThem,   // UD
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileStatus {
     pub path: String,
-    pub status: String,
-    pub staging: String,
+    /// Raw porcelain index byte: ' ', 'M', 'A', 'D', 'R', 'C', 'U', '?'.
+    pub index_status: char,
+    /// Raw porcelain worktree byte: ' ', 'M', 'D', 'U', '?'.
+    pub worktree_status: char,
+    /// Set when the pair represents a merge conflict.
+    pub conflict: Option<ConflictKind>,
     pub old_path: Option<String>,
 }
 
@@ -121,59 +137,54 @@ fn parse_porcelain_status(worktree_path: &str) -> Result<Vec<FileStatus>, String
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut files = Vec::new();
-
     for line in stdout.lines() {
-        if line.len() < 4 {
-            continue;
-        }
-
-        let index_status = line.as_bytes()[0];
-        let worktree_status = line.as_bytes()[1];
-        let path_part = &line[3..];
-
-        // Handle renames: "R  old -> new"
-        let (path, old_path) = if path_part.contains(" -> ") {
-            let parts: Vec<&str> = path_part.splitn(2, " -> ").collect();
-            (parts[1].to_string(), Some(parts[0].to_string()))
-        } else {
-            (path_part.to_string(), None)
-        };
-
-        let (status, staging) = match (index_status, worktree_status) {
-            (b'?', b'?') => ("?", "untracked"),
-            (b'A', b' ') | (b'A', b'M') => ("A", "staged"),
-            (b'M', b' ') => ("M", "staged"),
-            (b'M', b'M') => ("M", "staged"), // staged + unstaged modifications
-            (b' ', b'M') => ("M", "unstaged"),
-            (b'D', b' ') => ("D", "staged"),
-            (b' ', b'D') => ("D", "unstaged"),
-            (b'R', _) => ("R", "staged"),
-            (b'C', _) => ("C", "staged"),
-            (b'U', _) | (_, b'U') => ("U", "unstaged"), // unmerged
-            _ => {
-                let s = String::from_utf8_lossy(&[index_status]).to_string();
-                // Skip unknown statuses
-                if s.trim().is_empty() && worktree_status == b' ' {
-                    continue;
-                }
-                ("M", "unstaged")
+        if let Some(fs) = parse_porcelain_status_line(line) {
+            // Skip directory entries (untracked dirs end with '/')
+            if fs.path.ends_with('/') {
+                continue;
             }
-        };
-
-        // Skip directories (untracked dirs end with '/')
-        if path.ends_with('/') {
-            continue;
+            files.push(fs);
         }
-
-        files.push(FileStatus {
-            path,
-            status: status.to_string(),
-            staging: staging.to_string(),
-            old_path,
-        });
     }
-
     Ok(files)
+}
+
+/// Parse one line of `git status --porcelain` output into a FileStatus.
+/// Public-in-crate so tests can call it directly without forging a real conflict.
+pub(crate) fn parse_porcelain_status_line(line: &str) -> Option<FileStatus> {
+    if line.len() < 4 {
+        return None;
+    }
+    let bytes = line.as_bytes();
+    let xy = (bytes[0] as char, bytes[1] as char);
+    let path_part = &line[3..];
+
+    // Renames: "R  old -> new" or "C  old -> new"
+    let (path, old_path) = if path_part.contains(" -> ") {
+        let parts: Vec<&str> = path_part.splitn(2, " -> ").collect();
+        (parts[1].to_string(), Some(parts[0].to_string()))
+    } else {
+        (path_part.to_string(), None)
+    };
+
+    let conflict = match xy {
+        ('U', 'U') => Some(ConflictKind::BothModified),
+        ('A', 'A') => Some(ConflictKind::BothAdded),
+        ('D', 'D') => Some(ConflictKind::BothDeleted),
+        ('A', 'U') => Some(ConflictKind::AddedByUs),
+        ('U', 'A') => Some(ConflictKind::AddedByThem),
+        ('D', 'U') => Some(ConflictKind::DeletedByUs),
+        ('U', 'D') => Some(ConflictKind::DeletedByThem),
+        _ => None,
+    };
+
+    Some(FileStatus {
+        path,
+        index_status: xy.0,
+        worktree_status: xy.1,
+        conflict,
+        old_path,
+    })
 }
 
 fn parse_numstat(worktree_path: &str) -> Result<Vec<FileDiffStats>, String> {
@@ -578,17 +589,12 @@ pub fn get_commit_files(worktree_path: &str, commit_hash: &str) -> Result<GitSta
         if parts.len() != 2 {
             continue;
         }
-        let status_char = parts[0].chars().next().unwrap_or('M');
-        let status = match status_char {
-            'A' => "A",
-            'D' => "D",
-            'R' => "R",
-            _ => "M",
-        };
+        let index_ch = parts[0].chars().next().unwrap_or('M');
         files.push(FileStatus {
             path: parts[1].to_string(),
-            status: status.to_string(),
-            staging: "committed".to_string(),
+            index_status: index_ch,
+            worktree_status: ' ',
+            conflict: None,
             old_path: None,
         });
     }
@@ -1098,8 +1104,9 @@ mod tests {
             .iter()
             .find(|f| f.path == "staged.txt")
             .unwrap();
-        assert_eq!(staged.staging, "staged");
-        assert_eq!(staged.status, "A");
+        assert_eq!(staged.index_status, 'A');
+        assert_eq!(staged.worktree_status, ' ');
+        assert_eq!(staged.conflict, None);
     }
 
     #[test]
@@ -1246,11 +1253,61 @@ mod tests {
 
         stage_all(&rp).unwrap();
         let status = get_git_status(&rp).unwrap();
-        assert!(status.files.iter().all(|f| f.staging == "staged"));
+        assert!(status.files.iter().all(|f| f.index_status != ' ' && f.index_status != '?'));
 
         unstage_files(&rp, &["a.txt".to_string()]).unwrap();
         let status = get_git_status(&rp).unwrap();
         let a = status.files.iter().find(|f| f.path == "a.txt").unwrap();
-        assert_eq!(a.staging, "untracked");
+        assert_eq!(a.index_status, '?');
+    }
+
+    #[test]
+    fn status_classifies_all_conflict_pairs() {
+        let uu = parse_porcelain_status_line("UU file.txt").expect("parses");
+        assert_eq!(uu.conflict, Some(ConflictKind::BothModified));
+        assert_eq!(uu.path, "file.txt");
+
+        let aa = parse_porcelain_status_line("AA file.txt").expect("parses");
+        assert_eq!(aa.conflict, Some(ConflictKind::BothAdded));
+
+        let dd = parse_porcelain_status_line("DD file.txt").expect("parses");
+        assert_eq!(dd.conflict, Some(ConflictKind::BothDeleted));
+
+        let au = parse_porcelain_status_line("AU file.txt").expect("parses");
+        assert_eq!(au.conflict, Some(ConflictKind::AddedByUs));
+
+        let ua = parse_porcelain_status_line("UA file.txt").expect("parses");
+        assert_eq!(ua.conflict, Some(ConflictKind::AddedByThem));
+
+        let du = parse_porcelain_status_line("DU file.txt").expect("parses");
+        assert_eq!(du.conflict, Some(ConflictKind::DeletedByUs));
+
+        let ud = parse_porcelain_status_line("UD file.txt").expect("parses");
+        assert_eq!(ud.conflict, Some(ConflictKind::DeletedByThem));
+    }
+
+    #[test]
+    fn status_separates_index_and_worktree_dimensions() {
+        let mm = parse_porcelain_status_line("MM file.txt").unwrap();
+        assert_eq!(mm.index_status, 'M');
+        assert_eq!(mm.worktree_status, 'M');
+        assert_eq!(mm.conflict, None);
+
+        let m_space = parse_porcelain_status_line("M  file.txt").unwrap();
+        assert_eq!(m_space.index_status, 'M');
+        assert_eq!(m_space.worktree_status, ' ');
+
+        let space_m = parse_porcelain_status_line(" M file.txt").unwrap();
+        assert_eq!(space_m.index_status, ' ');
+        assert_eq!(space_m.worktree_status, 'M');
+
+        let untracked = parse_porcelain_status_line("?? file.txt").unwrap();
+        assert_eq!(untracked.index_status, '?');
+        assert_eq!(untracked.worktree_status, '?');
+
+        let renamed = parse_porcelain_status_line("R  old.txt -> new.txt").unwrap();
+        assert_eq!(renamed.index_status, 'R');
+        assert_eq!(renamed.path, "new.txt");
+        assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
     }
 }

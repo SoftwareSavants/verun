@@ -98,7 +98,7 @@ describe('dropdown stability during git refresh', () => {
       mergeable: 'MERGEABLE', body: '',
     }, {
       status: {
-        files: [{ path: 'a.ts', status: 'M', staging: 'unstaged', oldPath: undefined }],
+        files: [{ path: 'a.ts', indexStatus: ' ', worktreeStatus: 'M', conflict: null, oldPath: undefined }],
         stats: [], totalInsertions: 1, totalDeletions: 0,
       },
       branchStatus: { ahead: 0, behind: 1, unpushed: 0 },
@@ -143,8 +143,8 @@ describe('buildPrMessage', () => {
     const git = makeGit({
       status: {
         files: [
-          { path: 'src/foo.ts', status: 'M', staging: 'unstaged', oldPath: undefined },
-          { path: 'src/bar.ts', status: 'A', staging: 'staged', oldPath: undefined },
+          { path: 'src/foo.ts', indexStatus: ' ', worktreeStatus: 'M', conflict: null, oldPath: undefined },
+          { path: 'src/bar.ts', indexStatus: 'A', worktreeStatus: ' ', conflict: null, oldPath: undefined },
         ],
         stats: [],
         totalInsertions: 10,
@@ -195,7 +195,7 @@ describe('buildPrMessage', () => {
   test('dirty tree - tells claude to commit and push', () => {
     const git = makeGit({
       status: {
-        files: [{ path: 'src/foo.ts', status: 'M', staging: 'unstaged', oldPath: undefined }],
+        files: [{ path: 'src/foo.ts', indexStatus: ' ', worktreeStatus: 'M', conflict: null, oldPath: undefined }],
         stats: [],
         totalInsertions: 5,
         totalDeletions: 1,

@@ -77,8 +77,9 @@ function makeStatus(count: number): GitStatus {
   return {
     files: Array.from({ length: count }, (_, i) => ({
       path: `src/file-${i}.ts`,
-      status: 'M',
-      staging: 'unstaged',
+      indexStatus: ' ',
+      worktreeStatus: 'M',
+      conflict: null,
     })),
     stats: Array.from({ length: count }, (_, i) => ({
       path: `src/file-${i}.ts`,

@@ -9,27 +9,29 @@ import { clsx } from 'clsx'
 import { getFileIcon } from '../lib/fileIcons'
 import { taskGit, refreshTaskGit } from '../store/git'
 import * as ipc from '../lib/ipc'
-import type { GitStatus } from '../types'
+import type { GitStatus, FileStatus } from '../types'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 
 interface Props {
   taskId: string
 }
 
-const STATUS_LETTERS: Record<string, string> = {
-  M: 'M',
-  A: 'A',
-  D: 'D',
-  R: 'R',
-  '?': 'U',
+function letterFor(f: FileStatus): string {
+  if (f.conflict) return '!'
+  if (f.indexStatus === '?' && f.worktreeStatus === '?') return 'U'
+  if (f.indexStatus !== ' ' && f.indexStatus !== '?') return f.indexStatus
+  return f.worktreeStatus || '?'
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  M: 'text-amber-400',
-  A: 'text-emerald-400',
-  D: 'text-red-400',
-  R: 'text-blue-400',
-  '?': 'text-emerald-400',
+function colorFor(f: FileStatus): string {
+  if (f.conflict) return 'text-red-400'
+  if (f.indexStatus === '?' && f.worktreeStatus === '?') return 'text-emerald-400'
+  const ch = f.indexStatus !== ' ' && f.indexStatus !== '?' ? f.indexStatus : f.worktreeStatus
+  if (ch === 'M') return 'text-amber-400'
+  if (ch === 'A') return 'text-emerald-400'
+  if (ch === 'D') return 'text-red-400'
+  if (ch === 'R' || ch === 'C') return 'text-blue-400'
+  return 'text-text-muted'
 }
 
 export const CodeChanges: Component<Props> = (props) => {
@@ -263,8 +265,8 @@ export const CodeChanges: Component<Props> = (props) => {
                   {(f) => {
                     const fileName = f().path.split('/').pop() || f().path
                     const FileIcon = getFileIcon(fileName)
-                    const statusLetter = STATUS_LETTERS[f().status] || '?'
-                    const statusColor = STATUS_COLORS[f().status] || 'text-text-muted'
+                    const statusLetter = letterFor(f())
+                    const statusColor = colorFor(f())
                     const stats = () => statsForFile(f().path)
                     const active = () => isRowActive(f().path)
 

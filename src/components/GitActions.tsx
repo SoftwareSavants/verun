@@ -21,7 +21,7 @@ export function buildPrMessage(git: TaskGitState, base: string, isDraft: boolean
   if (uncommitted.length > 0) {
     const fileList = uncommitted
       .slice(0, 15)
-      .map(f => `  ${f.status} ${f.path}`)
+      .map(f => `  ${f.conflict ? '!' : f.indexStatus !== ' ' && f.indexStatus !== '?' ? f.indexStatus : f.worktreeStatus} ${f.path}`)
       .join('\n')
     const more = uncommitted.length > 15 ? `\n  ...and ${uncommitted.length - 15} more` : ''
     parts.push(`${uncommitted.length} uncommitted file${uncommitted.length === 1 ? '' : 's'}:\n${fileList}${more}`)
