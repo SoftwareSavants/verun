@@ -158,4 +158,55 @@ describe('buildTaskMenuItems (#61)', () => {
     )
     expect(labelsOf(items)).toContain('Unpin')
   })
+
+  test('navigation actions (Open in New Window, Rename, Open in Finder) appear for every task type', () => {
+    const variants: Array<[string, { isPinned: boolean; worktreePath: string }, { repoPath: string } | undefined]> = [
+      ['regular', { isPinned: false, worktreePath: '/tmp/p1/.verun/worktrees/feat' }, { repoPath: '/tmp/p1' }],
+      ['pinned branch', { isPinned: true, worktreePath: '/tmp/p1/.verun/worktrees/trunk' }, { repoPath: '/tmp/p1' }],
+      ['main pinned', { isPinned: true, worktreePath: '/tmp/p1' }, { repoPath: '/tmp/p1' }],
+    ]
+    for (const [name, task, project] of variants) {
+      const items = buildTaskMenuItems(task, project, noopActions)
+      const labels = labelsOf(items)
+      expect(labels, name).toContain('Open in New Window')
+      expect(labels, name).toContain('Rename')
+      expect(labels, name).toContain('Open in Finder')
+    }
+  })
+
+  test('regular task has a separator before Archive Task', () => {
+    const items = buildTaskMenuItems(
+      { isPinned: false, worktreePath: '/tmp/p1/.verun/worktrees/feat' },
+      { repoPath: '/tmp/p1' },
+      noopActions,
+    )
+    const archiveIdx = items.findIndex(
+      (i) => 'label' in i && i.label === 'Archive Task',
+    )
+    expect(archiveIdx).toBeGreaterThan(0)
+    expect('separator' in items[archiveIdx - 1]).toBe(true)
+  })
+
+  test('pinned branch task has a separator before Unpin', () => {
+    const items = buildTaskMenuItems(
+      { isPinned: true, worktreePath: '/tmp/p1/.verun/worktrees/trunk' },
+      { repoPath: '/tmp/p1' },
+      noopActions,
+    )
+    const unpinIdx = items.findIndex(
+      (i) => 'label' in i && i.label === 'Unpin',
+    )
+    expect(unpinIdx).toBeGreaterThan(0)
+    expect('separator' in items[unpinIdx - 1]).toBe(true)
+  })
+
+  test('main pinned task has no trailing separator (would dangle below nav items)', () => {
+    const items = buildTaskMenuItems(
+      { isPinned: true, worktreePath: '/tmp/p1' },
+      { repoPath: '/tmp/p1' },
+      noopActions,
+    )
+    const last = items[items.length - 1]
+    expect('separator' in last).toBe(false)
+  })
 })

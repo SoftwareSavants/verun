@@ -102,6 +102,52 @@ describe('tasks pinned selectors (#61)', () => {
       'regular',
     ])
   })
+
+  test('selectors return live results across mutation (insert + flip pin)', () => {
+    // Solid stores update in place — adding a task or flipping isPinned should
+    // change what the selectors return on the next call without needing to
+    // reset state. Guards against accidental memoization that wouldn't react
+    // to store mutations.
+    setTasks([makeTask({ id: 'main', projectId: 'p1', isPinned: true })])
+    expect(pinnedTasksForProject('p1').map((t) => t.id)).toEqual(['main'])
+
+    setTasks((prev) => [
+      ...prev,
+      makeTask({ id: 'feat', projectId: 'p1', isPinned: false }),
+    ])
+    expect(unpinnedActiveTasksForProject('p1').map((t) => t.id)).toEqual([
+      'feat',
+    ])
+
+    // Flip the regular task to pinned and verify it migrates to the pinned set.
+    setTasks((prev) =>
+      prev.map((t) => (t.id === 'feat' ? { ...t, isPinned: true } : t)),
+    )
+    expect(pinnedTasksForProject('p1').map((t) => t.id).sort()).toEqual([
+      'feat',
+      'main',
+    ])
+    expect(unpinnedActiveTasksForProject('p1')).toEqual([])
+  })
+
+  test('archiving the main pinned task removes it from the pinned section', () => {
+    // Archiving main is gated in the backend, but in case any code path ever
+    // sets archived=true on a pinned row, the selector must drop it from the
+    // pinned section so it doesn't render as a ghost row.
+    setTasks([makeTask({ id: 'main', projectId: 'p1', isPinned: true })])
+    expect(pinnedTasksForProject('p1')).toHaveLength(1)
+
+    setTasks((prev) =>
+      prev.map((t) => (t.id === 'main' ? { ...t, archived: true } : t)),
+    )
+    expect(pinnedTasksForProject('p1')).toEqual([])
+  })
+
+  test('selectors are case-sensitive on projectId (UUIDs are case-significant)', () => {
+    setTasks([makeTask({ id: 't', projectId: 'AbC', isPinned: true })])
+    expect(pinnedTasksForProject('abc')).toEqual([])
+    expect(pinnedTasksForProject('AbC').map((t) => t.id)).toEqual(['t'])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -141,6 +187,20 @@ describe('isMainPinned detection', () => {
       isMainPinned(
         { worktreePath: '/repo', isPinned: false },
         { repoPath: '/repo' },
+      ),
+    ).toBe(false)
+  })
+
+  test('false when paths differ by trailing slash (string equality)', () => {
+    // The Rust side never normalizes trailing slashes. If the project's
+    // repo_path is set with a trailing slash but the task's worktree_path is
+    // not (or vice versa), the equality check fails. This test pins that
+    // behavior so future readers know it is an exact-string compare and can
+    // change it deliberately if needed.
+    expect(
+      isMainPinned(
+        { worktreePath: '/repo', isPinned: true },
+        { repoPath: '/repo/' },
       ),
     ).toBe(false)
   })

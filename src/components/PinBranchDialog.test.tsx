@@ -224,4 +224,88 @@ describe('PinBranchDialog', () => {
     expect(listLocalBranchesMock).toHaveBeenCalledTimes(2)
     expect(listLocalBranchesMock).toHaveBeenLastCalledWith('p2')
   })
+
+  test('Pin Branch button stays disabled while a filter matches nothing', async () => {
+    listLocalBranchesMock.mockResolvedValue([
+      'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta',
+    ])
+    const { findByPlaceholderText, getByRole } = render(() =>
+      <PinBranchDialog open={true} projectId="p1" onClose={() => {}} />)
+    await flushMicrotasks()
+
+    const filter = await findByPlaceholderText('Filter branches…') as HTMLInputElement
+    fireEvent.input(filter, { target: { value: 'no-such-branch' } })
+    await flushMicrotasks()
+
+    const btn = getByRole('button', { name: 'Pin Branch' }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+  })
+
+  test('reopening for the same project resets filter and selection', async () => {
+    listLocalBranchesMock.mockResolvedValue([
+      'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta',
+    ])
+    const [open, setOpen] = createSignal(true)
+    const { findByPlaceholderText, getByRole } = render(() =>
+      <PinBranchDialog open={open()} projectId="p1" onClose={() => setOpen(false)} />)
+    await flushMicrotasks()
+
+    const filter = await findByPlaceholderText('Filter branches…') as HTMLInputElement
+    fireEvent.input(filter, { target: { value: 'eta' } })
+    await flushMicrotasks()
+    expect((getByRole('combobox') as HTMLSelectElement).value).toBe('beta')
+
+    setOpen(false)
+    await flushMicrotasks()
+    setOpen(true)
+    await flushMicrotasks()
+
+    const reopenedFilter = await findByPlaceholderText('Filter branches…') as HTMLInputElement
+    expect(reopenedFilter.value).toBe('')
+    // First branch wins on a fresh open.
+    expect((getByRole('combobox') as HTMLSelectElement).value).toBe('alpha')
+  })
+
+  test('does nothing on submit when no branch is selected', async () => {
+    // Defensive: even if the disabled state somehow lapses (e.g. a future
+    // refactor wires Enter through differently), the handler must not call
+    // pinBranch with an empty string and corrupt the DB.
+    listLocalBranchesMock.mockResolvedValue([])
+    const onClose = vi.fn()
+    const { getByRole } = render(() =>
+      <PinBranchDialog open={true} projectId="p1" onClose={onClose} />)
+    await flushMicrotasks()
+
+    fireEvent.click(getByRole('button', { name: 'Pin Branch' }))
+    await flushMicrotasks()
+
+    expect(pinBranchMock).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  test('shows loading label on the confirm button while pin is in flight', async () => {
+    let resolve!: (t: Task) => void
+    pinBranchMock.mockReturnValue(new Promise<Task>((r) => { resolve = r }))
+    const { getByRole, findByText } = render(() =>
+      <PinBranchDialog open={true} projectId="p1" onClose={() => {}} />)
+    await flushMicrotasks()
+
+    fireEvent.click(getByRole('button', { name: 'Pin Branch' }))
+    await flushMicrotasks()
+    expect(await findByText('Pinning...')).toBeTruthy()
+
+    resolve(makeTask())
+    await flushMicrotasks()
+  })
+
+  test('hides worktree path preview when project is unknown', async () => {
+    projectByIdMock.mockReturnValue(undefined)
+    const { container } = render(() =>
+      <PinBranchDialog open={true} projectId="p1" onClose={() => {}} />)
+    await flushMicrotasks()
+
+    // The preview block always contains the literal "/.verun/worktrees/" path
+    // segment when rendered. Absent project → nothing to render.
+    expect(container.textContent).not.toContain('/.verun/worktrees/')
+  })
 })
