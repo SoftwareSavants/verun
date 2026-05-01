@@ -1,5 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
-import { render, cleanup } from '@solidjs/testing-library'
+import { render, fireEvent, cleanup } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { buildPrMessage } from './GitActions'
 import type { TaskGitState } from '../store/git'
 
@@ -80,6 +81,47 @@ describe('closed PR treated as no PR', () => {
     }))
     const { getByText } = render(() => <GitActions taskId="t-001" sessionId="s-001" />)
     expect(getByText('Create PR')).toBeTruthy()
+  })
+})
+
+describe('dropdown stability during git refresh', () => {
+  beforeEach(() => { cleanup() })
+
+  // Repro for: during a session generating a response, file watcher refreshes
+  // git state every ~500ms. Each refresh writes fresh `status`/`commits`/etc.
+  // objects via produce. If the secondary action list returns new object
+  // references, <For> tears down and recreates every menu row, destroying any
+  // mid-flight click on items like "Commit & Push".
+  test('menu item DOM persists when git state refreshes with same effective content', () => {
+    const buildState = (): TaskGitState => makeGitState({
+      number: 42, title: 'PR', state: 'OPEN', url: 'https://x', isDraft: false,
+      mergeable: 'MERGEABLE', body: '',
+    }, {
+      status: {
+        files: [{ path: 'a.ts', status: 'M', staging: 'unstaged', oldPath: undefined }],
+        stats: [], totalInsertions: 1, totalDeletions: 0,
+      },
+      branchStatus: { ahead: 0, behind: 1, unpushed: 0 },
+    })
+
+    const [git, setGit] = createSignal<TaskGitState>(buildState())
+    taskGitMock.mockImplementation(() => git())
+
+    const { container, getByText } = render(() => <GitActions taskId="t-001" sessionId="s-001" />)
+
+    // Open dropdown: chevron toggle is the second button in the split control
+    const chevron = container.querySelector('.lucide-chevron-down')?.closest('button')
+    if (!chevron) throw new Error('chevron button not found')
+    fireEvent.click(chevron)
+
+    const before = getByText('Commit & Push').closest('button')
+    expect(before).toBeTruthy()
+
+    // Mimic refreshLocal: assign fresh objects with the same effective content
+    setGit(buildState())
+
+    const after = getByText('Commit & Push').closest('button')
+    expect(after).toBe(before)
   })
 })
 
