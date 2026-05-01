@@ -1068,6 +1068,310 @@ pub fn pull_branch(worktree_path: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Discard a list of paths.
+/// - Tracked files are reverted via `git checkout HEAD -- <paths>`.
+/// - Untracked files are removed from disk.
+#[allow(dead_code)]
+pub fn discard_files(worktree_path: &str, paths: &[String]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    // Classify: ask git which of the given paths are tracked.
+    let mut tracked = Vec::new();
+    let mut untracked = Vec::new();
+    for p in paths {
+        let out = git_read_only(worktree_path)
+            .args(["ls-files", "--error-unmatch", "--", p])
+            .output()
+            .map_err(|e| format!("Failed to classify path: {e}"))?;
+        if out.status.success() {
+            tracked.push(p.clone());
+        } else {
+            untracked.push(p.clone());
+        }
+    }
+
+    if !tracked.is_empty() {
+        let mut cmd = git(worktree_path);
+        cmd.args(["checkout", "HEAD", "--"]);
+        for p in &tracked {
+            cmd.arg(p);
+        }
+        let out = cmd.output().map_err(|e| format!("Failed to discard: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "git checkout HEAD failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+    }
+
+    for p in &untracked {
+        let full = std::path::Path::new(worktree_path).join(p);
+        if full.is_file() {
+            std::fs::remove_file(&full).map_err(|e| format!("Failed to remove {p}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Discard every unstaged change: revert tracked, clean untracked.
+#[allow(dead_code)]
+pub fn discard_all_unstaged(worktree_path: &str) -> Result<(), String> {
+    let out = git(worktree_path)
+        .args(["checkout", "HEAD", "--", "."])
+        .output()
+        .map_err(|e| format!("Failed to checkout: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git checkout HEAD failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+
+    let out = git(worktree_path)
+        .args(["clean", "-fd"])
+        .output()
+        .map_err(|e| format!("Failed to clean: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git clean -fd failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+/// Unstage everything in the index (equivalent to `git reset HEAD --`).
+#[allow(dead_code)]
+pub fn unstage_all(worktree_path: &str) -> Result<(), String> {
+    let out = git(worktree_path)
+        .args(["reset", "HEAD", "--"])
+        .output()
+        .map_err(|e| format!("Failed to reset: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git reset HEAD failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+/// Amend the last commit with a new message (and any currently staged changes).
+#[allow(dead_code)]
+pub fn commit_amend(worktree_path: &str, message: &str) -> Result<String, String> {
+    let out = git(worktree_path)
+        .args(["commit", "--amend", "-m", message])
+        .output()
+        .map_err(|e| format!("Failed to amend: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git commit --amend failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let hash_out = git_read_only(worktree_path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|e| format!("Failed to read HEAD: {e}"))?;
+    Ok(String::from_utf8_lossy(&hash_out.stdout).trim().to_string())
+}
+
+/// Resolve a conflict by taking either side, then stage the file.
+/// `choice` must be "ours" or "theirs".
+#[allow(dead_code)]
+pub fn resolve_conflict(
+    worktree_path: &str,
+    file_path: &str,
+    choice: &str,
+) -> Result<(), String> {
+    let flag = match choice {
+        "ours" => "--ours",
+        "theirs" => "--theirs",
+        other => return Err(format!("Invalid choice '{other}': expected 'ours' or 'theirs'")),
+    };
+
+    let out = git(worktree_path)
+        .args(["checkout", flag, "--", file_path])
+        .output()
+        .map_err(|e| format!("Failed to checkout {flag}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git checkout {flag} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+
+    let out = git(worktree_path)
+        .args(["add", "--", file_path])
+        .output()
+        .map_err(|e| format!("Failed to stage resolved file: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+/// Diff between HEAD and the staging index for a file.
+#[allow(dead_code)]
+pub fn get_staged_diff(
+    worktree_path: &str,
+    file_path: &str,
+    context_lines: Option<u32>,
+    ignore_whitespace: Option<bool>,
+) -> Result<FileDiff, String> {
+    scoped_diff(worktree_path, file_path, context_lines, ignore_whitespace, &["--cached"])
+}
+
+/// Diff between the staging index and the worktree for a file.
+#[allow(dead_code)]
+pub fn get_unstaged_diff(
+    worktree_path: &str,
+    file_path: &str,
+    context_lines: Option<u32>,
+    ignore_whitespace: Option<bool>,
+) -> Result<FileDiff, String> {
+    scoped_diff(worktree_path, file_path, context_lines, ignore_whitespace, &[])
+}
+
+fn scoped_diff(
+    worktree_path: &str,
+    file_path: &str,
+    context_lines: Option<u32>,
+    ignore_whitespace: Option<bool>,
+    extra: &[&str],
+) -> Result<FileDiff, String> {
+    let ctx_flag = format!("-U{}", context_lines.unwrap_or(3));
+    let mut args = vec!["diff", &ctx_flag];
+    if ignore_whitespace.unwrap_or(false) {
+        args.push("-w");
+    }
+    args.extend(extra);
+    args.extend(["--", file_path]);
+
+    let output = git_read_only(worktree_path)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("Failed to get scoped diff: {e}"))?;
+
+    let raw_diff = String::from_utf8_lossy(&output.stdout).to_string();
+    let hunks = parse_unified_diff(&raw_diff);
+
+    let mut insertions: u32 = 0;
+    let mut deletions: u32 = 0;
+    for h in &hunks {
+        for l in &h.lines {
+            match l.kind.as_str() {
+                "add" => insertions += 1,
+                "delete" => deletions += 1,
+                _ => {}
+            }
+        }
+    }
+
+    let status = if raw_diff.contains("new file mode") {
+        "A"
+    } else if raw_diff.contains("deleted file mode") {
+        "D"
+    } else {
+        "M"
+    };
+
+    let full_path = std::path::Path::new(worktree_path).join(file_path);
+    let total_lines = if full_path.exists() {
+        std::fs::read_to_string(&full_path)
+            .map(|c| c.lines().count() as u32)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    Ok(FileDiff {
+        path: file_path.to_string(),
+        status: status.to_string(),
+        hunks,
+        stats: FileDiffStats {
+            path: file_path.to_string(),
+            insertions,
+            deletions,
+        },
+        total_lines,
+    })
+}
+
+/// Side-by-side: HEAD text vs index text for a file.
+#[allow(dead_code)]
+pub fn get_staged_diff_contents(
+    worktree_path: &str,
+    file_path: &str,
+) -> Result<DiffContents, String> {
+    let (old_text, old_exists) = read_at_rev(worktree_path, "HEAD", file_path);
+
+    let out = git_read_only(worktree_path)
+        .args(["show", &format!(":{file_path}")])
+        .output();
+    let (new_text, new_exists) = match out {
+        Ok(o) if o.status.success() => (String::from_utf8_lossy(&o.stdout).to_string(), true),
+        _ => (String::new(), false),
+    };
+
+    let status = if !old_exists && new_exists {
+        "A"
+    } else if old_exists && !new_exists {
+        "D"
+    } else {
+        "M"
+    };
+    Ok(DiffContents {
+        path: file_path.to_string(),
+        status: status.to_string(),
+        old_text,
+        new_text,
+        binary: false,
+    })
+}
+
+/// Side-by-side: index text vs worktree file for a file.
+#[allow(dead_code)]
+pub fn get_unstaged_diff_contents(
+    worktree_path: &str,
+    file_path: &str,
+) -> Result<DiffContents, String> {
+    let out = git_read_only(worktree_path)
+        .args(["show", &format!(":{file_path}")])
+        .output();
+    let (old_text, old_exists) = match out {
+        Ok(o) if o.status.success() => (String::from_utf8_lossy(&o.stdout).to_string(), true),
+        _ => (String::new(), false),
+    };
+
+    let full_path = std::path::Path::new(worktree_path).join(file_path);
+    let (new_text, new_exists) = match std::fs::read_to_string(&full_path) {
+        Ok(s) => (s, true),
+        Err(_) => (String::new(), false),
+    };
+
+    let status = if !old_exists && new_exists {
+        "A"
+    } else if old_exists && !new_exists {
+        "D"
+    } else {
+        "M"
+    };
+    Ok(DiffContents {
+        path: file_path.to_string(),
+        status: status.to_string(),
+        old_text,
+        new_text,
+        binary: false,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1348,6 +1652,210 @@ mod tests {
         let big_stats = status.stats.iter().find(|s| s.path == "big.txt").unwrap();
         assert_eq!(big_stats.insertions, 0);
         assert_eq!(big_stats.deletions, 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // discard tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn discard_files_reverts_modified_and_removes_untracked() {
+        let (_dir, rp) = init_test_repo();
+
+        // Modified tracked file
+        fs::write(format!("{rp}/README.md"), "# changed\n").unwrap();
+        // Untracked file
+        fs::write(format!("{rp}/scratch.txt"), "junk\n").unwrap();
+
+        discard_files(&rp, &["README.md".to_string(), "scratch.txt".to_string()]).unwrap();
+
+        // README reverted
+        let readme = fs::read_to_string(format!("{rp}/README.md")).unwrap();
+        assert_eq!(readme, "# test\n");
+        // scratch removed
+        assert!(!std::path::Path::new(&format!("{rp}/scratch.txt")).exists());
+    }
+
+    #[test]
+    fn discard_all_unstaged_reverts_and_cleans() {
+        let (_dir, rp) = init_test_repo();
+        fs::write(format!("{rp}/README.md"), "# changed\n").unwrap();
+        fs::write(format!("{rp}/scratch.txt"), "junk\n").unwrap();
+        fs::create_dir_all(format!("{rp}/sub")).unwrap();
+        fs::write(format!("{rp}/sub/file.txt"), "junk\n").unwrap();
+
+        discard_all_unstaged(&rp).unwrap();
+
+        let readme = fs::read_to_string(format!("{rp}/README.md")).unwrap();
+        assert_eq!(readme, "# test\n");
+        assert!(!std::path::Path::new(&format!("{rp}/scratch.txt")).exists());
+        assert!(!std::path::Path::new(&format!("{rp}/sub")).exists());
+    }
+
+    // -------------------------------------------------------------------------
+    // unstage_all test
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn unstage_all_clears_index() {
+        let (_dir, rp) = init_test_repo();
+        fs::write(format!("{rp}/a.txt"), "a\n").unwrap();
+        fs::write(format!("{rp}/b.txt"), "b\n").unwrap();
+        git(&rp).args(["add", "."]).output().unwrap();
+
+        let before = get_git_status(&rp).unwrap();
+        assert!(before.files.iter().all(|f| f.index_status != ' ' && f.index_status != '?'));
+
+        unstage_all(&rp).unwrap();
+
+        let after = get_git_status(&rp).unwrap();
+        // After reset, both should now be untracked again (?? state).
+        assert!(after.files.iter().all(|f| f.index_status == '?' && f.worktree_status == '?'));
+    }
+
+    // -------------------------------------------------------------------------
+    // commit_amend test
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn commit_amend_rewrites_last_commit_message() {
+        let (_dir, rp) = init_test_repo();
+        let original_hash = git_read_only(&rp)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap();
+
+        // Stage a tweak so amend has new content.
+        fs::write(format!("{rp}/README.md"), "# amended\n").unwrap();
+        git(&rp).args(["add", "README.md"]).output().unwrap();
+
+        let new_hash = commit_amend(&rp, "init (amended)").unwrap();
+        assert_ne!(new_hash, original_hash);
+
+        let msg = git_read_only(&rp)
+            .args(["log", "-1", "--format=%s"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap();
+        assert_eq!(msg, "init (amended)");
+    }
+
+    // -------------------------------------------------------------------------
+    // resolve_conflict tests
+    // -------------------------------------------------------------------------
+
+    fn forge_conflict(rp: &str) {
+        // Capture the initial branch name (could be "main" or "master").
+        let initial_branch = git_read_only(rp)
+            .args(["branch", "--show-current"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap();
+
+        // Branch A with "ours" content.
+        git(rp).args(["checkout", "-b", "branch-a"]).output().unwrap();
+        fs::write(format!("{rp}/conflict.txt"), "ours-line\n").unwrap();
+        git(rp).args(["add", "."]).output().unwrap();
+        git(rp).args(["commit", "-m", "ours"]).output().unwrap();
+
+        // Branch B with "theirs" content.
+        git(rp).args(["checkout", &initial_branch]).output().unwrap();
+        git(rp).args(["checkout", "-b", "branch-b"]).output().unwrap();
+        fs::write(format!("{rp}/conflict.txt"), "theirs-line\n").unwrap();
+        git(rp).args(["add", "."]).output().unwrap();
+        git(rp).args(["commit", "-m", "theirs"]).output().unwrap();
+
+        // Try to merge branch-a into branch-b; conflict expected.
+        let _ = git(rp).args(["merge", "branch-a", "--no-edit"]).output();
+    }
+
+    #[test]
+    fn resolve_conflict_ours_keeps_our_content() {
+        let (_dir, rp) = init_test_repo();
+        forge_conflict(&rp);
+
+        resolve_conflict(&rp, "conflict.txt", "ours").unwrap();
+
+        let content = fs::read_to_string(format!("{rp}/conflict.txt")).unwrap();
+        // 'ours' from the perspective of branch-b is branch-b's line.
+        assert_eq!(content, "theirs-line\n");
+
+        let status = get_git_status(&rp).unwrap();
+        let f = status.files.iter().find(|f| f.path == "conflict.txt");
+        // After resolve + add, the file should no longer be in conflict (or absent).
+        assert!(f.map(|f| f.conflict.is_none()).unwrap_or(true));
+    }
+
+    #[test]
+    fn resolve_conflict_theirs_takes_other_content() {
+        let (_dir, rp) = init_test_repo();
+        forge_conflict(&rp);
+
+        resolve_conflict(&rp, "conflict.txt", "theirs").unwrap();
+
+        let content = fs::read_to_string(format!("{rp}/conflict.txt")).unwrap();
+        // 'theirs' from the perspective of branch-b is branch-a's line.
+        assert_eq!(content, "ours-line\n");
+    }
+
+    #[test]
+    fn resolve_conflict_rejects_invalid_choice() {
+        let (_dir, rp) = init_test_repo();
+        let err = resolve_conflict(&rp, "any.txt", "neither").unwrap_err();
+        assert!(err.contains("ours") || err.contains("theirs"));
+    }
+
+    // -------------------------------------------------------------------------
+    // scoped diff tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn staged_diff_returns_index_vs_head() {
+        let (_dir, rp) = init_test_repo();
+        fs::write(format!("{rp}/README.md"), "# v2\n").unwrap();
+        git(&rp).args(["add", "README.md"]).output().unwrap();
+        // Now modify worktree again so MM state.
+        fs::write(format!("{rp}/README.md"), "# v3\n").unwrap();
+
+        let staged = get_staged_diff(&rp, "README.md", None, None).unwrap();
+        let staged_text: String = staged
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| l.kind == "add")
+            .map(|l| l.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(staged_text.contains("# v2"));
+        assert!(!staged_text.contains("# v3"));
+
+        let unstaged = get_unstaged_diff(&rp, "README.md", None, None).unwrap();
+        let unstaged_text: String = unstaged
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| l.kind == "add")
+            .map(|l| l.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(unstaged_text.contains("# v3"));
+    }
+
+    #[test]
+    fn staged_diff_contents_returns_head_vs_index_strings() {
+        let (_dir, rp) = init_test_repo();
+        fs::write(format!("{rp}/README.md"), "# v2\n").unwrap();
+        git(&rp).args(["add", "README.md"]).output().unwrap();
+        fs::write(format!("{rp}/README.md"), "# v3\n").unwrap();
+
+        let dc = get_staged_diff_contents(&rp, "README.md").unwrap();
+        assert_eq!(dc.old_text, "# test\n");
+        assert_eq!(dc.new_text, "# v2\n");
+
+        let ud = get_unstaged_diff_contents(&rp, "README.md").unwrap();
+        assert_eq!(ud.old_text, "# v2\n");
+        assert_eq!(ud.new_text, "# v3\n");
     }
 
     #[test]
