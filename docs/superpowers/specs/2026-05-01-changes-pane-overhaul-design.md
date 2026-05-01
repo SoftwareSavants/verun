@@ -498,9 +498,7 @@ CHANGELOG.md gets a single entry under `## Unreleased`:
 
 ---
 
-## Open questions for review
+## Resolved details
 
-- **Empty-state copy.** Today the pane shows "No changes yet · File modifications will appear here as the agent works." Should the new pane keep this when *all three* sections are empty? Proposed: yes, only when all sections are empty. Show nothing when at least one section has rows.
-- **Section auto-collapse on count = 0.** Should sections be hidden entirely when their count is 0, or shown with `(0)` and a "no items" body? Proposed: **hidden** when 0 to reduce visual noise. Conflicts section in particular should never appear when there are no conflicts.
-
-These can be resolved during implementation if no preference is given.
+- **Empty-state copy.** Show "No changes yet · File modifications will appear here as the agent works." only when all three sections are empty. When at least one section has rows, no empty-state placeholder.
+- **Section visibility at count = 0.** Hide the section entirely (header included) when its row count is 0. The Conflicts section in particular only appears when there is at least one conflict.
