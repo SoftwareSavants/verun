@@ -4,10 +4,11 @@ import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
+import { PluginsPage } from './PluginsPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { AddProjectDialog } from './AddProjectDialog'
 import { BtsBuilderDialog } from './BtsBuilderDialog'
-import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId, siblingTaskInList, nextSessionIdInTask } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, showPlugins, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId, siblingTaskInList, nextSessionIdInTask } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
 import { activeTasksForProject, taskById } from '../store/tasks'
@@ -347,7 +348,10 @@ export const Layout: Component = () => {
         <Show when={showArchived() && !showSettings()}>
           <ArchivedPage />
         </Show>
-        <Show when={!showSettings() && !showArchived()}>
+        <Show when={showPlugins() && !showSettings() && !showArchived()}>
+          <PluginsPage />
+        </Show>
+        <Show when={!showSettings() && !showArchived() && !showPlugins()}>
           <TaskPanel />
         </Show>
       </div>
