@@ -99,6 +99,51 @@ pub fn list_marketplaces() -> Result<Vec<MarketplaceInfo>, String> {
     serde_json::from_str(&out).map_err(|e| format!("parse marketplaces json: {e}"))
 }
 
+pub(crate) fn install_args<'a>(plugin_id: &'a str, scope: &'a str) -> Vec<&'a str> {
+    vec!["plugin", "install", plugin_id, "--scope", scope]
+}
+
+pub(crate) fn uninstall_args(plugin_id: &str) -> Vec<&str> {
+    vec!["plugin", "uninstall", plugin_id]
+}
+
+fn run_in(cwd: &str, args: &[&str]) -> Result<(), String> {
+    let output = Command::new("claude")
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to spawn `claude {}`: {e}", args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        return Err(detail);
+    }
+    Ok(())
+}
+
+/// `claude plugin install <pluginId> --scope user|project|local`.
+/// `cwd` is the directory the install runs from — required so project /
+/// local scopes write to the right `.claude/settings.json`.
+pub fn install(plugin_id: &str, scope: &str, cwd: &str) -> Result<(), String> {
+    run_in(cwd, &install_args(plugin_id, scope))
+}
+
+/// `claude plugin uninstall <pluginId>`.
+pub fn uninstall(plugin_id: &str, cwd: &str) -> Result<(), String> {
+    run_in(cwd, &uninstall_args(plugin_id))
+}
+
+/// `claude plugin enable <pluginId>`.
+pub fn enable(plugin_id: &str, cwd: &str) -> Result<(), String> {
+    run_in(cwd, &["plugin", "enable", plugin_id])
+}
+
+/// `claude plugin disable <pluginId>`.
+pub fn disable(plugin_id: &str, cwd: &str) -> Result<(), String> {
+    run_in(cwd, &["plugin", "disable", plugin_id])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +208,32 @@ mod tests {
         assert_eq!(
             list[0].repo.as_deref(),
             Some("anthropics/claude-plugins-official")
+        );
+    }
+
+    #[test]
+    fn install_args_compose_correctly() {
+        assert_eq!(
+            install_args("asana@claude-plugins-official", "user"),
+            vec![
+                "plugin",
+                "install",
+                "asana@claude-plugins-official",
+                "--scope",
+                "user"
+            ]
+        );
+        assert_eq!(
+            install_args("foo@bar", "project"),
+            vec!["plugin", "install", "foo@bar", "--scope", "project"]
+        );
+    }
+
+    #[test]
+    fn uninstall_args_compose_correctly() {
+        assert_eq!(
+            uninstall_args("asana@claude-plugins-official"),
+            vec!["plugin", "uninstall", "asana@claude-plugins-official"]
         );
     }
 }
