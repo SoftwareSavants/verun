@@ -756,8 +756,11 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .bind(&id)
                 .execute(pool)
                 .await?;
-            // Keep the main pinned task's branch label in sync. Identified by
-            // worktree_path == projects.repo_path and is_pinned = 1.
+            // Keep the main pinned task's branch *label* in sync. The main
+            // task has worktree_path == repo_path (no real worktree), so this
+            // column is purely a display label — it doesn't change what's
+            // checked out on disk. Sessions on the main task always run
+            // against whatever HEAD currently is in the repo root.
             sqlx::query(
                 "UPDATE tasks \
                  SET branch = ? \

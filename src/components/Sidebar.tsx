@@ -42,6 +42,7 @@ import {
   requestNewTaskForProject,
   requestPinBranchForProject,
   focusOrSelectTask,
+  addToast,
 } from "../store/ui";
 import { sessions, loadSessions } from "../store/sessions";
 import { isStartCommandRunning } from "../store/terminals";
@@ -360,7 +361,11 @@ export const Sidebar: Component = () => {
       openWindow: () => ipc.openTaskWindow(task.id, task.name || undefined),
       startRename: () => setRenamingTaskId(taskId),
       openInFinder: () => ipc.openInFinder(task.worktreePath),
-      unpin: () => ipc.unpinTask(task.id).catch(() => {}),
+      unpin: () => {
+        ipc.unpinTask(task.id).catch((e) => {
+          addToast(`Could not unpin: ${String(e)}`, 'error')
+        })
+      },
       archive: () => setArchiveTaskTarget(taskId),
     });
     setContextMenu({ pos: { x: e.clientX, y: e.clientY }, items });

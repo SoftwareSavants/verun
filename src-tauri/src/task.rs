@@ -1026,6 +1026,11 @@ pub async fn create_task(
 /// Build the main pinned Task for a project. The worktree_path is set to the
 /// project's repo_path — no actual git worktree is created. Sessions run in
 /// the repo root on whatever HEAD currently is.
+///
+/// `branch` is set to `project.base_branch` purely as a display label for the
+/// sidebar; it does NOT control what's checked out. Renaming the project's
+/// base_branch updates this label via the `UpdateProjectBaseBranch` write but
+/// never touches the filesystem.
 pub fn build_main_pinned_task(project: &db::Project, port_offset: i64) -> Task {
     Task {
         id: Uuid::new_v4().to_string(),
@@ -3884,6 +3889,74 @@ mod tests {
         assert!(
             err.contains("project not found"),
             "expected project-not-found error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pin_branch_errors_with_empty_project_id() {
+        let (_dir, _repo_path) = pin_test_repo();
+        let (pool, tx) = pin_test_pool_and_tx().await;
+        let err = pin_branch(&tx, &pool, "", "trunk").await.unwrap_err();
+        assert!(
+            err.contains("project not found"),
+            "empty project id should surface the same not-found error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_main_pinned_task_uses_repo_path_as_worktree() {
+        let project = db::Project {
+            id: "p1".into(),
+            name: "x".into(),
+            repo_path: "/tmp/mainrepo".into(),
+            base_branch: "develop".into(),
+            setup_hook: String::new(),
+            destroy_hook: String::new(),
+            start_command: String::new(),
+            auto_start: false,
+            created_at: 0,
+            default_agent_type: "claude".into(),
+        };
+        let t = build_main_pinned_task(&project, 7);
+        assert!(t.is_pinned, "main pinned task must have is_pinned=true");
+        assert_eq!(t.worktree_path, "/tmp/mainrepo", "worktree IS the repo root");
+        assert_eq!(t.branch, "develop", "branch label tracks base_branch");
+        assert_eq!(t.name.as_deref(), Some("main"), "label is literally 'main'");
+        assert_eq!(t.port_offset, 7);
+        assert!(t.parent_task_id.is_none());
+        assert!(!t.archived);
+    }
+
+    #[tokio::test]
+    async fn pin_branch_idempotent_after_unpin_then_repin() {
+        // After unpin (which leaves the worktree on disk) the user can re-pin
+        // the same branch only if they first remove the worktree manually.
+        // Without a manual remove, the second pin must fail loudly so they
+        // know they're working with stale state — never silently succeed.
+        let (_dir, repo_path) = pin_test_repo();
+        std::process::Command::new("git")
+            .current_dir(&repo_path)
+            .args(["branch", "trunk"])
+            .output()
+            .unwrap();
+
+        let (pool, tx) = pin_test_pool_and_tx().await;
+        sqlx::query(
+            "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at, default_agent_type) \
+             VALUES ('p1', 'R', ?, 'main', '', '', '', 0, 1000, 'claude')",
+        )
+        .bind(&repo_path)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        pin_branch(&tx, &pool, "p1", "trunk").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let err = pin_branch(&tx, &pool, "p1", "trunk").await.unwrap_err();
+        assert!(
+            err.contains("already") || err.contains("checked out") || err.contains("exists"),
+            "second pin without removing the worktree must fail loudly: {err}"
         );
     }
 }

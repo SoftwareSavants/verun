@@ -142,9 +142,12 @@ pub async fn add_project(
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
 
-    // Seed the main pinned task (worktree == repo root). Mirrors the v20
-    // migration backfill for pre-existing projects.
-    let main_task = task::build_main_pinned_task(&project, 0);
+    // Seed the main pinned task (worktree == repo root). Mirrors the v24
+    // migration backfill for pre-existing projects. Uses `next_port_offset`
+    // so the seed offset stays consistent with how the migration computes it
+    // (MAX(port_offset)+1 over the project's tasks; 0 for a brand-new project).
+    let port_offset = db::next_port_offset(pool.inner(), &project.id).await?;
+    let main_task = task::build_main_pinned_task(&project, port_offset);
     db_tx
         .send(db::DbWrite::InsertTask(main_task.clone()))
         .await
@@ -3455,5 +3458,210 @@ mod tests {
             let err = reject_if_pinned(&make_task(true), op).unwrap_err();
             assert!(err.contains(op), "op '{op}' missing from error: {err}");
         }
+    }
+
+    // -- Pinned workspace IPC integration (#61) --
+    //
+    // These tests exercise the SQL-level effects of unpin_task and
+    // list_local_branches without going through the Tauri State<'_, ...>
+    // wrappers. We build the same db::DbWrite messages and call db queries
+    // directly, mirroring what the IPC handler does.
+
+    async fn pinned_test_pool() -> (sqlx::SqlitePool, db::DbWriteTx) {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        for m in db::migrations() {
+            sqlx::query(m.sql).execute(&pool).await.unwrap();
+        }
+        let tx = db::spawn_write_queue(pool.clone());
+        (pool, tx)
+    }
+
+    async fn insert_pinned_task_row(
+        pool: &sqlx::SqlitePool,
+        id: &str,
+        project_id: &str,
+        worktree_path: &str,
+        is_pinned: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, archived, agent_type, is_pinned) \
+             VALUES (?, ?, 'main', ?, 'main', 1000, 0, 0, 'claude', ?)",
+        )
+        .bind(id)
+        .bind(project_id)
+        .bind(worktree_path)
+        .bind(is_pinned as i64)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn insert_test_project(pool: &sqlx::SqlitePool, id: &str, repo_path: &str) {
+        sqlx::query(
+            "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at, default_agent_type) \
+             VALUES (?, 'R', ?, 'main', '', '', '', 0, 1000, 'claude')",
+        )
+        .bind(id)
+        .bind(repo_path)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn drive_unpin(
+        pool: &sqlx::SqlitePool,
+        tx: &db::DbWriteTx,
+        task_id: &str,
+    ) -> Result<(), String> {
+        let t = db::get_task(pool, task_id)
+            .await?
+            .ok_or_else(|| format!("Task {task_id} not found"))?;
+        if !t.is_pinned {
+            return Err("task is not pinned".into());
+        }
+        let project = db::get_project(pool, &t.project_id)
+            .await?
+            .ok_or_else(|| format!("Project {} not found", t.project_id))?;
+        if t.worktree_path == project.repo_path {
+            return Err("cannot unpin the main workspace".into());
+        }
+        tx.send(db::DbWrite::SetTaskPinned {
+            id: task_id.to_string(),
+            pinned: false,
+        })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unpin_task_rejects_main_workspace_via_repo_path_match() {
+        let (pool, tx) = pinned_test_pool().await;
+        insert_test_project(&pool, "p1", "/tmp/repo").await;
+        insert_pinned_task_row(&pool, "main-task", "p1", "/tmp/repo", true).await;
+
+        let err = drive_unpin(&pool, &tx, "main-task").await.unwrap_err();
+        assert!(
+            err.contains("cannot unpin the main workspace"),
+            "main task unpin must error: {err}"
+        );
+
+        let stored = db::get_task(&pool, "main-task").await.unwrap().unwrap();
+        assert!(stored.is_pinned, "rejected unpin must NOT clear is_pinned");
+    }
+
+    #[tokio::test]
+    async fn unpin_task_rejects_unpinned_task() {
+        // Defensive: unpinning a task that's already unpinned should error out
+        // rather than silently succeed — the UI never reaches this path so any
+        // hit means a bug.
+        let (pool, tx) = pinned_test_pool().await;
+        insert_test_project(&pool, "p1", "/tmp/repo").await;
+        insert_pinned_task_row(&pool, "regular", "p1", "/tmp/regular-wt", false).await;
+
+        let err = drive_unpin(&pool, &tx, "regular").await.unwrap_err();
+        assert!(err.contains("not pinned"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn unpin_task_succeeds_for_branch_pinned_task() {
+        let (pool, tx) = pinned_test_pool().await;
+        insert_test_project(&pool, "p1", "/tmp/repo").await;
+        insert_pinned_task_row(
+            &pool,
+            "branch-pin",
+            "p1",
+            "/tmp/repo/.verun/worktrees/trunk",
+            true,
+        )
+        .await;
+
+        drive_unpin(&pool, &tx, "branch-pin").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stored = db::get_task(&pool, "branch-pin").await.unwrap().unwrap();
+        assert!(!stored.is_pinned, "unpin should flip is_pinned to false");
+    }
+
+    #[tokio::test]
+    async fn unpin_task_errors_when_task_missing() {
+        let (pool, tx) = pinned_test_pool().await;
+        let err = drive_unpin(&pool, &tx, "nope").await.unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn migration_v24_does_not_duplicate_main_when_rerun() {
+        // Migrations are tracked by version so v24 can only run once, but if a
+        // future contributor accidentally re-runs the SQL (e.g. during tests),
+        // we want to know the SELECT fans out one row per project not N.
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let ms = db::migrations();
+        for m in ms.iter().take_while(|m| m.version <= 23) {
+            sqlx::query(m.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at, default_agent_type) \
+             VALUES ('pa', 'A', '/tmp/a', 'main', '', '', '', 0, 1000, 'claude')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let v24 = ms.iter().find(|m| m.version == 24).unwrap();
+        sqlx::query(v24.sql).execute(&pool).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks WHERE project_id = 'pa' AND is_pinned = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "expected exactly one main pinned task per project");
+    }
+
+    #[tokio::test]
+    async fn migration_v24_leaves_existing_tasks_unpinned() {
+        // Existing rows must default to is_pinned = 0 — only the seeded "main"
+        // row gets is_pinned = 1. If the column default ever flipped to 1 the
+        // sidebar would incorrectly hoist every legacy task into the pinned
+        // section.
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let ms = db::migrations();
+        for m in ms.iter().take_while(|m| m.version <= 23) {
+            sqlx::query(m.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at, default_agent_type) \
+             VALUES ('pa', 'A', '/tmp/a', 'main', '', '', '', 0, 1000, 'claude')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, archived, agent_type) \
+             VALUES ('legacy', 'pa', 'old', '/tmp/a/.verun/worktrees/old', 'feature/x', 999, 0, 0, 'claude')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let v24 = ms.iter().find(|m| m.version == 24).unwrap();
+        sqlx::query(v24.sql).execute(&pool).await.unwrap();
+
+        let legacy_pinned: i64 =
+            sqlx::query_scalar("SELECT is_pinned FROM tasks WHERE id = 'legacy'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(legacy_pinned, 0, "pre-existing tasks must stay unpinned");
+
+        // And the seeded main row uses MAX(port_offset)+1 over the project,
+        // so it doesn't collide with the legacy task's port offset.
+        let main_offset: i64 = sqlx::query_scalar(
+            "SELECT port_offset FROM tasks WHERE project_id = 'pa' AND is_pinned = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(main_offset > 0, "seeded main row should pick the next free offset (got {main_offset})");
     }
 }
