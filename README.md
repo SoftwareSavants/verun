@@ -20,6 +20,7 @@ Pluggable agent backend with first-class support for Claude Code and Codex (plan
 - **Fork from any message** - hover any past reply to rewind the conversation in place, or branch into a new task with the worktree restored to the code as it was at that exact turn. Verun takes a git snapshot at every turn, so you can undo an entire direction - not just a line of code
 - **Tool approval** - configurable trust levels per task: supervised, normal, or full auto
 - **UI / Terminal toggle for Claude** - flip any Claude session into a real PTY running `claude --resume` to use the unmodified TUI, while history, fork, and search keep working because Verun tails the on-disk transcript. The mode is sticky per session with an app-wide default in Settings
+- **Plugin marketplace browser** - browse, search, and install Claude Code plugins from any configured marketplace without leaving Verun
 - **Notifications** - desktop alerts when an agent finishes, fails, or needs approval so you can context-switch away
 
 ## Full workspace, not just a launcher
