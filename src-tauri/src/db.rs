@@ -277,6 +277,31 @@ pub fn migrations() -> Vec<Migration> {
               ON github_cache_entries(task_id, scope);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 24,
+        description: "add is_pinned flag to tasks and seed main workspace per project",
+        sql: r#"
+            ALTER TABLE tasks ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;
+
+            INSERT INTO tasks (
+                id, project_id, name, worktree_path, branch,
+                created_at, port_offset, archived, agent_type, is_pinned
+            )
+            SELECT
+                lower(hex(randomblob(16))),
+                p.id,
+                'main',
+                p.repo_path,
+                p.base_branch,
+                strftime('%s','now') * 1000,
+                COALESCE((SELECT MAX(port_offset) + 1 FROM tasks WHERE project_id = p.id), 0),
+                0,
+                p.default_agent_type,
+                1
+            FROM projects p;
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -323,6 +348,8 @@ pub struct Task {
     pub agent_type: String,
     #[sqlx(default)]
     pub last_pushed_sha: Option<String>,
+    #[sqlx(default)]
+    pub is_pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -499,6 +526,10 @@ pub enum DbWrite {
     SetLastPushedSha {
         id: String,
         sha: String,
+    },
+    SetTaskPinned {
+        id: String,
+        pinned: bool,
     },
 
     // Sessions
@@ -725,6 +756,23 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
                 .bind(&id)
                 .execute(pool)
                 .await?;
+            // Keep the main pinned task's branch *label* in sync. The main
+            // task has worktree_path == repo_path (no real worktree), so this
+            // column is purely a display label — it doesn't change what's
+            // checked out on disk. Sessions on the main task always run
+            // against whatever HEAD currently is in the repo root.
+            sqlx::query(
+                "UPDATE tasks \
+                 SET branch = ? \
+                 WHERE project_id = ? AND is_pinned = 1 AND worktree_path = ( \
+                     SELECT repo_path FROM projects WHERE id = ? \
+                 )",
+            )
+            .bind(&base_branch)
+            .bind(&id)
+            .bind(&id)
+            .execute(pool)
+            .await?;
         }
         DbWrite::UpdateProjectHooks {
             id,
@@ -820,8 +868,8 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         // -- Tasks --
         DbWrite::InsertTask(t) => {
             sqlx::query(
-                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id, agent_type) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id, agent_type, is_pinned) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&t.id)
             .bind(&t.project_id)
@@ -832,6 +880,7 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .bind(t.port_offset)
             .bind(&t.parent_task_id)
             .bind(&t.agent_type)
+            .bind(t.is_pinned)
             .execute(pool)
             .await?;
         }
@@ -930,6 +979,13 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
         DbWrite::SetLastPushedSha { id, sha } => {
             sqlx::query("UPDATE tasks SET last_pushed_sha = ? WHERE id = ?")
                 .bind(&sha)
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        DbWrite::SetTaskPinned { id, pinned } => {
+            sqlx::query("UPDATE tasks SET is_pinned = ? WHERE id = ?")
+                .bind(pinned)
                 .bind(&id)
                 .execute(pool)
                 .await?;
@@ -1677,7 +1733,7 @@ pub(crate) mod tests {
     #[test]
     fn migration_versions_are_sequential() {
         let m = migrations();
-        assert_eq!(m.len(), 23);
+        assert_eq!(m.len(), 24);
         for (i, mig) in m.iter().enumerate() {
             assert_eq!(
                 mig.version,
@@ -1740,6 +1796,7 @@ pub(crate) mod tests {
             parent_task_id: None,
             agent_type: "claude".into(),
             last_pushed_sha: None,
+            is_pinned: false,
         }
     }
 
@@ -3460,5 +3517,85 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(ref_count(&pool, &h1).await, 0);
         assert_eq!(ref_count(&pool, &h2).await, 0);
+    }
+
+    // -- Pinned workspace tests (#61) --
+
+    #[tokio::test]
+    async fn task_roundtrip_preserves_is_pinned() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+
+        let mut t = make_task("p-001");
+        t.is_pinned = true;
+        t.name = Some("main".into());
+        t.worktree_path = "/tmp/myapp".into();
+        t.branch = "main".into();
+        process_write(&pool, DbWrite::InsertTask(t)).await.unwrap();
+
+        let stored = get_task(&pool, "t-001").await.unwrap().unwrap();
+        assert!(stored.is_pinned, "is_pinned should persist to DB");
+        assert_eq!(stored.worktree_path, "/tmp/myapp");
+    }
+
+    #[tokio::test]
+    async fn migration_v24_backfills_main_pinned_task_per_project() {
+        // Apply migrations 1..=23 on an empty pool, insert projects, then apply v24
+        // and assert each project has exactly one is_pinned=1 task pointing at its repo.
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let ms = migrations();
+        for m in ms.iter().take_while(|m| m.version <= 23) {
+            sqlx::query(m.sql).execute(&pool).await.unwrap();
+        }
+
+        // Seed two projects directly (pre-v24 schema shape).
+        sqlx::query(
+            "INSERT INTO projects (id, name, repo_path, base_branch, setup_hook, destroy_hook, start_command, auto_start, created_at, default_agent_type) \
+             VALUES ('pa', 'A', '/tmp/a', 'main', '', '', '', 0, 1000, 'claude'), \
+                    ('pb', 'B', '/tmp/b', 'develop', '', '', '', 0, 2000, 'claude')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let v24 = ms.iter().find(|m| m.version == 24).expect("v24 exists");
+        sqlx::query(v24.sql).execute(&pool).await.unwrap();
+
+        // One pinned main task per project, worktree == repo_path, branch == base_branch.
+        let tasks: Vec<(String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT project_id, COALESCE(name, ''), worktree_path, branch, is_pinned \
+             FROM tasks ORDER BY project_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].0, "pa");
+        assert_eq!(tasks[0].1, "main");
+        assert_eq!(tasks[0].2, "/tmp/a");
+        assert_eq!(tasks[0].3, "main");
+        assert_eq!(tasks[0].4, 1);
+        assert_eq!(tasks[1].0, "pb");
+        assert_eq!(tasks[1].1, "main");
+        assert_eq!(tasks[1].2, "/tmp/b");
+        assert_eq!(tasks[1].3, "develop");
+        assert_eq!(tasks[1].4, 1);
+    }
+
+    #[tokio::test]
+    async fn new_task_defaults_is_pinned_false() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+
+        let t = get_task(&pool, "t-001").await.unwrap().unwrap();
+        assert!(!t.is_pinned);
     }
 }

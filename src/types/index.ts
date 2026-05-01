@@ -37,6 +37,7 @@ export interface Task {
   lastCommitMessage: string | null
   parentTaskId: string | null
   agentType: AgentType // legacy DB column, not used - agent lives on sessions
+  isPinned: boolean
 }
 
 export interface Session {

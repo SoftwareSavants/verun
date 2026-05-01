@@ -275,6 +275,9 @@ pub fn run() {
             ipc::get_setup_in_progress,
             ipc::run_hook,
             ipc::stop_hook,
+            ipc::pin_branch,
+            ipc::unpin_task,
+            ipc::list_local_branches,
             // Sessions
             ipc::create_session,
             ipc::send_message,

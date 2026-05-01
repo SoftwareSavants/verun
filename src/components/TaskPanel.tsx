@@ -20,7 +20,7 @@ import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/editorView'
-import { Square, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy, GitCompare } from 'lucide-solid'
+import { Square, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy, GitCompare, Pin } from 'lucide-solid'
 import { GitActions, hasGitActionsContent } from './GitActions'
 import { NewSessionMenu } from './NewSessionMenu'
 import { ContextMenu } from './ContextMenu'
@@ -329,8 +329,23 @@ export const TaskPanel: Component = () => {
                 {/* Header — drag region for titlebar */}
                 <div class="px-4 pt-8 pb-2 flex items-center justify-between bg-surface-1 drag-region" data-tauri-drag-region>
                   <div class="flex items-center gap-2 min-w-0 no-drag">
+                    <Show when={t().isPinned}>
+                      {(() => {
+                        const isMain = () => projectById(t().projectId)?.repoPath === t().worktreePath
+                        return (
+                          <span
+                            class="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/10 text-accent text-[10px] font-medium ring-1 ring-accent/20"
+                            title={isMain() ? 'Main workspace — runs in the repo root' : 'Pinned workspace — skips archive and PR flow'}
+                            aria-label={isMain() ? 'Main pinned workspace' : 'Pinned workspace'}
+                          >
+                            <Pin size={10} />
+                            {isMain() ? 'Main' : 'Pinned'}
+                          </span>
+                        )
+                      })()}
+                    </Show>
                     <h2 class="text-[13px] font-medium text-text-primary truncate shrink-0">
-                      {t().name || 'New task'}
+                      {t().name || (t().isPinned ? t().branch : 'New task')}
                     </h2>
                     <button
                       class="text-[11px] text-text-tertiary hover:text-text-secondary truncate min-w-0 transition-colors"
@@ -439,7 +454,7 @@ export const TaskPanel: Component = () => {
                       >
                         <Terminal size={13} />
                       </button>
-                      <Show when={hasGitActionsContent(t().id)}>
+                      <Show when={!t().isPinned && hasGitActionsContent(t().id)}>
                         <span class="w-px h-4 bg-outline/8 mx-1" />
                         <GitActions
                           taskId={t().id}
