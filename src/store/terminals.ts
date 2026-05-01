@@ -1,4 +1,4 @@
-import { createSignal } from 'solid-js'
+import { batch, createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
@@ -167,12 +167,17 @@ export async function spawnTerminal(taskId: string, rows: number, cols: number, 
   const result = await ipc.ptySpawn(taskId, rows, cols, initialCommand, isStartCommand || undefined, isStartCommand || undefined)
   const name = isStartCommand ? 'Dev Server' : result.shellName
   const instance: TerminalInstance = { id: result.terminalId, taskId, name, isStartCommand }
-  if (isStartCommand) {
-    setTerminals(produce(t => t.unshift(instance)))
-  } else {
-    setTerminals(produce(t => t.push(instance)))
-  }
-  setActiveTerminalForTask(taskId, result.terminalId)
+  // Batch so the <For> in TerminalPanel mounts the new ShellTerminal with
+  // activeId already pointing at it — otherwise xterm.js initializes inside
+  // a display:none wrapper and never refits when the wrapper later flips visible.
+  batch(() => {
+    if (isStartCommand) {
+      setTerminals(produce(t => t.unshift(instance)))
+    } else {
+      setTerminals(produce(t => t.push(instance)))
+    }
+    setActiveTerminalForTask(taskId, result.terminalId)
+  })
   return instance
 }
 
