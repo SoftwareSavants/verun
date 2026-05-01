@@ -16,8 +16,6 @@ import { newTaskIds } from "../lib/taskDiff";
 import { projects, projectById } from "../store/projects";
 import {
   tasks,
-  pinnedTasksForProject,
-  unpinnedActiveTasksForProject,
   loadTasks,
   archiveTask,
   isTaskCreating,
@@ -224,17 +222,25 @@ export const Sidebar: Component = () => {
   const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null);
   const [renamingTaskId, setRenamingTaskId] = createSignal<string | null>(null);
 
-  const pinnedByProject = createMemo(() => {
-    const byProject: Record<string, typeof tasks> = {}
-    for (const p of projects) byProject[p.id] = pinnedTasksForProject(p.id)
-    return byProject
+  // Partition tasks once per reactive update. Calling
+  // pinnedTasksForProject/unpinnedActiveTasksForProject per project re-scans
+  // `tasks` for every project (O(P*T)); a single pass over `tasks` is O(T).
+  const partitioned = createMemo(() => {
+    const pinned: Record<string, typeof tasks> = {}
+    const unpinned: Record<string, typeof tasks> = {}
+    for (const p of projects) {
+      pinned[p.id] = []
+      unpinned[p.id] = []
+    }
+    for (const t of tasks) {
+      if (t.archived) continue
+      if (t.isPinned) pinned[t.projectId]?.push(t)
+      else unpinned[t.projectId]?.push(t)
+    }
+    return { pinned, unpinned }
   })
-
-  const unpinnedByProject = createMemo(() => {
-    const byProject: Record<string, typeof tasks> = {}
-    for (const p of projects) byProject[p.id] = unpinnedActiveTasksForProject(p.id)
-    return byProject
-  })
+  const pinnedByProject = () => partitioned().pinned
+  const unpinnedByProject = () => partitioned().unpinned
 
   // Cmd+1..Cmd+9 skip pinned tasks — those get their own label-less rows.
   // Bindings flow through unpinned tasks in project order so the numbering

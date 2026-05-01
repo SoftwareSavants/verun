@@ -1092,10 +1092,23 @@ pub async fn pin_branch(
         is_pinned: true,
     };
 
-    db_tx
-        .send(db::DbWrite::InsertTask(task.clone()))
-        .await
-        .map_err(|e| format!("DB write failed: {e}"))?;
+    if let Err(e) = db_tx.send(db::DbWrite::InsertTask(task.clone())).await {
+        // Roll back the worktree we just created — otherwise the user is
+        // wedged: the row never lands but git refuses a second attach because
+        // the worktree exists on disk. Best-effort: log if the cleanup also
+        // fails so the failure mode stays visible.
+        let rp = project.repo_path.clone();
+        let wtp = task.worktree_path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(cleanup_err) = worktree::delete_worktree(&rp, &wtp) {
+                eprintln!(
+                    "[verun] pin_branch rollback failed for {wtp}: {cleanup_err}"
+                );
+            }
+        })
+        .await;
+        return Err(format!("DB write failed: {e}"));
+    }
 
     Ok(task)
 }
@@ -3928,7 +3941,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pin_branch_idempotent_after_unpin_then_repin() {
+    async fn pin_branch_rejects_repin_when_worktree_already_exists() {
         // After unpin (which leaves the worktree on disk) the user can re-pin
         // the same branch only if they first remove the worktree manually.
         // Without a manual remove, the second pin must fail loudly so they

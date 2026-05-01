@@ -182,6 +182,12 @@ pub async fn delete_project(
         .ok_or_else(|| format!("Project {id} not found"))?;
 
     let tasks = db::list_tasks_for_project(pool.inner(), &id).await?;
+    // Cascade is the only path that may remove pinned tasks. The IPC
+    // delete_task handler rejects pinned via reject_if_pinned, so users can
+    // only drop pinned rows by deleting the whole project. task::delete_task
+    // itself checks worktree_path == repo_path and skips the worktree remove
+    // for the main pinned task; pinned-branch tasks (trunk, develop, ...)
+    // get their .verun/worktrees/<branch> cleaned up here.
     for t in &tasks {
         task::delete_task(
             &app,
