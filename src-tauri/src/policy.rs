@@ -145,13 +145,18 @@ pub fn evaluate(
     }
 
     match tool_name {
-        // Read-only tools — allowed within the project repo
+        // Read-only tools — allowed within the project repo or ~/.claude
         "Read" | "Glob" | "Grep" | "LSP" => {
             if let Some(path) = extract_path(tool_input) {
                 if is_path_within(&path, repo_path) {
                     PolicyResult {
                         decision: PolicyDecision::AutoAllow,
                         reason: format!("read within project repo: {path}"),
+                    }
+                } else if is_within_claude_home(&path) {
+                    PolicyResult {
+                        decision: PolicyDecision::AutoAllow,
+                        reason: format!("read within ~/.claude: {path}"),
                     }
                 } else {
                     PolicyResult {
@@ -247,6 +252,17 @@ fn extract_path(input: &serde_json::Value) -> Option<String> {
         .or_else(|| input.get("path"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+}
+
+/// True if `path` is inside `$HOME/.claude` (skill caches, plugin assets, settings).
+/// Reads are auto-allowed there so Claude can load its own skills/plugins without
+/// prompting on every file.
+fn is_within_claude_home(path: &str) -> bool {
+    let Some(home) = std::env::var_os("HOME") else {
+        return false;
+    };
+    let claude_dir = Path::new(&home).join(".claude");
+    is_path_within(path, &claude_dir.to_string_lossy())
 }
 
 /// Check if a path is within a boundary directory.
@@ -481,16 +497,9 @@ fn check_git(args: &[String]) -> Option<&'static str> {
     let subcmd = strs.iter().find(|a| !a.starts_with('-'))?;
     match *subcmd {
         "push" => {
-            if has_long_flag(
-                &strs,
-                &[
-                    "--force",
-                    "--force-with-lease",
-                    "--force-if-includes",
-                    "--delete",
-                ],
-            ) || has_short_flag(&strs, 'f')
-            {
+            // --force-with-lease and --force-if-includes are safe variants
+            // (they refuse to clobber if upstream moved) — used by rebase flows.
+            if has_long_flag(&strs, &["--force", "--delete"]) || has_short_flag(&strs, 'f') {
                 Some("git push --force/--delete")
             } else {
                 None
@@ -758,6 +767,20 @@ mod tests {
             TrustLevel::Normal,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn read_in_claude_home_auto_allowed() {
+        let home = std::env::var("HOME").expect("HOME set");
+        let path = format!("{home}/.claude/plugins/cache/foo/bar.md");
+        let result = evaluate(
+            "Read",
+            &json!({ "file_path": path }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+        );
+        assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
 
     #[test]
@@ -1170,17 +1193,33 @@ mod tests {
             Some("git push --force/--delete")
         );
         assert_eq!(
-            matches_deny_pattern("git push --force-with-lease"),
-            Some("git push --force/--delete")
-        );
-        assert_eq!(
-            matches_deny_pattern("git push --force-if-includes"),
-            Some("git push --force/--delete")
-        );
-        assert_eq!(
             matches_deny_pattern("git push --delete origin branch"),
             Some("git push --force/--delete")
         );
+    }
+
+    #[test]
+    fn allow_git_push_force_with_lease() {
+        // --force-with-lease and --force-if-includes are safe variants:
+        // they refuse to clobber if upstream moved. Used by rebase/conflict flows.
+        assert_eq!(matches_deny_pattern("git push --force-with-lease"), None);
+        assert_eq!(
+            matches_deny_pattern("git push --force-with-lease origin main"),
+            None
+        );
+        assert_eq!(matches_deny_pattern("git push --force-if-includes"), None);
+    }
+
+    #[test]
+    fn bash_git_push_force_with_lease_auto_allowed() {
+        let result = evaluate(
+            "Bash",
+            &json!({"command": "git push --force-with-lease origin main"}),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+        );
+        assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
 
     // -- Deny pattern: git branch --

@@ -40,18 +40,20 @@ import {
   markTaskWindowed,
   requestNewTaskForProject,
   focusOrSelectTask,
+  setShowTerminal,
 } from "../store/ui";
 import { sessions, loadSessions } from "../store/sessions";
-import { isStartCommandRunning } from "../store/terminals";
-import { deleteProject } from "../store/projects";
+import { isStartCommandRunning, spawnStartCommand, stopStartCommand } from "../store/terminals";
+import { isSetupRunning } from "../store/setup";
+import { deleteProject, projectById } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { buildAddProjectMenuItems } from "../lib/addProjectMenu";
+import { buildTaskMenuItems } from "../lib/taskMenu";
 import { selectSettingsSection } from "./SettingsPage";
 import {
   Plus,
   FolderOpen,
-  Pencil,
   Trash2,
   Loader2,
   Circle,
@@ -307,31 +309,35 @@ export const Sidebar: Component = () => {
     e.preventDefault();
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
+    const project = projectById(task.projectId);
+    const handleStart = async () => {
+      const cmd = project?.startCommand;
+      if (!cmd) return;
+      if (selectedTaskId() === task.id) setShowTerminal(true);
+      await spawnStartCommand(task.id, cmd);
+    };
+    const openProjectSettings = () => {
+      selectSettingsSection(task.projectId);
+      setShowSettings(true);
+    };
     setContextMenu({
       pos: { x: e.clientX, y: e.clientY },
-      items: [
+      items: buildTaskMenuItems(
         {
-          label: "Open in New Window",
-          icon: ExternalLink,
-          action: () => ipc.openTaskWindow(task.id, task.name || undefined),
+          onOpenInNewWindow: () => ipc.openTaskWindow(task.id, task.name || undefined),
+          onRename: () => setRenamingTaskId(taskId),
+          onOpenInFinder: () => ipc.openInFinder(task.worktreePath),
+          onStartApp: handleStart,
+          onStopApp: () => stopStartCommand(task.id),
+          onSetupStartCommand: openProjectSettings,
+          onArchive: () => setArchiveTaskTarget(taskId),
         },
         {
-          label: "Rename",
-          icon: Pencil,
-          action: () => setRenamingTaskId(taskId),
+          isRunning: isStartCommandRunning(task.id),
+          isSetupRunning: isSetupRunning(task.id),
+          hasStartCommand: !!project?.startCommand,
         },
-        {
-          label: "Open in Finder",
-          icon: FolderOpen,
-          action: () => ipc.openInFinder(task.worktreePath),
-        },
-        { separator: true },
-        {
-          label: "Archive Task",
-          icon: Archive,
-          action: () => setArchiveTaskTarget(taskId),
-        },
-      ],
+      ),
     });
   };
 

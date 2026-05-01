@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix the git toolbar dropdown ("Commit & Push", "Merge PR", etc.) becoming unclickable while a session was generating a response. Each file/git event during streaming triggered `refreshTaskGit`, which wrote fresh `status`/`commits`/`branchStatus` objects via `produce`. The dropdown's action factories returned new `GitAction` objects on every reactive read, so `<For each={secondaryActions()}>` saw new references and tore down + recreated every menu row, racing the user's mid-flight click. Action factories are now `createMemo` with stable references (label-based equals where the label can switch), and dynamic message bodies are computed inside the click handler so cached objects don't go stale
+- Task right-click menu now has Start App / Stop App, mirroring the toolbar's start-command toggle so you can run/kill a task's dev server without opening it. Disabled while the setup hook is running; if no start command is configured the entry becomes "Set Up Start Command..." and jumps straight to project settings
+- Auto-allow `git push --force-with-lease` and `--force-if-includes` in Normal trust (the safe variants used after rebase). Bare `--force` / `-f` and `--delete` still require approval
+- Auto-allow Read/Glob/Grep/LSP under `~/.claude` (skill caches, plugin assets, settings) so Claude can load its own skills without prompting
 - Cmd+Alt+Left/Right now cycles between sessions in the current task when viewing a session (wraps at edges). The shortcut still cycles editor tabs when a file is open, mirroring Ctrl+Tab's view-aware behavior
 - File edits detected by the worktree watcher now trigger a debounced local git refresh, so status/commits/branch state update automatically as you change code without hitting GitHub
 - Local git refresh now uses non-locking read-only git commands, so viewing status no longer rewrites `.git/index` and self-triggers endless `git-local-changed` watcher loops
