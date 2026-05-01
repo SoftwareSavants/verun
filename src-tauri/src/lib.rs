@@ -14,6 +14,7 @@ mod github_remote;
 mod ipc;
 mod lsp;
 mod markdown_skills;
+mod plugin_marketplace;
 mod policy;
 mod pty;
 mod snapshots;
