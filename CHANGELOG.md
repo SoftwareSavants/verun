@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Auto-allow `git push --force-with-lease` and `--force-if-includes` in Normal trust (the safe variants used after rebase). Bare `--force` / `-f` and `--delete` still require approval
+- Auto-allow Read/Glob/Grep/LSP under `~/.claude` (skill caches, plugin assets, settings) so Claude can load its own skills without prompting
 - Cmd+Alt+Left/Right now cycles between sessions in the current task when viewing a session (wraps at edges). The shortcut still cycles editor tabs when a file is open, mirroring Ctrl+Tab's view-aware behavior
 - File edits detected by the worktree watcher now trigger a debounced local git refresh, so status/commits/branch state update automatically as you change code without hitting GitHub
 - Local git refresh now uses non-locking read-only git commands, so viewing status no longer rewrites `.git/index` and self-triggers endless `git-local-changed` watcher loops
