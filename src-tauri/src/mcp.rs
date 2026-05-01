@@ -2125,6 +2125,7 @@ mod tests {
             parent_task_id: None,
             agent_type: "claude".into(),
             last_pushed_sha: None,
+            is_pinned: false,
         }
     }
 

@@ -11,7 +11,10 @@ interface Props {
   onClose: () => void
 }
 
-// Mirrors worktree::attach_worktree_for_existing_branch in the Rust side.
+// Pre-canonicalize preview of the worktree path. Rust calls
+// std::fs::canonicalize on the result of `git worktree add`, so if repoPath
+// is a symlink the stored task.worktreePath will be the resolved form, not
+// the literal string shown here.
 function previewWorktreePath(repoPath: string, branch: string): string {
   return `${repoPath}/.verun/worktrees/${branch}`
 }
