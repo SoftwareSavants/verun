@@ -50,8 +50,7 @@ export function buildPrMessage(git: TaskGitState, base: string, isDraft: boolean
 interface GitAction {
   icon: Component<{ size: number }>
   label: string
-  message?: string
-  action?: () => Promise<void>
+  action: () => void | Promise<void>
 }
 
 interface Props {
@@ -121,12 +120,8 @@ export const GitActions: Component<Props> = (props) => {
     setConfirming(null)
     setActionLoading(true)
     try {
-      if (a.action) {
-        await a.action()
-        setOpen(false)
-      } else if (a.message) {
-        send(a.message)
-      }
+      await a.action()
+      setOpen(false)
     } finally {
       setActionLoading(false)
     }
@@ -224,28 +219,71 @@ export const GitActions: Component<Props> = (props) => {
   const hasLocalChanges = () => fileCount() > 0 || unpushed() > 0
   const localClean = () => !hasLocalChanges()
 
-  const pushAction = (): GitAction =>
-    fileCount() > 0
-      ? { icon: ArrowUpFromLine, label: 'Commit & Push', message: 'commit all changes and push to remote' }
-      : { icon: ArrowUpFromLine, label: 'Push', action: doPush }
-  const createPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Create PR', message: buildPrMessage(git(), baseBranch(), false) })
-  const draftPrAction = (): GitAction => ({ icon: GitPullRequest, label: 'Draft PR', message: buildPrMessage(git(), baseBranch(), true) })
-  const pullAction = (): GitAction => ({ icon: Download, label: 'Update Branch', message: `this branch is behind ${baseBranch()}. rebase onto ${baseBranch()} to bring it up to date. Use git rebase, not merge.` })
-  const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: `rebase this branch onto ${baseBranch()} and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue` })
-  const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: async () => openMergePanel() })
-  const readyForReviewAction = (): GitAction => ({ icon: Eye, label: 'Ready for Review', action: doMarkReady })
-  const archiveAction = (): GitAction => ({ icon: Archive, label: 'Archive', action: async () => { await archiveTask(props.taskId) } })
-
   const isDraft = () => pr()?.isDraft ?? false
   const isBehind = () => behind() > 0
   const prMerged = () => pr()?.state === 'MERGED'
+  const hasOpenPr = () => pr()?.state === 'OPEN'
+  const prClosed = () => pr()?.state === 'CLOSED'
+  const prDone = () => prMerged()
+  const hasAnything = () => hasOpenPr() || prMerged() || prClosed() || (!prDone() && (commitCount() > 0 || isBehind())) || fileCount() > 0
+
+  // Each action factory is memoized so its returned object reference stays
+  // stable across reactive updates that don't change the action itself. This
+  // is what keeps <For each={secondaryActions()}> from tearing down dropdown
+  // rows on every git refresh - otherwise a click on "Commit & Push" mid-stream
+  // races the rebuild and gets dropped.
+  //
+  // Messages that depend on git state are computed at click time inside the
+  // action callback, not baked into the cached object, to avoid staleness.
+
+  const labelEquals = (a: GitAction | undefined, b: GitAction | undefined) => a?.label === b?.label
+
+  const pushAction = createMemo<GitAction, undefined>(() =>
+    fileCount() > 0
+      ? { icon: ArrowUpFromLine, label: 'Commit & Push', action: () => send('commit all changes and push to remote') }
+      : { icon: ArrowUpFromLine, label: 'Push', action: doPush },
+    undefined,
+    { equals: labelEquals },
+  )
+  const createPrAction = createMemo<GitAction>(() => ({
+    icon: GitPullRequest, label: 'Create PR',
+    action: () => send(buildPrMessage(git(), baseBranch(), false)),
+  }))
+  const draftPrAction = createMemo<GitAction>(() => ({
+    icon: GitPullRequest, label: 'Draft PR',
+    action: () => send(buildPrMessage(git(), baseBranch(), true)),
+  }))
+  const pullAction = createMemo<GitAction>(() => ({
+    icon: Download, label: 'Update Branch',
+    action: () => send(`this branch is behind ${baseBranch()}. rebase onto ${baseBranch()} to bring it up to date. Use git rebase, not merge.`),
+  }))
+  const resolveConflictsAction = createMemo<GitAction>(() => ({
+    icon: Swords, label: 'Resolve conflicts',
+    action: () => send(`rebase this branch onto ${baseBranch()} and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue`),
+  }))
+  const mergePrAction = createMemo<GitAction>(() => ({
+    icon: GitMerge, label: 'Merge PR', action: async () => openMergePanel(),
+  }))
+  const readyForReviewAction = createMemo<GitAction>(() => ({
+    icon: Eye, label: 'Ready for Review', action: doMarkReady,
+  }))
+  const archiveAction = createMemo<GitAction>(() => ({
+    icon: Archive, label: 'Archive', action: async () => { await archiveTask(props.taskId) },
+  }))
+  const fixCiAction = createMemo<GitAction>(() => ({
+    icon: Wrench, label: 'Fix CI',
+    action: () => send(`fix the failing CI checks: ${failedChecks().map(c => c.name).join(', ')}`),
+  }))
+  const reviewAction = createMemo<GitAction>(() => ({
+    icon: Search, label: 'Review', action: () => send('/review'),
+  }))
 
   // Smart default action based on state
   // Flow: Pull (if behind) → Push (updates existing PR) → Create PR → Ready for Review (if draft) → Resolve conflicts → Merge
-  const primaryAction = (): GitAction => {
+  const primaryAction = createMemo<GitAction>(() => {
     if (prMerged() && localClean()) return archiveAction()
     if (prMerged()) return pushAction()
-    if (failedChecks().length > 0) return { icon: Wrench, label: 'Fix CI', message: `fix the failing CI checks: ${failedChecks().map(c => c.name).join(', ')}` }
+    if (failedChecks().length > 0) return fixCiAction()
     if (isBehind() && !prDone()) return pullAction()
     if (hasOpenPr() && hasLocalChanges()) return pushAction()
     if (!hasOpenPr()) return createPrAction()
@@ -253,9 +291,9 @@ export const GitActions: Component<Props> = (props) => {
     if (conflicts() && localClean()) return resolveConflictsAction()
     if (localClean()) return mergePrAction()
     return createPrAction()
-  }
+  })
 
-  const secondaryActions = () => {
+  const secondaryActions = createMemo<GitAction[], undefined>(() => {
     const primary = primaryAction()
     const hasPr = hasOpenPr()
     const draft = isDraft()
@@ -267,9 +305,7 @@ export const GitActions: Component<Props> = (props) => {
       readyForReviewAction(),
       mergePrAction(),
     ]
-    if (hasReviewSkill()) {
-      all.push({ icon: Search, label: 'Review', message: '/review' })
-    }
+    if (hasReviewSkill()) all.push(reviewAction())
     return all.filter(a => {
       if (a.label === primary.label) return false
       if (a.label === 'Update Branch' && (!isBehind() || prDone())) return false
@@ -280,7 +316,9 @@ export const GitActions: Component<Props> = (props) => {
       if (a.label === 'Review' && !hasPr) return false
       return true
     })
-  }
+  }, undefined, {
+    equals: (a, b) => a.length === b.length && a.every((x, i) => x === b[i]),
+  })
 
   // Close dropdown on outside click
   let containerRef: HTMLDivElement | undefined
@@ -301,11 +339,6 @@ export const GitActions: Component<Props> = (props) => {
       })
     }
   })
-
-  const hasOpenPr = () => pr()?.state === 'OPEN'
-  const prClosed = () => pr()?.state === 'CLOSED'
-  const prDone = () => prMerged()
-  const hasAnything = () => hasOpenPr() || prMerged() || prClosed() || (!prDone() && (commitCount() > 0 || isBehind())) || fileCount() > 0
 
   const PrimaryIcon = () => {
     return <Dynamic component={primaryAction().icon} size={12} />
