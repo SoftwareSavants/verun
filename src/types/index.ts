@@ -476,3 +476,64 @@ export interface Problem {
   code?: string | number
   source: string         // 'typescript', 'eslint', etc.
 }
+
+// ---------- Plugins ----------
+
+export type PluginScope = 'user' | 'project' | 'local'
+
+export interface PluginSourceObject {
+  source?: string
+  url?: string
+  repo?: string
+  path?: string
+  ref?: string
+  sha?: string
+}
+
+// Source can be either a structured object or a bare path string.
+export type PluginSource = PluginSourceObject | string
+
+export interface AvailablePlugin {
+  pluginId: string
+  name: string
+  description: string
+  marketplaceName: string
+  source: PluginSource
+  version?: string
+  installCount?: number
+}
+
+export interface InstalledPlugin {
+  id: string
+  version?: string
+  scope: PluginScope
+  enabled: boolean
+  installPath?: string
+  installedAt?: string
+  lastUpdated?: string
+}
+
+export interface PluginCatalog {
+  installed: InstalledPlugin[]
+  available: AvailablePlugin[]
+}
+
+export interface MarketplaceInfo {
+  name: string
+  source?: string
+  repo?: string
+  url?: string
+  installLocation?: string
+}
+
+export interface PluginManifest {
+  /** Raw plugin.json contents (or null when missing). */
+  manifest: Record<string, unknown> | null
+  skills: string[]
+  commands: string[]
+  agents: string[]
+  hasHooks: boolean
+  hasMcpConfig: boolean
+  hasLspConfig: boolean
+  hasReadme: boolean
+}

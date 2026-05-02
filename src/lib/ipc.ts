@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, PluginCatalog, MarketplaceInfo, PluginScope, PluginManifest } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 const seed = () => import('./seedData')
@@ -552,3 +552,25 @@ export interface MigrationReport {
 
 export const migrateLegacyAttachments = (): Promise<MigrationReport> =>
   invoke<MigrationReport>('migrate_legacy_attachments')
+
+// Plugins
+export const pluginIsSupported = () =>
+  invoke<boolean>('plugin_is_supported')
+
+export const pluginListCatalog = () =>
+  invoke<PluginCatalog>('plugin_list_catalog')
+
+export const pluginListMarketplaces = () =>
+  invoke<MarketplaceInfo[]>('plugin_list_marketplaces')
+
+export const pluginInstall = (pluginId: string, scope: PluginScope, cwd: string) =>
+  invoke<void>('plugin_install', { pluginId, scope, cwd })
+
+export const pluginUninstall = (pluginId: string, cwd: string) =>
+  invoke<void>('plugin_uninstall', { pluginId, cwd })
+
+export const pluginSetEnabled = (pluginId: string, enabled: boolean, cwd: string) =>
+  invoke<void>('plugin_set_enabled', { pluginId, enabled, cwd })
+
+export const pluginReadManifest = (installPath: string) =>
+  invoke<PluginManifest>('plugin_read_manifest', { installPath })

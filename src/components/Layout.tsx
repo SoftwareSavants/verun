@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
+import { PluginsPage } from './PluginsPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { AddProjectDialog } from './AddProjectDialog'
 import { BtsBuilderDialog } from './BtsBuilderDialog'
@@ -350,6 +351,7 @@ export const Layout: Component = () => {
         <Show when={!showSettings() && !showArchived()}>
           <TaskPanel />
         </Show>
+        <PluginsPage />
       </div>
 
       <NewTaskDialog

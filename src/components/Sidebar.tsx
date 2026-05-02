@@ -31,6 +31,8 @@ import {
   setShowSettings,
   showArchived,
   setShowArchived,
+  showPlugins,
+  setShowPlugins,
   isTaskUnread,
   isTaskAttention,
   clearTaskIndicators,
@@ -62,6 +64,7 @@ import {
   Archive,
   Settings,
   Play,
+  Puzzle,
 } from "lucide-solid";
 import { clsx } from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -545,11 +548,27 @@ export const Sidebar: Component = () => {
             onClick={() => {
               const next = !showArchived()
               setShowArchived(next)
-              if (next) { setShowSettings(false); setSelectedTaskId(null) }
+              if (next) { setShowSettings(false); setShowPlugins(false); setSelectedTaskId(null) }
             }}
             title="Archived"
           >
             <Archive size={14} />
+          </button>
+          <button
+            class={clsx(
+              'p-1.5 rounded-md transition-colors',
+              showPlugins()
+                ? 'text-accent bg-accent-muted'
+                : 'text-text-dim hover:text-text-secondary hover:bg-surface-3'
+            )}
+            onClick={() => {
+              const next = !showPlugins()
+              setShowPlugins(next)
+              if (next) { setShowSettings(false); setShowArchived(false) }
+            }}
+            title="Plugins"
+          >
+            <Puzzle size={14} />
           </button>
           <button
             class={clsx(
@@ -561,7 +580,7 @@ export const Sidebar: Component = () => {
             onClick={() => {
               const next = !showSettings()
               setShowSettings(next)
-              if (next) setShowArchived(false)
+              if (next) { setShowArchived(false); setShowPlugins(false) }
             }}
             title="Settings"
           >

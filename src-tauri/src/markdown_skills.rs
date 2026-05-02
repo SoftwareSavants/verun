@@ -51,6 +51,25 @@ fn unquote(s: &str) -> String {
     }
 }
 
+/// Reads a single field's value from a markdown file's YAML-ish frontmatter
+/// block. Returns `None` if there's no frontmatter or the field is absent.
+fn parse_frontmatter_field(text: &str, field: &str) -> Option<String> {
+    let rest = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))?;
+    let end = rest.find("\n---")?;
+    let block = &rest[..end];
+    for line in block.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim() == field {
+            return Some(unquote(value.trim()));
+        }
+    }
+    None
+}
+
 /// Enumerates `<dir>/*/SKILL.md`, returning a skill for each subdirectory that
 /// has a parseable SKILL.md. Returns empty if the directory doesn't exist.
 pub fn scan_skills_dir(dir: &Path) -> Vec<AgentSkill> {
@@ -91,9 +110,19 @@ pub fn scan_commands_dir(dir: &Path) -> Vec<AgentSkill> {
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        if let Some(skill) = parse_skill_frontmatter(&text) {
-            skills.push(skill);
-        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // Filename is the canonical command name (matches how Claude Code's
+        // plugin spec resolves slash commands). Frontmatter `name:` is honoured
+        // when present so user-authored commands that set it explicitly still
+        // win, but it's no longer required — most plugin command files only
+        // declare `description:` and friends.
+        let name = parse_frontmatter_field(&text, "name")
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| stem.to_string());
+        let description = parse_frontmatter_field(&text, "description").unwrap_or_default();
+        skills.push(AgentSkill { name, description });
     }
     skills
 }
@@ -208,12 +237,29 @@ mod tests {
             "---\nname: ship\ndescription: Ship it\n---\n",
         );
         fs::write(tmp.path().join("readme.txt"), "nope").unwrap();
+        // No frontmatter — should still register, with name from filename.
         fs::write(tmp.path().join("stray.md"), "# no frontmatter\n").unwrap();
 
         let mut cmds = scan_commands_dir(tmp.path());
         cmds.sort_by(|a, b| a.name.cmp(&b.name));
         let names: Vec<&str> = cmds.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["bump-version", "ship"]);
+        assert_eq!(names, vec!["bump-version", "ship", "stray"]);
+    }
+
+    #[test]
+    fn scan_commands_dir_falls_back_to_filename_when_frontmatter_omits_name() {
+        let tmp = TempDir::new().unwrap();
+        // Anthropic plugin command shape: description-only frontmatter, no name.
+        write_command(
+            tmp.path(),
+            "code-review",
+            "---\nallowed-tools: Bash(gh pr view:*)\ndescription: Code review a pull request\n---\n",
+        );
+
+        let cmds = scan_commands_dir(tmp.path());
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].name, "code-review");
+        assert_eq!(cmds[0].description, "Code review a pull request");
     }
 
     #[test]

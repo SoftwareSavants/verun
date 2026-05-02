@@ -253,7 +253,10 @@ fn scan_installed_plugins(user_home: &Path) -> Vec<AgentSkill> {
         return Vec::new();
     };
     let mut skills = Vec::new();
-    for entries in plugins.values() {
+    for (key, entries) in plugins {
+        // Manifest keys look like `<plugin>@<marketplace>`. The plugin name is
+        // the prefix.
+        let plugin_name = key.split('@').next().unwrap_or(key.as_str());
         let Some(array) = entries.as_array() else {
             continue;
         };
@@ -262,8 +265,16 @@ fn scan_installed_plugins(user_home: &Path) -> Vec<AgentSkill> {
                 continue;
             };
             let base = Path::new(install_path);
+            // Skills aren't namespaced — they're addressed by their declared name.
             skills.extend(scan_skills_dir(&base.join("skills")));
-            skills.extend(scan_commands_dir(&base.join("commands")));
+            // Commands get the `<plugin>:<command>` prefix so Verun's slash
+            // command UI matches what `claude` autocomplete shows.
+            for cmd in scan_commands_dir(&base.join("commands")) {
+                skills.push(AgentSkill {
+                    name: format!("{plugin_name}:{}", cmd.name),
+                    description: cmd.description,
+                });
+            }
         }
     }
     skills
@@ -455,19 +466,25 @@ mod tests {
     }
 
     #[test]
-    fn discover_includes_plugin_commands() {
+    fn discover_namespaces_plugin_commands() {
+        // The CLI's autocomplete shows plugin commands as `<plugin>:<command>`
+        // (e.g. `/code-review:code-review`). Verun mirrors that so the slash
+        // command UI matches what users see in the terminal.
         let home = TempDir::new().unwrap();
         let install_path = home.path().join(".claude/plugins/cache/mp/plugin-x/1.0.0");
         write_command(
             &install_path.join("commands"),
             "plugin-cmd",
-            "---\nname: plugin-cmd\ndescription: from plugin\n---\n",
+            "---\ndescription: from plugin\n---\n",
         );
         write_installed_plugins(home.path(), &[&install_path]);
 
         let skills = Claude.discover_skills(None, home.path());
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"plugin-cmd"));
+        // write_installed_plugins keys entries as `plugin-<i>@mp`, so the
+        // first plugin is named `plugin-0`.
+        assert!(names.contains(&"plugin-0:plugin-cmd"));
+        assert!(!names.contains(&"plugin-cmd"));
     }
 
     #[test]

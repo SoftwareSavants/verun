@@ -14,6 +14,7 @@ mod github_remote;
 mod ipc;
 mod lsp;
 mod markdown_skills;
+mod plugin_marketplace;
 mod policy;
 mod pty;
 mod snapshots;
@@ -409,6 +410,14 @@ pub fn run() {
             ipc::get_storage_stats,
             ipc::run_blob_gc,
             ipc::migrate_legacy_attachments,
+            // Plugin marketplace
+            ipc::plugin_is_supported,
+            ipc::plugin_list_catalog,
+            ipc::plugin_list_marketplaces,
+            ipc::plugin_install,
+            ipc::plugin_uninstall,
+            ipc::plugin_set_enabled,
+            ipc::plugin_read_manifest,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

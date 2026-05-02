@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- New Plugins page (sidebar puzzle icon) lists every plugin from configured Claude Code marketplaces with search, marketplace filter, sort by install count, and one-click install/uninstall. Backed by a thin Rust wrapper around `claude plugin list/install/uninstall` so the CLI stays the source of truth for what's installed. Scope picker is gated to user-only when no project is selected; project/local become available once a project is in focus, so installs target the right `.claude/settings.json`
 - Cmd+Alt+Left/Right now cycles between sessions in the current task when viewing a session (wraps at edges). The shortcut still cycles editor tabs when a file is open, mirroring Ctrl+Tab's view-aware behavior
 - File edits detected by the worktree watcher now trigger a debounced local git refresh, so status/commits/branch state update automatically as you change code without hitting GitHub
 - Local git refresh now uses non-locking read-only git commands, so viewing status no longer rewrites `.git/index` and self-triggers endless `git-local-changed` watcher loops
