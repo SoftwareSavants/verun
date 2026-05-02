@@ -671,6 +671,27 @@ function userMessageForTurn(output: OutputItem[], turnIndex: number): string | u
   return undefined
 }
 
+/** True if the given 1-based turn produced any assistant work (text,
+ *  thinking, tool call, tool result) before its error fired. Used to
+ *  decide whether retry should resend the original prompt or just say
+ *  "continue" so Claude picks up mid-loop instead of redoing everything. */
+export function turnHasProgress(output: OutputItem[], turnIndex: number): boolean {
+  let seen = 0
+  for (const item of output) {
+    if (item.kind === 'userMessage') {
+      seen += 1
+      continue
+    }
+    if (seen !== turnIndex) continue
+    if (item.kind === 'errorMessage') return false
+    if (item.kind === 'text' || item.kind === 'thinking'
+        || item.kind === 'toolStart' || item.kind === 'toolResult') {
+      return true
+    }
+  }
+  return false
+}
+
 /** Pretty-print a JSON blob if parseable, else return as-is. Keeps the raw
  *  details panel readable regardless of what the CLI sent. */
 function prettyJson(raw?: string): string {
@@ -692,6 +713,7 @@ const ErrorBlockView: Component<{
   const [showDetails, setShowDetails] = createSignal(false)
   const [copiedRaw, setCopiedRaw] = createSignal(false)
   const retryMessage = () => userMessageForTurn(props.output, props.turnIndex)
+  const hasProgress = () => turnHasProgress(props.output, props.turnIndex)
 
   const modeArgs = (): [string | undefined, boolean | undefined, boolean | undefined, boolean | undefined] => {
     const sid = props.sessionId
@@ -704,8 +726,12 @@ const ErrorBlockView: Component<{
   }
 
   const retry = async () => {
-    const msg = retryMessage()
-    if (!msg || !props.sessionId) return
+    if (!props.sessionId) return
+    // Mid-loop failures: resending the original prompt makes Claude redo work
+    // it already did. Send "continue" so it picks up from the persisted tool
+    // results instead.
+    const msg = hasProgress() ? 'continue' : retryMessage()
+    if (!msg) return
     setRetrying(true)
     try {
       const [model, plan, thinking, fast] = modeArgs()
@@ -750,16 +776,18 @@ const ErrorBlockView: Component<{
             disabled={retrying()}
           >
             <RotateCw size={11} />
-            Retry
+            {hasProgress() ? 'Continue' : 'Retry'}
           </button>
-          <button
-            class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-2 text-text-secondary hover:bg-surface-3 transition-colors disabled:opacity-50"
-            onClick={retryNewSession}
-            disabled={retrying()}
-          >
-            <Plus size={11} />
-            Retry in new session
-          </button>
+          <Show when={!hasProgress()}>
+            <button
+              class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-2 text-text-secondary hover:bg-surface-3 transition-colors disabled:opacity-50"
+              onClick={retryNewSession}
+              disabled={retrying()}
+            >
+              <Plus size={11} />
+              Retry in new session
+            </button>
+          </Show>
         </Show>
         <Show when={props.raw}>
           <button
