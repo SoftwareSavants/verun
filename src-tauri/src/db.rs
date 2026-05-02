@@ -283,6 +283,20 @@ pub fn migrations() -> Vec<Migration> {
         description: "rename trust_level 'normal' to 'auto_safe'",
         sql: "UPDATE task_trust_levels SET trust_level = 'auto_safe' WHERE trust_level = 'normal';",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 25,
+        description: "auto-safe policy: global settings table + per-project override column",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS global_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            ALTER TABLE projects ADD COLUMN auto_safe_override TEXT;
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -562,6 +576,14 @@ pub enum DbWrite {
         task_id: String,
         trust_level: String,
         updated_at: i64,
+    },
+    SetGlobalAutoSafePolicy {
+        json: String,
+    },
+    SetProjectAutoSafeOverride {
+        project_id: String,
+        /// `None` clears the override (sets the column to NULL).
+        json: Option<String>,
     },
     InsertAuditEntry {
         session_id: String,
@@ -1126,6 +1148,25 @@ async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Er
             .execute(pool)
             .await?;
         }
+        DbWrite::SetGlobalAutoSafePolicy { json } => {
+            let now = crate::task::epoch_ms();
+            sqlx::query(
+                "INSERT INTO global_settings (key, value, updated_at) \
+                 VALUES ('auto_safe_policy', ?, ?) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            )
+            .bind(&json)
+            .bind(now)
+            .execute(pool)
+            .await?;
+        }
+        DbWrite::SetProjectAutoSafeOverride { project_id, json } => {
+            sqlx::query("UPDATE projects SET auto_safe_override = ? WHERE id = ?")
+                .bind(json.as_deref())
+                .bind(&project_id)
+                .execute(pool)
+                .await?;
+        }
         DbWrite::InsertAuditEntry {
             session_id,
             task_id,
@@ -1577,6 +1618,55 @@ pub async fn invalidate_github_cache(
 
 // Turn snapshots
 
+#[allow(dead_code)] // wired up in task.rs / ipc.rs in subsequent tasks
+pub async fn get_or_seed_global_auto_safe_policy(
+    pool: &SqlitePool,
+) -> Result<crate::auto_safe::GlobalPolicy, String> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM global_settings WHERE key = 'auto_safe_policy'")
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("read global_settings: {e}"))?;
+    if let Some((json,)) = row {
+        let parsed: crate::auto_safe::GlobalPolicy = serde_json::from_str(&json)
+            .map_err(|e| format!("parse global auto-safe policy: {e}"))?;
+        return Ok(parsed);
+    }
+    let defaults = crate::auto_safe::defaults();
+    let json = serde_json::to_string(&defaults).map_err(|e| e.to_string())?;
+    let now = crate::task::epoch_ms();
+    sqlx::query(
+        "INSERT OR IGNORE INTO global_settings (key, value, updated_at) \
+         VALUES ('auto_safe_policy', ?, ?)",
+    )
+    .bind(&json)
+    .bind(now)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("seed global auto-safe policy: {e}"))?;
+    Ok(defaults)
+}
+
+#[allow(dead_code)] // wired up in ipc.rs in subsequent tasks
+pub async fn get_project_auto_safe_override(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> Result<Option<crate::auto_safe::ProjectOverride>, String> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT auto_safe_override FROM projects WHERE id = ?")
+            .bind(project_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("read project override: {e}"))?;
+    let json = match row.and_then(|(j,)| j) {
+        Some(j) if !j.is_empty() => j,
+        _ => return Ok(None),
+    };
+    let parsed: crate::auto_safe::ProjectOverride =
+        serde_json::from_str(&json).map_err(|e| format!("parse project override: {e}"))?;
+    Ok(Some(parsed))
+}
+
 pub async fn get_turn_snapshot(
     pool: &SqlitePool,
     session_id: &str,
@@ -1683,7 +1773,7 @@ pub(crate) mod tests {
     #[test]
     fn migration_versions_are_sequential() {
         let m = migrations();
-        assert_eq!(m.len(), 23);
+        assert_eq!(m.len(), 25);
         for (i, mig) in m.iter().enumerate() {
             assert_eq!(
                 mig.version,
@@ -1728,6 +1818,87 @@ pub(crate) mod tests {
             created_at: 1000,
             default_agent_type: "claude".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn migration_adds_global_settings_and_auto_safe_override() {
+        let pool = test_pool().await;
+        let cnt: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='global_settings'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cnt.0, 1);
+        let cnt: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='auto_safe_override'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cnt.0, 1);
+    }
+
+    #[tokio::test]
+    async fn global_auto_safe_policy_round_trip() {
+        let pool = test_pool().await;
+        let p = get_or_seed_global_auto_safe_policy(&pool).await.unwrap();
+        assert_eq!(p, crate::auto_safe::defaults());
+
+        let mut new_p = p.clone();
+        new_p.websearch.mode = crate::auto_safe::WebSearchMode::Allow;
+        process_write_for_tests(
+            &pool,
+            DbWrite::SetGlobalAutoSafePolicy {
+                json: serde_json::to_string(&new_p).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let read = get_or_seed_global_auto_safe_policy(&pool).await.unwrap();
+        assert_eq!(read.websearch.mode, crate::auto_safe::WebSearchMode::Allow);
+    }
+
+    #[tokio::test]
+    async fn project_auto_safe_override_round_trip() {
+        let pool = test_pool().await;
+        process_write_for_tests(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        let none = get_project_auto_safe_override(&pool, "p-001").await.unwrap();
+        assert!(none.is_none());
+
+        let po = crate::auto_safe::ProjectOverride {
+            version: 1,
+            read: Some(crate::auto_safe::ReadConfig {
+                scope: crate::auto_safe::ReadScope::Any,
+            }),
+            ..Default::default()
+        };
+        process_write_for_tests(
+            &pool,
+            DbWrite::SetProjectAutoSafeOverride {
+                project_id: "p-001".into(),
+                json: Some(serde_json::to_string(&po).unwrap()),
+            },
+        )
+        .await
+        .unwrap();
+        let some = get_project_auto_safe_override(&pool, "p-001").await.unwrap();
+        assert_eq!(some, Some(po));
+
+        process_write_for_tests(
+            &pool,
+            DbWrite::SetProjectAutoSafeOverride {
+                project_id: "p-001".into(),
+                json: None,
+            },
+        )
+        .await
+        .unwrap();
+        let cleared = get_project_auto_safe_override(&pool, "p-001").await.unwrap();
+        assert!(cleared.is_none());
     }
 
     pub(crate) fn make_task(project_id: &str) -> Task {
