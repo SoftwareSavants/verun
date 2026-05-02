@@ -72,29 +72,33 @@ export const PluginsPage: Component = () => {
           </button>
         </div>
 
-        <div class="flex-1 grid grid-cols-[180px_1fr] gap-4 min-h-0">
+        <div class="flex-1 grid grid-cols-[160px_1fr] min-h-0">
           {/* Agent rail */}
-          <nav class="flex flex-col gap-0.5">
+          <nav class="flex flex-col gap-0.5 border-r border-border pr-3 -my-1 py-1 overflow-y-auto">
+            <div class="text-[10px] font-medium uppercase tracking-wider text-text-dim px-2.5 mb-1">
+              Coding agent
+            </div>
             <For each={AGENT_ORDER}>
               {agent => {
                 const active = () => activeAgent() === agent
                 const supported = SUPPORTED_AGENTS.has(agent)
                 return (
                   <button
-                    class={`group flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left transition-colors ${
+                    class={`relative flex items-center gap-2 pl-2.5 pr-2 py-1.5 rounded-md text-left transition-colors ${
                       active()
-                        ? 'bg-accent-muted text-accent ring-1 ring-accent/30'
-                        : 'text-text-secondary hover:bg-surface-3'
+                        ? 'bg-accent-muted text-accent'
+                        : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary'
                     }`}
                     onClick={() => setActiveAgent(agent)}
                   >
-                    <SvgIcon svg={agentIcon(agent)} size={16} />
+                    <Show when={active()}>
+                      <span class="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-accent" />
+                    </Show>
+                    <SvgIcon svg={agentIcon(agent)} size={14} />
                     <span class="text-[12px] font-medium flex-1 truncate">{AGENT_DISPLAY_NAMES[agent]}</span>
                     <Show when={!supported}>
-                      <span class={`text-[9px] uppercase tracking-wider px-1 py-0.5 rounded ring-1 ${
-                        active() ? 'ring-accent/30' : 'ring-white/10 text-text-dim'
-                      }`}>
-                        Soon
+                      <span class="text-[9px] uppercase tracking-wider text-text-dim font-medium">
+                        soon
                       </span>
                     </Show>
                   </button>
@@ -104,7 +108,7 @@ export const PluginsPage: Component = () => {
           </nav>
 
           {/* Right panel */}
-          <div class="flex flex-col min-h-0 min-w-0">
+          <div class="flex flex-col min-h-0 min-w-0 pl-4">
             <Show
               when={SUPPORTED_AGENTS.has(activeAgent())}
               fallback={<ComingSoon agent={activeAgent()} />}
