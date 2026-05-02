@@ -285,6 +285,7 @@ pub fn run() {
             ipc::abort_message,
             ipc::interrupt_session,
             ipc::get_session_context_usage,
+            ipc::ask_side_question,
             ipc::get_active_sessions,
             ipc::respond_to_approval,
             ipc::get_pending_approvals,

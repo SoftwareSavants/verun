@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Side question (`/btw`) for Claude sessions: ask an ephemeral question without polluting the transcript. Type `/btw <question>` in the composer (auto-completes from the slash-command palette), or - while the agent is streaming and you've scrolled to the bottom of the chat - click the small "Ask sideways /btw" pill that takes the place of the scroll-to-bottom button (same screen real estate, swapped by context). Q/A are not persisted to `output_lines` and never re-enter conversation history on resume; `synthetic` fallbacks are badged distinctly. Wires through a new `ask_side_question` Tauri command on top of the existing control-request plumbing.
 - Cmd+Alt+Left/Right now cycles between sessions in the current task when viewing a session (wraps at edges). The shortcut still cycles editor tabs when a file is open, mirroring Ctrl+Tab's view-aware behavior
 - File edits detected by the worktree watcher now trigger a debounced local git refresh, so status/commits/branch state update automatically as you change code without hitting GitHub
 - Local git refresh now uses non-locking read-only git commands, so viewing status no longer rewrites `.git/index` and self-triggers endless `git-local-changed` watcher loops

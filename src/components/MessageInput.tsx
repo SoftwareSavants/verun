@@ -21,6 +21,7 @@ import * as ipc from '../lib/ipc'
 import { Popover } from './Popover'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
+import { openSideQuestion } from '../store/sideQuestion'
 import { serializeAttachments, deserializeAttachments, uploadAttachments } from '../lib/binary'
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 
@@ -1001,18 +1002,33 @@ export const MessageInput: Component<Props> = (props) => {
         setPlanMode(!planMode())
         break
       }
+      case 'btw': {
+        const sid = props.sessionId
+        if (!sid) break
+        // Strip the `/btw ` prefix; whatever's left becomes the side question.
+        // Empty rest means "open the panel" - pass undefined so the panel
+        // restores the remembered Q/A instead of blanking it.
+        const rest = message().trim().replace(/^\/btw\s*/i, '')
+        openSideQuestion(sid, rest.length > 0 ? rest : undefined, rest.length > 0)
+        break
+      }
     }
     setMessage('')
     setShowPalette(false)
   }
 
   const handleCommandSelect = (cmd: Command) => {
-    if (cmd.category === 'app') {
+    // /btw is an app command but takes a free-form question, so insert the
+    // prefix and let the user type the question instead of firing immediately
+    // with empty text.
+    if (cmd.category === 'app' && cmd.name !== 'btw') {
       handleAppCommand(cmd)
     } else {
       setMessage(`/${cmd.name} `)
+      setInputContent(`/${cmd.name} `)
       setShowPalette(false)
       inputRef?.focus()
+      setCursorToEnd()
     }
   }
 
@@ -1308,7 +1324,7 @@ export const MessageInput: Component<Props> = (props) => {
       const msg = message().trim()
       if (msg.startsWith('/')) {
         const cmdName = msg.slice(1).split(/\s+/)[0]
-        const appCmds = ['new-session', 'clear', 'plan']
+        const appCmds = ['new-session', 'clear', 'plan', 'btw']
         if (appCmds.includes(cmdName)) {
           handleAppCommand({ name: cmdName, description: '', category: 'app' })
           return

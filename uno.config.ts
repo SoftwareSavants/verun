@@ -209,6 +209,18 @@ export default defineConfig({
           box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.65);
         }
 
+        /* Side question panel enter animation - one-shot keyframe that fires
+           on mount, no JS state needed. Anchored to bottom-right so it grows
+           out of the corner it's pinned to. */
+        @keyframes sideQuestionEnter {
+          from { opacity: 0; transform: scale(0.95) translateY(0.5rem); }
+          to   { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .side-question-enter {
+          animation: sideQuestionEnter 220ms cubic-bezier(0.22, 1, 0.36, 1);
+          transform-origin: bottom right;
+        }
+
         /* Hide scrollbar but keep scrolling */
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { scrollbar-width: none; }

@@ -935,6 +935,20 @@ pub async fn get_session_context_usage(
     task::get_session_context_usage(active.inner(), pending_ctrl.inner(), &session_id).await
 }
 
+/// Ask Claude an ephemeral side question (`/btw`) while a turn is mid-stream.
+/// Q/A are not persisted and never enter the conversation transcript.
+/// Returns `Ok(None)` when the CLI couldn't answer (e.g. before the first
+/// turn completes on a resumed session).
+#[tauri::command]
+pub async fn ask_side_question(
+    active: State<'_, ActiveMap>,
+    pending_ctrl: State<'_, PendingControlResponses>,
+    session_id: String,
+    question: String,
+) -> Result<Option<task::SideQuestionResponse>, String> {
+    task::send_side_question(active.inner(), pending_ctrl.inner(), &session_id, &question).await
+}
+
 /// Return session IDs that currently have an active process
 #[tauri::command]
 pub async fn get_active_sessions(active: State<'_, ActiveMap>) -> Result<Vec<String>, String> {
