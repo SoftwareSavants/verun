@@ -163,16 +163,26 @@ export const DiffEditor: Component<Props> = (props) => {
 
   const sourceKey = () => {
     const s = props.source
-    return s.type === 'commit' ? `c:${s.commitHash}` : 'w'
+    switch (s.type) {
+      case 'commit':   return `c:${s.commitHash}`
+      case 'staged':   return 'staged'
+      case 'unstaged': return 'unstaged'
+      default:         return 'w'
+    }
   }
 
   const fetchContents = async () => {
     setLoading(true)
     setError(null)
     try {
-      const c = props.source.type === 'commit'
-        ? await ipc.getCommitFileContents(props.taskId, props.source.commitHash, props.relativePath)
-        : await ipc.getFileDiffContents(props.taskId, props.relativePath)
+      let c: DiffContents
+      const s = props.source
+      switch (s.type) {
+        case 'working':  c = await ipc.getFileDiffContents(props.taskId, props.relativePath); break
+        case 'staged':   c = await ipc.getStagedDiffContents(props.taskId, props.relativePath); break
+        case 'unstaged': c = await ipc.getUnstagedDiffContents(props.taskId, props.relativePath); break
+        case 'commit':   c = await ipc.getCommitFileContents(props.taskId, s.commitHash, props.relativePath); break
+      }
       setContents(c)
     } catch (e) {
       setError(String(e))

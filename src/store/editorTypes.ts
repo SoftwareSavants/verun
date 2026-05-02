@@ -1,4 +1,8 @@
-export type DiffSource = { type: 'working' } | { type: 'commit'; commitHash: string }
+export type DiffSource =
+  | { type: 'working' }
+  | { type: 'staged' }
+  | { type: 'unstaged' }
+  | { type: 'commit'; commitHash: string }
 
 export interface EditorTab {
   /** Unique tab key. For files this is the relative path. For diffs it's a synthetic key (see diffTabKey). */
