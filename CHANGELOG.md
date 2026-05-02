@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Configurable auto-safe policy: new global "Auto-safe" Settings tab and per-project override section let you allow or deny tool categories (read, write, web search, web fetch, MCP) and edit Bash deny patterns. Renamed the `Normal` trust level to `Auto-safe`.
 - Cmd+Alt+Left/Right now cycles between sessions in the current task when viewing a session (wraps at edges). The shortcut still cycles editor tabs when a file is open, mirroring Ctrl+Tab's view-aware behavior
 - File edits detected by the worktree watcher now trigger a debounced local git refresh, so status/commits/branch state update automatically as you change code without hitting GitHub
 - Local git refresh now uses non-locking read-only git commands, so viewing status no longer rewrites `.git/index` and self-triggers endless `git-local-changed` watcher loops

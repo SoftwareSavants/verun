@@ -216,19 +216,25 @@ enum EnvelopeAction {
 /// shapes. Native Claude TUI hides this scaffolding; we either hide or
 /// summarise it depending on the shape:
 ///
-///     <command-message>adapt</command-message>
-///     <command-name>/adapt</command-name>
-///     <command-args>wassup</command-args>
+/// ```text
+/// <command-message>adapt</command-message>
+/// <command-name>/adapt</command-name>
+/// <command-args>wassup</command-args>
+/// ```
 ///
 /// → Replace("/adapt wassup")
 ///
-///     <local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>
+/// ```text
+/// <local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>
+/// ```
 ///
 /// → Drop (post-execution side-effect; the command itself was already shown
 ///   when the user typed it).
 ///
-///     Base directory for this skill: /Users/x/.claude/skills/adapt
-///     ...skill markdown body...
+/// ```text
+/// Base directory for this skill: /Users/x/.claude/skills/adapt
+/// ...skill markdown body...
+/// ```
 ///
 /// → Drop (skill-body injection - the model needs it but the user doesn't).
 fn classify_envelope(text: &str) -> EnvelopeAction {
