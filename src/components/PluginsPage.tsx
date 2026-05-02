@@ -59,8 +59,8 @@ export const PluginsPage: Component = () => {
 
   return (
     <Dialog open={showPlugins()} onClose={() => setShowPlugins(false)} width="min(92vw, 80rem)">
-      <div class="flex flex-col" style={{ height: 'min(78vh, 720px)' }}>
-        <div class="flex items-center justify-between mb-4">
+      <div class="-m-5 flex flex-col" style={{ height: 'min(78vh, 720px)' }}>
+        <div class="flex items-center justify-between px-4 py-3 border-b border-border">
           <h2 class="text-sm font-semibold text-text-primary">Plugins</h2>
           <button
             class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 transition-colors disabled:opacity-50"
@@ -74,7 +74,7 @@ export const PluginsPage: Component = () => {
 
         <div class="flex-1 grid grid-cols-[160px_1fr] min-h-0">
           {/* Agent rail — matches the app's main sidebar density */}
-          <nav class="flex flex-col gap-0.5 border-r border-border pr-2 -my-1 py-1 overflow-y-auto">
+          <nav class="flex flex-col gap-0.5 border-r border-border px-2 py-2 overflow-y-auto">
             <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted px-2 mb-1">
               Coding agent
             </div>
@@ -108,7 +108,7 @@ export const PluginsPage: Component = () => {
           </nav>
 
           {/* Right panel */}
-          <div class="flex flex-col min-h-0 min-w-0 pl-3">
+          <div class="flex flex-col min-h-0 min-w-0 px-4 py-3">
             <Show
               when={SUPPORTED_AGENTS.has(activeAgent())}
               fallback={<ComingSoon agent={activeAgent()} />}
