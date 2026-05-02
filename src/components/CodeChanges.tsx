@@ -1,81 +1,68 @@
-import { Component, createSignal, createEffect, on, Show, For, createMemo } from 'solid-js'
-import { createVirtualizer } from '@tanstack/solid-virtual'
-import { RefreshCw, X, GitCompare, FileText, ClipboardCopy, FolderOpen, ExternalLink, Tag } from 'lucide-solid'
-import { diffTabKey } from '../store/files'
-import { openDiffTab, openFilePinned, revealFileInTree, mainView, type DiffSource } from '../store/editorView'
-import { selectedTaskId } from '../store/ui'
-import { taskById } from '../store/tasks'
-import { getFileIcon } from '../lib/fileIcons'
-import { BranchCommits } from './BranchCommits'
-import { taskGit, refreshTaskGit } from '../store/git'
-import * as ipc from '../lib/ipc'
-import type { GitStatus, FileStatus } from '../types'
+import { Component, createSignal, createMemo, createEffect, on, Show } from 'solid-js'
+import { GitCompare, FileText, ClipboardCopy, FolderOpen, ExternalLink, Tag, Plus, Minus, X } from 'lucide-solid'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { ChangesHeader } from './ChangesHeader'
+import { FileSection, type SectionKind, type BulkAction } from './FileSection'
+import { FileRow } from './FileRow'
+import { CommitComposer } from './CommitComposer'
+import { ConflictStageDialog, type ConflictChoice } from './ConflictStageDialog'
+import { BranchCommits } from './BranchCommits'
+import { fanOut, type FileEntry } from '../lib/gitStatus'
+import { taskGit, refreshTaskGit } from '../store/git'
+import { taskById } from '../store/tasks'
+import { selectedTaskId } from '../store/ui'
+import { openDiffTab, openFilePinned, revealFileInTree, mainView, type DiffSource } from '../store/editorView'
+import { diffTabKey } from '../store/files'
+import * as ipc from '../lib/ipc'
+import {
+  stageOne, unstageOne, discardOne, resolveConflict, stageConflictAsIs,
+  stageAll, unstageAll, discardAllUnstaged,
+  commitWithFallback, commitAndPush, commitAmend,
+} from '../store/changesActions'
+import type { GitStatus } from '../types'
 
-interface Props {
-  taskId: string
-}
-
-function letterFor(f: FileStatus): string {
-  if (f.conflict) return '!'
-  if (f.indexStatus === '?' && f.worktreeStatus === '?') return 'U'
-  if (f.indexStatus !== ' ' && f.indexStatus !== '?') return f.indexStatus
-  return f.worktreeStatus || '?'
-}
-
-function colorFor(f: FileStatus): string {
-  if (f.conflict) return 'text-red-400'
-  if (f.indexStatus === '?' && f.worktreeStatus === '?') return 'text-emerald-400'
-  const ch = f.indexStatus !== ' ' && f.indexStatus !== '?' ? f.indexStatus : f.worktreeStatus
-  if (ch === 'M') return 'text-amber-400'
-  if (ch === 'A') return 'text-emerald-400'
-  if (ch === 'D') return 'text-red-400'
-  if (ch === 'R' || ch === 'C') return 'text-blue-400'
-  return 'text-text-muted'
-}
+interface Props { taskId: string }
 
 export const CodeChanges: Component<Props> = (props) => {
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
-
-  // null = uncommitted changes (read from store), string = commit hash (local)
   const [selectedCommit, setSelectedCommit] = createSignal<string | null>(null)
   const [commitStatus, setCommitStatus] = createSignal<GitStatus | null>(null)
+  const [conflictDialogPath, setConflictDialogPath] = createSignal<string | null>(null)
+  const [bulkInflight, setBulkInflight] = createSignal<SectionKind | null>(null)
 
-  // Reactive accessors that branch on selectedCommit
-  const status = () => selectedCommit() ? commitStatus() : taskGit(props.taskId).status
-  const commits = () => taskGit(props.taskId).commits
-  const uncommittedCount = () => taskGit(props.taskId).status?.files.length ?? 0
-  let fileScrollRef: HTMLDivElement | undefined
+  const liveStatus = (): GitStatus | null =>
+    selectedCommit() ? commitStatus() : taskGit(props.taskId).status
 
-  const files = () => status()?.files || []
   const statsByPath = createMemo(() => {
-    const map = new Map<string, NonNullable<GitStatus['stats'][number]>>()
-    for (const s of status()?.stats || []) map.set(s.path, s)
+    const map = new Map<string, { insertions: number; deletions: number }>()
+    for (const s of liveStatus()?.stats ?? []) map.set(s.path, s)
     return map
   })
 
+  const allEntries = createMemo<FileEntry[]>(() => {
+    const files = liveStatus()?.files ?? []
+    return files.flatMap(fanOut)
+  })
+
+  const conflicts = () => allEntries().filter(e => e.kind === 'conflict')
+  const stagedEntries = () => allEntries().filter(e => e.kind === 'staged')
+  const unstagedEntries = () => allEntries().filter(e => e.kind === 'unstaged')
+
   const refresh = async () => {
     try {
-      setLoading(true)
-      setError(null)
+      setLoading(true); setError(null)
       await refreshTaskGit(props.taskId, { force: true })
-    } catch (e: any) {
-      setError(e?.toString() || 'Failed to load status')
-    } finally {
-      setLoading(false)
-    }
+    } catch (e: unknown) { setError(e?.toString() || 'Failed to load status') }
+    finally { setLoading(false) }
   }
 
   const selectCommit = async (hash: string | null) => {
     setSelectedCommit(hash)
-    if (hash === null) {
-      setCommitStatus(null) // will read from store
-    } else {
-      try {
-        const s = await ipc.getCommitFiles(props.taskId, hash)
-        setCommitStatus(s)
-      } catch {}
+    if (hash === null) setCommitStatus(null)
+    else {
+      try { setCommitStatus(await ipc.getCommitFiles(props.taskId, hash)) }
+      catch { /* ignore */ }
     }
   }
 
@@ -86,114 +73,157 @@ export const CodeChanges: Component<Props> = (props) => {
     ipc.watchWorktree(props.taskId)
   }))
 
-  const sourceForRow = (): DiffSource => {
-    const commit = selectedCommit()
-    return commit ? { type: 'commit', commitHash: commit } : { type: 'working' }
+  // Diff source per row kind
+  const sourceForEntry = (entry: FileEntry): DiffSource => {
+    if (selectedCommit()) return { type: 'commit', commitHash: selectedCommit()! }
+    if (entry.kind === 'staged') return { type: 'staged' }
+    if (entry.kind === 'unstaged' && entry.file.indexStatus === '?') return { type: 'working' }
+    if (entry.kind === 'unstaged') return { type: 'unstaged' }
+    return { type: 'working' }  // conflict
   }
 
-  const openDiff = (path: string, opts?: { pinned?: boolean }) => {
-    openDiffTab(props.taskId, path, sourceForRow(), opts)
-  }
-
-  const isRowActive = (path: string) => {
+  const isRowActive = (entry: FileEntry) => {
     const tid = selectedTaskId()
     if (!tid || tid !== props.taskId) return false
-    return mainView(tid) === diffTabKey(sourceForRow(), path)
+    return mainView(tid) === diffTabKey(sourceForEntry(entry), entry.file.path)
   }
 
-  const statsForFile = (path: string) => {
-    return statsByPath().get(path)
+  const openDiff = (entry: FileEntry, opts?: { pinned?: boolean }) =>
+    openDiffTab(props.taskId, entry.file.path, sourceForEntry(entry), opts)
+
+  const openFile = (entry: FileEntry) =>
+    openFilePinned(props.taskId, entry.file.path, entry.file.path.split('/').pop() || entry.file.path)
+
+  const onPrimary = async (entry: FileEntry) => {
+    if (entry.kind === 'conflict') { setConflictDialogPath(entry.file.path); return }
+    if (entry.kind === 'staged') await unstageOne(props.taskId, entry.file.path)
+    else await stageOne(props.taskId, entry.file.path)
   }
 
-  const fileVirtualizer = createVirtualizer({
-    get count() { return files().length },
-    getScrollElement: () => fileScrollRef ?? null,
-    estimateSize: () => 28,
-    overscan: 10,
-    initialRect: { width: 280, height: 360 },
-  })
-
-  const visibleFileRows = () => {
-    const rows = fileVirtualizer.getVirtualItems()
-    if (rows.length > 0 || files().length === 0) return rows
-    const size = 28
-    return Array.from({ length: Math.min(files().length, 20) }, (_, index) => ({
-      key: index,
-      index,
-      start: index * size,
-      end: (index + 1) * size,
-      size,
-      lane: 0,
-    }))
+  const onDiscard = async (entry: FileEntry) => {
+    await discardOne(props.taskId, entry.file.path)
   }
 
-  // ── File row context menu ─────────────────────────────────────────────
-  const [fileMenu, setFileMenu] = createSignal<{ x: number; y: number; path: string } | null>(null)
+  const onConflictChoice = async (choice: ConflictChoice) => {
+    const path = conflictDialogPath()
+    if (!path) return
+    setConflictDialogPath(null)
+    if (choice === 'ours' || choice === 'theirs') {
+      await resolveConflict(props.taskId, path, choice)
+    } else {
+      await stageConflictAsIs(props.taskId, path)
+    }
+  }
+
+  const runBulk = async (kind: SectionKind, fn: () => Promise<void>) => {
+    setBulkInflight(kind)
+    try { await fn() } finally { setBulkInflight(null) }
+  }
+
+  const conflictBulk: BulkAction[] = []
+  const stagedBulk = (): BulkAction[] => [
+    { icon: Minus, title: 'Unstage all', onClick: () => runBulk('staged', () => unstageAll(props.taskId)) },
+  ]
+  const changesBulk = (): BulkAction[] => [
+    { icon: Plus, title: 'Stage all', onClick: () => runBulk('changes', () => stageAll(props.taskId)) },
+    {
+      icon: X,
+      title: 'Discard all',
+      onClick: () => runBulk('changes', async () => {
+        if (window.confirm('Discard all unstaged changes? This cannot be undone.')) {
+          await discardAllUnstaged(props.taskId)
+        }
+      }),
+    },
+  ]
+
+  const onJumpToSection = (kind: SectionKind) => {
+    localStorage.setItem(`verun:changes:section:${kind}:open`, 'true')
+    refreshTaskGit(props.taskId, { force: true })
+  }
+
+  const canCommit = () => conflicts().length === 0 && allEntries().length > 0
+  const canAmend = () => taskGit(props.taskId).commits.length > 0
+  const amendDefault = () => taskGit(props.taskId).commits[0]?.message ?? ''
+  const onCommit = (msg: string) => commitWithFallback(props.taskId, msg, stagedEntries().length > 0)
+  const onCommitAndPush = async (msg: string) => commitAndPush(props.taskId, msg)
+  const onAmend = (msg: string) => commitAmend(props.taskId, msg)
+
+  const [fileMenu, setFileMenu] = createSignal<{ x: number; y: number; entry: FileEntry } | null>(null)
   const closeFileMenu = () => setFileMenu(null)
-
   const fullPath = (rel: string) => {
     const t = taskById(props.taskId)
     return t?.worktreePath ? `${t.worktreePath}/${rel}` : rel
   }
-
   const fileMenuItems = (): ContextMenuItem[] => {
     const m = fileMenu()
     if (!m) return []
-    const path = m.path
+    const e = m.entry
+    const path = e.file.path
     const name = path.split('/').pop() || path
-    return [
-      { label: 'Open Diff', icon: GitCompare, action: () => { openDiff(path, { pinned: true }); closeFileMenu() } },
-      { label: 'Open File', icon: FileText, action: () => { openFilePinned(props.taskId, path, name); closeFileMenu() } },
+    const items: ContextMenuItem[] = [
+      { label: 'Open Diff',       icon: GitCompare,   action: () => { openDiff(e, { pinned: true }); closeFileMenu() } },
+      { label: 'Open File',       icon: FileText,     action: () => { openFile(e); closeFileMenu() } },
       { label: 'Open in VS Code', icon: ExternalLink, action: () => { ipc.openInApp(fullPath(path), 'Visual Studio Code'); closeFileMenu() } },
       { separator: true },
-      { label: 'Reveal in File Tree', icon: FolderOpen, action: () => { revealFileInTree(props.taskId, path); closeFileMenu() } },
-      { label: 'Reveal in Finder', icon: FolderOpen, action: () => { ipc.openInFinder(fullPath(path)); closeFileMenu() } },
-      { separator: true },
-      { label: 'Copy Name', icon: Tag, action: () => { navigator.clipboard.writeText(name); closeFileMenu() } },
-      { label: 'Copy Relative Path', icon: ClipboardCopy, action: () => { navigator.clipboard.writeText(path); closeFileMenu() } },
-      { label: 'Copy Absolute Path', icon: ClipboardCopy, action: () => { navigator.clipboard.writeText(fullPath(path)); closeFileMenu() } },
     ]
+    if (e.kind === 'conflict') {
+      items.push({ label: 'Stage…',  icon: Plus,  action: () => { setConflictDialogPath(path); closeFileMenu() } })
+    } else if (e.kind === 'staged') {
+      items.push({ label: 'Unstage', icon: Minus, action: () => { unstageOne(props.taskId, path); closeFileMenu() } })
+    } else {
+      items.push({ label: 'Stage',   icon: Plus,  action: () => { stageOne(props.taskId, path); closeFileMenu() } })
+    }
+    if (e.kind !== 'conflict') {
+      items.push({ label: 'Discard', icon: X, action: () => { discardOne(props.taskId, path); closeFileMenu() } })
+    }
+    items.push(
+      { separator: true },
+      { label: 'Reveal in File Tree', icon: FolderOpen,    action: () => { revealFileInTree(props.taskId, path); closeFileMenu() } },
+      { label: 'Reveal in Finder',    icon: FolderOpen,    action: () => { ipc.openInFinder(fullPath(path)); closeFileMenu() } },
+      { separator: true },
+      { label: 'Copy Name',           icon: Tag,           action: () => { navigator.clipboard.writeText(name); closeFileMenu() } },
+      { label: 'Copy Relative Path',  icon: ClipboardCopy, action: () => { navigator.clipboard.writeText(path); closeFileMenu() } },
+      { label: 'Copy Absolute Path',  icon: ClipboardCopy, action: () => { navigator.clipboard.writeText(fullPath(path)); closeFileMenu() } },
+    )
+    return items
   }
 
-  const selectedCommitInfo = () => commits().find(c => c.hash === selectedCommit())
+  const renderRow = (entry: FileEntry) => {
+    const stats = statsByPath().get(entry.file.path)
+    return (
+      <FileRow
+        entry={entry}
+        active={isRowActive(entry)}
+        insertions={stats?.insertions}
+        deletions={stats?.deletions}
+        onOpenDiff={() => openDiff(entry)}
+        onOpenDiffPinned={() => openDiff(entry, { pinned: true })}
+        onOpenFile={() => openFile(entry)}
+        onPrimary={() => onPrimary(entry)}
+        onDiscard={() => onDiscard(entry)}
+        onContextMenu={(e: MouseEvent) => { e.preventDefault(); setFileMenu({ x: e.clientX, y: e.clientY, entry }) }}
+      />
+    )
+  }
+
+  const selectedCommitInfo = () =>
+    taskGit(props.taskId).commits.find(c => c.hash === selectedCommit())
 
   return (
     <div class="flex flex-col h-full overflow-hidden min-w-0">
-      {/* Header — title + stats on the left, view toggles on the right */}
-      <div class="flex items-center justify-between px-3 h-9 bg-surface-1">
-        <div class="flex items-center gap-2 text-xs text-text-muted min-w-0">
-          <span class="font-medium text-text-secondary shrink-0">
-            {selectedCommit() ? 'Commit' : 'Changes'}
-          </span>
-          <Show when={selectedCommit() && selectedCommitInfo()}>
-            <span class="font-mono text-text-dim truncate">{selectedCommitInfo()!.shortHash}</span>
-          </Show>
-          <Show when={status()}>
-            <span class="text-text-dim shrink-0 tabular-nums">
-              {status()!.files.length} file{status()!.files.length !== 1 ? 's' : ''}
-            </span>
-            <Show when={status()!.totalInsertions > 0}>
-              <span class="text-emerald-400 shrink-0 tabular-nums">+{status()!.totalInsertions}</span>
-            </Show>
-            <Show when={status()!.totalDeletions > 0}>
-              <span class="text-red-400 shrink-0 tabular-nums">-{status()!.totalDeletions}</span>
-            </Show>
-          </Show>
-        </div>
+      <ChangesHeader
+        conflicts={conflicts().length}
+        staged={stagedEntries().length}
+        changes={unstagedEntries().length}
+        totalInsertions={liveStatus()?.totalInsertions ?? 0}
+        totalDeletions={liveStatus()?.totalDeletions ?? 0}
+        loading={loading()}
+        selectedCommitShortHash={selectedCommit() ? selectedCommitInfo()?.shortHash : undefined}
+        onRefresh={refresh}
+        onJumpToSection={onJumpToSection}
+      />
 
-        <div class="flex items-center gap-0.5 shrink-0">
-          <button
-            class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 disabled:opacity-40"
-            onClick={refresh}
-            disabled={loading()}
-            title="Refresh"
-          >
-            <RefreshCw size={12} class={loading() ? 'animate-spin' : ''} />
-          </button>
-        </div>
-      </div>
-
-      {/* Error */}
       <Show when={error()}>
         <div class="px-3 py-2 text-xs text-red-400 bg-red-400/5 border-b-1 border-b-solid border-b-outline/8 flex items-center justify-between">
           <span class="truncate">{error()}</span>
@@ -201,86 +231,63 @@ export const CodeChanges: Component<Props> = (props) => {
         </div>
       </Show>
 
-      {/* File list + diff */}
-      <div ref={fileScrollRef} class="flex-1 overflow-auto">
-        <Show when={status()?.files.length === 0 && !loading()}>
+      <div class="flex-1 overflow-auto flex flex-col min-h-0">
+        <FileSection
+          kind="conflicts"
+          title="Conflicts"
+          entries={conflicts()}
+          renderRow={renderRow}
+          bulkActions={conflictBulk}
+          bulkInflight={bulkInflight() === 'conflicts'}
+        />
+        <FileSection
+          kind="staged"
+          title="Staged Changes"
+          entries={stagedEntries()}
+          renderRow={renderRow}
+          bulkActions={stagedBulk()}
+          bulkInflight={bulkInflight() === 'staged'}
+        />
+        <FileSection
+          kind="changes"
+          title="Changes"
+          entries={unstagedEntries()}
+          renderRow={renderRow}
+          bulkActions={changesBulk()}
+          bulkInflight={bulkInflight() === 'changes'}
+        />
+
+        <Show when={allEntries().length === 0 && !loading() && !selectedCommit()}>
           <div class="px-4 py-10 text-center">
-            <p class="text-sm text-text-muted mb-1">
-              {selectedCommit() ? 'No files in this commit' : 'No changes yet'}
-            </p>
-            <Show when={!selectedCommit()}>
-              <p class="text-xs text-text-dim">File modifications will appear here as the agent works.</p>
-            </Show>
+            <p class="text-sm text-text-muted mb-1">No changes yet</p>
+            <p class="text-xs text-text-dim">File modifications will appear here as the agent works.</p>
           </div>
         </Show>
-
-        <div style={{ height: `${fileVirtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
-          <For each={visibleFileRows()}>
-            {(vrow) => {
-              const file = () => files()[vrow.index]
-              return (
-                <Show when={file()}>
-                  {(f) => {
-                    const fileName = f().path.split('/').pop() || f().path
-                    const FileIcon = getFileIcon(fileName)
-                    const statusLetter = letterFor(f())
-                    const statusColor = colorFor(f())
-                    const stats = () => statsForFile(f().path)
-                    const active = () => isRowActive(f().path)
-
-                    return (
-                      <div
-                        class={`absolute left-0 top-0 w-full flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs ${
-                          active()
-                            ? 'bg-surface-2 text-text-primary'
-                            : 'hover:bg-surface-2 text-text-secondary'
-                        }`}
-                        style={{
-                          height: `${vrow.size}px`,
-                          transform: `translateY(${vrow.start}px)`,
-                          'box-shadow': active() ? 'inset 2px 0 0 #2d6e4f' : undefined,
-                        }}
-                        onClick={() => openDiff(f().path)}
-                        onDblClick={(e) => { e.stopPropagation(); openDiff(f().path, { pinned: true }) }}
-                        onContextMenu={(e) => { e.preventDefault(); setFileMenu({ x: e.clientX, y: e.clientY, path: f().path }) }}
-                      >
-                        <span class="shrink-0 text-text-dim">
-                          <FileIcon size={12} />
-                        </span>
-
-                        <span class="truncate flex-1">
-                          {f().path}
-                        </span>
-
-                        <Show when={stats()}>
-                          <span class="shrink-0 flex items-center gap-1.5 text-[10px] tabular-nums">
-                            <Show when={stats()!.insertions > 0}>
-                              <span class="text-emerald-400">+{stats()!.insertions}</span>
-                            </Show>
-                            <Show when={stats()!.deletions > 0}>
-                              <span class="text-red-400">-{stats()!.deletions}</span>
-                            </Show>
-                          </span>
-                        </Show>
-
-                        <span class={`shrink-0 text-[11px] font-medium tabular-nums w-3 text-center ${statusColor}`}>
-                          {statusLetter}
-                        </span>
-                      </div>
-                    )
-                  }}
-                </Show>
-              )
-            }}
-          </For>
-        </div>
       </div>
+
+      <Show when={!selectedCommit()}>
+        <CommitComposer
+          taskId={props.taskId}
+          canCommit={canCommit()}
+          canAmend={canAmend()}
+          amendDefaultMessage={amendDefault()}
+          onCommit={onCommit}
+          onCommitAndPush={onCommitAndPush}
+          onAmend={onAmend}
+        />
+      </Show>
 
       <BranchCommits
         taskId={props.taskId}
         selectedCommit={selectedCommit()}
-        uncommittedCount={uncommittedCount()}
+        uncommittedCount={liveStatus()?.files.length ?? 0}
         onSelectCommit={selectCommit}
+      />
+
+      <ConflictStageDialog
+        path={conflictDialogPath()}
+        onChoose={onConflictChoice}
+        onClose={() => setConflictDialogPath(null)}
       />
 
       <ContextMenu
