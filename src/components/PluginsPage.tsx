@@ -1,5 +1,6 @@
 import { Component, For, Show, createMemo, createSignal, onMount } from 'solid-js'
 import { Search, RefreshCw, Sparkles } from 'lucide-solid'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import type { AgentType } from '../types'
 import { AGENT_DISPLAY_NAMES } from '../types'
 import { catalog, marketplaces, isSupported, isLoading, isInstalled, loadCatalog } from '../store/plugins'
@@ -202,10 +203,13 @@ const ComingSoon: Component<{ agent: AgentType }> = (props) => {
           Verun's plugin browser currently supports Claude Code only.
           {' '}{name()} support is on the roadmap.
         </p>
-        <div class="inline-flex items-center gap-1.5 text-[11px] text-accent bg-accent-muted px-2.5 py-1 rounded-full ring-1 ring-accent/20">
+        <button
+          class="inline-flex items-center gap-1.5 text-[11px] text-accent bg-accent-muted px-2.5 py-1 rounded-full ring-1 ring-accent/20 hover:bg-accent/15 transition-colors cursor-pointer"
+          onClick={() => openUrl('https://github.com/SoftwareSavants/verun/blob/main/ROADMAP.md')}
+        >
           <Sparkles class="w-3 h-3" />
           Track progress in our public roadmap
-        </div>
+        </button>
       </div>
     </div>
   )
