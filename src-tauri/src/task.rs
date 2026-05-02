@@ -3023,6 +3023,20 @@ async fn generate_session_title(first_message: &str, worktree_path: &str) -> Opt
 /// Parse a .verun.json config file. Returns (setup_hook, destroy_hook, start_command) if valid.
 /// Supports the structured format: { hooks: { setup, destroy }, startCommand }
 pub fn parse_verun_config_file(path: &str) -> Option<(String, String, String)> {
+    parse_verun_config_extended(path).map(|p| (p.setup, p.destroy, p.start))
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ParsedVerunConfig {
+    pub setup: String,
+    pub destroy: String,
+    pub start: String,
+    pub auto_safe_override: Option<crate::auto_safe::ProjectOverride>,
+}
+
+/// Extended parser that also pulls out `autoSafeOverride`. Returns `None` only
+/// when the file is unreadable / unparseable / completely empty.
+pub fn parse_verun_config_extended(path: &str) -> Option<ParsedVerunConfig> {
     let content = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&content).ok()?;
 
@@ -3042,13 +3056,23 @@ pub fn parse_verun_config_file(path: &str) -> Option<(String, String, String)> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let auto_safe_override: Option<crate::auto_safe::ProjectOverride> = v
+        .get("autoSafeOverride")
+        .and_then(|node| serde_json::from_value(node.clone()).ok());
 
-    // Only return if at least one field is set
-    if setup.is_empty() && destroy.is_empty() && start.is_empty() {
+    if setup.is_empty()
+        && destroy.is_empty()
+        && start.is_empty()
+        && auto_safe_override.is_none()
+    {
         return None;
     }
-
-    Some((setup, destroy, start))
+    Some(ParsedVerunConfig {
+        setup,
+        destroy,
+        start,
+        auto_safe_override,
+    })
 }
 
 pub fn epoch_ms() -> i64 {
@@ -3566,6 +3590,31 @@ fn run_git_ignoring_env(cwd: &std::path::Path, args: &[&str]) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_verun_config_extended_includes_auto_safe_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "hooks": { "setup": "echo s", "destroy": "" },
+              "startCommand": "",
+              "autoSafeOverride": {
+                "version": 1,
+                "websearch": { "mode": "allow" }
+              }
+            }"#,
+        )
+        .unwrap();
+        let parsed = crate::task::parse_verun_config_extended(path.to_str().unwrap()).unwrap();
+        assert_eq!(parsed.setup, "echo s");
+        assert!(parsed.auto_safe_override.is_some());
+        assert_eq!(
+            parsed.auto_safe_override.unwrap().websearch.unwrap().mode,
+            crate::auto_safe::WebSearchMode::Allow
+        );
+    }
 
     #[tokio::test]
     async fn live_policy_swap_changes_decisions_immediately() {

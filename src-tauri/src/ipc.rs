@@ -245,13 +245,16 @@ pub async fn export_project_config(
         None => None,
     };
 
-    let config = serde_json::json!({
+    let mut config = serde_json::json!({
         "hooks": {
             "setup": &project.setup_hook,
             "destroy": &project.destroy_hook,
         },
         "startCommand": &project.start_command,
     });
+    if let Some(po) = db::get_project_auto_safe_override(pool.inner(), &project.id).await? {
+        config["autoSafeOverride"] = serde_json::to_value(po).map_err(|e| e.to_string())?;
+    }
     let pretty = serde_json::to_string_pretty(&config).unwrap_or_default();
     let config_path = resolve_config_path(
         &project.repo_path,
@@ -274,6 +277,7 @@ fn resolve_config_path(repo_path: &str, task_worktree_path: Option<&str>) -> Str
 pub async fn import_project_config(
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
+    active: State<'_, ActiveMap>,
     project_id: String,
     task_id: Option<String>,
 ) -> Result<ImportedHooks, String> {
@@ -294,24 +298,36 @@ pub async fn import_project_config(
         &project.repo_path,
         task.as_ref().map(|t| t.worktree_path.as_str()),
     );
-    let (setup, destroy, start) = task::parse_verun_config_file(&config_path)
+    let parsed = task::parse_verun_config_extended(&config_path)
         .ok_or_else(|| "No .verun.json found or file is empty".to_string())?;
 
     db_tx
         .send(db::DbWrite::UpdateProjectHooks {
-            id: project_id,
-            setup_hook: setup.clone(),
-            destroy_hook: destroy.clone(),
-            start_command: start.clone(),
+            id: project_id.clone(),
+            setup_hook: parsed.setup.clone(),
+            destroy_hook: parsed.destroy.clone(),
+            start_command: parsed.start.clone(),
             auto_start: project.auto_start,
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
 
+    if let Some(po) = parsed.auto_safe_override {
+        let json = serde_json::to_string(&po).map_err(|e| e.to_string())?;
+        db_tx
+            .send(db::DbWrite::SetProjectAutoSafeOverride {
+                project_id: project_id.clone(),
+                json: Some(json),
+            })
+            .await
+            .map_err(|e| format!("DB write failed: {e}"))?;
+        reapply_policy_to_project_sessions(pool.inner(), active.inner(), &project_id).await?;
+    }
+
     Ok(ImportedHooks {
-        setup_hook: setup,
-        destroy_hook: destroy,
-        start_command: start,
+        setup_hook: parsed.setup,
+        destroy_hook: parsed.destroy,
+        start_command: parsed.start,
     })
 }
 
