@@ -544,7 +544,6 @@ pub struct ActiveProcess {
     pub auto_safe_policy: Arc<arc_swap::ArcSwap<crate::auto_safe::EffectivePolicy>>,
     /// Project this session belongs to. Lets policy-edit IPCs find the
     /// affected sessions for live `auto_safe_policy` updates.
-    #[allow(dead_code)] // wired up in ipc.rs reapply functions in subsequent tasks
     pub project_id: String,
     /// Which agent owns this process. Lets `abort_message` /
     /// `close_session` / app-exit dispatch on the trait without a DB read.

@@ -300,6 +300,11 @@ pub fn run() {
             ipc::set_trust_level,
             ipc::get_trust_level,
             ipc::get_audit_log,
+            ipc::get_auto_safe_policy,
+            ipc::set_auto_safe_policy,
+            ipc::get_project_auto_safe_override,
+            ipc::set_project_auto_safe_override,
+            ipc::parse_bash_pattern,
             // Git / Worktree
             ipc::get_diff,
             ipc::merge_branch,

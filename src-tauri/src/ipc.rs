@@ -1106,6 +1106,187 @@ pub async fn get_trust_level(
     db::get_trust_level(pool.inner(), &task_id).await
 }
 
+// ----------------------------- Auto-safe policy -----------------------------
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoSafePolicyResponse {
+    pub global: crate::auto_safe::GlobalPolicy,
+    pub defaults: crate::auto_safe::GlobalPolicy,
+}
+
+#[tauri::command]
+pub async fn get_auto_safe_policy(
+    pool: State<'_, SqlitePool>,
+) -> Result<AutoSafePolicyResponse, String> {
+    let global = db::get_or_seed_global_auto_safe_policy(pool.inner()).await?;
+    Ok(AutoSafePolicyResponse {
+        global,
+        defaults: crate::auto_safe::defaults(),
+    })
+}
+
+#[tauri::command]
+pub async fn set_auto_safe_policy(
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    active: State<'_, ActiveMap>,
+    policy: crate::auto_safe::GlobalPolicy,
+) -> Result<(), String> {
+    if policy.version != 1 {
+        return Err(format!("unsupported policy version {}", policy.version));
+    }
+    let json = serde_json::to_string(&policy).map_err(|e| e.to_string())?;
+    db_tx
+        .send(crate::db::DbWrite::SetGlobalAutoSafePolicy { json })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+    reapply_policy_to_all_sessions(pool.inner(), active.inner()).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_project_auto_safe_override(
+    pool: State<'_, SqlitePool>,
+    project_id: String,
+) -> Result<Option<crate::auto_safe::ProjectOverride>, String> {
+    crate::db::get_project_auto_safe_override(pool.inner(), &project_id).await
+}
+
+#[tauri::command]
+pub async fn set_project_auto_safe_override(
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    active: State<'_, ActiveMap>,
+    project_id: String,
+    override_value: Option<crate::auto_safe::ProjectOverride>,
+) -> Result<(), String> {
+    if let Some(po) = &override_value {
+        if po.version != 1 {
+            return Err(format!("unsupported override version {}", po.version));
+        }
+    }
+    let json = match override_value {
+        Some(po) => Some(serde_json::to_string(&po).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    db_tx
+        .send(crate::db::DbWrite::SetProjectAutoSafeOverride {
+            project_id: project_id.clone(),
+            json,
+        })
+        .await
+        .map_err(|e| format!("DB write failed: {e}"))?;
+    reapply_policy_to_project_sessions(pool.inner(), active.inner(), &project_id).await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedBashPattern {
+    pub program: String,
+    pub subcommand: Vec<String>,
+    pub flags: Vec<String>,
+    pub pipe_to_shell: bool,
+}
+
+#[tauri::command]
+pub fn parse_bash_pattern(text: String) -> Result<ParsedBashPattern, String> {
+    parse_bash_pattern_inner(&text)
+}
+
+pub(crate) fn parse_bash_pattern_inner(text: &str) -> Result<ParsedBashPattern, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("pattern must not be empty".into());
+    }
+    if let Some((left, right)) = trimmed.split_once('|') {
+        let right = right.trim();
+        if matches!(right, "sh" | "bash" | "zsh") {
+            let program = left
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| "pipe pattern missing program".to_string())?
+                .to_string();
+            return Ok(ParsedBashPattern {
+                program,
+                subcommand: vec![],
+                flags: vec![],
+                pipe_to_shell: true,
+            });
+        }
+        return Err("only `<program> | sh|bash|zsh` pipe patterns are supported".into());
+    }
+    let mut tokens = trimmed.split_whitespace();
+    let program = tokens.next().unwrap().to_string();
+    let mut subcommand = Vec::new();
+    let mut flags = Vec::new();
+    for tok in tokens {
+        if tok.starts_with('-') {
+            flags.push(tok.to_string());
+        } else {
+            subcommand.push(tok.to_string());
+        }
+    }
+    Ok(ParsedBashPattern {
+        program,
+        subcommand,
+        flags,
+        pipe_to_shell: false,
+    })
+}
+
+/// Recompute every active session's effective policy (uses current global
+/// + each session's project override). Called after a global policy edit.
+pub(crate) async fn reapply_policy_to_all_sessions(
+    pool: &SqlitePool,
+    active: &ActiveMap,
+) -> Result<(), String> {
+    use std::sync::Arc;
+    let global = crate::db::get_or_seed_global_auto_safe_policy(pool).await?;
+    // Snapshot project ids first to avoid holding the dashmap iterator across awaits.
+    let entries: Vec<(String, std::sync::Arc<arc_swap::ArcSwap<crate::auto_safe::EffectivePolicy>>)> =
+        active
+            .iter()
+            .map(|e| (e.value().project_id.clone(), e.value().auto_safe_policy.clone()))
+            .collect();
+    let mut by_project: std::collections::HashMap<String, std::sync::Arc<crate::auto_safe::EffectivePolicy>> =
+        std::collections::HashMap::new();
+    for (project_id, policy_swap) in entries {
+        let cached = by_project.get(&project_id).cloned();
+        let eff = match cached {
+            Some(e) => e,
+            None => {
+                let po = crate::db::get_project_auto_safe_override(pool, &project_id).await?;
+                let resolved = Arc::new(crate::auto_safe::resolve_effective(&global, po.as_ref()));
+                by_project.insert(project_id, resolved.clone());
+                resolved
+            }
+        };
+        policy_swap.store(eff);
+    }
+    Ok(())
+}
+
+/// Recompute the effective policy for sessions that belong to one project.
+/// Called after a project override edit.
+pub(crate) async fn reapply_policy_to_project_sessions(
+    pool: &SqlitePool,
+    active: &ActiveMap,
+    project_id: &str,
+) -> Result<(), String> {
+    use std::sync::Arc;
+    let global = crate::db::get_or_seed_global_auto_safe_policy(pool).await?;
+    let po = crate::db::get_project_auto_safe_override(pool, project_id).await?;
+    let eff = Arc::new(crate::auto_safe::resolve_effective(&global, po.as_ref()));
+    for entry in active.iter() {
+        if entry.value().project_id == project_id {
+            entry.value().auto_safe_policy.store(eff.clone());
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_audit_log(
     pool: State<'_, SqlitePool>,
@@ -3312,5 +3493,33 @@ mod tests {
         assert_eq!(returned.len(), 1);
         assert_eq!(cache.read().unwrap().len(), 1);
         assert_eq!(cache.read().unwrap()[0].id, "claude");
+    }
+
+    // ----- parse_bash_pattern -----
+
+    #[test]
+    fn parse_bash_pattern_program_subcommand_flags() {
+        let r = super::parse_bash_pattern_inner("git push --force").unwrap();
+        assert_eq!(r.program, "git");
+        assert_eq!(r.subcommand, vec!["push".to_string()]);
+        assert_eq!(r.flags, vec!["--force".to_string()]);
+        assert!(!r.pipe_to_shell);
+    }
+
+    #[test]
+    fn parse_bash_pattern_curl_pipe_sh() {
+        let r = super::parse_bash_pattern_inner("curl | sh").unwrap();
+        assert_eq!(r.program, "curl");
+        assert!(r.pipe_to_shell);
+    }
+
+    #[test]
+    fn parse_bash_pattern_empty_is_error() {
+        assert!(super::parse_bash_pattern_inner("   ").is_err());
+    }
+
+    #[test]
+    fn parse_bash_pattern_unsupported_pipe_is_error() {
+        assert!(super::parse_bash_pattern_inner("foo | tail").is_err());
     }
 }
