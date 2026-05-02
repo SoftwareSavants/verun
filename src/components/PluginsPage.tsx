@@ -1,8 +1,9 @@
 import { Component, For, Show, createMemo, createSignal, onMount } from 'solid-js'
-import { X, Search, RefreshCw } from 'lucide-solid'
+import { Search, RefreshCw, Puzzle } from 'lucide-solid'
 import { catalog, marketplaces, isSupported, isLoading, isInstalled, loadCatalog } from '../store/plugins'
-import { setShowPlugins, selectedProjectId } from '../store/ui'
+import { showPlugins, setShowPlugins, selectedProjectId } from '../store/ui'
 import { projects } from '../store/projects'
+import { Dialog } from './Dialog'
 import { PluginCard } from './PluginCard'
 
 type SortKey = 'installs' | 'name'
@@ -15,10 +16,6 @@ export const PluginsPage: Component = () => {
 
   onMount(() => { void loadCatalog() })
 
-  // When a project is selected we run installs from its worktree, which lets
-  // project / local scopes write to the right `.claude/settings.json`. With
-  // no project selected we restrict to user scope and run from the home dir
-  // so the CLI never falls back to writing into the wrong directory.
   const cwd = createMemo(() => {
     const pid = selectedProjectId()
     if (pid) {
@@ -28,6 +25,7 @@ export const PluginsPage: Component = () => {
     return ''
   })
   const allowProjectScope = createMemo(() => selectedProjectId() != null)
+  const showMarketplaceBadge = createMemo(() => marketplaces.length > 1)
 
   const filtered = createMemo(() => {
     const q = query().trim().toLowerCase()
@@ -57,91 +55,98 @@ export const PluginsPage: Component = () => {
   }
 
   return (
-    <div class="absolute inset-0 bg-bg z-20 flex flex-col">
-      <div class="flex items-center justify-between px-4 py-3 border-b-1 border-b-solid border-b-white/8">
-        <h1 class="text-lg font-medium">Plugins</h1>
-        <div class="flex items-center gap-2">
+    <Dialog open={showPlugins()} onClose={() => setShowPlugins(false)} width="min(92vw, 80rem)">
+      <div class="flex flex-col" style={{ 'min-height': '60vh', 'max-height': 'calc(100vh - 10rem)' }}>
+        {/* Consolidated header: title + search + controls in one row */}
+        <div class="flex items-center gap-3 mb-4">
+          <div class="flex items-center gap-2 shrink-0">
+            <Puzzle size={16} class="text-accent" />
+            <h2 class="text-sm font-semibold text-text-primary">Plugins</h2>
+          </div>
+          <Show when={isSupported() !== false}>
+            <div class="relative flex-1 min-w-0">
+              <Search class="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-text-dim" />
+              <input
+                type="text"
+                placeholder="Search plugins…"
+                class="input-base w-full pl-7 pr-3 py-1 text-[12px]"
+                value={query()}
+                onInput={e => setQuery(e.currentTarget.value)}
+              />
+            </div>
+            <label class="flex items-center gap-1.5 text-[11px] text-text-secondary shrink-0">
+              <input
+                type="checkbox"
+                checked={installedOnly()}
+                onChange={e => setInstalledOnly(e.currentTarget.checked)}
+                aria-label="Installed only"
+              />
+              Installed only
+            </label>
+            <select
+              class="input-base px-2 py-1 text-[11px] shrink-0"
+              value={sortKey()}
+              onChange={e => setSortKey(e.currentTarget.value as SortKey)}
+            >
+              <option value="installs">Most installed</option>
+              <option value="name">Name</option>
+            </select>
+          </Show>
           <button
-            class="p-1 rounded hover:bg-white/5"
+            class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 transition-colors"
             onClick={() => loadCatalog()}
             title="Refresh"
             disabled={isLoading()}
           >
-            <RefreshCw class={`w-4 h-4 ${isLoading() ? 'animate-spin' : ''}`} />
-          </button>
-          <button class="p-1 rounded hover:bg-white/5" onClick={() => setShowPlugins(false)} aria-label="Close">
-            <X class="w-4 h-4" />
+            <RefreshCw class={`w-3.5 h-3.5 ${isLoading() ? 'animate-spin' : ''}`} />
           </button>
         </div>
-      </div>
 
-      <Show when={isSupported() === false}>
-        <div class="p-8 text-center text-sm text-fg/60">
-          Update Claude Code to 2.0+ to use the plugin marketplace.
-        </div>
-      </Show>
-
-      <Show when={isSupported() !== false}>
-        <div class="px-4 py-3 flex items-center gap-3 flex-wrap border-b-1 border-b-solid border-b-white/8">
-          <div class="relative flex-1 min-w-60">
-            <Search class="w-4 h-4 absolute left-2 top-1/2 -translate-y-1/2 text-fg/40" />
-            <input
-              type="text"
-              placeholder="Search plugins…"
-              class="w-full pl-8 pr-3 py-1.5 rounded ring-1 ring-white/10 bg-bg text-sm focus:ring-accent focus:outline-none"
-              value={query()}
-              onInput={e => setQuery(e.currentTarget.value)}
-            />
-          </div>
-          <label class="flex items-center gap-1.5 text-sm text-fg/80">
-            <input
-              type="checkbox"
-              checked={installedOnly()}
-              onChange={e => setInstalledOnly(e.currentTarget.checked)}
-              aria-label="Installed only"
-            />
-            Installed only
-          </label>
-          <select
-            class="px-2 py-1.5 rounded ring-1 ring-white/10 bg-bg text-sm"
-            value={sortKey()}
-            onChange={e => setSortKey(e.currentTarget.value as SortKey)}
-          >
-            <option value="installs">Most installed</option>
-            <option value="name">Name</option>
-          </select>
-        </div>
-
-        <Show when={marketplaces.length > 1}>
-          <div class="px-4 py-2 flex items-center gap-2 flex-wrap border-b-1 border-b-solid border-b-white/8">
-            <span class="text-xs text-fg/50">Marketplaces:</span>
-            <For each={marketplaces}>
-              {mp => {
-                const active = () => marketplaceFilter().has(mp.name)
-                return (
-                  <button
-                    class={`px-2 py-0.5 rounded-full text-xs ring-1 ${active() ? 'ring-accent bg-accent/10 text-accent' : 'ring-white/10 hover:bg-white/5'}`}
-                    onClick={() => toggleMp(mp.name)}
-                  >
-                    {mp.name}
-                  </button>
-                )
-              }}
-            </For>
+        <Show when={isSupported() === false}>
+          <div class="p-8 text-center text-sm text-text-dim">
+            Update Claude Code to 2.0+ to use the plugin marketplace.
           </div>
         </Show>
 
-        <div class="flex-1 overflow-auto p-4">
-          <Show when={!isLoading() && filtered().length === 0}>
-            <p class="text-sm text-fg/60 text-center py-8">No plugins match your filters.</p>
+        <Show when={isSupported() !== false}>
+          <Show when={showMarketplaceBadge()}>
+            <div class="flex items-center gap-2 flex-wrap mb-3">
+              <span class="text-[10px] uppercase tracking-wider text-text-dim">Marketplaces</span>
+              <For each={marketplaces}>
+                {mp => {
+                  const active = () => marketplaceFilter().has(mp.name)
+                  return (
+                    <button
+                      class={`px-2 py-0.5 rounded-full text-[11px] ring-1 ${active() ? 'ring-accent bg-accent/10 text-accent' : 'ring-white/10 text-text-secondary hover:bg-white/5'}`}
+                      onClick={() => toggleMp(mp.name)}
+                    >
+                      {mp.name}
+                    </button>
+                  )
+                }}
+              </For>
+            </div>
           </Show>
-          <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
-            <For each={filtered()}>
-              {p => <PluginCard plugin={p} cwd={cwd()} allowProjectScope={allowProjectScope()} />}
-            </For>
+
+          <div class="flex-1 overflow-y-auto -mx-1 px-1">
+            <Show when={!isLoading() && filtered().length === 0}>
+              <p class="text-sm text-text-dim text-center py-8">No plugins match your filters.</p>
+            </Show>
+            <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
+              <For each={filtered()}>
+                {p => (
+                  <PluginCard
+                    plugin={p}
+                    cwd={cwd()}
+                    allowProjectScope={allowProjectScope()}
+                    showMarketplace={showMarketplaceBadge()}
+                  />
+                )}
+              </For>
+            </div>
           </div>
-        </div>
-      </Show>
-    </div>
+        </Show>
+      </div>
+    </Dialog>
   )
 }

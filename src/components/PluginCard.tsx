@@ -8,6 +8,10 @@ interface Props {
   cwd: string
   /** When false, only `user` scope is offered (no project context). */
   allowProjectScope: boolean
+  /** When true, render the marketplace name as a small badge near the install
+   * count. When false (single marketplace configured), it's hidden — every
+   * card would otherwise repeat the same string. */
+  showMarketplace: boolean
 }
 
 export const PluginCard: Component<Props> = (props) => {
@@ -20,19 +24,21 @@ export const PluginCard: Component<Props> = (props) => {
     props.allowProjectScope ? ['user', 'project', 'local'] : ['user']
 
   return (
-    <div class="ring-1 ring-white/8 rounded-lg p-4 flex flex-col gap-3 bg-bg">
+    <div class="ring-1 ring-white/8 rounded-lg p-4 flex flex-col gap-3 bg-white/2 hover:bg-white/4 transition-colors">
       <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0 flex-1">
-          <h3 class="font-medium truncate">{props.plugin.name}</h3>
-          <p class="text-xs text-fg/50 truncate">{props.plugin.marketplaceName}</p>
+        <h3 class="font-medium truncate min-w-0 flex-1">{props.plugin.name}</h3>
+        <div class="flex flex-col items-end gap-1 shrink-0 text-[11px] text-text-dim">
+          <Show when={props.plugin.installCount != null}>
+            <span>{props.plugin.installCount!.toLocaleString()} installs</span>
+          </Show>
+          <Show when={props.showMarketplace}>
+            <span class="px-1.5 py-0.5 rounded ring-1 ring-white/10 text-[10px]">
+              {props.plugin.marketplaceName}
+            </span>
+          </Show>
         </div>
-        <Show when={props.plugin.installCount != null}>
-          <span class="text-xs text-fg/60 shrink-0">
-            {props.plugin.installCount!.toLocaleString()} installs
-          </span>
-        </Show>
       </div>
-      <p class="text-sm text-fg/80 line-clamp-3">{props.plugin.description}</p>
+      <p class="text-sm text-text-secondary line-clamp-4">{props.plugin.description}</p>
       <div class="flex items-center gap-2 mt-auto">
         <Show
           when={!installed()}
@@ -69,7 +75,7 @@ export const PluginCard: Component<Props> = (props) => {
                 {scope()} <ChevronDown class="w-3 h-3" />
               </button>
               <Show when={scopeOpen()}>
-                <div class="absolute right-0 top-full mt-1 ring-1 ring-white/10 rounded bg-bg z-10 min-w-24">
+                <div class="absolute right-0 top-full mt-1 ring-1 ring-white/10 rounded bg-surface-2 z-10 min-w-24">
                   <For each={scopes()}>
                     {s => (
                       <button

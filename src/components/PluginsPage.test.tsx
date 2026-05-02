@@ -37,6 +37,7 @@ vi.mock('../store/plugins', () => {
 })
 
 vi.mock('../store/ui', () => ({
+  showPlugins: () => true,
   setShowPlugins: vi.fn(),
   selectedProjectId: () => null,
   addToast: vi.fn(),
