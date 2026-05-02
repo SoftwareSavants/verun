@@ -222,13 +222,13 @@ enum EnvelopeAction {
 /// <command-args>wassup</command-args>
 /// ```
 ///
-/// → Replace("/adapt wassup")
+/// → `Replace("/adapt wassup")`
 ///
 /// ```text
 /// <local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>
 /// ```
 ///
-/// → Drop (post-execution side-effect; the command itself was already shown
+/// → `Drop` (post-execution side-effect; the command itself was already shown
 ///   when the user typed it).
 ///
 /// ```text
@@ -236,7 +236,7 @@ enum EnvelopeAction {
 /// ...skill markdown body...
 /// ```
 ///
-/// → Drop (skill-body injection - the model needs it but the user doesn't).
+/// → `Drop` (skill-body injection - the model needs it but the user doesn't).
 fn classify_envelope(text: &str) -> EnvelopeAction {
     let trimmed = text.trim_start();
 
