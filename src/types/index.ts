@@ -476,3 +476,54 @@ export interface Problem {
   code?: string | number
   source: string         // 'typescript', 'eslint', etc.
 }
+
+// -- Auto-safe policy --
+
+export type ReadScope     = 'repo' | 'any' | 'ask'
+export type WriteScope    = 'worktree' | 'repo' | 'any' | 'ask'
+export type WebSearchMode = 'allow' | 'ask'
+export type WebFetchMode  = 'allow' | 'domains' | 'ask'
+export type McpMode       = 'allow' | 'servers' | 'ask'
+
+export interface BashPattern {
+  id: string
+  pattern: string
+  builtin?: boolean
+}
+
+export interface AutoSafePolicy {
+  version: 1
+  read:  { scope: ReadScope }
+  write: { scope: WriteScope }
+  websearch: { mode: WebSearchMode }
+  webfetch:  { mode: WebFetchMode, domains: string[] }
+  mcp:       { mode: McpMode, servers: string[] }
+  bash:      { patterns: BashPattern[] }
+}
+
+export interface AutoSafeProjectOverride {
+  version: 1
+  read?:  { scope: ReadScope }
+  write?: { scope: WriteScope }
+  websearch?: { mode: WebSearchMode }
+  webfetch?:  { mode: WebFetchMode, domains: string[] }
+  mcp?:       { mode: McpMode, servers: string[] }
+  bash?: { disabledGlobal: string[], extra: BashPattern[] }
+}
+
+export interface ParsedBashPattern {
+  program: string
+  subcommand: string[]
+  flags: string[]
+  pipeToShell: boolean
+}
+
+/**
+ * Hard-blocked Bash patterns. Always evaluated regardless of user policy.
+ * Surfaced in the UI as locked rows so users know what Verun protects.
+ */
+export const HARD_BLOCK_PATTERNS: ReadonlyArray<{ id: string, label: string }> = [
+  { id: 'worktree-prune',  label: 'git worktree prune' },
+  { id: 'worktree-remove', label: 'git worktree remove' },
+  { id: 'rm-verun',        label: 'rm .verun/*' },
+] as const

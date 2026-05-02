@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, AutoSafePolicy, AutoSafeProjectOverride, ParsedBashPattern } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 const seed = () => import('./seedData')
@@ -552,3 +552,30 @@ export interface MigrationReport {
 
 export const migrateLegacyAttachments = (): Promise<MigrationReport> =>
   invoke<MigrationReport>('migrate_legacy_attachments')
+
+// -- Auto-safe policy --
+
+export interface AutoSafePolicyResponse {
+  global: AutoSafePolicy
+  defaults: AutoSafePolicy
+}
+
+export const getAutoSafePolicy = (): Promise<AutoSafePolicyResponse> =>
+  invoke<AutoSafePolicyResponse>('get_auto_safe_policy')
+
+export const setAutoSafePolicy = (policy: AutoSafePolicy): Promise<void> =>
+  invoke<void>('set_auto_safe_policy', { policy })
+
+export const getProjectAutoSafeOverride = (
+  projectId: string,
+): Promise<AutoSafeProjectOverride | null> =>
+  invoke<AutoSafeProjectOverride | null>('get_project_auto_safe_override', { projectId })
+
+export const setProjectAutoSafeOverride = (
+  projectId: string,
+  overrideValue: AutoSafeProjectOverride | null,
+): Promise<void> =>
+  invoke<void>('set_project_auto_safe_override', { projectId, overrideValue })
+
+export const parseBashPattern = (text: string): Promise<ParsedBashPattern> =>
+  invoke<ParsedBashPattern>('parse_bash_pattern', { text })
