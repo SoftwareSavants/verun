@@ -1,7 +1,17 @@
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, vi, beforeEach } from 'vitest'
 import * as ipc from './ipc'
 
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}))
+
+import { invoke } from '@tauri-apps/api/core'
+
 describe('ipc', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset()
+  })
+
   test('all project functions are exported', () => {
     expect(typeof ipc.addProject).toBe('function')
     expect(typeof ipc.listProjects).toBe('function')
@@ -49,5 +59,25 @@ describe('ipc', () => {
     expect(typeof ipc.uploadAttachment).toBe('function')
     expect(typeof ipc.getBlob).toBe('function')
     expect(typeof ipc.getStorageStats).toBe('function')
+  })
+
+  describe('askSideQuestion', () => {
+    test('forwards camelCase args to ask_side_question and resolves to typed object', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ response: 'ok', synthetic: false })
+      const result = await ipc.askSideQuestion('s1', 'q?')
+      expect(invoke).toHaveBeenCalledWith('ask_side_question', { sessionId: 's1', question: 'q?' })
+      expect(result).toEqual({ response: 'ok', synthetic: false })
+    })
+
+    test('resolves to null when CLI cannot answer', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce(null)
+      const result = await ipc.askSideQuestion('s1', 'q?')
+      expect(result).toBeNull()
+    })
+
+    test('rejects when invoke throws', async () => {
+      vi.mocked(invoke).mockRejectedValueOnce(new Error('No active session'))
+      await expect(ipc.askSideQuestion('s1', 'q?')).rejects.toThrow('No active session')
+    })
   })
 })

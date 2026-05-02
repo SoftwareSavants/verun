@@ -11,6 +11,8 @@ import { MessageInput } from './MessageInput'
 import { ChatView } from './ChatView'
 import { SessionTerminal } from './SessionTerminal'
 import { ClaudeViewToggle } from './ClaudeViewToggle'
+import { SideQuestionPanel } from './SideQuestionPanel'
+import { sideQuestionPanelData } from '../store/sideQuestion'
 import { sessionViewMode } from '../store/sessionViewMode'
 import { canUseTerminalView } from '../lib/terminalMode'
 import { RightPanel } from './RightPanel'
@@ -814,6 +816,17 @@ export const TaskPanel: Component = () => {
         }}
       </Show>
       <QuickOpen />
+      <Show when={sideQuestionPanelData()} keyed>
+        {(p) => (
+          <SideQuestionPanel
+            sessionId={p.sessionId}
+            taskId={sessionById(p.sessionId)?.taskId}
+            prefill={p.prefill}
+            autoSubmit={p.autoSubmit}
+            openId={p.openId}
+          />
+        )}
+      </Show>
     </div>
   )
 }

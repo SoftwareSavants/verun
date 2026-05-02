@@ -476,3 +476,10 @@ export interface Problem {
   code?: string | number
   source: string         // 'typescript', 'eslint', etc.
 }
+
+// Side question (/btw) - ephemeral Q/A while a turn is mid-stream.
+// Q/A never enters conversation history nor `output_lines`.
+export interface SideQuestionResponse {
+  response: string
+  synthetic: boolean
+}

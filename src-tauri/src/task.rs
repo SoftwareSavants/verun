@@ -2955,6 +2955,91 @@ pub async fn get_session_context_usage(
     }
 }
 
+/// Response shape for an ephemeral `/btw` side question. `synthetic = true`
+/// signals a fallback canned reply (e.g. when the turn isn't far enough along
+/// to answer meaningfully).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SideQuestionResponse {
+    pub response: String,
+    pub synthetic: bool,
+}
+
+/// Build the inner `request` body for a `side_question` control_request.
+/// Pure (no I/O) so the wire shape can be asserted in unit tests.
+fn build_side_question_request(question: &str) -> serde_json::Value {
+    serde_json::json!({
+        "subtype": "side_question",
+        "question": question,
+    })
+}
+
+/// Parse the CLI's `control_response` payload for a `side_question` request.
+/// The Anthropic SDK envelope is `{"response": {"subtype": "success",
+/// "request_id": ..., "response": {"response": "...", "synthetic": false}}}`,
+/// but `stream.rs` already unwraps one `response` layer before resolving the
+/// oneshot, so what arrives here is the inner `{"response": ..., "synthetic": ...}`.
+/// `null` at `response` means the CLI couldn't answer (e.g. before the first
+/// turn completes on a resumed session): returns `Ok(None)`.
+fn parse_side_question_response(
+    value: &serde_json::Value,
+) -> Result<Option<SideQuestionResponse>, String> {
+    let response_field = value
+        .get("response")
+        .ok_or_else(|| "side_question reply missing `response` field".to_string())?;
+    if response_field.is_null() {
+        return Ok(None);
+    }
+    let response = response_field
+        .as_str()
+        .ok_or_else(|| "side_question reply `response` is not a string".to_string())?
+        .to_string();
+    let synthetic = value
+        .get("synthetic")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Ok(Some(SideQuestionResponse {
+        response,
+        synthetic,
+    }))
+}
+
+/// Ask Claude an ephemeral side question while a turn is mid-stream. The Q/A
+/// is not added to conversation history and never persisted to `output_lines`.
+/// Returns `Ok(None)` when the CLI returned a null response (e.g. nothing to
+/// answer about yet on a freshly resumed session).
+pub async fn send_side_question(
+    active: &ActiveMap,
+    pending: &PendingControlResponses,
+    session_id: &str,
+    question: &str,
+) -> Result<Option<SideQuestionResponse>, String> {
+    let stdin = active
+        .get(session_id)
+        .map(|proc| proc.stdin.clone())
+        .ok_or_else(|| "No active session".to_string())?;
+
+    let (request_id, rx) = send_control_request(
+        &stdin,
+        Some(pending),
+        build_side_question_request(question),
+    )
+    .await?;
+    let rx = rx.expect("pending map provided");
+
+    let result = tokio::time::timeout(Duration::from_secs(60), rx).await;
+
+    if result.is_err() {
+        pending.remove(&request_id);
+    }
+
+    match result {
+        Ok(Ok(Ok(v))) => parse_side_question_response(&v),
+        Ok(Ok(Err(e))) => Err(e),
+        Ok(Err(_)) => Err("Session closed before responding".to_string()),
+        Err(_) => Err("Timed out waiting for CLI response".to_string()),
+    }
+}
+
 fn title_generation_args(prompt: &str) -> Vec<String> {
     vec![
         "-p".into(),
@@ -3660,5 +3745,77 @@ mod tests {
         assert!(args.iter().any(|a| a == "test prompt"));
         assert!(args.iter().any(|a| a == "--no-session-persistence"));
         assert!(args.iter().any(|a| a == "haiku"));
+    }
+
+    #[test]
+    fn side_question_request_has_correct_wire_shape() {
+        let body = build_side_question_request("what was that var name?");
+        assert_eq!(body["subtype"], "side_question");
+        assert_eq!(body["question"], "what was that var name?");
+        // No extra top-level fields.
+        let obj = body.as_object().expect("object");
+        assert_eq!(obj.len(), 2);
+    }
+
+    // Note on shape: stream.rs unwraps one `response` layer before resolving
+    // the oneshot, so what `parse_side_question_response` sees is the inner
+    // `{"response": "...", "synthetic": ...}` object - not the SDK's outer
+    // `{"response": {"response": ..., "synthetic": ...}}` envelope.
+
+    #[test]
+    fn side_question_response_parses_full_payload() {
+        let v = serde_json::json!({ "response": "it was foo", "synthetic": false });
+        let parsed = parse_side_question_response(&v).unwrap();
+        assert_eq!(
+            parsed,
+            Some(SideQuestionResponse {
+                response: "it was foo".to_string(),
+                synthetic: false
+            })
+        );
+    }
+
+    #[test]
+    fn side_question_response_parses_synthetic_true() {
+        let v = serde_json::json!({ "response": "fallback", "synthetic": true });
+        let parsed = parse_side_question_response(&v).unwrap().unwrap();
+        assert!(parsed.synthetic);
+        assert_eq!(parsed.response, "fallback");
+    }
+
+    #[test]
+    fn side_question_response_defaults_synthetic_to_false_when_missing() {
+        let v = serde_json::json!({ "response": "ok" });
+        let parsed = parse_side_question_response(&v).unwrap().unwrap();
+        assert!(!parsed.synthetic);
+    }
+
+    #[test]
+    fn side_question_response_null_response_returns_none() {
+        let v = serde_json::json!({ "response": null, "synthetic": false });
+        let parsed = parse_side_question_response(&v).unwrap();
+        assert_eq!(parsed, None);
+    }
+
+    #[test]
+    fn side_question_response_missing_response_field_errors() {
+        let v = serde_json::json!({ "synthetic": true });
+        assert!(parse_side_question_response(&v).is_err());
+    }
+
+    #[test]
+    fn side_question_response_non_string_response_errors() {
+        let v = serde_json::json!({ "response": 42 });
+        assert!(parse_side_question_response(&v).is_err());
+    }
+
+    #[tokio::test]
+    async fn send_side_question_errors_when_session_not_active() {
+        let active = new_active_map();
+        let pending = new_pending_control_responses();
+        let err = send_side_question(&active, &pending, "no-such-session", "hi")
+            .await
+            .unwrap_err();
+        assert!(err.contains("No active session"), "got: {err}");
     }
 }

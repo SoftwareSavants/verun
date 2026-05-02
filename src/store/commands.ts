@@ -23,6 +23,7 @@ export const APP_COMMANDS: Command[] = [
   { name: 'new-session', description: 'Create a new session on the current task', category: 'app' },
   { name: 'clear', description: 'Clear the current session output', category: 'app' },
   { name: 'plan', description: 'Toggle plan mode', category: 'app' },
+  { name: 'btw', description: 'Ask an ephemeral side question (not added to history)', category: 'app' },
 ]
 
 const byKey = new Map<string, AgentSkill[]>()

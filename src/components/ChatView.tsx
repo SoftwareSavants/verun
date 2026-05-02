@@ -3,13 +3,14 @@ import { createStore, produce, reconcile } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { OutputItem, SessionStatus, AttachmentRef } from '../types'
-import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp } from 'lucide-solid'
+import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp, MessageCircleQuestion } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
 import { Popover } from './Popover'
 import { parseMentions } from '../lib/mentions'
 import * as ipc from '../lib/ipc'
+import { openSideQuestion, sideQuestionPanel } from '../store/sideQuestion'
 import { addToast, setSelectedTaskId, setSelectedSessionIdForTask } from '../store/ui'
 import { setSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, sendMessage, createSession } from '../store/sessions'
 import { planModeForSession, thinkingModeForSession, fastModeForSession } from '../store/sessionContext'
@@ -1286,15 +1287,64 @@ export const ChatView: Component<Props> = (props) => {
         </Show>
       </div>
       </div>
-      <Show when={!isAtBottom()}>
-        <button
-          class="absolute bottom-4 right-4 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-surface-2 ring-1 ring-outline/10 shadow-lg text-text-dim hover:text-text-secondary hover:ring-outline/20 transition-colors"
-          onClick={scrollToBottom}
-          title="Scroll to bottom"
-        >
-          <ChevronDown size={15} />
-        </button>
-      </Show>
+      {(() => {
+        const hasAiTurn = () => props.output.some((i) => i.kind !== 'userMessage')
+        const showBtw = () =>
+          isAtBottom()
+          && props.agentType === 'claude'
+          && !!props.sessionId
+          && hasAiTurn()
+          && sideQuestionPanel()?.sessionId !== props.sessionId
+        const showScroll = () => !isAtBottom()
+        // Both buttons share the same bottom-right pivot so they appear to
+        // morph out of/into the same anchor point instead of cross-fading
+        // as two competing rectangles.
+        const morph =
+          'absolute bottom-0 right-0 origin-bottom-right will-change-[transform,opacity] '
+          + 'transition-[opacity,transform] duration-[260ms] '
+          + 'ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
+        return (
+          <div class="absolute bottom-4 right-4 z-10 pointer-events-none">
+            <button
+              class={clsx(
+                morph,
+                'w-7 h-7 flex items-center justify-center rounded-full bg-surface-2 ring-1 ring-outline/10 shadow-lg text-text-dim hover:text-text-secondary hover:ring-outline/20',
+                showScroll()
+                  ? 'opacity-100 scale-100 pointer-events-auto'
+                  : 'opacity-0 scale-75 pointer-events-none',
+              )}
+              onClick={scrollToBottom}
+              title="Scroll to bottom"
+              aria-hidden={!showScroll()}
+              tabindex={showScroll() ? 0 : -1}
+            >
+              <ChevronDown size={15} />
+            </button>
+            <button
+              class={clsx(
+                morph,
+                'h-7 px-2.5 flex items-center gap-1.5 whitespace-nowrap rounded-full bg-surface-2 ring-1 ring-outline/10 shadow-lg text-text-dim hover:text-text-secondary hover:ring-outline/20 text-[11px]',
+                showBtw()
+                  ? 'opacity-100 scale-100 pointer-events-auto'
+                  : 'opacity-0 scale-75 pointer-events-none',
+              )}
+              onClick={() => {
+                const sid = props.sessionId
+                if (sid) openSideQuestion(sid)
+              }}
+              title="Ask Claude an ephemeral side question (does not enter conversation history)"
+              aria-hidden={!showBtw()}
+              tabindex={showBtw() ? 0 : -1}
+            >
+              <MessageCircleQuestion size={12} />
+              <span>
+                Ask sideways{' '}
+                <code class="ml-0.5 px-1 py-0.5 rounded bg-surface-3 text-text-dim text-[9px]">/btw</code>
+              </span>
+            </button>
+          </div>
+        )
+      })()}
       <Show when={viewerImage()}>
         {(img) => (
           <ImageViewer
