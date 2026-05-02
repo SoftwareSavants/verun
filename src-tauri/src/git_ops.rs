@@ -1302,6 +1302,18 @@ pub fn get_staged_diff_contents(
     worktree_path: &str,
     file_path: &str,
 ) -> Result<DiffContents, String> {
+    if is_binary_diff(
+        worktree_path,
+        &["diff", "--numstat", "--cached", "--", file_path],
+    ) {
+        return Ok(DiffContents {
+            path: file_path.to_string(),
+            status: "M".to_string(),
+            old_text: String::new(),
+            new_text: String::new(),
+            binary: true,
+        });
+    }
     let (old_text, old_exists) = read_at_rev(worktree_path, "HEAD", file_path);
 
     let out = git_read_only(worktree_path)
@@ -1333,6 +1345,18 @@ pub fn get_unstaged_diff_contents(
     worktree_path: &str,
     file_path: &str,
 ) -> Result<DiffContents, String> {
+    if is_binary_diff(
+        worktree_path,
+        &["diff", "--numstat", "--", file_path],
+    ) {
+        return Ok(DiffContents {
+            path: file_path.to_string(),
+            status: "M".to_string(),
+            old_text: String::new(),
+            new_text: String::new(),
+            binary: true,
+        });
+    }
     let out = git_read_only(worktree_path)
         .args(["show", &format!(":{file_path}")])
         .output();

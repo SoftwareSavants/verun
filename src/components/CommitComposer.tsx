@@ -36,16 +36,22 @@ export const CommitComposer: Component<Props> = (props) => {
     if (submitDisabled() && op !== 'amend') return
     if (op === 'amend' && (busy() || !msg().trim())) return
     setBusy(true)
+    let succeeded = false
     try {
       const m = msg()
       if (op === 'commit') await props.onCommit(m)
       else if (op === 'push') await props.onCommitAndPush(m)
       else await props.onAmend(m)
+      succeeded = true
+    } catch {
+      // Toast already surfaced by changesActions; preserve the draft.
+    } finally {
+      setBusy(false)
+    }
+    if (succeeded) {
       setMsg('')
       setAmendMode(false)
       setOpen(false)
-    } finally {
-      setBusy(false)
     }
   }
 

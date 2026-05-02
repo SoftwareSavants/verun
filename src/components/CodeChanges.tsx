@@ -139,11 +139,10 @@ export const CodeChanges: Component<Props> = (props) => {
 
   const onJumpToSection = (kind: SectionKind) => {
     localStorage.setItem(`verun:changes:section:${kind}:open`, 'true')
-    refreshTaskGit(props.taskId, { force: true })
   }
 
   const canCommit = () => conflicts().length === 0 && allEntries().length > 0
-  const canAmend = () => taskGit(props.taskId).commits.length > 0
+  const canAmend = () => taskGit(props.taskId).commits.length > 0 && conflicts().length === 0
   const amendDefault = () => taskGit(props.taskId).commits[0]?.message ?? ''
   const onCommit = (msg: string) => commitWithFallback(props.taskId, msg, stagedEntries().length > 0)
   const onCommitAndPush = async (msg: string) => commitAndPush(props.taskId, msg)

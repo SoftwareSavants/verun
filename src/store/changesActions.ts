@@ -1,5 +1,5 @@
 import { produce } from 'solid-js/store'
-import { setGitStates, refreshTaskGit, type TaskGitState } from './git'
+import { setGitStates, gitStates, refreshTaskGit, type TaskGitState } from './git'
 import * as ipc from '../lib/ipc'
 import { addToast } from './ui'
 import type { FileStatus } from '../types'
@@ -112,6 +112,11 @@ export async function stageConflictAsIs(taskId: string, path: string): Promise<v
 }
 
 export async function stageAll(taskId: string): Promise<void> {
+  const status = gitStates[taskId]?.status
+  if (status?.files.some(f => !!f.conflict)) {
+    addToast('Resolve conflicts before staging all', 'error')
+    return
+  }
   try {
     await ipc.gitStage(taskId, [])  // empty paths → stage all
   } catch (e: unknown) {
@@ -144,11 +149,20 @@ export async function commitWithFallback(
   hasStaged: boolean,
 ): Promise<void> {
   try {
-    if (!hasStaged) await ipc.gitStage(taskId, [])
+    if (!hasStaged) {
+      const status = gitStates[taskId]?.status
+      if (status?.files.some(f => !!f.conflict)) {
+        addToast('Resolve conflicts before committing', 'error')
+        throw new Error('conflicts')
+      }
+      await ipc.gitStage(taskId, [])
+    }
     await ipc.gitCommit(taskId, message)
   } catch (e: unknown) {
-    addToast(`Commit failed: ${e}`, 'error')
-    return
+    if ((e as Error)?.message !== 'conflicts') {
+      addToast(`Commit failed: ${e}`, 'error')
+    }
+    throw e
   }
   await refreshTaskGit(taskId, { force: true })
 }
@@ -158,7 +172,7 @@ export async function commitAndPush(taskId: string, message: string): Promise<vo
     await ipc.gitCommitAndPush(taskId, message)
   } catch (e: unknown) {
     addToast(`Commit & push failed: ${e}`, 'error')
-    return
+    throw e
   }
   await refreshTaskGit(taskId, { local: true, remote: true, force: true })
 }
@@ -168,7 +182,7 @@ export async function commitAmend(taskId: string, message: string): Promise<void
     await ipc.gitCommitAmend(taskId, message)
   } catch (e: unknown) {
     addToast(`Amend failed: ${e}`, 'error')
-    return
+    throw e
   }
   await refreshTaskGit(taskId, { force: true })
 }
