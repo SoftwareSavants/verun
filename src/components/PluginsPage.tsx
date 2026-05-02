@@ -85,7 +85,7 @@ export const PluginsPage: Component = () => {
               title="Sort"
             >
               <option value="installs">Most installed</option>
-              <option value="name">A-Z</option>
+              <option value="name">Alphabetical</option>
             </select>
             <label class="flex items-center gap-1.5 text-[11px] text-text-secondary shrink-0 cursor-pointer">
               <input
