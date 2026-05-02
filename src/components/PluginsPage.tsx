@@ -1,5 +1,5 @@
 import { Component, For, Show, createMemo, createSignal, onMount } from 'solid-js'
-import { Search, RefreshCw, Puzzle } from 'lucide-solid'
+import { Search, RefreshCw } from 'lucide-solid'
 import { catalog, marketplaces, isSupported, isLoading, isInstalled, loadCatalog } from '../store/plugins'
 import { showPlugins, setShowPlugins, selectedProjectId } from '../store/ui'
 import { projects } from '../store/projects'
@@ -7,11 +7,12 @@ import { Dialog } from './Dialog'
 import { PluginCard } from './PluginCard'
 
 type SortKey = 'installs' | 'name'
+type MarketplaceFilterValue = 'all' | string
 
 export const PluginsPage: Component = () => {
   const [query, setQuery] = createSignal('')
   const [installedOnly, setInstalledOnly] = createSignal(false)
-  const [marketplaceFilter, setMarketplaceFilter] = createSignal<Set<string>>(new Set())
+  const [marketplaceFilter, setMarketplaceFilter] = createSignal<MarketplaceFilterValue>('all')
   const [sortKey, setSortKey] = createSignal<SortKey>('installs')
 
   onMount(() => { void loadCatalog() })
@@ -33,7 +34,7 @@ export const PluginsPage: Component = () => {
     const onlyInstalled = installedOnly()
     let list = catalog.available.filter(p => {
       if (onlyInstalled && !isInstalled(p.pluginId)) return false
-      if (mpFilter.size > 0 && !mpFilter.has(p.marketplaceName)) return false
+      if (mpFilter !== 'all' && p.marketplaceName !== mpFilter) return false
       if (q && !p.name.toLowerCase().includes(q) && !p.description.toLowerCase().includes(q)) return false
       return true
     })
@@ -45,36 +46,48 @@ export const PluginsPage: Component = () => {
     return list
   })
 
-  const toggleMp = (name: string) => {
-    setMarketplaceFilter(prev => {
-      const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
-      return next
-    })
-  }
+  const selectClass =
+    'bg-surface-1 border border-border rounded-md px-2 py-1 text-[11px] text-text-primary outline-none focus:border-accent transition-colors shrink-0'
 
   return (
     <Dialog open={showPlugins()} onClose={() => setShowPlugins(false)} width="min(92vw, 80rem)">
       <div class="flex flex-col" style={{ 'min-height': '60vh', 'max-height': 'calc(100vh - 10rem)' }}>
-        {/* Consolidated header: title + search + controls in one row */}
-        <div class="flex items-center gap-3 mb-4">
-          <div class="flex items-center gap-2 shrink-0">
-            <Puzzle size={16} class="text-accent" />
-            <h2 class="text-sm font-semibold text-text-primary">Plugins</h2>
-          </div>
+        <div class="flex items-center gap-2 mb-4">
+          <h2 class="text-sm font-semibold text-text-primary shrink-0 mr-1">Plugins</h2>
           <Show when={isSupported() !== false}>
             <div class="relative flex-1 min-w-0">
               <Search class="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-text-dim" />
               <input
                 type="text"
                 placeholder="Search plugins…"
-                class="input-base w-full pl-7 pr-3 py-1 text-[12px]"
+                class="w-full bg-surface-1 border border-border rounded-md pl-7 pr-3 py-1 text-[12px] text-text-primary outline-none focus:border-accent transition-colors"
                 value={query()}
                 onInput={e => setQuery(e.currentTarget.value)}
               />
             </div>
-            <label class="flex items-center gap-1.5 text-[11px] text-text-secondary shrink-0">
+            <Show when={showMarketplaceBadge()}>
+              <select
+                class={selectClass}
+                value={marketplaceFilter()}
+                onChange={e => setMarketplaceFilter(e.currentTarget.value)}
+                title="Filter by marketplace"
+              >
+                <option value="all">All marketplaces</option>
+                <For each={marketplaces}>
+                  {mp => <option value={mp.name}>{mp.name}</option>}
+                </For>
+              </select>
+            </Show>
+            <select
+              class={selectClass}
+              value={sortKey()}
+              onChange={e => setSortKey(e.currentTarget.value as SortKey)}
+              title="Sort"
+            >
+              <option value="installs">Most installed</option>
+              <option value="name">Name</option>
+            </select>
+            <label class="flex items-center gap-1.5 text-[11px] text-text-secondary shrink-0 cursor-pointer">
               <input
                 type="checkbox"
                 checked={installedOnly()}
@@ -83,17 +96,9 @@ export const PluginsPage: Component = () => {
               />
               Installed only
             </label>
-            <select
-              class="input-base px-2 py-1 text-[11px] shrink-0"
-              value={sortKey()}
-              onChange={e => setSortKey(e.currentTarget.value as SortKey)}
-            >
-              <option value="installs">Most installed</option>
-              <option value="name">Name</option>
-            </select>
           </Show>
           <button
-            class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 transition-colors"
+            class="p-1 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3 transition-colors shrink-0"
             onClick={() => loadCatalog()}
             title="Refresh"
             disabled={isLoading()}
@@ -109,25 +114,6 @@ export const PluginsPage: Component = () => {
         </Show>
 
         <Show when={isSupported() !== false}>
-          <Show when={showMarketplaceBadge()}>
-            <div class="flex items-center gap-2 flex-wrap mb-3">
-              <span class="text-[10px] uppercase tracking-wider text-text-dim">Marketplaces</span>
-              <For each={marketplaces}>
-                {mp => {
-                  const active = () => marketplaceFilter().has(mp.name)
-                  return (
-                    <button
-                      class={`px-2 py-0.5 rounded-full text-[11px] ring-1 ${active() ? 'ring-accent bg-accent/10 text-accent' : 'ring-white/10 text-text-secondary hover:bg-white/5'}`}
-                      onClick={() => toggleMp(mp.name)}
-                    >
-                      {mp.name}
-                    </button>
-                  )
-                }}
-              </For>
-            </div>
-          </Show>
-
           <div class="flex-1 overflow-y-auto -mx-1 px-1">
             <Show when={!isLoading() && filtered().length === 0}>
               <p class="text-sm text-text-dim text-center py-8">No plugins match your filters.</p>
