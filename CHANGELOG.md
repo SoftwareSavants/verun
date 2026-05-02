@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Mid-loop API errors (e.g. ConnectionRefused after tools already ran) now surface a `Continue` button instead of `Retry`. It sends `continue` to the resumed session so Claude picks up from the persisted tool results instead of redoing the whole turn from the original prompt. `Retry in new session` is hidden in this case since it would discard the in-flight progress. Fresh-failure turns (no assistant content yet) keep the original Retry / Retry-in-new-session pair
 - Cmd+Alt+Left/Right now cycles between sessions in the current task when viewing a session (wraps at edges). The shortcut still cycles editor tabs when a file is open, mirroring Ctrl+Tab's view-aware behavior
 - File edits detected by the worktree watcher now trigger a debounced local git refresh, so status/commits/branch state update automatically as you change code without hitting GitHub
 - Local git refresh now uses non-locking read-only git commands, so viewing status no longer rewrites `.git/index` and self-triggers endless `git-local-changed` watcher loops

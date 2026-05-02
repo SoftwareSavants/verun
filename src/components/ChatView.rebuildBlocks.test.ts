@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { rebuildBlocks } from './ChatView'
+import { rebuildBlocks, turnHasProgress } from './ChatView'
 import type { OutputItem } from '../types'
 
 describe('rebuildBlocks turnEnd rendering', () => {
@@ -106,5 +106,55 @@ describe('rebuildBlocks codex plan/diff updates', () => {
     const diff = blocks.find(b => b.type === 'diff') as { type: 'diff'; diff: string } | undefined
     expect(diff).toBeDefined()
     expect(diff!.diff).toContain('+new line')
+  })
+})
+
+describe('turnHasProgress (mid-turn vs first-shot detection for retry)', () => {
+  test('returns false when error fires before any assistant content', () => {
+    const items: OutputItem[] = [
+      { kind: 'userMessage', text: 'hello', timestamp: 1 } as OutputItem,
+      { kind: 'errorMessage', message: 'API Error: ConnectionRefused' } as OutputItem,
+      { kind: 'turnEnd', status: 'error', error: 'API Error: ConnectionRefused' } as OutputItem,
+    ]
+    expect(turnHasProgress(items, 1)).toBe(false)
+  })
+
+  test('returns true when assistant text streamed before the error', () => {
+    const items: OutputItem[] = [
+      { kind: 'userMessage', text: 'hello', timestamp: 1 } as OutputItem,
+      { kind: 'text', text: 'partial response' } as OutputItem,
+      { kind: 'errorMessage', message: 'API Error: ConnectionRefused' } as OutputItem,
+    ]
+    expect(turnHasProgress(items, 1)).toBe(true)
+  })
+
+  test('returns true when tool calls happened before the error (mid-loop failure)', () => {
+    const items: OutputItem[] = [
+      { kind: 'userMessage', text: 'do work', timestamp: 1 } as OutputItem,
+      { kind: 'toolStart', tool: 'Read', input: '{}' } as OutputItem,
+      { kind: 'toolResult', text: 'file contents', isError: false } as OutputItem,
+      { kind: 'errorMessage', message: 'API Error: ConnectionRefused' } as OutputItem,
+    ]
+    expect(turnHasProgress(items, 1)).toBe(true)
+  })
+
+  test('returns true when only thinking was produced before the error', () => {
+    const items: OutputItem[] = [
+      { kind: 'userMessage', text: 'hello', timestamp: 1 } as OutputItem,
+      { kind: 'thinking', text: 'pondering' } as OutputItem,
+      { kind: 'errorMessage', message: 'API Error: ConnectionRefused' } as OutputItem,
+    ]
+    expect(turnHasProgress(items, 1)).toBe(true)
+  })
+
+  test('does not count progress from earlier completed turns', () => {
+    const items: OutputItem[] = [
+      { kind: 'userMessage', text: 'first', timestamp: 1 } as OutputItem,
+      { kind: 'text', text: 'first response' } as OutputItem,
+      { kind: 'turnEnd', status: 'completed' } as OutputItem,
+      { kind: 'userMessage', text: 'second', timestamp: 2 } as OutputItem,
+      { kind: 'errorMessage', message: 'API Error: ConnectionRefused' } as OutputItem,
+    ]
+    expect(turnHasProgress(items, 2)).toBe(false)
   })
 })
