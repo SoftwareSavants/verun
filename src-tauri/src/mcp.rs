@@ -112,6 +112,13 @@ pub enum McpAction {
         tail_bytes: i64,
         reply: oneshot::Sender<Result<AppLogsOutcome, String>>,
     },
+    CreateSession {
+        task_id: String,
+        agent_type: String,
+        model: Option<String>,
+        initial_message: Option<String>,
+        reply: oneshot::Sender<Result<CreateSessionOutcome, String>>,
+    },
 }
 
 /// Result returned by the worker after a successful `SpawnTask`. Carries
@@ -148,6 +155,15 @@ pub struct AppLogsOutcome {
     pub running: bool,
     pub output: String,
     pub bytes: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateSessionOutcome {
+    pub task_id: String,
+    pub session_id: String,
+    pub agent_type: String,
+    pub model: Option<String>,
+    pub initial_message_delivered: bool,
 }
 
 pub async fn dispatch(ctx: &McpContext, req: JsonRpcRequest) -> JsonRpcResponse {
@@ -191,8 +207,10 @@ fn tools_list_result() -> Value {
     json!({
         "tools": [
             tool_schema_list_tasks(),
+            tool_schema_list_sessions(),
             tool_schema_read_task_output(),
             tool_schema_send_message(),
+            tool_schema_create_session(),
             tool_schema_spawn_task(),
             tool_schema_app_start(),
             tool_schema_app_stop(),
@@ -243,8 +261,10 @@ async fn handle_tools_call(ctx: &McpContext, params: Value) -> Result<Value, Jso
 
     let text = match name {
         "verun_list_tasks" => tool_list_tasks(ctx, arguments).await?,
+        "verun_list_sessions" => tool_list_sessions(ctx, arguments).await?,
         "verun_read_task_output" => tool_read_task_output(ctx, arguments).await?,
         "verun_send_message" => tool_send_message(ctx, arguments).await?,
+        "verun_create_session" => tool_create_session(ctx, arguments).await?,
         "verun_spawn_task" => tool_spawn_task(ctx, arguments).await?,
         "verun_app_start" => tool_app_start(ctx, arguments).await?,
         "verun_app_stop" => tool_app_stop(ctx, arguments).await?,
@@ -337,6 +357,110 @@ async fn tool_list_tasks(ctx: &McpContext, args: Value) -> Result<String, JsonRp
     serde_json::to_string(&payload).map_err(internal)
 }
 
+async fn tool_list_sessions(ctx: &McpContext, args: Value) -> Result<String, JsonRpcError> {
+    let include_closed = args
+        .get("include_closed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(20)
+        .clamp(1, 100) as usize;
+
+    let task_id_owned: String = if let Some(s) = args.get("task_id").and_then(|v| v.as_str()) {
+        s.to_string()
+    } else {
+        ctx.caller_task_id
+            .clone()
+            .ok_or_else(|| JsonRpcError {
+                code: E_INVALID_PARAMS,
+                message: "verun_list_sessions: 'task_id' is required when VERUN_TASK_ID is not set in the MCP session.".into(),
+            })?
+    };
+    let task_id = task_id_owned.as_str();
+
+    let task = db::get_task(&ctx.pool, task_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| JsonRpcError {
+            code: E_INVALID_PARAMS,
+            message: format!(
+                "Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."
+            ),
+        })?;
+
+    let mut sessions = db::list_sessions_for_task(&ctx.pool, &task.id)
+        .await
+        .map_err(internal)?;
+    // running/idle first, newest-started first.
+    sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+
+    if include_closed {
+        let closed = db::list_closed_sessions_for_task(&ctx.pool, &task.id)
+            .await
+            .map_err(internal)?;
+        sessions.extend(closed);
+    }
+
+    let truncated = sessions.len() > limit;
+    let visible: Vec<&db::Session> = sessions.iter().take(limit).collect();
+
+    let items: Vec<Value> = visible
+        .iter()
+        .map(|s| {
+            json!({
+                "session_id": s.id,
+                "name": s.name,
+                "status": s.status,
+                "agent_type": s.agent_type,
+                "model": s.model,
+                "started_at": s.started_at,
+                "ended_at": s.ended_at,
+                "closed_at": s.closed_at,
+                "total_cost": s.total_cost,
+                "parent_session_id": s.parent_session_id,
+                "forked_at_message_uuid": s.forked_at_message_uuid,
+            })
+        })
+        .collect();
+
+    let payload = json!({
+        "task_id": task.id,
+        "items": items,
+        "truncated": truncated,
+    });
+
+    serde_json::to_string(&payload).map_err(internal)
+}
+
+fn tool_schema_list_sessions() -> Value {
+    json!({
+        "name": "verun_list_sessions",
+        "description": "List sessions for a Verun task so you can pick a specific session_id to read from or send to. By default lists the caller's task and only currently-running sessions; pass `task_id` to target a sibling task and `include_closed=true` to also include finished sessions. Returns up to `limit` items (default 20, max 100), running sessions first then closed (newest-first within each group). Use the returned `session_id` with verun_read_task_output or verun_send_message.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Optional. Task whose sessions to list. Defaults to the caller's task."
+                },
+                "include_closed": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "If true, include sessions whose status is 'closed'. Default false (only running/idle/etc)."
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "minimum": 1,
+                    "maximum": 100
+                }
+            }
+        }
+    })
+}
+
 fn tool_schema_read_task_output() -> Value {
     json!({
         "name": "verun_read_task_output",
@@ -393,14 +517,17 @@ async fn tool_read_task_output(ctx: &McpContext, args: Value) -> Result<String, 
             .map_err(internal)?
             .ok_or_else(|| JsonRpcError {
                 code: E_INVALID_PARAMS,
-                message: format!("Session '{session_id}' not found."),
+                message: format!(
+                    "Session '{session_id}' not found. Use verun_list_sessions with task_id='{}' to discover valid session IDs.",
+                    task.id
+                ),
             })?;
         if s.task_id != task.id {
             return Err(JsonRpcError {
                 code: E_INVALID_PARAMS,
                 message: format!(
-                    "Session '{}' belongs to a different task than '{}'.",
-                    s.id, task.id
+                    "Session '{}' belongs to task '{}', not '{}'. Either pass task_id='{}' or omit session_id to use the latest session in '{}'.",
+                    s.id, s.task_id, task.id, s.task_id, task.id
                 ),
             });
         }
@@ -411,7 +538,9 @@ async fn tool_read_task_output(ctx: &McpContext, args: Value) -> Result<String, 
             .map_err(internal)?
             .ok_or_else(|| JsonRpcError {
                 code: E_INVALID_PARAMS,
-                message: format!("Task '{task_id}' has no sessions yet."),
+                message: format!(
+                    "Task '{task_id}' has no sessions yet. Call verun_create_session with task_id='{task_id}' to start one."
+                ),
             })?
     };
 
@@ -514,14 +643,17 @@ async fn tool_send_message(ctx: &McpContext, args: Value) -> Result<String, Json
             .map_err(internal)?
             .ok_or_else(|| JsonRpcError {
                 code: E_INVALID_PARAMS,
-                message: format!("Session '{session_id}' not found."),
+                message: format!(
+                    "Session '{session_id}' not found. Use verun_list_sessions with task_id='{}' to discover valid session IDs.",
+                    task.id
+                ),
             })?;
         if s.task_id != task.id {
             return Err(JsonRpcError {
                 code: E_INVALID_PARAMS,
                 message: format!(
-                    "Session '{}' does not belong to task '{}'.",
-                    s.id, task.id
+                    "Session '{}' belongs to task '{}', not '{}'. Either pass task_id='{}' or omit session_id to use the latest session in '{}'.",
+                    s.id, s.task_id, task.id, s.task_id, task.id
                 ),
             });
         }
@@ -533,7 +665,7 @@ async fn tool_send_message(ctx: &McpContext, args: Value) -> Result<String, Json
             .ok_or_else(|| JsonRpcError {
                 code: E_INVALID_PARAMS,
                 message: format!(
-                    "Task '{task_id}' has no sessions yet - send a message via the Verun UI first to create one."
+                    "Task '{task_id}' has no sessions yet. Call verun_create_session with task_id='{task_id}' to start one."
                 ),
             })?
     };
@@ -607,6 +739,146 @@ fn tool_schema_spawn_task() -> Value {
             }
         }
     })
+}
+
+fn tool_schema_create_session() -> Value {
+    json!({
+        "name": "verun_create_session",
+        "description": "Start a fresh agent session inside an existing Verun task (same worktree, same branch) so you can have a clean conversation thread without losing the task's working state. Use this instead of verun_spawn_task when you want a new chat thread on the same code, not a new task. Defaults to the caller's task and the agent_type of the task's most recent session (falls back to the project's default when there is none). Pass `initial_message` to send a first prompt the moment the session is created. Returns the new session_id and the agent type that was actually used.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Optional. Task to attach the new session to. Defaults to the caller's task."
+                },
+                "agent_type": {
+                    "type": "string",
+                    "enum": ["claude", "codex", "cursor", "gemini", "opencode"],
+                    "description": "Optional. Agent runtime for the new session. Defaults to the task's existing agent_type, falling back to the project default."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional. Override the model for the new session (e.g. 'sonnet', 'opus', 'gpt-5')."
+                },
+                "initial_message": {
+                    "type": "string",
+                    "description": "Optional. Prompt delivered to the agent immediately after the session is created."
+                }
+            }
+        }
+    })
+}
+
+async fn tool_create_session(ctx: &McpContext, args: Value) -> Result<String, JsonRpcError> {
+    let task_id_owned: String = if let Some(s) = args.get("task_id").and_then(|v| v.as_str()) {
+        s.to_string()
+    } else {
+        ctx.caller_task_id
+            .clone()
+            .ok_or_else(|| JsonRpcError {
+                code: E_INVALID_PARAMS,
+                message: "verun_create_session: 'task_id' is required when VERUN_TASK_ID is not set in the MCP session.".into(),
+            })?
+    };
+    let task_id = task_id_owned.as_str();
+
+    let task = db::get_task(&ctx.pool, task_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| JsonRpcError {
+            code: E_INVALID_PARAMS,
+            message: format!(
+                "Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."
+            ),
+        })?;
+
+    // Resolve agent_type: explicit > task's latest session's agent > project default.
+    let agent_type = match args.get("agent_type").and_then(|v| v.as_str()) {
+        Some(a) => a.to_string(),
+        None => match db::latest_session_for_task(&ctx.pool, &task.id)
+            .await
+            .map_err(internal)?
+        {
+            Some(s) if !s.agent_type.is_empty() => s.agent_type,
+            _ => db::get_project(&ctx.pool, &task.project_id)
+                .await
+                .map_err(internal)?
+                .map(|p| p.default_agent_type)
+                .unwrap_or_else(|| "claude".into()),
+        },
+    };
+    if !matches!(
+        agent_type.as_str(),
+        "claude" | "codex" | "cursor" | "gemini" | "opencode"
+    ) {
+        return Err(JsonRpcError {
+            code: E_INVALID_PARAMS,
+            message: format!(
+                "verun_create_session: unknown agent_type '{agent_type}'. Valid values: claude, codex, cursor, gemini, opencode."
+            ),
+        });
+    }
+
+    let model = args
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let initial_message = match args.get("initial_message").and_then(|v| v.as_str()) {
+        Some(m) if m.trim().is_empty() => {
+            return Err(JsonRpcError {
+                code: E_INVALID_PARAMS,
+                message:
+                    "verun_create_session: 'initial_message' must not be empty when provided."
+                        .into(),
+            });
+        }
+        Some(m) => Some(m.to_string()),
+        None => None,
+    };
+
+    let actions = ctx.actions.as_ref().ok_or_else(|| JsonRpcError {
+        code: E_INTERNAL,
+        message:
+            "verun_create_session: server is not configured to perform side-effect actions."
+                .into(),
+    })?;
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    actions
+        .send(McpAction::CreateSession {
+            task_id: task.id.clone(),
+            agent_type: agent_type.clone(),
+            model: model.clone(),
+            initial_message,
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|e| JsonRpcError {
+            code: E_INTERNAL,
+            message: format!("verun_create_session: action queue closed: {e}"),
+        })?;
+
+    let outcome = reply_rx
+        .await
+        .map_err(|e| JsonRpcError {
+            code: E_INTERNAL,
+            message: format!("verun_create_session: worker dropped reply: {e}"),
+        })?
+        .map_err(|e| JsonRpcError {
+            code: E_INTERNAL,
+            message: e,
+        })?;
+
+    let payload = json!({
+        "task_id": outcome.task_id,
+        "session_id": outcome.session_id,
+        "agent": outcome.agent_type,
+        "model": outcome.model,
+        "initial_message_delivered": outcome.initial_message_delivered,
+    });
+    serde_json::to_string(&payload).map_err(internal)
 }
 
 async fn tool_spawn_task(ctx: &McpContext, args: Value) -> Result<String, JsonRpcError> {
@@ -1015,6 +1287,23 @@ pub async fn run_action_worker(app: tauri::AppHandle, mut rx: mpsc::Receiver<Mcp
                 let result = perform_app_logs(&app, &task_id, tail_bytes).await;
                 let _ = reply.send(result);
             }
+            McpAction::CreateSession {
+                task_id,
+                agent_type,
+                model,
+                initial_message,
+                reply,
+            } => {
+                let result = perform_create_session(
+                    &app,
+                    task_id,
+                    agent_type,
+                    model,
+                    initial_message,
+                )
+                .await;
+                let _ = reply.send(result);
+            }
         }
     }
 }
@@ -1280,6 +1569,84 @@ async fn perform_app_stop(
     })
 }
 
+async fn perform_create_session(
+    app: &tauri::AppHandle,
+    task_id: String,
+    agent_type: String,
+    model: Option<String>,
+    initial_message: Option<String>,
+) -> Result<CreateSessionOutcome, String> {
+    use tauri::Manager;
+
+    let pool = app.state::<SqlitePool>();
+    let db_tx = app.state::<crate::db::DbWriteTx>();
+
+    let task = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task '{task_id}' not found."))?;
+
+    let session = crate::task::create_session(
+        app,
+        db_tx.inner(),
+        task.id.clone(),
+        agent_type.clone(),
+        model.clone(),
+    )
+    .await?;
+
+    let mut delivered = false;
+    if let Some(msg) = initial_message {
+        let active = app.state::<crate::task::ActiveMap>();
+        let pending = app.state::<crate::task::PendingApprovals>();
+        let pending_meta = app.state::<crate::task::PendingApprovalMeta>();
+        let pending_ctrl = app.state::<crate::task::PendingControlResponses>();
+        let trust_level = crate::policy::TrustLevel::from_str(
+            &db::get_trust_level(pool.inner(), &task.id).await?,
+        );
+        let repo_path = db::get_repo_path_for_task(pool.inner(), &task.id).await?;
+        let result = crate::task::send_message(
+            app.clone(),
+            db_tx.inner(),
+            active.inner().clone(),
+            pending.inner().clone(),
+            pending_meta.inner().clone(),
+            pending_ctrl.inner().clone(),
+            crate::task::SendMessageParams {
+                session_id: session.id.clone(),
+                task_id: task.id.clone(),
+                project_id: task.project_id.clone(),
+                worktree_path: task.worktree_path.clone(),
+                repo_path,
+                port_offset: task.port_offset,
+                trust_level,
+                message: msg,
+                resume_session_id: None,
+                attachments: Vec::new(),
+                model: model.clone(),
+                plan_mode: false,
+                thinking_mode: false,
+                fast_mode: false,
+                task_name: task.name.clone(),
+                agent_type: agent_type.clone(),
+                external: true,
+            },
+        )
+        .await;
+        match result {
+            Ok(()) => delivered = true,
+            Err(e) => eprintln!("[verun-mcp] create_session: initial_message failed: {e}"),
+        }
+    }
+
+    Ok(CreateSessionOutcome {
+        task_id: task.id,
+        session_id: session.id,
+        agent_type,
+        model,
+        initial_message_delivered: delivered,
+    })
+}
+
 async fn perform_app_logs(
     app: &tauri::AppHandle,
     task_id: &str,
@@ -1480,6 +1847,7 @@ fn pre_approve_verun_in_claude_settings(worktree_path: &Path) -> std::io::Result
 const SAFE_AUTO_APPROVED_TOOLS: &[&str] = &[
     "verun_app_logs",
     "verun_list_tasks",
+    "verun_list_sessions",
     "verun_app_start",
     "verun_app_stop",
     "verun_app_restart",
@@ -2807,6 +3175,7 @@ mod tests {
         for tool in [
             "mcp__verun__verun_app_logs",
             "mcp__verun__verun_list_tasks",
+            "mcp__verun__verun_list_sessions",
             "mcp__verun__verun_app_start",
             "mcp__verun__verun_app_stop",
             "mcp__verun__verun_app_restart",
@@ -2816,6 +3185,7 @@ mod tests {
         // High-blast-radius tools must NOT be auto-approved.
         assert!(!allow.contains(&"mcp__verun__verun_send_message"));
         assert!(!allow.contains(&"mcp__verun__verun_create_task"));
+        assert!(!allow.contains(&"mcp__verun__verun_create_session"));
     }
 
     #[test]
@@ -3165,7 +3535,7 @@ mod tests {
         .await;
         let err = resp.error.unwrap();
         assert_eq!(err.code, E_INVALID_PARAMS);
-        assert!(err.message.contains("different task"));
+        assert!(err.message.contains("belongs to task"));
     }
 
     #[tokio::test]
@@ -3437,6 +3807,9 @@ mod tests {
                     McpAction::AppLogs { reply, .. } => {
                         let _ = reply.send(Err("not supported by this test worker".into()));
                     }
+                    McpAction::CreateSession { reply, .. } => {
+                        let _ = reply.send(Err("not supported by this test worker".into()));
+                    }
                 }
             }
         });
@@ -3556,7 +3929,7 @@ mod tests {
         let err = resp.error.expect("expected error");
         assert_eq!(err.code, E_INVALID_PARAMS);
         assert!(
-            err.message.contains("does not belong"),
+            err.message.contains("belongs to task"),
             "got: {}",
             err.message
         );
@@ -3823,6 +4196,9 @@ mod tests {
                         let _ = reply.send(Err("not supported by this test worker".into()));
                     }
                     McpAction::AppLogs { reply, .. } => {
+                        let _ = reply.send(Err("not supported by this test worker".into()));
+                    }
+                    McpAction::CreateSession { reply, .. } => {
                         let _ = reply.send(Err("not supported by this test worker".into()));
                     }
                 }
@@ -4242,6 +4618,9 @@ mod tests {
                     McpAction::SpawnTask { reply, .. } => {
                         let _ = reply.send(Err("not supported".into()));
                     }
+                    McpAction::CreateSession { reply, .. } => {
+                        let _ = reply.send(Err("not supported".into()));
+                    }
                 }
             }
         });
@@ -4615,5 +4994,316 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("server failed to rebind over stale socket");
+    }
+
+    // ----------------------------------------------------------------------
+    // verun_list_sessions
+    // ----------------------------------------------------------------------
+
+    fn call_list_sessions(args: Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/call".into(),
+            params: json!({ "name": "verun_list_sessions", "arguments": args }),
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_list_includes_verun_list_sessions() {
+        let pool = pool_with_schema().await;
+        let ctx = McpContext {
+            pool,
+            caller_task_id: None,
+            actions: None,
+        };
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/list".into(),
+            params: json!({}),
+        };
+        let resp = dispatch(&ctx, req).await;
+        let tools = resp.result.unwrap()["tools"].as_array().cloned().unwrap();
+        assert!(tools.iter().any(|t| t["name"] == "verun_list_sessions"));
+    }
+
+    #[tokio::test]
+    async fn list_sessions_defaults_to_caller_task_and_excludes_closed() {
+        let pool = pool_with_schema().await;
+        process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
+            .await
+            .unwrap();
+        // running session
+        process_write(&pool, DbWrite::CreateSession(session("s-running", "t-a", 2000)))
+            .await
+            .unwrap();
+        // closed session
+        let mut closed = session("s-closed", "t-a", 1500);
+        closed.status = "closed".into();
+        closed.closed_at = Some(2500);
+        process_write(&pool, DbWrite::CreateSession(closed))
+            .await
+            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::CloseSession {
+                id: "s-closed".into(),
+                closed_at: 2500,
+            },
+        )
+        .await
+        .unwrap();
+
+        let ctx = McpContext {
+            pool: pool.clone(),
+            caller_task_id: Some("t-a".into()),
+            actions: None,
+        };
+        let resp = dispatch(&ctx, call_list_sessions(json!({}))).await;
+        let payload: Value = serde_json::from_str(
+            resp.result.unwrap()["content"][0]["text"].as_str().unwrap(),
+        )
+        .unwrap();
+        let items = payload["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["session_id"], "s-running");
+        assert_eq!(items[0]["status"], "running");
+        // Trimmed projection: should include these fields, omit token columns.
+        assert!(items[0].get("agent_type").is_some());
+        assert!(items[0].get("started_at").is_some());
+        assert!(items[0].get("input_tokens").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_sessions_includes_closed_when_requested() {
+        let pool = pool_with_schema().await;
+        process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(session("s-r", "t-a", 2000)))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(session("s-c", "t-a", 1500)))
+            .await
+            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::CloseSession {
+                id: "s-c".into(),
+                closed_at: 2500,
+            },
+        )
+        .await
+        .unwrap();
+
+        let ctx = McpContext {
+            pool: pool.clone(),
+            caller_task_id: Some("t-a".into()),
+            actions: None,
+        };
+        let resp =
+            dispatch(&ctx, call_list_sessions(json!({ "include_closed": true }))).await;
+        let payload: Value = serde_json::from_str(
+            resp.result.unwrap()["content"][0]["text"].as_str().unwrap(),
+        )
+        .unwrap();
+        let items = payload["items"].as_array().unwrap();
+        let ids: Vec<&str> = items.iter().map(|i| i["session_id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"s-r"));
+        assert!(ids.contains(&"s-c"));
+    }
+
+    #[tokio::test]
+    async fn list_sessions_unknown_task_returns_helpful_error() {
+        let pool = pool_with_schema().await;
+        let ctx = McpContext {
+            pool,
+            caller_task_id: None,
+            actions: None,
+        };
+        let resp = dispatch(
+            &ctx,
+            call_list_sessions(json!({ "task_id": "t-nope" })),
+        )
+        .await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, E_INVALID_PARAMS);
+        assert!(err.message.contains("verun_list_tasks"));
+    }
+
+    #[tokio::test]
+    async fn list_sessions_without_caller_or_task_id_errors() {
+        let pool = pool_with_schema().await;
+        let ctx = McpContext {
+            pool,
+            caller_task_id: None,
+            actions: None,
+        };
+        let resp = dispatch(&ctx, call_list_sessions(json!({}))).await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, E_INVALID_PARAMS);
+        assert!(err.message.contains("VERUN_TASK_ID"));
+    }
+
+    // ----------------------------------------------------------------------
+    // verun_create_session
+    // ----------------------------------------------------------------------
+
+    fn call_create_session(args: Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/call".into(),
+            params: json!({ "name": "verun_create_session", "arguments": args }),
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_list_includes_verun_create_session() {
+        let pool = pool_with_schema().await;
+        let ctx = McpContext {
+            pool,
+            caller_task_id: None,
+            actions: None,
+        };
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/list".into(),
+            params: json!({}),
+        };
+        let resp = dispatch(&ctx, req).await;
+        let tools = resp.result.unwrap()["tools"].as_array().cloned().unwrap();
+        assert!(tools.iter().any(|t| t["name"] == "verun_create_session"));
+    }
+
+    #[tokio::test]
+    async fn create_session_unknown_agent_type_rejected() {
+        let pool = pool_with_schema().await;
+        process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel::<McpAction>(1);
+        let ctx = McpContext {
+            pool,
+            caller_task_id: Some("t-a".into()),
+            actions: Some(tx),
+        };
+        let resp = dispatch(
+            &ctx,
+            call_create_session(json!({ "agent_type": "bogus" })),
+        )
+        .await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, E_INVALID_PARAMS);
+        assert!(err.message.contains("unknown agent_type"));
+    }
+
+    #[tokio::test]
+    async fn create_session_empty_initial_message_rejected() {
+        let pool = pool_with_schema().await;
+        process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel::<McpAction>(1);
+        let ctx = McpContext {
+            pool,
+            caller_task_id: Some("t-a".into()),
+            actions: Some(tx),
+        };
+        let resp = dispatch(
+            &ctx,
+            call_create_session(json!({ "initial_message": "   " })),
+        )
+        .await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, E_INVALID_PARAMS);
+        assert!(err.message.contains("must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn create_session_unknown_task_returns_helpful_error() {
+        let pool = pool_with_schema().await;
+        let (tx, _rx) = mpsc::channel::<McpAction>(1);
+        let ctx = McpContext {
+            pool,
+            caller_task_id: None,
+            actions: Some(tx),
+        };
+        let resp = dispatch(
+            &ctx,
+            call_create_session(json!({ "task_id": "t-nope" })),
+        )
+        .await;
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, E_INVALID_PARAMS);
+        assert!(err.message.contains("verun_list_tasks"));
+    }
+
+    #[tokio::test]
+    async fn create_session_dispatches_action_to_worker() {
+        let pool = pool_with_schema().await;
+        process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::CreateSession(session("s-prev", "t-a", 1500)))
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = mpsc::channel::<McpAction>(2);
+        tokio::spawn(async move {
+            while let Some(a) = rx.recv().await {
+                if let McpAction::CreateSession {
+                    task_id,
+                    agent_type,
+                    model,
+                    initial_message,
+                    reply,
+                } = a
+                {
+                    let _ = reply.send(Ok(CreateSessionOutcome {
+                        task_id,
+                        session_id: "s-new".into(),
+                        agent_type,
+                        model,
+                        initial_message_delivered: initial_message.is_some(),
+                    }));
+                }
+            }
+        });
+
+        let ctx = McpContext {
+            pool,
+            caller_task_id: Some("t-a".into()),
+            actions: Some(tx),
+        };
+        let resp = dispatch(
+            &ctx,
+            call_create_session(json!({ "initial_message": "hello fresh" })),
+        )
+        .await;
+        let payload: Value = serde_json::from_str(
+            resp.result.unwrap()["content"][0]["text"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["task_id"], "t-a");
+        assert_eq!(payload["session_id"], "s-new");
+        assert_eq!(payload["initial_message_delivered"], true);
     }
 }
