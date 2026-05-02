@@ -16,8 +16,10 @@ section; per-project overrides win over globals at evaluation time.
 - Global settings define the baseline; per-project overrides take precedence
   per-category and per-bash-pattern.
 - Preserve the worktree-protection hard blocks (cannot be disabled).
-- Preserve the existing per-task `TrustLevel` (`normal` / `full_auto` /
-  `supervised`); user-policy only affects how `Normal` evaluates.
+- Rename the per-task `TrustLevel::Normal` to `TrustLevel::AutoSafe` (and the
+  string value `"normal"` → `"auto_safe"`) for consistency with the new
+  settings tab. The other levels (`full_auto`, `supervised`) are unchanged.
+  User-configured policy only affects how `AutoSafe` evaluates.
 
 ## Non-goals
 
@@ -32,7 +34,7 @@ section; per-project overrides win over globals at evaluation time.
 
 `policy.rs::evaluate` decides per tool category:
 
-| Tool category                         | Default decision in `Normal` trust level                     |
+| Tool category                         | Default decision in `AutoSafe` trust level (was `Normal`)    |
 | ------------------------------------- | ------------------------------------------------------------ |
 | `Read` / `Glob` / `Grep` / `LSP`      | Auto-allow if path inside repo, else require approval        |
 | `Edit` / `Write` / `NotebookEdit`     | Auto-allow if path inside worktree, else require approval    |
@@ -46,8 +48,9 @@ section; per-project overrides win over globals at evaluation time.
 `TrustLevel::FullAuto` overrides everything to auto-allow (after hard blocks).
 `TrustLevel::Supervised` overrides everything to require approval.
 
-This spec only changes the `Normal` path; `FullAuto` and `Supervised` keep
-their current behavior (full auto and full approval respectively).
+This spec only changes the `AutoSafe` (formerly `Normal`) path; `FullAuto`
+and `Supervised` keep their current behavior (full auto and full approval
+respectively).
 
 ## UX
 
@@ -353,6 +356,31 @@ Merge rules for computing `EffectivePolicy`:
   effective = (global.patterns - project.disabled_global) ∪ project.extra
   ```
   Locked patterns are never removed regardless of `disabled_global`.
+
+## TrustLevel rename
+
+`TrustLevel::Normal` → `TrustLevel::AutoSafe`. Affects:
+
+- `src-tauri/src/policy.rs`: enum variant, `from_str`, `as_str`, `from_u8`,
+  `to_u8` (numeric value `0` stays the same to avoid re-encoding stored
+  data), all match arms, all tests.
+- `src-tauri/src/db.rs`: schema default `'normal'` → `'auto_safe'`. A new
+  migration runs `UPDATE task_trust_levels SET trust_level = 'auto_safe'
+  WHERE trust_level = 'normal';` for backwards compatibility with existing
+  installs.
+- `src-tauri/src/ipc.rs`: `set_trust_level` accepts `auto_safe` (and rejects
+  the old `normal` string). The `get_trust_level` endpoint returns the new
+  value.
+- `src-tauri/src/task.rs`: any string defaults switched to `auto_safe`.
+- `src/types/index.ts`: `TrustLevel = 'normal' | ...` → `'auto_safe' | ...`.
+- All frontend call sites and UI labels updated. User-facing copy: "Auto-safe"
+  replaces "Normal" wherever the trust level is shown.
+- `policy_audit_log` rows already store decisions per call, not the trust
+  level - no migration needed there.
+
+The numeric encoding in the live `Arc<AtomicU8>` keeps `AutoSafe = 0`,
+`FullAuto = 1`, `Supervised = 2`. Only the string serialization changes,
+so live sessions across the upgrade keep evaluating correctly.
 
 ## Backend changes
 
