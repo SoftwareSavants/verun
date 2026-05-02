@@ -2109,12 +2109,16 @@ async fn handle_control_request(
     };
 
     // Evaluate policy — load trust level fresh so mid-run IPC edits apply.
+    // TODO(Task 9): replace inline defaults with the live ArcSwap policy.
+    let effective_policy =
+        crate::auto_safe::resolve_effective(&crate::auto_safe::defaults(), None);
     let result = policy::evaluate(
         &tool_name,
         &tool_input,
         worktree_path,
         repo_path,
         TrustLevel::from_atomic(trust_level),
+        &effective_policy,
     );
     let input_summary = policy::summarize_input(&tool_name, &tool_input);
 

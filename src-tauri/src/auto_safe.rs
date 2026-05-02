@@ -138,13 +138,20 @@ pub struct EffectivePolicy {
 
 /// IDs of built-in Bash deny patterns. Stable across versions so per-project
 /// `disabled_global` lists keep working when the global list shrinks/grows.
+/// Each id maps to a single program/subcommand so the matcher can be a simple
+/// "program + positional + flags" check; UI groups related patterns visually.
 pub const BUILTIN_PATTERN_IDS: &[(&str, &str)] = &[
     ("sudo", "sudo"),
-    ("ssh-scp", "ssh / scp"),
+    ("ssh", "ssh"),
+    ("scp", "scp"),
     ("rsync", "rsync"),
-    ("kill", "kill / pkill / killall"),
-    ("chmod-chown", "chmod / chown"),
-    ("docker-kubectl", "docker / kubectl"),
+    ("kill", "kill"),
+    ("pkill", "pkill"),
+    ("killall", "killall"),
+    ("chmod", "chmod"),
+    ("chown", "chown"),
+    ("docker", "docker"),
+    ("kubectl", "kubectl"),
     ("git-push-force", "git push --force"),
     ("git-reset-hard", "git reset --hard"),
     ("git-clean-f", "git clean -f"),

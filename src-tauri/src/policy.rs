@@ -97,14 +97,16 @@ pub struct PolicyResult {
 /// - `worktree_path`: the task's worktree directory (for write scoping)
 /// - `repo_path`: the project's repo directory (for read scoping)
 /// - `trust_level`: the task's trust level
+/// - `policy`: user-configured effective policy (read/write scopes, web/MCP
+///   modes, bash deny patterns)
 pub fn evaluate(
     tool_name: &str,
     tool_input: &serde_json::Value,
     worktree_path: &str,
     repo_path: &str,
     trust_level: TrustLevel,
+    policy: &crate::auto_safe::EffectivePolicy,
 ) -> PolicyResult {
-    // ExitPlanMode always requires approval — it's the plan review step
     if tool_name == "ExitPlanMode" {
         return PolicyResult {
             decision: PolicyDecision::RequireApproval,
@@ -113,7 +115,6 @@ pub fn evaluate(
     }
 
     // Hard blocks — always require approval regardless of trust level.
-    // Verun manages worktree lifecycle; Claude must never touch it.
     if tool_name == "Bash" {
         let command = tool_input
             .get("command")
@@ -127,7 +128,6 @@ pub fn evaluate(
         }
     }
 
-    // Trust level overrides
     match trust_level {
         TrustLevel::FullAuto => {
             return PolicyResult {
@@ -144,63 +144,92 @@ pub fn evaluate(
         TrustLevel::AutoSafe => {}
     }
 
+    use crate::auto_safe::{McpMode, ReadScope, WebFetchMode, WebSearchMode, WriteScope};
+
     match tool_name {
-        // Read-only tools — allowed within the project repo
-        "Read" | "Glob" | "Grep" | "LSP" => {
-            if let Some(path) = extract_path(tool_input) {
-                if is_path_within(&path, repo_path) {
-                    PolicyResult {
-                        decision: PolicyDecision::AutoAllow,
-                        reason: format!("read within project repo: {path}"),
+        "Read" | "Glob" | "Grep" | "LSP" => match policy.read.scope {
+            ReadScope::Any => PolicyResult {
+                decision: PolicyDecision::AutoAllow,
+                reason: "read scope = any".into(),
+            },
+            ReadScope::Ask => PolicyResult {
+                decision: PolicyDecision::RequireApproval,
+                reason: "read scope = ask".into(),
+            },
+            ReadScope::Repo => {
+                if let Some(path) = extract_path(tool_input) {
+                    if is_path_within(&path, repo_path) {
+                        PolicyResult {
+                            decision: PolicyDecision::AutoAllow,
+                            reason: format!("read within project repo: {path}"),
+                        }
+                    } else {
+                        PolicyResult {
+                            decision: PolicyDecision::RequireApproval,
+                            reason: format!("read outside project repo: {path}"),
+                        }
                     }
                 } else {
                     PolicyResult {
-                        decision: PolicyDecision::RequireApproval,
-                        reason: format!("read outside project repo: {path}"),
+                        decision: PolicyDecision::AutoAllow,
+                        reason: format!("{tool_name} with no file path"),
                     }
                 }
-            } else {
-                // No path in input (e.g. Grep with just a pattern) — allow
-                PolicyResult {
-                    decision: PolicyDecision::AutoAllow,
-                    reason: format!("{tool_name} with no file path"),
-                }
             }
-        }
+        },
 
-        // Write tools — only allowed within the worktree
         "Edit" | "Write" | "NotebookEdit" => {
-            if let Some(path) = extract_path(tool_input) {
-                if is_path_within(&path, worktree_path) {
-                    PolicyResult {
-                        decision: PolicyDecision::AutoAllow,
-                        reason: format!("write within worktree: {path}"),
-                    }
-                } else {
-                    PolicyResult {
-                        decision: PolicyDecision::RequireApproval,
-                        reason: format!("write outside worktree: {path}"),
-                    }
-                }
-            } else {
-                PolicyResult {
+            let path = extract_path(tool_input);
+            match policy.write.scope {
+                WriteScope::Any => PolicyResult {
+                    decision: PolicyDecision::AutoAllow,
+                    reason: "write scope = any".into(),
+                },
+                WriteScope::Ask => PolicyResult {
                     decision: PolicyDecision::RequireApproval,
-                    reason: format!("{tool_name} with no file path — cannot verify scope"),
-                }
+                    reason: "write scope = ask".into(),
+                },
+                WriteScope::Repo => match path {
+                    Some(p) if is_path_within(&p, repo_path) => PolicyResult {
+                        decision: PolicyDecision::AutoAllow,
+                        reason: format!("write within project repo: {p}"),
+                    },
+                    Some(p) => PolicyResult {
+                        decision: PolicyDecision::RequireApproval,
+                        reason: format!("write outside project repo: {p}"),
+                    },
+                    None => PolicyResult {
+                        decision: PolicyDecision::RequireApproval,
+                        reason: format!("{tool_name} with no file path — cannot verify scope"),
+                    },
+                },
+                WriteScope::Worktree => match path {
+                    Some(p) if is_path_within(&p, worktree_path) => PolicyResult {
+                        decision: PolicyDecision::AutoAllow,
+                        reason: format!("write within worktree: {p}"),
+                    },
+                    Some(p) => PolicyResult {
+                        decision: PolicyDecision::RequireApproval,
+                        reason: format!("write outside worktree: {p}"),
+                    },
+                    None => PolicyResult {
+                        decision: PolicyDecision::RequireApproval,
+                        reason: format!("{tool_name} with no file path — cannot verify scope"),
+                    },
+                },
             }
         }
 
-        // Bash — deny-list check, otherwise auto-allow with logging
         "Bash" => {
             let command = tool_input
                 .get("command")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            if let Some(pattern) = matches_deny_pattern(command) {
+            if let Some(pattern_id) = matches_user_patterns(command, &policy.bash_patterns) {
                 PolicyResult {
                     decision: PolicyDecision::RequireApproval,
-                    reason: format!("bash matches deny pattern: {pattern}"),
+                    reason: format!("bash matches deny pattern: {pattern_id}"),
                 }
             } else {
                 PolicyResult {
@@ -210,30 +239,318 @@ pub fn evaluate(
             }
         }
 
-        // Agent — sub-agent tools are evaluated individually
         "Agent" => PolicyResult {
             decision: PolicyDecision::AutoAllow,
             reason: "agent tool — sub-calls evaluated individually".into(),
         },
 
-        // MCP tools — unknown scope, require approval
-        name if name.starts_with("mcp__") => PolicyResult {
-            decision: PolicyDecision::RequireApproval,
-            reason: format!("MCP tool: {name}"),
+        name if name.starts_with("mcp__") => {
+            let server = name
+                .trim_start_matches("mcp__")
+                .split("__")
+                .next()
+                .unwrap_or("");
+            match policy.mcp.mode {
+                McpMode::Allow => PolicyResult {
+                    decision: PolicyDecision::AutoAllow,
+                    reason: "mcp mode = allow".into(),
+                },
+                McpMode::Ask => PolicyResult {
+                    decision: PolicyDecision::RequireApproval,
+                    reason: format!("MCP tool: {name}"),
+                },
+                McpMode::Servers => {
+                    if policy.mcp.servers.iter().any(|s| s == server) {
+                        PolicyResult {
+                            decision: PolicyDecision::AutoAllow,
+                            reason: format!("mcp server '{server}' in allowlist"),
+                        }
+                    } else {
+                        PolicyResult {
+                            decision: PolicyDecision::RequireApproval,
+                            reason: format!("mcp server '{server}' not in allowlist"),
+                        }
+                    }
+                }
+            }
+        }
+
+        "WebSearch" => match policy.websearch.mode {
+            WebSearchMode::Allow => PolicyResult {
+                decision: PolicyDecision::AutoAllow,
+                reason: "websearch = allow".into(),
+            },
+            WebSearchMode::Ask => PolicyResult {
+                decision: PolicyDecision::RequireApproval,
+                reason: "websearch = ask".into(),
+            },
         },
 
-        // Web tools — network access, require approval
-        "WebSearch" | "WebFetch" => PolicyResult {
-            decision: PolicyDecision::RequireApproval,
-            reason: format!("{tool_name} requires network access"),
+        "WebFetch" => match policy.webfetch.mode {
+            WebFetchMode::Allow => PolicyResult {
+                decision: PolicyDecision::AutoAllow,
+                reason: "webfetch = allow".into(),
+            },
+            WebFetchMode::Ask => PolicyResult {
+                decision: PolicyDecision::RequireApproval,
+                reason: "webfetch = ask".into(),
+            },
+            WebFetchMode::Domains => {
+                let url = tool_input.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                let host = parse_host(url).unwrap_or_default();
+                if !host.is_empty()
+                    && policy
+                        .webfetch
+                        .domains
+                        .iter()
+                        .any(|d| host_matches(&host, d))
+                {
+                    PolicyResult {
+                        decision: PolicyDecision::AutoAllow,
+                        reason: format!("webfetch host '{host}' in allowlist"),
+                    }
+                } else {
+                    PolicyResult {
+                        decision: PolicyDecision::RequireApproval,
+                        reason: format!("webfetch host '{host}' not in allowlist"),
+                    }
+                }
+            }
         },
 
-        // Unknown tools — conservative
         _ => PolicyResult {
             decision: PolicyDecision::RequireApproval,
             reason: format!("unknown tool: {tool_name}"),
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// URL host parsing for WebFetch domain match
+// ---------------------------------------------------------------------------
+
+fn parse_host(url: &str) -> Option<String> {
+    let after_scheme = url.find("://").map(|i| &url[i + 3..]).unwrap_or(url);
+    let host_with_userinfo = after_scheme.split(['/', '?', '#']).next()?;
+    let host = host_with_userinfo.rsplit('@').next().unwrap_or("");
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.split(':').next().unwrap_or("").to_string())
+    }
+}
+
+/// DNS-label suffix match. `host_matches("api.github.com", "github.com")` = true,
+/// `host_matches("notgithub.com", "github.com")` = false.
+fn host_matches(host: &str, domain: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    let d = domain.trim_end_matches('.').to_ascii_lowercase();
+    if d.is_empty() {
+        return false;
+    }
+    if h == d {
+        return true;
+    }
+    h.ends_with(&format!(".{d}"))
+}
+
+// ---------------------------------------------------------------------------
+// User-pattern Bash matcher
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct ParsedPattern<'a> {
+    /// Pattern display text (e.g. "git push --force"). Used as the
+    /// human-readable reason on a match.
+    label: &'a str,
+    program: String,
+    /// Subcommand words (positional args, in order) before any flags.
+    subcommand: Vec<String>,
+    /// Required flags (any leading-`-` token in the pattern).
+    flags: Vec<String>,
+    /// Special: pipe-to-shell (e.g. `curl | sh`).
+    pipe_to_shell: bool,
+}
+
+fn parse_user_pattern(p: &crate::auto_safe::BashPattern) -> Option<ParsedPattern<'_>> {
+    let text = p.pattern.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Some((left, right)) = text.split_once('|') {
+        let left = left.trim();
+        let right = right.trim();
+        if matches!(right, "sh" | "bash" | "zsh") {
+            let lhs_first = left.split_whitespace().next().unwrap_or("");
+            return Some(ParsedPattern {
+                label: &p.pattern,
+                program: lhs_first.to_string(),
+                subcommand: vec![],
+                flags: vec![],
+                pipe_to_shell: true,
+            });
+        }
+    }
+    let mut tokens = text.split_whitespace();
+    let program = tokens.next()?.to_string();
+    let mut subcommand = Vec::new();
+    let mut flags = Vec::new();
+    for tok in tokens {
+        if tok.starts_with('-') {
+            flags.push(tok.to_string());
+        } else {
+            subcommand.push(tok.to_string());
+        }
+    }
+    Some(ParsedPattern {
+        label: &p.pattern,
+        program,
+        subcommand,
+        flags,
+        pipe_to_shell: false,
+    })
+}
+
+fn matches_user_patterns(
+    command: &str,
+    patterns: &[crate::auto_safe::BashPattern],
+) -> Option<String> {
+    let parsed: Vec<ParsedPattern<'_>> = patterns.iter().filter_map(parse_user_pattern).collect();
+    if parsed.is_empty() {
+        return None;
+    }
+    let list: yash_syntax::syntax::List = command.parse().ok()?;
+    walk_user_match(&list, &parsed)
+}
+
+fn walk_user_match(
+    list: &yash_syntax::syntax::List,
+    patterns: &[ParsedPattern],
+) -> Option<String> {
+    for item in &list.0 {
+        let aol = &*item.and_or;
+        for pipeline in std::iter::once(&aol.first).chain(aol.rest.iter().map(|(_, p)| p)) {
+            if let Some(r) = walk_pipeline_user_match(pipeline, patterns) {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
+fn walk_pipeline_user_match(
+    pipeline: &yash_syntax::syntax::Pipeline,
+    patterns: &[ParsedPattern],
+) -> Option<String> {
+    use yash_syntax::syntax::Command;
+    if pipeline.commands.len() >= 2 {
+        let first = pipeline.commands.first().unwrap();
+        let last = pipeline.commands.last().unwrap();
+        if let (Command::Simple(f), Command::Simple(l)) = (first.as_ref(), last.as_ref()) {
+            let fp = f
+                .words
+                .first()
+                .map(|(w, _)| w.to_string())
+                .unwrap_or_default();
+            let lp = l
+                .words
+                .first()
+                .map(|(w, _)| w.to_string())
+                .unwrap_or_default();
+            if matches!(lp.as_str(), "sh" | "bash" | "zsh") {
+                for p in patterns {
+                    if p.pipe_to_shell && p.program == fp {
+                        return Some(p.label.to_string());
+                    }
+                }
+            }
+        }
+    }
+    for cmd in &pipeline.commands {
+        if let Some(r) = walk_command_user_match(cmd, patterns) {
+            return Some(r);
+        }
+    }
+    None
+}
+
+fn walk_command_user_match(
+    cmd: &yash_syntax::syntax::Command,
+    patterns: &[ParsedPattern],
+) -> Option<String> {
+    use yash_syntax::syntax::{Command, CompoundCommand};
+    match cmd {
+        Command::Simple(sc) => {
+            let args: Vec<String> = sc.words.iter().map(|(w, _)| w.to_string()).collect();
+            check_user_simple(&args, patterns)
+        }
+        Command::Compound(fcc) => match &fcc.command {
+            CompoundCommand::Subshell { body, .. } => walk_user_match(body, patterns),
+            CompoundCommand::Grouping(body) => walk_user_match(body, patterns),
+            _ => None,
+        },
+        Command::Function(_) => None,
+    }
+}
+
+fn check_user_simple(args: &[String], patterns: &[ParsedPattern]) -> Option<String> {
+    if args.is_empty() {
+        return None;
+    }
+    let (program, rest) = skip_wrappers(args);
+    let positional: Vec<&str> = rest
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(|s| s.as_str())
+        .collect();
+    let flags: Vec<&str> = rest
+        .iter()
+        .filter(|a| a.starts_with('-'))
+        .map(|s| s.as_str())
+        .collect();
+    for p in patterns {
+        if p.pipe_to_shell {
+            continue;
+        }
+        if program != p.program {
+            continue;
+        }
+        if positional.len() < p.subcommand.len() {
+            continue;
+        }
+        if !p
+            .subcommand
+            .iter()
+            .enumerate()
+            .all(|(i, w)| positional[i] == w.as_str())
+        {
+            continue;
+        }
+        if p.flags
+            .iter()
+            .all(|req| flag_present(&flags, req, &p.program))
+        {
+            return Some(p.label.to_string());
+        }
+    }
+    None
+}
+
+fn flag_present(present: &[&str], required: &str, program: &str) -> bool {
+    if present.contains(&required) {
+        return true;
+    }
+    if program == "git" && required == "--force" && present.contains(&"-f") {
+        return true;
+    }
+    if required == "-rf" {
+        // accept any rm-style flag combination that includes both r and f
+        let combined: String = present.iter().copied().collect();
+        let has_r = combined.contains('r') || present.contains(&"--recursive");
+        let has_f = combined.contains('f') || present.contains(&"--force");
+        return has_r && has_f;
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -272,18 +589,6 @@ fn is_path_within(path: &str, boundary: &str) -> bool {
     };
 
     canonical_path.starts_with(&canonical_boundary)
-}
-
-/// AST-based deny-pattern analysis for bash commands.
-/// Parses the command into a shell AST, walks every sub-command (including
-/// compounds, subshells, and chained commands), and checks each against
-/// deny rules. Returns the pattern name if any sub-command matches.
-fn matches_deny_pattern(command: &str) -> Option<&'static str> {
-    let list: yash_syntax::syntax::List = match command.parse() {
-        Ok(l) => l,
-        Err(_) => return Some("unparseable command"),
-    };
-    walk_list(&list)
 }
 
 /// Hard blocks that require approval regardless of trust level.
@@ -372,10 +677,6 @@ fn check_rm_verun(args: &[String]) -> Option<&'static str> {
 
 type CheckFn = fn(&[String]) -> Option<&'static str>;
 
-fn walk_list(list: &yash_syntax::syntax::List) -> Option<&'static str> {
-    walk_list_with(list, check_args)
-}
-
 fn walk_list_with(list: &yash_syntax::syntax::List, check: CheckFn) -> Option<&'static str> {
     for item in &list.0 {
         let aol = &*item.and_or;
@@ -392,21 +693,6 @@ fn walk_pipeline_with(
     pipeline: &yash_syntax::syntax::Pipeline,
     check: CheckFn,
 ) -> Option<&'static str> {
-    use yash_syntax::syntax::Command;
-    // curl/wget piped to shell (only for the full deny check, not hard blocks)
-    if pipeline.commands.len() >= 2 {
-        let first = pipeline.commands.first().unwrap();
-        let last = pipeline.commands.last().unwrap();
-        if let (Command::Simple(f), Command::Simple(l)) = (first.as_ref(), last.as_ref()) {
-            let fp = f.words.first().map(|(w, _)| w.to_string());
-            let lp = l.words.first().map(|(w, _)| w.to_string());
-            if matches!(fp.as_deref(), Some("curl" | "wget"))
-                && matches!(lp.as_deref(), Some("sh" | "bash" | "zsh"))
-            {
-                return Some("curl/wget piped to shell");
-            }
-        }
-    }
     for cmd in &pipeline.commands {
         if let Some(r) = walk_command_with(cmd, check) {
             return Some(r);
@@ -434,25 +720,6 @@ fn walk_command_with(cmd: &yash_syntax::syntax::Command, check: CheckFn) -> Opti
     }
 }
 
-// ---- Argument-level deny checks ----
-
-fn check_args(args: &[String]) -> Option<&'static str> {
-    let (program, rest) = skip_wrappers(args);
-    match program {
-        "git" => check_git(rest),
-        "gh" | "hub" => check_gh(rest),
-        "bash" | "sh" | "zsh" => check_shell_exec(rest),
-        "ssh" | "scp" => Some("ssh/scp"),
-        "rsync" => Some("rsync"),
-        "sudo" => Some("sudo"),
-        "kill" | "pkill" | "killall" => Some("kill"),
-        "chmod" | "chown" => Some("chmod/chown"),
-        "docker" | "kubectl" => Some("docker/kubectl"),
-        "rm" => check_rm(rest),
-        _ => None,
-    }
-}
-
 fn skip_wrappers(args: &[String]) -> (&str, &[String]) {
     let mut i = 0;
     loop {
@@ -473,162 +740,6 @@ fn skip_wrappers(args: &[String]) -> (&str, &[String]) {
         return ("", &[]);
     }
     (&args[i], &args[i + 1..])
-}
-
-fn check_git(args: &[String]) -> Option<&'static str> {
-    let filtered = strip_git_c_flag(args);
-    let strs: Vec<&str> = filtered.iter().map(|s| s.as_str()).collect();
-    let subcmd = strs.iter().find(|a| !a.starts_with('-'))?;
-    match *subcmd {
-        "push" => {
-            if has_long_flag(
-                &strs,
-                &[
-                    "--force",
-                    "--force-with-lease",
-                    "--force-if-includes",
-                    "--delete",
-                ],
-            ) || has_short_flag(&strs, 'f')
-            {
-                Some("git push --force/--delete")
-            } else {
-                None
-            }
-        }
-        "reset" => {
-            if has_long_flag(&strs, &["--hard"]) {
-                Some("git reset --hard")
-            } else {
-                None
-            }
-        }
-        "clean" => {
-            if has_short_flag(&strs, 'f') || has_long_flag(&strs, &["--force"]) {
-                Some("git clean")
-            } else {
-                None
-            }
-        }
-        "checkout" => {
-            if strs.contains(&"--") && strs.contains(&".") {
-                Some("git checkout (discard all)")
-            } else {
-                None
-            }
-        }
-        "branch" => {
-            if has_short_flag(&strs, 'D') {
-                Some("git branch force-delete")
-            } else if has_short_flag(&strs, 'd') || has_long_flag(&strs, &["--delete"]) {
-                Some("git branch delete")
-            } else {
-                None
-            }
-        }
-        "worktree" => {
-            let pos: Vec<&&str> = strs.iter().filter(|a| !a.starts_with('-')).collect();
-            match pos.get(1).map(|s| **s) {
-                Some("remove") => Some("git worktree remove"),
-                Some("prune") => Some("git worktree prune"),
-                _ => None,
-            }
-        }
-        "stash" => {
-            let pos: Vec<&&str> = strs.iter().filter(|a| !a.starts_with('-')).collect();
-            match pos.get(1).map(|s| **s) {
-                Some("drop") | Some("clear") => Some("git stash drop/clear"),
-                _ => None,
-            }
-        }
-        "tag" => {
-            if has_short_flag(&strs, 'd') || has_long_flag(&strs, &["--delete"]) {
-                Some("git tag delete")
-            } else {
-                None
-            }
-        }
-        "remote" => {
-            let pos: Vec<&&str> = strs.iter().filter(|a| !a.starts_with('-')).collect();
-            match pos.get(1).map(|s| **s) {
-                Some("remove") | Some("rm") => Some("git remote remove"),
-                _ => None,
-            }
-        }
-        "reflog" => {
-            let pos: Vec<&&str> = strs.iter().filter(|a| !a.starts_with('-')).collect();
-            match pos.get(1).map(|s| **s) {
-                Some("expire") | Some("delete") => Some("git reflog expire/delete"),
-                _ => None,
-            }
-        }
-        "gc" => {
-            if has_long_flag(&strs, &["--prune"]) || strs.iter().any(|s| s.starts_with("--prune="))
-            {
-                Some("git gc --prune")
-            } else {
-                None
-            }
-        }
-        "filter-branch" => Some("git filter-branch"),
-        "update-ref" => {
-            if has_short_flag(&strs, 'd') || has_long_flag(&strs, &["--delete"]) {
-                Some("git update-ref delete")
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-fn check_gh(args: &[String]) -> Option<&'static str> {
-    let strs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    match (strs.first(), strs.get(1)) {
-        (Some(&"repo"), Some(&"delete")) => Some("gh repo delete"),
-        (Some(&"release"), Some(&"delete")) => Some("gh release delete"),
-        _ => None,
-    }
-}
-
-fn check_rm(args: &[String]) -> Option<&'static str> {
-    let strs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let has_recursive = has_short_flag(&strs, 'r')
-        || has_short_flag(&strs, 'R')
-        || has_long_flag(&strs, &["--recursive"]);
-    let has_force = has_short_flag(&strs, 'f') || has_long_flag(&strs, &["--force"]);
-    if has_recursive && has_force {
-        let has_abs_path = strs
-            .iter()
-            .any(|a| !a.starts_with('-') && a.starts_with('/'));
-        if has_abs_path {
-            return Some("rm -rf with absolute path");
-        }
-    }
-    None
-}
-
-fn check_shell_exec(args: &[String]) -> Option<&'static str> {
-    for (i, arg) in args.iter().enumerate() {
-        if arg == "-c" {
-            if let Some(cmd_str) = args.get(i + 1) {
-                let unquoted = strip_outer_quotes(cmd_str);
-                return matches_deny_pattern(&unquoted);
-            }
-        }
-    }
-    None
-}
-
-// ---- Flag helpers ----
-
-fn has_long_flag(args: &[&str], flags: &[&str]) -> bool {
-    args.iter().any(|a| flags.contains(a))
-}
-
-fn has_short_flag(args: &[&str], ch: char) -> bool {
-    args.iter()
-        .any(|a| a.starts_with('-') && !a.starts_with("--") && a[1..].contains(ch))
 }
 
 fn strip_outer_quotes(s: &str) -> String {
@@ -678,6 +789,10 @@ mod tests {
     const WORKTREE: &str = "/tmp/project/.verun/worktrees/silly-penguin";
     const REPO: &str = "/tmp/project";
 
+    fn default_policy() -> crate::auto_safe::EffectivePolicy {
+        crate::auto_safe::resolve_effective(&crate::auto_safe::defaults(), None)
+    }
+
     // -- Trust level overrides --
 
     #[test]
@@ -688,6 +803,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -704,6 +820,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -716,6 +833,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -728,6 +846,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Supervised,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -743,6 +862,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         // Will fall through to string prefix check since paths don't exist
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
@@ -756,6 +876,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -768,6 +889,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -780,6 +902,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -794,6 +917,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -806,6 +930,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -818,13 +943,14 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
 
     #[test]
     fn write_no_path_requires_approval() {
-        let result = evaluate("Write", &json!({}), WORKTREE, REPO, TrustLevel::AutoSafe);
+        let result = evaluate("Write", &json!({}), WORKTREE, REPO, TrustLevel::AutoSafe, &default_policy());
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
 
@@ -838,6 +964,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -850,6 +977,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -862,6 +990,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -874,6 +1003,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -886,6 +1016,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git push --force"));
@@ -899,6 +1030,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -911,6 +1043,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -923,6 +1056,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -935,9 +1069,10 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
-        assert!(result.reason.contains("curl/wget piped to shell"));
+        assert!(result.reason.contains("curl | sh"));
     }
 
     #[test]
@@ -948,18 +1083,47 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
 
     #[test]
-    fn bash_rm_rf_relative_auto_allowed() {
+    fn bash_rm_rf_relative_requires_approval_by_default() {
+        // The new model lists `rm -rf` as a default deny pattern. Users who
+        // want the old "auto-allow rm -rf inside the worktree" behavior can
+        // remove the pattern from the global list (or per project).
         let result = evaluate(
             "Bash",
             &json!({"command": "rm -rf ./node_modules"}),
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+        assert!(result.reason.contains("rm -rf"));
+    }
+
+    #[test]
+    fn bash_rm_rf_can_be_disabled_per_project() {
+        let g = crate::auto_safe::defaults();
+        let po = crate::auto_safe::ProjectOverride {
+            version: 1,
+            bash: Some(crate::auto_safe::ProjectOverrideBash {
+                disabled_global: vec!["rm-rf".into()],
+                extra: vec![],
+            }),
+            ..Default::default()
+        };
+        let eff = crate::auto_safe::resolve_effective(&g, Some(&po));
+        let result = evaluate(
+            "Bash",
+            &json!({"command": "rm -rf ./node_modules"}),
+            WORKTREE,
+            REPO,
+            TrustLevel::AutoSafe,
+            &eff,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -972,6 +1136,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -984,6 +1149,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -996,6 +1162,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1010,6 +1177,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -1024,6 +1192,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("MCP tool"));
@@ -1039,6 +1208,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1051,6 +1221,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1065,6 +1236,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1143,441 +1315,6 @@ mod tests {
         assert!(summary.len() < 600);
     }
 
-    // -- Deny pattern: safe commands --
-
-    #[test]
-    fn deny_safe_commands() {
-        assert!(matches_deny_pattern("cargo build").is_none());
-        assert!(matches_deny_pattern("npm test").is_none());
-        assert!(matches_deny_pattern("ls -la").is_none());
-        assert!(matches_deny_pattern("git status").is_none());
-        assert!(matches_deny_pattern("git diff").is_none());
-        assert!(matches_deny_pattern("git log --oneline").is_none());
-        assert!(matches_deny_pattern("git add .").is_none());
-        assert!(matches_deny_pattern("git commit -m 'fix'").is_none());
-        assert!(matches_deny_pattern("git push").is_none());
-        assert!(matches_deny_pattern("git push origin main").is_none());
-        assert!(matches_deny_pattern("git branch -a").is_none());
-        assert!(matches_deny_pattern("git stash").is_none());
-        assert!(matches_deny_pattern("git stash pop").is_none());
-        assert!(matches_deny_pattern("git stash list").is_none());
-        assert!(matches_deny_pattern("git tag v1.0").is_none());
-        assert!(matches_deny_pattern("git remote -v").is_none());
-        assert!(matches_deny_pattern("git gc").is_none());
-        assert!(matches_deny_pattern("git worktree list").is_none());
-        assert!(matches_deny_pattern("git worktree add /tmp/wt branch").is_none());
-    }
-
-    // -- Deny pattern: git push variants --
-
-    #[test]
-    fn deny_git_push_force() {
-        assert_eq!(
-            matches_deny_pattern("git push --force"),
-            Some("git push --force/--delete")
-        );
-        assert_eq!(
-            matches_deny_pattern("git push -f origin main"),
-            Some("git push --force/--delete")
-        );
-        assert_eq!(
-            matches_deny_pattern("git push --force-with-lease"),
-            Some("git push --force/--delete")
-        );
-        assert_eq!(
-            matches_deny_pattern("git push --force-if-includes"),
-            Some("git push --force/--delete")
-        );
-        assert_eq!(
-            matches_deny_pattern("git push --delete origin branch"),
-            Some("git push --force/--delete")
-        );
-    }
-
-    // -- Deny pattern: git branch --
-
-    #[test]
-    fn deny_git_branch_delete() {
-        assert_eq!(
-            matches_deny_pattern("git branch -d my-feature"),
-            Some("git branch delete")
-        );
-        assert_eq!(
-            matches_deny_pattern("git branch --delete my-feature"),
-            Some("git branch delete")
-        );
-    }
-
-    #[test]
-    fn deny_git_branch_force_delete() {
-        assert_eq!(
-            matches_deny_pattern("git branch -D my-feature"),
-            Some("git branch force-delete")
-        );
-    }
-
-    #[test]
-    fn deny_git_branch_combined_flags() {
-        assert_eq!(
-            matches_deny_pattern("git branch -Dr origin/old"),
-            Some("git branch force-delete")
-        );
-    }
-
-    // -- Deny pattern: git worktree --
-
-    #[test]
-    fn deny_git_worktree_remove() {
-        assert_eq!(
-            matches_deny_pattern("git worktree remove /tmp/wt"),
-            Some("git worktree remove")
-        );
-        assert_eq!(
-            matches_deny_pattern("git worktree remove --force /tmp/wt"),
-            Some("git worktree remove")
-        );
-    }
-
-    #[test]
-    fn deny_git_worktree_prune() {
-        assert_eq!(
-            matches_deny_pattern("git worktree prune"),
-            Some("git worktree prune")
-        );
-    }
-
-    // -- Deny pattern: git reset/clean/checkout --
-
-    #[test]
-    fn deny_git_reset_hard() {
-        assert_eq!(
-            matches_deny_pattern("git reset --hard HEAD~1"),
-            Some("git reset --hard")
-        );
-    }
-
-    #[test]
-    fn deny_git_clean() {
-        assert_eq!(matches_deny_pattern("git clean -f"), Some("git clean"));
-        assert_eq!(matches_deny_pattern("git clean -fd"), Some("git clean"));
-        assert_eq!(matches_deny_pattern("git clean -fdx"), Some("git clean"));
-        assert_eq!(matches_deny_pattern("git clean --force"), Some("git clean"));
-    }
-
-    #[test]
-    fn deny_git_checkout_discard_all() {
-        assert_eq!(
-            matches_deny_pattern("git checkout -- ."),
-            Some("git checkout (discard all)")
-        );
-    }
-
-    // -- Deny pattern: new git operations --
-
-    #[test]
-    fn deny_git_stash_destructive() {
-        assert_eq!(
-            matches_deny_pattern("git stash drop"),
-            Some("git stash drop/clear")
-        );
-        assert_eq!(
-            matches_deny_pattern("git stash clear"),
-            Some("git stash drop/clear")
-        );
-        assert_eq!(
-            matches_deny_pattern("git stash drop stash@{0}"),
-            Some("git stash drop/clear")
-        );
-    }
-
-    #[test]
-    fn deny_git_tag_delete() {
-        assert_eq!(
-            matches_deny_pattern("git tag -d v1.0"),
-            Some("git tag delete")
-        );
-        assert_eq!(
-            matches_deny_pattern("git tag --delete v1.0"),
-            Some("git tag delete")
-        );
-    }
-
-    #[test]
-    fn deny_git_remote_remove() {
-        assert_eq!(
-            matches_deny_pattern("git remote remove origin"),
-            Some("git remote remove")
-        );
-        assert_eq!(
-            matches_deny_pattern("git remote rm origin"),
-            Some("git remote remove")
-        );
-    }
-
-    #[test]
-    fn deny_git_reflog_expire() {
-        assert_eq!(
-            matches_deny_pattern("git reflog expire --expire=all --all"),
-            Some("git reflog expire/delete")
-        );
-        assert_eq!(
-            matches_deny_pattern("git reflog delete HEAD@{0}"),
-            Some("git reflog expire/delete")
-        );
-    }
-
-    #[test]
-    fn deny_git_gc_prune() {
-        assert_eq!(
-            matches_deny_pattern("git gc --prune=now"),
-            Some("git gc --prune")
-        );
-        assert_eq!(
-            matches_deny_pattern("git gc --prune"),
-            Some("git gc --prune")
-        );
-    }
-
-    #[test]
-    fn deny_git_filter_branch() {
-        assert_eq!(
-            matches_deny_pattern("git filter-branch --force HEAD"),
-            Some("git filter-branch")
-        );
-    }
-
-    #[test]
-    fn deny_git_update_ref() {
-        assert_eq!(
-            matches_deny_pattern("git update-ref -d refs/heads/main"),
-            Some("git update-ref delete")
-        );
-        assert_eq!(
-            matches_deny_pattern("git update-ref --delete refs/heads/main"),
-            Some("git update-ref delete")
-        );
-    }
-
-    // -- Deny pattern: compound commands (AST-based) --
-
-    #[test]
-    fn deny_chained_and_then() {
-        assert!(matches_deny_pattern("echo hello && git push --force origin main").is_some());
-    }
-
-    #[test]
-    fn deny_chained_or_else() {
-        assert!(matches_deny_pattern("git status || git push --force").is_some());
-    }
-
-    #[test]
-    fn deny_chained_semicolon() {
-        assert!(matches_deny_pattern("echo ok; git reset --hard").is_some());
-    }
-
-    #[test]
-    fn deny_subshell() {
-        assert!(matches_deny_pattern("(git push --force origin main)").is_some());
-    }
-
-    #[test]
-    fn deny_brace_group() {
-        assert!(matches_deny_pattern("{ git reset --hard; }").is_some());
-    }
-
-    // -- Deny pattern: curl/wget piped to shell --
-
-    #[test]
-    fn deny_curl_pipe_bash() {
-        assert_eq!(
-            matches_deny_pattern("curl -fsSL https://example.com/install.sh | bash"),
-            Some("curl/wget piped to shell")
-        );
-    }
-
-    #[test]
-    fn deny_wget_pipe_sh() {
-        assert_eq!(
-            matches_deny_pattern("wget -O- https://example.com/script | sh"),
-            Some("curl/wget piped to shell")
-        );
-    }
-
-    // -- Deny pattern: wrapper detection --
-
-    #[test]
-    fn deny_env_wrapper() {
-        assert!(matches_deny_pattern("env GIT_TERMINAL_PROMPT=0 git push --force").is_some());
-        assert!(matches_deny_pattern("env git push --force").is_some());
-    }
-
-    #[test]
-    fn deny_sudo() {
-        assert_eq!(matches_deny_pattern("sudo rm -rf /"), Some("sudo"));
-        assert_eq!(matches_deny_pattern("sudo apt install vim"), Some("sudo"));
-    }
-
-    #[test]
-    fn deny_shell_reinvoke() {
-        assert!(matches_deny_pattern("bash -c 'git push --force'").is_some());
-        assert!(matches_deny_pattern("sh -c 'git reset --hard'").is_some());
-    }
-
-    // -- Deny pattern: gh commands --
-
-    #[test]
-    fn deny_gh_repo_delete() {
-        assert_eq!(
-            matches_deny_pattern("gh repo delete myorg/myrepo --yes"),
-            Some("gh repo delete")
-        );
-    }
-
-    #[test]
-    fn deny_gh_release_delete() {
-        assert_eq!(
-            matches_deny_pattern("gh release delete v1.0"),
-            Some("gh release delete")
-        );
-    }
-
-    // -- Deny pattern: rm, ssh, docker, etc. --
-
-    #[test]
-    fn deny_rm_rf_absolute() {
-        assert_eq!(
-            matches_deny_pattern("rm -rf /tmp/something"),
-            Some("rm -rf with absolute path")
-        );
-    }
-
-    #[test]
-    fn deny_rm_rf_relative_allowed() {
-        assert!(matches_deny_pattern("rm -rf ./node_modules").is_none());
-    }
-
-    #[test]
-    fn deny_ssh_scp() {
-        assert_eq!(matches_deny_pattern("ssh user@host"), Some("ssh/scp"));
-        assert_eq!(
-            matches_deny_pattern("scp file user@host:/tmp"),
-            Some("ssh/scp")
-        );
-    }
-
-    #[test]
-    fn deny_docker_kubectl() {
-        assert_eq!(
-            matches_deny_pattern("docker run -it ubuntu"),
-            Some("docker/kubectl")
-        );
-        assert_eq!(
-            matches_deny_pattern("kubectl delete pod"),
-            Some("docker/kubectl")
-        );
-    }
-
-    #[test]
-    fn deny_kill() {
-        assert_eq!(matches_deny_pattern("kill -9 1234"), Some("kill"));
-        assert_eq!(matches_deny_pattern("pkill -f node"), Some("kill"));
-        assert_eq!(matches_deny_pattern("killall node"), Some("kill"));
-    }
-
-    #[test]
-    fn deny_chmod_chown() {
-        assert_eq!(
-            matches_deny_pattern("chmod 777 /tmp/file"),
-            Some("chmod/chown")
-        );
-        assert_eq!(
-            matches_deny_pattern("chown root:root /tmp/file"),
-            Some("chmod/chown")
-        );
-    }
-
-    // -- Integration: evaluate() with Bash tool --
-
-    #[test]
-    fn bash_git_branch_delete_requires_approval() {
-        let result = evaluate(
-            "Bash",
-            &json!({"command": "git branch -d my-feature"}),
-            WORKTREE,
-            REPO,
-            TrustLevel::AutoSafe,
-        );
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
-        assert!(result.reason.contains("git branch delete"));
-    }
-
-    #[test]
-    fn bash_git_branch_force_delete_requires_approval() {
-        let result = evaluate(
-            "Bash",
-            &json!({"command": "git branch -D my-feature"}),
-            WORKTREE,
-            REPO,
-            TrustLevel::AutoSafe,
-        );
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
-        assert!(result.reason.contains("git branch force-delete"));
-    }
-
-    #[test]
-    fn bash_git_worktree_remove_requires_approval() {
-        let result = evaluate(
-            "Bash",
-            &json!({"command": "git worktree remove /tmp/some-worktree"}),
-            WORKTREE,
-            REPO,
-            TrustLevel::AutoSafe,
-        );
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
-        assert!(result.reason.contains("git worktree remove"));
-    }
-
-    #[test]
-    fn bash_git_worktree_prune_requires_approval() {
-        let result = evaluate(
-            "Bash",
-            &json!({"command": "git worktree prune"}),
-            WORKTREE,
-            REPO,
-            TrustLevel::AutoSafe,
-        );
-        assert_eq!(result.decision, PolicyDecision::RequireApproval);
-        assert!(result.reason.contains("git worktree prune"));
-    }
-
-    #[test]
-    fn bash_git_branch_list_auto_allowed() {
-        let result = evaluate(
-            "Bash",
-            &json!({"command": "git branch -a"}),
-            WORKTREE,
-            REPO,
-            TrustLevel::AutoSafe,
-        );
-        assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
-    }
-
-    // -- Flag helpers --
-
-    #[test]
-    fn has_short_flag_combined() {
-        assert!(has_short_flag(&["-Df"], 'D'));
-        assert!(has_short_flag(&["-Df"], 'f'));
-        assert!(!has_short_flag(&["-Df"], 'x'));
-        assert!(!has_short_flag(&["--delete"], 'd'));
-    }
-
-    #[test]
-    fn has_long_flag_exact() {
-        assert!(has_long_flag(&["--force", "origin"], &["--force"]));
-        assert!(!has_long_flag(&["-f", "origin"], &["--force"]));
-    }
-
     // =====================================================================
     // Hard blocks — worktree ops & .verun deletion (all trust levels)
     // =====================================================================
@@ -1592,6 +1329,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains("hard-blocked"));
@@ -1606,6 +1344,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains("hard-blocked"));
@@ -1619,6 +1358,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Supervised,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1631,6 +1371,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains("hard-blocked"));
@@ -1644,6 +1385,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::AutoSafe,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains("hard-blocked"));
@@ -1657,6 +1399,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1671,6 +1414,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1683,6 +1427,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1695,13 +1440,9 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
-    }
-
-    #[test]
-    fn deny_git_c_push_force() {
-        assert!(matches_deny_pattern("git -C /other/repo push --force").is_some());
     }
 
     // -- .verun directory deletion --
@@ -1714,6 +1455,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains(".verun"));
@@ -1727,6 +1469,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1739,6 +1482,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1751,6 +1495,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1763,6 +1508,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1777,6 +1523,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1789,6 +1536,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1801,6 +1549,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1813,6 +1562,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1825,6 +1575,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1837,6 +1588,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1851,6 +1603,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1863,6 +1616,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1875,6 +1629,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1887,6 +1642,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1899,6 +1655,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1911,6 +1668,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1925,6 +1683,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1937,6 +1696,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1949,6 +1709,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1963,6 +1724,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -1975,6 +1737,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -1987,6 +1750,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -1999,6 +1763,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2011,6 +1776,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2023,6 +1789,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2035,6 +1802,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2047,7 +1815,207 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            &default_policy(),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    // -- New EffectivePolicy-driven decisions --
+
+    #[test]
+    fn auto_safe_websearch_allow_when_policy_says_allow() {
+        let mut p = crate::auto_safe::defaults();
+        p.websearch.mode = crate::auto_safe::WebSearchMode::Allow;
+        let eff = crate::auto_safe::resolve_effective(&p, None);
+        let result = evaluate(
+            "WebSearch",
+            &json!({"query": "verun"}),
+            "/tmp",
+            "/tmp",
+            TrustLevel::AutoSafe,
+            &eff,
+        );
+        assert_eq!(result.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn auto_safe_webfetch_domain_match_is_dns_label_suffix() {
+        let mut p = crate::auto_safe::defaults();
+        p.webfetch.mode = crate::auto_safe::WebFetchMode::Domains;
+        p.webfetch.domains = vec!["github.com".into()];
+        let eff = crate::auto_safe::resolve_effective(&p, None);
+
+        let allow_sub = evaluate(
+            "WebFetch",
+            &json!({"url": "https://api.github.com/repos/foo"}),
+            "/tmp",
+            "/tmp",
+            TrustLevel::AutoSafe,
+            &eff,
+        );
+        assert_eq!(allow_sub.decision, PolicyDecision::AutoAllow);
+
+        let deny_lookalike = evaluate(
+            "WebFetch",
+            &json!({"url": "https://notgithub.com/x"}),
+            "/tmp",
+            "/tmp",
+            TrustLevel::AutoSafe,
+            &eff,
+        );
+        assert_eq!(deny_lookalike.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn auto_safe_mcp_server_allowlist() {
+        let mut p = crate::auto_safe::defaults();
+        p.mcp.mode = crate::auto_safe::McpMode::Servers;
+        p.mcp.servers = vec!["atlassian".into()];
+        let eff = crate::auto_safe::resolve_effective(&p, None);
+
+        let allow = evaluate(
+            "mcp__atlassian__search",
+            &json!({}),
+            "/tmp",
+            "/tmp",
+            TrustLevel::AutoSafe,
+            &eff,
+        );
+        assert_eq!(allow.decision, PolicyDecision::AutoAllow);
+
+        let deny = evaluate(
+            "mcp__apollo__people_match",
+            &json!({}),
+            "/tmp",
+            "/tmp",
+            TrustLevel::AutoSafe,
+            &eff,
+        );
+        assert_eq!(deny.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn auto_safe_read_scope_any_allows_outside_repo() {
+        let mut p = crate::auto_safe::defaults();
+        p.read.scope = crate::auto_safe::ReadScope::Any;
+        let eff = crate::auto_safe::resolve_effective(&p, None);
+        let r = evaluate(
+            "Read",
+            &json!({"file_path": "/etc/passwd"}),
+            WORKTREE,
+            REPO,
+            TrustLevel::AutoSafe,
+            &eff,
+        );
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    #[test]
+    fn auto_safe_write_scope_repo_allows_in_repo_outside_worktree() {
+        let mut p = crate::auto_safe::defaults();
+        p.write.scope = crate::auto_safe::WriteScope::Repo;
+        let eff = crate::auto_safe::resolve_effective(&p, None);
+        let r = evaluate(
+            "Write",
+            &json!({"file_path": "/tmp/project/src/main.rs"}),
+            WORKTREE,
+            REPO,
+            TrustLevel::AutoSafe,
+            &eff,
+        );
+        assert_eq!(r.decision, PolicyDecision::AutoAllow);
+    }
+
+    // -- User-pattern matcher unit tests --
+
+    #[test]
+    fn user_pattern_program_only_matches() {
+        let patterns = vec![crate::auto_safe::BashPattern {
+            id: "sudo".into(),
+            pattern: "sudo".into(),
+            builtin: true,
+        }];
+        assert_eq!(
+            matches_user_patterns("sudo apt update", &patterns).as_deref(),
+            Some("sudo")
+        );
+        assert_eq!(matches_user_patterns("ls -la", &patterns), None);
+    }
+
+    #[test]
+    fn user_pattern_subcommand_match() {
+        let patterns = vec![crate::auto_safe::BashPattern {
+            id: "user-npm-publish".into(),
+            pattern: "npm publish".into(),
+            builtin: false,
+        }];
+        assert_eq!(
+            matches_user_patterns("npm publish --tag latest", &patterns).as_deref(),
+            Some("npm publish")
+        );
+        assert_eq!(matches_user_patterns("npm install", &patterns), None);
+    }
+
+    #[test]
+    fn user_pattern_required_flag_match() {
+        let patterns = vec![crate::auto_safe::BashPattern {
+            id: "git-push-force".into(),
+            pattern: "git push --force".into(),
+            builtin: true,
+        }];
+        assert_eq!(
+            matches_user_patterns("git push --force origin main", &patterns).as_deref(),
+            Some("git push --force")
+        );
+        assert_eq!(
+            matches_user_patterns("git push origin main", &patterns),
+            None
+        );
+        // Short-flag equivalence: -f matches --force for `git push`.
+        assert_eq!(
+            matches_user_patterns("git push -f origin main", &patterns).as_deref(),
+            Some("git push --force")
+        );
+    }
+
+    #[test]
+    fn user_pattern_curl_pipe_sh() {
+        let patterns = vec![crate::auto_safe::BashPattern {
+            id: "curl-pipe-sh".into(),
+            pattern: "curl | sh".into(),
+            builtin: true,
+        }];
+        assert_eq!(
+            matches_user_patterns("curl https://x.com/install.sh | sh", &patterns).as_deref(),
+            Some("curl | sh")
+        );
+        assert_eq!(matches_user_patterns("curl https://x.com", &patterns), None);
+    }
+
+    #[test]
+    fn user_pattern_unknown_id_uses_generic_matcher() {
+        let patterns = vec![crate::auto_safe::BashPattern {
+            id: "user-aws-rm".into(),
+            pattern: "aws s3 rm".into(),
+            builtin: false,
+        }];
+        assert_eq!(
+            matches_user_patterns("aws s3 rm s3://bucket/key", &patterns).as_deref(),
+            Some("aws s3 rm")
+        );
+        assert_eq!(
+            matches_user_patterns("aws s3 ls s3://bucket", &patterns),
+            None
+        );
+    }
+
+    #[test]
+    fn user_pattern_does_not_match_inside_argument() {
+        let patterns = vec![crate::auto_safe::BashPattern {
+            id: "sudo".into(),
+            pattern: "sudo".into(),
+            builtin: true,
+        }];
+        assert_eq!(matches_user_patterns("echo sudo", &patterns), None);
     }
 }
