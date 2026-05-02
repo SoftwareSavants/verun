@@ -66,7 +66,7 @@ const [showUsagePopover, setShowUsagePopover] = createSignal(false)
 
 const TRUST_OPTIONS: ReadonlyArray<{ value: TrustLevel; title: string; subtitle: string }> = [
   { value: 'supervised', title: 'Ask every time', subtitle: 'Approve each tool call' },
-  { value: 'normal', title: 'Auto-approve safe', subtitle: 'Edits in-repo, reads anything' },
+  { value: 'auto_safe', title: 'Auto-safe', subtitle: 'Edits in-repo, reads anything' },
   { value: 'full_auto', title: 'Full auto', subtitle: 'No prompts. Anything goes.' },
 ]
 
@@ -442,7 +442,7 @@ export const MessageInput: Component<Props> = (props) => {
   const [fileMentionQuery, setFileMentionQuery] = createSignal('')
   const [worktreeFiles, setWorktreeFiles] = createSignal<string[]>([])
   const [filesLoaded, setFilesLoaded] = createSignal<string | null>(null)
-  const [trustLevel, setTrustLevelLocal] = createSignal<TrustLevel>('normal')
+  const [trustLevel, setTrustLevelLocal] = createSignal<TrustLevel>('auto_safe')
   const [showTrustMenu, setShowTrustMenu] = createSignal(false)
 
   // Edit last message state — ArrowUp loads last user/queued message, Escape restores draft
@@ -477,7 +477,7 @@ export const MessageInput: Component<Props> = (props) => {
       try {
         const level = await ipc.getTrustLevel(taskId) as TrustLevel
         setTrustLevelLocal(level)
-      } catch { /* default to normal */ }
+      } catch { /* default to auto_safe */ }
     }
   }))
 

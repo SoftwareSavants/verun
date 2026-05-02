@@ -219,7 +219,7 @@ export interface ToolApprovalRequest {
 
 // Policy types
 
-export type TrustLevel = 'normal' | 'full_auto' | 'supervised'
+export type TrustLevel = 'auto_safe' | 'full_auto' | 'supervised'
 
 export interface AuditEntry {
   id: number
