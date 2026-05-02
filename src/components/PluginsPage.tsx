@@ -81,7 +81,6 @@ export const PluginsPage: Component = () => {
             <For each={AGENT_ORDER}>
               {agent => {
                 const active = () => activeAgent() === agent
-                const supported = SUPPORTED_AGENTS.has(agent)
                 return (
                   <button
                     class={`relative flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left transition-colors ${
@@ -96,11 +95,6 @@ export const PluginsPage: Component = () => {
                     </Show>
                     <SvgIcon svg={agentIcon(agent)} size={14} />
                     <span class="text-[12px] font-medium flex-1 truncate">{AGENT_DISPLAY_NAMES[agent]}</span>
-                    <Show when={!supported}>
-                      <span class="text-[9px] uppercase tracking-wider text-text-dim font-medium">
-                        soon
-                      </span>
-                    </Show>
                   </button>
                 )
               }}
