@@ -3210,6 +3210,16 @@ pub async fn plugin_set_enabled(
     )
 }
 
+#[tauri::command]
+pub async fn plugin_read_manifest(
+    install_path: String,
+) -> Result<crate::plugin_marketplace::PluginManifest, String> {
+    flatten_join(
+        tokio::task::spawn_blocking(move || crate::plugin_marketplace::read_manifest(&install_path))
+            .await,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

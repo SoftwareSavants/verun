@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, PluginCatalog, MarketplaceInfo, PluginScope } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, PluginCatalog, MarketplaceInfo, PluginScope, PluginManifest } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 const seed = () => import('./seedData')
@@ -571,3 +571,6 @@ export const pluginUninstall = (pluginId: string, cwd: string) =>
 
 export const pluginSetEnabled = (pluginId: string, enabled: boolean, cwd: string) =>
   invoke<void>('plugin_set_enabled', { pluginId, enabled, cwd })
+
+export const pluginReadManifest = (installPath: string) =>
+  invoke<PluginManifest>('plugin_read_manifest', { installPath })

@@ -525,3 +525,15 @@ export interface MarketplaceInfo {
   url?: string
   installLocation?: string
 }
+
+export interface PluginManifest {
+  /** Raw plugin.json contents (or null when missing). */
+  manifest: Record<string, unknown> | null
+  skills: string[]
+  commands: string[]
+  agents: string[]
+  hasHooks: boolean
+  hasMcpConfig: boolean
+  hasLspConfig: boolean
+  hasReadme: boolean
+}

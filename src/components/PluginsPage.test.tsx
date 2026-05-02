@@ -33,7 +33,14 @@ const { catalog, marketplaces, mocks } = vi.hoisted(() => {
 vi.mock('../store/plugins', () => {
   const [cat] = createStore(catalog)
   const [mps] = createStore(marketplaces)
-  return { catalog: cat, marketplaces: mps, ...mocks }
+  return {
+    catalog: cat,
+    marketplaces: mps,
+    selectedPluginId: () => null,
+    setSelectedPluginId: vi.fn(),
+    installedPluginById: () => undefined,
+    ...mocks,
+  }
 })
 
 vi.mock('../store/ui', () => ({
@@ -56,31 +63,31 @@ describe('PluginsPage', () => {
   })
 
   test('renders all available plugins by default', () => {
-    const { getByText } = render(() => <PluginsPage />)
-    expect(getByText('asana')).toBeTruthy()
-    expect(getByText('amplitude')).toBeTruthy()
-    expect(getByText('foo')).toBeTruthy()
+    const { getAllByText } = render(() => <PluginsPage />)
+    // Default stacks Installed / Popular / Browse, so plugins appear in
+    // multiple sections — assert at least one render per name.
+    expect(getAllByText('asana').length).toBeGreaterThan(0)
+    expect(getAllByText('amplitude').length).toBeGreaterThan(0)
+    expect(getAllByText('foo').length).toBeGreaterThan(0)
   })
 
-  test('search filters by name', async () => {
-    const { getByPlaceholderText, queryByText, getByText } = render(() => <PluginsPage />)
+  test('search filters the Browse all section but leaves Installed/Popular intact', async () => {
+    const { getByPlaceholderText, getAllByText } = render(() => <PluginsPage />)
+    // Baseline: with 3 plugins and cap=8, Popular renders all 3 once.
+    // asana also renders in Installed → 3 total. amplitude/foo: 2 each (Popular + Browse).
+    expect(getAllByText('asana').length).toBe(3)
+    expect(getAllByText('amplitude').length).toBe(2)
+    expect(getAllByText('foo').length).toBe(2)
+
     const search = getByPlaceholderText(/search/i)
     fireEvent.input(search, { target: { value: 'amp' } })
     await waitFor(() => {
-      expect(queryByText('asana')).toBeNull()
-      expect(queryByText('foo')).toBeNull()
+      // Only Browse responds: foo drops from 2 → 1, asana from 3 → 2.
+      expect(getAllByText('foo').length).toBe(1)
+      expect(getAllByText('asana').length).toBe(2)
     })
-    expect(getByText('amplitude')).toBeTruthy()
+    // amplitude still in both Popular and Browse.
+    expect(getAllByText('amplitude').length).toBe(2)
   })
 
-  test('installed-only toggle hides un-installed', async () => {
-    const { getByLabelText, queryByText, getByText } = render(() => <PluginsPage />)
-    const toggle = getByLabelText(/installed only/i)
-    fireEvent.click(toggle)
-    await waitFor(() => {
-      expect(queryByText('amplitude')).toBeNull()
-      expect(queryByText('foo')).toBeNull()
-    })
-    expect(getByText('asana')).toBeTruthy()
-  })
 })

@@ -9,6 +9,7 @@ export const [marketplaces, setMarketplaces] = createStore<MarketplaceInfo[]>([]
 export const [isSupported, setIsSupported] = createSignal<boolean | null>(null)
 export const [isLoading, setIsLoading] = createSignal(false)
 export const [pending, setPending] = createStore<Record<string, true>>({})
+export const [selectedPluginId, setSelectedPluginId] = createSignal<string | null>(null)
 
 export function isPending(pluginId: string): boolean {
   return !!pending[pluginId]
@@ -16,6 +17,10 @@ export function isPending(pluginId: string): boolean {
 
 export function isInstalled(pluginId: string): boolean {
   return catalog.installed.some(p => p.id === pluginId)
+}
+
+export function installedPluginById(pluginId: string) {
+  return catalog.installed.find(p => p.id === pluginId)
 }
 
 export async function loadCatalog() {

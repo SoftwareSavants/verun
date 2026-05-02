@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   isPending: vi.fn(() => false),
   installPlugin: vi.fn().mockResolvedValue(undefined),
   uninstallPlugin: vi.fn().mockResolvedValue(undefined),
+  setSelectedPluginId: vi.fn(),
 }))
 
 vi.mock('../store/plugins', () => mocks)
@@ -35,7 +36,7 @@ describe('PluginCard', () => {
     const { getByText } = render(() => <PluginCard plugin={sample} cwd="/tmp" allowProjectScope={true} showMarketplace={true} />)
     expect(getByText('asana')).toBeTruthy()
     expect(getByText(/Asana integration/)).toBeTruthy()
-    expect(getByText(/8,126/)).toBeTruthy()
+    expect(getByText(/8\.1K/)).toBeTruthy()
   })
 
   test('clicking Install calls installPlugin with default scope user', () => {

@@ -417,6 +417,7 @@ pub fn run() {
             ipc::plugin_install,
             ipc::plugin_uninstall,
             ipc::plugin_set_enabled,
+            ipc::plugin_read_manifest,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

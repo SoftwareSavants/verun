@@ -52,6 +52,7 @@ describe('ipc', () => {
     expect(typeof ipc.pluginInstall).toBe('function')
     expect(typeof ipc.pluginUninstall).toBe('function')
     expect(typeof ipc.pluginSetEnabled).toBe('function')
+    expect(typeof ipc.pluginReadManifest).toBe('function')
   })
 
   test('blob store wrappers are exported', () => {
