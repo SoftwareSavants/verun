@@ -26,7 +26,7 @@ export const PluginCard: Component<Props> = (props) => {
   return (
     <div class="ring-1 ring-white/8 rounded-lg p-4 flex flex-col gap-1 bg-white/2 hover:bg-white/4 transition-colors">
       <div class="flex items-baseline justify-between gap-3">
-        <h3 class="font-medium truncate min-w-0 flex-1 leading-tight">{props.plugin.name}</h3>
+        <h3 class="font-medium truncate min-w-0 flex-1 leading-tight m-0">{props.plugin.name}</h3>
         <div class="flex flex-col items-end gap-1 shrink-0 text-[11px] text-text-dim">
           <Show when={props.plugin.installCount != null}>
             <span>{props.plugin.installCount!.toLocaleString()} installs</span>
