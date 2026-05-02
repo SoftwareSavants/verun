@@ -539,6 +539,13 @@ pub struct ActiveProcess {
     /// evaluation re-reads it on every tool call — IPC edits mid-run take
     /// effect on the next `can_use_tool` check instead of the next spawn.
     pub trust_level: Arc<AtomicU8>,
+    /// Live auto-safe policy for this task. Resolved from global + project
+    /// override at spawn; live-swapped by IPC edits via `ArcSwap`.
+    pub auto_safe_policy: Arc<arc_swap::ArcSwap<crate::auto_safe::EffectivePolicy>>,
+    /// Project this session belongs to. Lets policy-edit IPCs find the
+    /// affected sessions for live `auto_safe_policy` updates.
+    #[allow(dead_code)] // wired up in ipc.rs reapply functions in subsequent tasks
+    pub project_id: String,
     /// Which agent owns this process. Lets `abort_message` /
     /// `close_session` / app-exit dispatch on the trait without a DB read.
     pub kind: AgentKind,
@@ -1302,6 +1309,7 @@ pub struct SendMessageParams {
     pub repo_path: String,
     pub port_offset: i64,
     pub trust_level: TrustLevel,
+    pub auto_safe_policy: Arc<arc_swap::ArcSwap<crate::auto_safe::EffectivePolicy>>,
     pub message: String,
     pub resume_session_id: Option<String>,
     pub attachments: Vec<Attachment>,
@@ -1339,6 +1347,7 @@ pub async fn send_message(
         repo_path,
         port_offset,
         trust_level,
+        auto_safe_policy,
         message,
         resume_session_id,
         attachments,
@@ -1662,6 +1671,7 @@ pub async fn send_message(
             repo_path,
             port_offset,
             trust_level,
+            auto_safe_policy,
             resume_session_id,
             model,
             plan_mode,
@@ -1831,6 +1841,10 @@ pub struct SpawnSessionParams {
     pub repo_path: String,
     pub port_offset: i64,
     pub trust_level: TrustLevel,
+    /// Effective auto-safe policy at spawn time. The IPC layer resolves
+    /// global + project override and passes the result here. Wrapped in
+    /// `ArcSwap` so live IPC edits propagate without restart.
+    pub auto_safe_policy: Arc<arc_swap::ArcSwap<crate::auto_safe::EffectivePolicy>>,
     pub resume_session_id: Option<String>,
     pub model: Option<String>,
     pub plan_mode: bool,
@@ -1870,6 +1884,7 @@ async fn spawn_codex_app_server_session(
         repo_path,
         port_offset,
         trust_level,
+        auto_safe_policy,
         resume_session_id,
         model,
         plan_mode,
@@ -2109,6 +2124,8 @@ async fn spawn_codex_app_server_session(
             stdin: stdin.clone(),
             busy: busy.clone(),
             trust_level: trust_level_atom,
+            auto_safe_policy: auto_safe_policy.clone(),
+            project_id: project_id.clone(),
             kind,
             current_permission_mode: if plan_mode { "plan" } else { "default" }.to_string(),
             current_model: model.clone(),
@@ -2381,6 +2398,7 @@ pub async fn spawn_session_process(
         repo_path,
         port_offset,
         trust_level,
+        auto_safe_policy,
         resume_session_id,
         model,
         plan_mode,
@@ -2542,6 +2560,8 @@ pub async fn spawn_session_process(
             stdin: stdin.clone(),
             busy: busy.clone(),
             trust_level: trust_level_atom.clone(),
+            auto_safe_policy: auto_safe_policy.clone(),
+            project_id: project_id.clone(),
             kind,
             current_permission_mode: if plan_mode { "plan" } else { "default" }.to_string(),
             current_model: model.clone(),
@@ -2567,6 +2587,7 @@ pub async fn spawn_session_process(
     let monitor_wt = worktree_path.clone();
     let monitor_repo = repo_path;
     let monitor_trust = trust_level_atom.clone();
+    let monitor_policy = auto_safe_policy.clone();
     let monitor_agent = AgentKind::parse(&agent_type).implementation();
     let monitor_busy = busy.clone();
     tokio::spawn(async move {
@@ -2586,6 +2607,7 @@ pub async fn spawn_session_process(
             monitor_wt,
             monitor_repo,
             monitor_trust,
+            monitor_policy,
             monitor_agent,
         )
         .await;
@@ -3545,6 +3567,45 @@ fn run_git_ignoring_env(cwd: &std::path::Path, args: &[&str]) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn live_policy_swap_changes_decisions_immediately() {
+        use crate::auto_safe::{defaults, resolve_effective, WebSearchMode};
+        use arc_swap::ArcSwap;
+        use std::sync::Arc;
+
+        let mut g = defaults();
+        g.websearch.mode = WebSearchMode::Ask;
+        let policy = Arc::new(ArcSwap::from_pointee(resolve_effective(&g, None)));
+
+        let load_a = policy.load_full();
+        let result = crate::policy::evaluate(
+            "WebSearch",
+            &serde_json::json!({"query": "x"}),
+            "/tmp",
+            "/tmp",
+            crate::policy::TrustLevel::AutoSafe,
+            &load_a,
+        );
+        assert_eq!(
+            result.decision,
+            crate::policy::PolicyDecision::RequireApproval
+        );
+
+        g.websearch.mode = WebSearchMode::Allow;
+        policy.store(Arc::new(resolve_effective(&g, None)));
+
+        let load_b = policy.load_full();
+        let result = crate::policy::evaluate(
+            "WebSearch",
+            &serde_json::json!({"query": "x"}),
+            "/tmp",
+            "/tmp",
+            crate::policy::TrustLevel::AutoSafe,
+            &load_b,
+        );
+        assert_eq!(result.decision, crate::policy::PolicyDecision::AutoAllow);
+    }
 
     #[test]
     fn branch_name_format() {

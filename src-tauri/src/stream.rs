@@ -1515,6 +1515,7 @@ pub async fn stream_and_capture(
     worktree_path: String,
     repo_path: String,
     trust_level: Arc<AtomicU8>,
+    auto_safe_policy: Arc<arc_swap::ArcSwap<crate::auto_safe::EffectivePolicy>>,
     agent: Box<dyn crate::agent::Agent>,
 ) -> StreamResult {
     let mut reader = BufReader::new(stdout).lines();
@@ -1595,7 +1596,7 @@ pub async fn stream_and_capture(
                             &app, &session_id, &task_id, &v, &stdin,
                             &pending_approvals, &pending_approval_meta,
                             &worktree_path, &repo_path,
-                            &trust_level, &db_tx,
+                            &trust_level, &auto_safe_policy, &db_tx,
                         ).await {
                             if cr.handled {
                                 if let Some(tool_start) = cr.tool_start {
@@ -2063,6 +2064,7 @@ async fn handle_control_request(
     worktree_path: &str,
     repo_path: &str,
     trust_level: &Arc<AtomicU8>,
+    auto_safe_policy: &Arc<arc_swap::ArcSwap<crate::auto_safe::EffectivePolicy>>,
     db_tx: &DbWriteTx,
 ) -> Option<ControlRequestResult> {
     if v.get("type").and_then(|t| t.as_str()) != Some("control_request") {
@@ -2108,10 +2110,9 @@ async fn handle_control_request(
         input: input_str,
     };
 
-    // Evaluate policy — load trust level fresh so mid-run IPC edits apply.
-    // TODO(Task 9): replace inline defaults with the live ArcSwap policy.
-    let effective_policy =
-        crate::auto_safe::resolve_effective(&crate::auto_safe::defaults(), None);
+    // Evaluate policy — load trust level + policy fresh so mid-run IPC edits
+    // (TrustLevel atomic store + ArcSwap of EffectivePolicy) apply.
+    let effective_policy = auto_safe_policy.load_full();
     let result = policy::evaluate(
         &tool_name,
         &tool_input,

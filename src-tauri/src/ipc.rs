@@ -719,6 +719,14 @@ pub async fn send_message(
     let refs = attachments.unwrap_or_default();
     let resolved = task::resolve_attachments(&refs, &app_data.0).await?;
 
+    // Resolve auto-safe policy: prefer the live ArcSwap on an existing active
+    // process for this task (so live IPC edits stick across send_message
+    // calls); fall back to a fresh resolve if no active process is around.
+    let auto_safe_policy = match active.iter().find(|e| e.value().task_id == session.task_id) {
+        Some(entry) => entry.value().auto_safe_policy.clone(),
+        None => resolve_auto_safe_policy_for_project(pool.inner(), &t.project_id).await?,
+    };
+
     task::send_message(
         app,
         db_tx.inner(),
@@ -734,6 +742,7 @@ pub async fn send_message(
             repo_path,
             port_offset: t.port_offset,
             trust_level,
+            auto_safe_policy,
             message,
             resume_session_id: session.resume_session_id,
             attachments: resolved,
@@ -787,6 +796,7 @@ pub async fn prewarm_session(
     );
     let trust_level = crate::policy::TrustLevel::from_str(&trust_result?);
     let repo_path = repo_result?;
+    let auto_safe_policy = resolve_auto_safe_policy_for_project(pool.inner(), &t.project_id).await?;
 
     task::spawn_session_process(
         app,
@@ -803,6 +813,7 @@ pub async fn prewarm_session(
             repo_path,
             port_offset: t.port_offset,
             trust_level,
+            auto_safe_policy,
             resume_session_id: session.resume_session_id,
             model: session.model,
             plan_mode: false,
@@ -815,6 +826,18 @@ pub async fn prewarm_session(
         },
     )
     .await
+}
+
+/// Load global + per-project auto-safe policy and wrap into an `ArcSwap` for
+/// live updates from policy-edit IPCs.
+pub(crate) async fn resolve_auto_safe_policy_for_project(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> Result<std::sync::Arc<arc_swap::ArcSwap<crate::auto_safe::EffectivePolicy>>, String> {
+    let global = crate::db::get_or_seed_global_auto_safe_policy(pool).await?;
+    let project = crate::db::get_project_auto_safe_override(pool, project_id).await?;
+    let eff = crate::auto_safe::resolve_effective(&global, project.as_ref());
+    Ok(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(eff)))
 }
 
 #[tauri::command]
