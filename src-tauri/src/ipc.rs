@@ -1043,10 +1043,10 @@ pub async fn set_trust_level(
 ) -> Result<(), String> {
     // Validate
     match trust_level.as_str() {
-        "normal" | "full_auto" | "supervised" => {}
+        "auto_safe" | "full_auto" | "supervised" => {}
         _ => {
             return Err(format!(
-                "Invalid trust level: {trust_level}. Must be normal, full_auto, or supervised"
+                "Invalid trust level: {trust_level}. Must be auto_safe, full_auto, or supervised"
             ))
         }
     }

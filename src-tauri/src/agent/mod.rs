@@ -623,7 +623,7 @@ mod tests {
             plan_mode: false,
             thinking_mode: false,
             fast_mode: false,
-            trust_level: crate::policy::TrustLevel::Normal,
+            trust_level: crate::policy::TrustLevel::AutoSafe,
             worktree_path: "",
             repo_path: "",
             message: "",
@@ -917,21 +917,21 @@ mod tests {
             assert!(agent.encode_rpc_initialized_notification().is_err());
             let ts = CodexRpcThreadStartParams {
                 cwd: "/tmp",
-                trust_level: crate::policy::TrustLevel::Normal,
+                trust_level: crate::policy::TrustLevel::AutoSafe,
                 model: None,
             };
             assert!(agent.encode_rpc_thread_start(1, &ts).is_err());
             let tr = CodexRpcThreadResumeParams {
                 thread_id: "t",
                 cwd: "/tmp",
-                trust_level: crate::policy::TrustLevel::Normal,
+                trust_level: crate::policy::TrustLevel::AutoSafe,
             };
             assert!(agent.encode_rpc_thread_resume(1, &tr).is_err());
             let turn = CodexRpcTurnStartParams {
                 thread_id: "t",
                 prompt: "hi",
                 image_urls: &[],
-                trust_level: crate::policy::TrustLevel::Normal,
+                trust_level: crate::policy::TrustLevel::AutoSafe,
                 model: None,
                 effort: None,
                 plan_mode: false,
@@ -1098,7 +1098,7 @@ mod tests {
                 7,
                 &CodexRpcThreadStartParams {
                     cwd: "/repo",
-                    trust_level: crate::policy::TrustLevel::Normal,
+                    trust_level: crate::policy::TrustLevel::AutoSafe,
                     model: Some("gpt-5.4"),
                 },
             )
@@ -1155,7 +1155,7 @@ mod tests {
                 &CodexRpcThreadResumeParams {
                     thread_id: "t-abc",
                     cwd: "/repo",
-                    trust_level: crate::policy::TrustLevel::Normal,
+                    trust_level: crate::policy::TrustLevel::AutoSafe,
                 },
             )
             .expect("encode thread/resume");
@@ -1175,7 +1175,7 @@ mod tests {
                     thread_id: "t-xyz",
                     prompt: "list files",
                     image_urls: &[],
-                    trust_level: crate::policy::TrustLevel::Normal,
+                    trust_level: crate::policy::TrustLevel::AutoSafe,
                     model: Some("gpt-5.4"),
                     effort: Some("medium"),
                     plan_mode: false,
@@ -1217,7 +1217,7 @@ mod tests {
                     thread_id: "t-xyz",
                     prompt: "design a rate limiter",
                     image_urls: &[],
-                    trust_level: crate::policy::TrustLevel::Normal,
+                    trust_level: crate::policy::TrustLevel::AutoSafe,
                     model: Some("gpt-5.4"),
                     effort: None,
                     plan_mode: true,
@@ -1292,7 +1292,7 @@ mod tests {
                     thread_id: "t-xyz",
                     prompt: "look",
                     image_urls: &urls,
-                    trust_level: crate::policy::TrustLevel::Normal,
+                    trust_level: crate::policy::TrustLevel::AutoSafe,
                     model: None,
                     effort: None,
                     plan_mode: false,

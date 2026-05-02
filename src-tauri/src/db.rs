@@ -277,6 +277,12 @@ pub fn migrations() -> Vec<Migration> {
               ON github_cache_entries(task_id, scope);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 24,
+        description: "rename trust_level 'normal' to 'auto_safe'",
+        sql: "UPDATE task_trust_levels SET trust_level = 'auto_safe' WHERE trust_level = 'normal';",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -1606,7 +1612,7 @@ pub async fn get_trust_level(pool: &SqlitePool, task_id: &str) -> Result<String,
             .await
             .map_err(|e| e.to_string())?;
 
-    Ok(row.map(|(tl,)| tl).unwrap_or_else(|| "normal".into()))
+    Ok(row.map(|(tl,)| tl).unwrap_or_else(|| "auto_safe".into()))
 }
 
 pub async fn get_repo_path_for_task(pool: &SqlitePool, task_id: &str) -> Result<String, String> {

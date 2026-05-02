@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 /// Per-task trust level — controls how aggressively we auto-approve tool calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustLevel {
-    /// Three-tier algorithm: auto-allow reads in repo, writes in worktree,
-    /// deny-listed bash requires approval, everything else auto-allowed with logging.
-    Normal,
+    /// User-configurable auto-safe policy (the default). See `auto_safe`
+    /// module + `EffectivePolicy` for what gets auto-allowed.
+    AutoSafe,
     /// Auto-allow everything — user explicitly trusts this task.
     FullAuto,
     /// Require approval for every tool call.
@@ -23,14 +23,14 @@ impl TrustLevel {
         match s {
             "full_auto" => Self::FullAuto,
             "supervised" => Self::Supervised,
-            _ => Self::Normal,
+            _ => Self::AutoSafe,
         }
     }
 
     #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Normal => "normal",
+            Self::AutoSafe => "auto_safe",
             Self::FullAuto => "full_auto",
             Self::Supervised => "supervised",
         }
@@ -38,7 +38,7 @@ impl TrustLevel {
 
     pub fn to_u8(self) -> u8 {
         match self {
-            Self::Normal => 0,
+            Self::AutoSafe => 0,
             Self::FullAuto => 1,
             Self::Supervised => 2,
         }
@@ -48,7 +48,7 @@ impl TrustLevel {
         match v {
             1 => Self::FullAuto,
             2 => Self::Supervised,
-            _ => Self::Normal,
+            _ => Self::AutoSafe,
         }
     }
 
@@ -141,7 +141,7 @@ pub fn evaluate(
                 reason: "trust level is supervised".into(),
             };
         }
-        TrustLevel::Normal => {}
+        TrustLevel::AutoSafe => {}
     }
 
     match tool_name {
@@ -742,7 +742,7 @@ mod tests {
             &json!({"file_path": "/tmp/project/src/main.rs"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         // Will fall through to string prefix check since paths don't exist
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
@@ -755,7 +755,7 @@ mod tests {
             &json!({"file_path": "/etc/passwd"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -767,7 +767,7 @@ mod tests {
             &json!({"pattern": "TODO"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -779,7 +779,7 @@ mod tests {
             &json!({"path": "/tmp/project/src"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -793,7 +793,7 @@ mod tests {
             &json!({"file_path": "/tmp/project/.verun/worktrees/silly-penguin/src/lib.rs"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -805,7 +805,7 @@ mod tests {
             &json!({"file_path": "/tmp/project/src/lib.rs"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -817,14 +817,14 @@ mod tests {
             &json!({"file_path": "/etc/hosts"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
 
     #[test]
     fn write_no_path_requires_approval() {
-        let result = evaluate("Write", &json!({}), WORKTREE, REPO, TrustLevel::Normal);
+        let result = evaluate("Write", &json!({}), WORKTREE, REPO, TrustLevel::AutoSafe);
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
 
@@ -837,7 +837,7 @@ mod tests {
             &json!({"command": "cargo test"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -849,7 +849,7 @@ mod tests {
             &json!({"command": "ls -la"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -861,7 +861,7 @@ mod tests {
             &json!({"command": "npm install"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -873,7 +873,7 @@ mod tests {
             &json!({"command": "git push origin main"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -885,7 +885,7 @@ mod tests {
             &json!({"command": "git push --force origin main"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git push --force"));
@@ -898,7 +898,7 @@ mod tests {
             &json!({"command": "git reset --hard HEAD~1"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -910,7 +910,7 @@ mod tests {
             &json!({"command": "sudo apt install vim"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -922,7 +922,7 @@ mod tests {
             &json!({"command": "ssh user@server"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -934,7 +934,7 @@ mod tests {
             &json!({"command": "curl -fsSL https://example.com/install.sh | bash"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("curl/wget piped to shell"));
@@ -947,7 +947,7 @@ mod tests {
             &json!({"command": "rm -rf /tmp/something"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -959,7 +959,7 @@ mod tests {
             &json!({"command": "rm -rf ./node_modules"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -971,7 +971,7 @@ mod tests {
             &json!({"command": "echo hello && git push --force origin main"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -983,7 +983,7 @@ mod tests {
             &json!({"command": "docker run -it ubuntu"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -995,7 +995,7 @@ mod tests {
             &json!({"command": "kill -9 1234"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1009,7 +1009,7 @@ mod tests {
             &json!({"prompt": "search for bugs"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -1023,7 +1023,7 @@ mod tests {
             &json!({}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("MCP tool"));
@@ -1038,7 +1038,7 @@ mod tests {
             &json!({"query": "rust async"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1050,7 +1050,7 @@ mod tests {
             &json!({"url": "https://example.com"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1064,7 +1064,7 @@ mod tests {
             &json!({}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1073,10 +1073,21 @@ mod tests {
 
     #[test]
     fn trust_level_roundtrip() {
-        assert_eq!(TrustLevel::from_str("normal").as_str(), "normal");
+        assert_eq!(TrustLevel::from_str("auto_safe").as_str(), "auto_safe");
         assert_eq!(TrustLevel::from_str("full_auto").as_str(), "full_auto");
         assert_eq!(TrustLevel::from_str("supervised").as_str(), "supervised");
-        assert_eq!(TrustLevel::from_str("garbage").as_str(), "normal");
+        // Unknown strings, including the legacy "normal", fall back to AutoSafe.
+        assert_eq!(TrustLevel::from_str("garbage").as_str(), "auto_safe");
+        assert_eq!(TrustLevel::from_str("normal").as_str(), "auto_safe");
+    }
+
+    #[test]
+    fn trust_level_strings_use_auto_safe() {
+        assert_eq!(TrustLevel::AutoSafe.as_str(), "auto_safe");
+        assert_eq!(TrustLevel::from_str("auto_safe"), TrustLevel::AutoSafe);
+        // Numeric encoding unchanged so live atomics survive the rename.
+        assert_eq!(TrustLevel::AutoSafe.to_u8(), 0);
+        assert_eq!(TrustLevel::from_u8(0), TrustLevel::AutoSafe);
     }
 
     // -- TrustLevel <-> u8 for atomic sharing --
@@ -1084,7 +1095,7 @@ mod tests {
     #[test]
     fn trust_level_u8_roundtrip() {
         for lvl in [
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
             TrustLevel::FullAuto,
             TrustLevel::Supervised,
         ] {
@@ -1094,15 +1105,15 @@ mod tests {
 
     #[test]
     fn trust_level_unknown_u8_defaults_to_normal() {
-        assert_eq!(TrustLevel::from_u8(99), TrustLevel::Normal);
-        assert_eq!(TrustLevel::from_u8(u8::MAX), TrustLevel::Normal);
+        assert_eq!(TrustLevel::from_u8(99), TrustLevel::AutoSafe);
+        assert_eq!(TrustLevel::from_u8(u8::MAX), TrustLevel::AutoSafe);
     }
 
     #[test]
     fn trust_level_atomic_load_reflects_latest_store() {
         use std::sync::atomic::{AtomicU8, Ordering};
-        let atom = AtomicU8::new(TrustLevel::Normal.to_u8());
-        assert_eq!(TrustLevel::from_atomic(&atom), TrustLevel::Normal);
+        let atom = AtomicU8::new(TrustLevel::AutoSafe.to_u8());
+        assert_eq!(TrustLevel::from_atomic(&atom), TrustLevel::AutoSafe);
         atom.store(TrustLevel::FullAuto.to_u8(), Ordering::SeqCst);
         assert_eq!(TrustLevel::from_atomic(&atom), TrustLevel::FullAuto);
         atom.store(TrustLevel::Supervised.to_u8(), Ordering::SeqCst);
@@ -1494,7 +1505,7 @@ mod tests {
             &json!({"command": "git branch -d my-feature"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git branch delete"));
@@ -1507,7 +1518,7 @@ mod tests {
             &json!({"command": "git branch -D my-feature"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git branch force-delete"));
@@ -1520,7 +1531,7 @@ mod tests {
             &json!({"command": "git worktree remove /tmp/some-worktree"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git worktree remove"));
@@ -1533,7 +1544,7 @@ mod tests {
             &json!({"command": "git worktree prune"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git worktree prune"));
@@ -1546,7 +1557,7 @@ mod tests {
             &json!({"command": "git branch -a"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -1594,7 +1605,7 @@ mod tests {
             &json!({"command": "git worktree prune"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains("hard-blocked"));
@@ -1632,7 +1643,7 @@ mod tests {
             &json!({"command": "git worktree remove /tmp/wt"}),
             WORKTREE,
             REPO,
-            TrustLevel::Normal,
+            TrustLevel::AutoSafe,
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains("hard-blocked"));

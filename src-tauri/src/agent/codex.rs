@@ -24,7 +24,7 @@ pub struct Codex;
 fn trust_level_to_approval_policy(trust: TrustLevel) -> &'static str {
     match trust {
         TrustLevel::Supervised => "untrusted",
-        TrustLevel::Normal => "on-request",
+        TrustLevel::AutoSafe => "on-request",
         TrustLevel::FullAuto => "never",
     }
 }
@@ -32,7 +32,7 @@ fn trust_level_to_approval_policy(trust: TrustLevel) -> &'static str {
 fn trust_level_to_thread_sandbox(trust: TrustLevel) -> &'static str {
     match trust {
         TrustLevel::Supervised => "read-only",
-        TrustLevel::Normal => "workspace-write",
+        TrustLevel::AutoSafe => "workspace-write",
         TrustLevel::FullAuto => "danger-full-access",
     }
 }
@@ -40,7 +40,7 @@ fn trust_level_to_thread_sandbox(trust: TrustLevel) -> &'static str {
 fn trust_level_to_turn_sandbox_policy(trust: TrustLevel) -> Value {
     match trust {
         TrustLevel::Supervised => json!({ "type": "readOnly" }),
-        TrustLevel::Normal => json!({ "type": "workspaceWrite" }),
+        TrustLevel::AutoSafe => json!({ "type": "workspaceWrite" }),
         TrustLevel::FullAuto => json!({ "type": "dangerFullAccess" }),
     }
 }
