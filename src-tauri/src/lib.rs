@@ -11,6 +11,7 @@ mod file_search;
 mod git_ops;
 mod github;
 mod github_remote;
+mod auto_safe;
 mod ipc;
 mod lsp;
 mod markdown_skills;
