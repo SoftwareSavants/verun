@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, For, Show, type JSX } from 'solid-js'
-import { ChevronDown, ChevronRight, X, Check, Settings, FolderGit2, Loader2, Sparkles, Download, Upload, GitBranch, Palette, ArrowUp, RotateCcw, ListChecks } from 'lucide-solid'
+import { ChevronDown, ChevronRight, X, Check, Settings, FolderGit2, Loader2, Sparkles, Download, Upload, GitBranch, Palette, ArrowUp, RotateCcw, ListChecks, ShieldCheck } from 'lucide-solid'
 import {
   appearance, setAppearance,
   THEME_PRESETS, findThemePreset,
@@ -9,6 +9,9 @@ import {
 } from '../lib/theme'
 import { setShowSettings, setSelectedTaskId, setSelectedSessionIdForTask, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist, sidebarWidth } from '../store/ui'
 import { ClaudeDefaultViewPicker } from './ClaudeDefaultViewPicker'
+import { AutoSafeSettings } from './AutoSafeSettings'
+import { AutoSafeProjectOverride } from './AutoSafeProjectOverride'
+import { hydrateAutoSafe } from '../store/autoSafe'
 import { notificationsEnabled, setNotificationsEnabledAndPersist } from '../lib/notifications'
 import { projects, updateHooks, updateStoreHooks, updateBaseBranch } from '../store/projects'
 import { createTask, activeTasksForProject } from '../store/tasks'
@@ -25,7 +28,7 @@ import { addToast } from '../store/ui'
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
 import { produce } from 'solid-js/store'
 
-type SettingsSection = 'general' | 'appearance' | string // project id
+type SettingsSection = 'general' | 'appearance' | 'auto-safe' | string // project id
 
 // Module-level signals so Layout can drive section switching and save via keyboard shortcuts
 const [activeSection, setActiveSection] = createSignal<SettingsSection>('general')
@@ -37,13 +40,18 @@ export const [settingsSaveRequested, setSettingsSaveRequested] = createSignal(0)
 
 export function selectSettingsSection(section: SettingsSection) {
   setActiveSection(section)
-  if (section === 'general') return
+  if (section === 'general' || section === 'appearance') return
+  if (section === 'auto-safe') {
+    void hydrateAutoSafe()
+    return
+  }
   const p = projects.find(pr => pr.id === section)
   if (p) {
     setEditSetupHook(p.setupHook)
     setEditDestroyHook(p.destroyHook)
     setEditStartCommand(p.startCommand)
     setEditAutoStart(p.autoStart)
+    void hydrateAutoSafe()
   }
 }
 
@@ -195,6 +203,19 @@ export const SettingsPage: Component = () => {
           <span>Appearance</span>
         </button>
 
+        {/* Auto-safe */}
+        <button
+          class={`flex items-center gap-2.5 mx-2 mt-0.5 px-3 py-2 rounded-md text-sm transition-colors ${
+            activeSection() === 'auto-safe'
+              ? 'bg-surface-3 text-text-secondary'
+              : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+          }`}
+          onClick={() => { setActiveSection('auto-safe'); void hydrateAutoSafe() }}
+        >
+          <ShieldCheck size={15} />
+          <span>Auto-safe</span>
+        </button>
+
         {/* Projects header */}
         <Show when={projects.length > 0}>
           <div class="px-3 pt-4 pb-2">
@@ -230,7 +251,13 @@ export const SettingsPage: Component = () => {
           {/* Header with close button */}
           <div class="flex items-center justify-between mb-6">
             <h1 class="text-lg font-semibold text-text-primary">
-              {activeSection() === 'general' ? 'General' : activeSection() === 'appearance' ? 'Appearance' : selectedProject()?.name ?? 'Settings'}
+              {activeSection() === 'general'
+                ? 'General'
+                : activeSection() === 'appearance'
+                ? 'Appearance'
+                : activeSection() === 'auto-safe'
+                ? 'Auto-safe'
+                : selectedProject()?.name ?? 'Settings'}
             </h1>
             <button
               class="p-1.5 rounded-lg text-text-dim hover:text-text-secondary border border-border hover:border-border-active transition-colors"
@@ -309,8 +336,13 @@ export const SettingsPage: Component = () => {
             />
           </Show>
 
+          {/* Auto-safe section */}
+          <Show when={activeSection() === 'auto-safe'}>
+            <AutoSafeSettings />
+          </Show>
+
           {/* Per-project settings */}
-          <Show when={activeSection() !== 'general' && activeSection() !== 'appearance' && selectedProject()}>
+          <Show when={activeSection() !== 'general' && activeSection() !== 'appearance' && activeSection() !== 'auto-safe' && selectedProject()}>
             {/* Repository section */}
             <div class="mb-8">
               <h2 class="section-title mb-4">Repository</h2>
@@ -544,6 +576,13 @@ export const SettingsPage: Component = () => {
                 </div>
               </div>
             </div>
+
+            {/* Auto-safe policy override */}
+            <Show when={selectedProject()}>
+              <div class="mb-8">
+                <AutoSafeProjectOverride projectId={selectedProject()!.id} />
+              </div>
+            </Show>
           </Show>
         </div>
       </div>
