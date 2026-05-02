@@ -59,7 +59,7 @@ export const PluginsPage: Component = () => {
 
   return (
     <Dialog open={showPlugins()} onClose={() => setShowPlugins(false)} width="min(92vw, 80rem)">
-      <div class="flex flex-col" style={{ 'min-height': '60vh', 'max-height': 'calc(100vh - 10rem)' }}>
+      <div class="flex flex-col" style={{ height: 'min(78vh, 720px)' }}>
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-sm font-semibold text-text-primary">Plugins</h2>
           <button
