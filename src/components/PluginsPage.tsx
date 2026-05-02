@@ -75,7 +75,7 @@ export const PluginsPage: Component = () => {
         <div class="flex-1 grid grid-cols-[160px_1fr] min-h-0">
           {/* Agent rail — matches the app's main sidebar density */}
           <nav class="flex flex-col gap-0.5 border-r border-border px-2 py-2 overflow-y-auto">
-            <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted px-2 mb-1">
+            <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted px-2.5 mb-1">
               Coding agent
             </div>
             <For each={AGENT_ORDER}>
@@ -84,7 +84,7 @@ export const PluginsPage: Component = () => {
                 const supported = SUPPORTED_AGENTS.has(agent)
                 return (
                   <button
-                    class={`relative flex items-center gap-2 px-2 py-1 rounded-md text-left transition-colors ${
+                    class={`relative flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left transition-colors ${
                       active()
                         ? 'bg-accent-muted text-accent'
                         : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary'
@@ -92,7 +92,7 @@ export const PluginsPage: Component = () => {
                     onClick={() => setActiveAgent(agent)}
                   >
                     <Show when={active()}>
-                      <span class="absolute left-0 top-1 bottom-1 w-0.5 rounded-r bg-accent" />
+                      <span class="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-accent" />
                     </Show>
                     <SvgIcon svg={agentIcon(agent)} size={14} />
                     <span class="text-[12px] font-medium flex-1 truncate">{AGENT_DISPLAY_NAMES[agent]}</span>
