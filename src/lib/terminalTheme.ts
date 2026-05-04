@@ -69,14 +69,31 @@ export function getXtermFontConfig(): { fontFamily: string; fontSize: number; cu
   }
 }
 
-/** Subscribe an xterm instance to live appearance updates. Returns cleanup. */
-export function subscribeXtermToAppearance(term: XTerm, onResize?: () => void): () => void {
+/** Subscribe an xterm instance to live appearance updates. Returns cleanup.
+ *
+ *  `reloadRenderer`, when provided, is invoked after the new theme has been
+ *  written to xterm's options. WebGL-rendered terminals must use this to swap
+ *  in a fresh renderer instance — xterm v6's WebGL renderer keeps its texture
+ *  atlas, glyph cache, and rectangle-batch buffers alive across theme changes,
+ *  so setting `term.options.theme` updates the option object but the visible
+ *  canvas keeps painting with the old palette. The DOM renderer doesn't have
+ *  this issue (it re-injects CSS on every theme change), so DOM-only callers
+ *  can leave it undefined.
+ */
+export function subscribeXtermToAppearance(
+  term: XTerm,
+  onResize?: () => void,
+  reloadRenderer?: () => void,
+): () => void {
   return onAppearanceChanged(() => {
     const cfg = getXtermFontConfig()
     term.options.theme = getXtermTheme()
     term.options.fontFamily = cfg.fontFamily
     term.options.fontSize = cfg.fontSize
     term.options.cursorBlink = cfg.cursorBlink
+    // Swap the renderer first so it activates against the just-written theme
+    // (its constructor caches `themeService.colors` once at activate time).
+    reloadRenderer?.()
     // The WebGL renderer caches a texture atlas keyed on font + theme. Without
     // invalidating it, font/color changes don't visibly repaint until the next
     // resize. The canvas renderer ignores this method.

@@ -109,6 +109,22 @@ function initialFit(entry: XtermEntry, terminalId: string) {
 }
 
 /**
+ * Replace a terminal's WebGL renderer with a fresh instance carrying the
+ * current theme. Setting `term.options.theme = newTheme` fires xterm's
+ * `onChangeColors`, but xterm v6's WebglRenderer keeps its texture atlas,
+ * cell model, and rectangle-batch buffers across that event — visible cells
+ * keep painting with the colors baked in at construction time. The canonical
+ * fix used by VS Code is to swap the renderer entirely; doing that via the
+ * WebglAddon's lifecycle gives us a clean `setRenderer(...)` → `_fullRefresh()`
+ * sequence that paints the whole grid in the new palette.
+ */
+function reloadWebglAddon(entry: import('../store/terminals').XtermEntry): void {
+  if (!entry.webglFactory) return
+  entry.webglAddon?.dispose()
+  entry.webglAddon = entry.webglFactory()
+}
+
+/**
  * Force-redraw triggers that fix WebGL texture-atlas drift without relying on
  * the user resizing the window. VS Code (`xtermTerminal.ts: forceRedraw()`)
  * and Tabby (`xtermFrontend.ts: displayMetricsChanged$`) both wire these.
@@ -245,10 +261,14 @@ export const ShellTerminal: Component<Props> = (props) => {
         existing.term.focus()
       })
       resizeObserver = attachResizeObserver(terminalRef, existing, props.terminalId)
-      unsubAppearance = subscribeXtermToAppearance(existing.term, () => {
-        existing.fitAddon.fit()
-        existing.term.clearTextureAtlas()
-      })
+      unsubAppearance = subscribeXtermToAppearance(
+        existing.term,
+        () => {
+          existing.fitAddon.fit()
+          existing.term.clearTextureAtlas()
+        },
+        () => reloadWebglAddon(existing),
+      )
       unsubLifecycle = attachAtlasLifecycle(existing.term)
       return
     }
@@ -301,27 +321,43 @@ export const ShellTerminal: Component<Props> = (props) => {
       term.write(replay.data)
       markSeqWritten(props.terminalId, replay.seq)
     }
-    registerXterm(props.terminalId, term, fitAddon, searchAddon)
-
-    try {
-      const webgl = new WebglAddon()
-      // VS Code pattern: dispose on context loss so xterm falls back to the
-      // DOM renderer instead of leaving a dead GL context behind. Critical
-      // on macOS WebKit (Tauri) where the OS occasionally drops contexts on
-      // sleep / Mission Control / display switches.
-      webgl.onContextLoss(() => webgl.dispose())
-      term.loadAddon(webgl)
-    } catch {
-      // WebGL not available — xterm auto-falls back to the DOM renderer.
+    // Factored so the appearance subscriber can re-create a fresh WebGL
+    // renderer instance when the theme flips. xterm v6's WebglRenderer caches
+    // its texture atlas + glyph state across `term.options.theme = ...`
+    // assignments, so without a swap, running terminals keep painting the
+    // colors they were started with.
+    const makeWebgl = (): WebglAddon | undefined => {
+      try {
+        const webgl = new WebglAddon()
+        // VS Code pattern: dispose on context loss so xterm falls back to the
+        // DOM renderer instead of leaving a dead GL context behind. Critical
+        // on macOS WebKit (Tauri) where the OS occasionally drops contexts on
+        // sleep / Mission Control / display switches.
+        webgl.onContextLoss(() => webgl.dispose())
+        term.loadAddon(webgl)
+        return webgl
+      } catch {
+        // WebGL not available — xterm auto-falls back to the DOM renderer.
+        return undefined
+      }
     }
+    const initialWebgl = makeWebgl()
 
-    const entry = { term, fitAddon, searchAddon }
+    const entry: import('../store/terminals').XtermEntry = {
+      term, fitAddon, searchAddon, webglAddon: initialWebgl, webglFactory: makeWebgl,
+    }
+    // Re-register so the registry sees the WebGL handle alongside the term.
+    registerXterm(props.terminalId, term, fitAddon, searchAddon, initialWebgl, makeWebgl)
     initialFit(entry, props.terminalId)
     resizeObserver = attachResizeObserver(terminalRef, entry, props.terminalId)
-    unsubAppearance = subscribeXtermToAppearance(term, () => {
-      fitAddon.fit()
-      term.clearTextureAtlas()
-    })
+    unsubAppearance = subscribeXtermToAppearance(
+      term,
+      () => {
+        fitAddon.fit()
+        term.clearTextureAtlas()
+      },
+      () => reloadWebglAddon(entry),
+    )
     unsubLifecycle = attachAtlasLifecycle(term)
   })
 
