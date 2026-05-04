@@ -6,6 +6,7 @@ import type { TerminalInstance, PtyOutputEvent, PtyExitedEvent } from '../types'
 import type { Terminal as XTerm } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import type { SearchAddon } from '@xterm/addon-search'
+import type { WebglAddon } from '@xterm/addon-webgl'
 import { activeTerminalForTask, setActiveTerminalForTaskContext } from './taskContext'
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,14 @@ export interface XtermEntry {
   term: XTerm
   fitAddon: FitAddon
   searchAddon?: SearchAddon
+  /** Factory + handle for the WebGL renderer addon. Stored so the appearance
+   *  subscriber can dispose-and-reload it when the theme flips — xterm v6's
+   *  WebGL renderer caches its texture atlas + glyph state per renderer
+   *  instance, and a fresh instance is the canonical way to make running
+   *  terminals adopt new colors (setting `term.options.theme` updates the
+   *  options but the visible canvas keeps the old palette). */
+  webglFactory?: () => WebglAddon | undefined
+  webglAddon?: WebglAddon
 }
 const xtermInstances = new Map<string, XtermEntry>()
 
@@ -102,8 +111,15 @@ export function markSeqWritten(terminalId: string, seq: number) {
   if (seq > prev) lastSeqWritten.set(terminalId, seq)
 }
 
-export function registerXterm(terminalId: string, term: XTerm, fitAddon: FitAddon, searchAddon?: SearchAddon) {
-  xtermInstances.set(terminalId, { term, fitAddon, searchAddon })
+export function registerXterm(
+  terminalId: string,
+  term: XTerm,
+  fitAddon: FitAddon,
+  searchAddon?: SearchAddon,
+  webglAddon?: WebglAddon,
+  webglFactory?: () => WebglAddon | undefined,
+) {
+  xtermInstances.set(terminalId, { term, fitAddon, searchAddon, webglAddon, webglFactory })
   // Drain any live chunks that arrived after the snapshot was taken but before
   // this xterm was mounted. Stale chunks (seq <= last written) are skipped.
   const pending = pendingChunks.get(terminalId)

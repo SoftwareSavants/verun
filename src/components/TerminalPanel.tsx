@@ -78,7 +78,7 @@ export const TerminalPanel: Component<Props> = (props) => {
   })
 
   return (
-    <div class="flex flex-col h-full bg-[#0a0a0a]">
+    <div class="flex flex-col h-full bg-surface-0">
       {/* Tab bar */}
       <div class="flex items-center px-2 py-1.5 gap-1 bg-surface-1 border-b border-border-subtle overflow-x-auto shrink-0">
         <For each={sortedTerminals()}>
