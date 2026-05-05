@@ -56,6 +56,16 @@ export function invalidateDirectory(taskId: string, relativePath: string) {
   }
 }
 
+/** Reload every directory listing cached for this task (e.g. after `.gitignore` changes). */
+export function reloadAllCachedDirectoriesForTask(taskId: string) {
+  const prefix = `${taskId}:`
+  for (const key of Object.keys(dirContents)) {
+    if (!key.startsWith(prefix)) continue
+    const relativePath = key.slice(prefix.length)
+    void loadDirectory(taskId, relativePath)
+  }
+}
+
 export function clearTaskFileCache(taskId: string) {
   const keys = Object.keys(dirContents).filter(k => k.startsWith(`${taskId}:`))
   for (const key of keys) {

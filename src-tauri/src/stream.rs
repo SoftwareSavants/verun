@@ -1486,7 +1486,11 @@ fn process_github_remote_invalidation(
             if scopes.is_some() {
                 pending.remove(0);
             }
-            if *is_error { None } else { scopes }
+            if *is_error {
+                None
+            } else {
+                scopes
+            }
         }
         _ => None,
     }

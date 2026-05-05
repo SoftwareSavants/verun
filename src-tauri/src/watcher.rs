@@ -12,6 +12,11 @@ fn is_git_related(rel: &str) -> bool {
     rel == ".git" || rel.starts_with(".git/")
 }
 
+/// True when edits to this path change which files Git considers ignored.
+fn is_git_ignore_rules_path(rel: &str) -> bool {
+    rel == ".gitignore" || rel.ends_with("/.gitignore") || rel == ".git/info/exclude"
+}
+
 /// If `worktree_path/.git` is a file (git worktree), parses the `gitdir:` line
 /// and returns the absolute path to the actual git directory (the one that
 /// holds `index`, `HEAD`, etc.). Returns an empty vec for regular repos where
@@ -51,6 +56,10 @@ pub fn new_file_watcher_map() -> FileWatcherMap {
 pub struct FileTreeChangedEvent {
     pub task_id: String,
     pub path: String,
+    /// When set, file tree UIs should reload **every** cached directory for the
+    /// task so `git check-ignore` results (e.g. dimming) match the new rules.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_rules_changed: bool,
 }
 
 pub fn start_watching(
@@ -77,8 +86,15 @@ pub fn start_watching(
             if let Ok(events) = events {
                 let mut file_dirs = std::collections::HashSet::new();
                 let mut git_changed = false;
+                let mut ignore_rules_changed = false;
                 for event in &events {
                     if event.kind == DebouncedEventKind::Any {
+                        if let Ok(rel_file) = event.path.strip_prefix(&wt_path) {
+                            let rf = rel_file.to_string_lossy();
+                            if is_git_ignore_rules_path(&rf) {
+                                ignore_rules_changed = true;
+                            }
+                        }
                         // Events from the extra git dir (worktree git state) →
                         // local git state only, never file-tree-changed.
                         let from_extra_git =
@@ -111,14 +127,26 @@ pub fn start_watching(
                         },
                     );
                 }
-                for dir in file_dirs {
+                if ignore_rules_changed {
                     let _ = app.emit(
                         "file-tree-changed",
                         FileTreeChangedEvent {
                             task_id: tid.clone(),
-                            path: dir,
+                            path: String::new(),
+                            ignore_rules_changed: true,
                         },
                     );
+                } else {
+                    for dir in file_dirs {
+                        let _ = app.emit(
+                            "file-tree-changed",
+                            FileTreeChangedEvent {
+                                task_id: tid.clone(),
+                                path: dir,
+                                ignore_rules_changed: false,
+                            },
+                        );
+                    }
                 }
             }
         },
@@ -145,7 +173,16 @@ pub fn start_watching(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_git_related, resolve_extra_git_dirs};
+    use super::{is_git_ignore_rules_path, is_git_related, resolve_extra_git_dirs};
+
+    #[test]
+    fn git_ignore_rules_paths() {
+        assert!(is_git_ignore_rules_path(".gitignore"));
+        assert!(is_git_ignore_rules_path("packages/a/.gitignore"));
+        assert!(is_git_ignore_rules_path(".git/info/exclude"));
+        assert!(!is_git_ignore_rules_path("foo.txt"));
+        assert!(!is_git_ignore_rules_path(".gitignore-backup"));
+    }
 
     #[test]
     fn git_dir_itself_is_git_related() {
