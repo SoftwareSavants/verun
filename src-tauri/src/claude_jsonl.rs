@@ -216,19 +216,24 @@ enum EnvelopeAction {
 /// shapes. Native Claude TUI hides this scaffolding; we either hide or
 /// summarise it depending on the shape:
 ///
-///     <command-message>adapt</command-message>
-///     <command-name>/adapt</command-name>
-///     <command-args>wassup</command-args>
+/// ```text
+/// <command-message>adapt</command-message>
+/// <command-name>/adapt</command-name>
+/// <command-args>wassup</command-args>
+/// ```
 ///
 /// → Replace("/adapt wassup")
 ///
-///     <local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>
+/// ```text
+/// <local-command-stdout>Set model to Sonnet 4.6</local-command-stdout>
+/// ```
 ///
 /// → Drop (post-execution side-effect; the command itself was already shown
 ///   when the user typed it).
-///
-///     Base directory for this skill: /Users/x/.claude/skills/adapt
-///     ...skill markdown body...
+/// ```text
+/// Base directory for this skill: /Users/x/.claude/skills/adapt
+/// ...skill markdown body...
+/// ```
 ///
 /// → Drop (skill-body injection - the model needs it but the user doesn't).
 fn classify_envelope(text: &str) -> EnvelopeAction {
@@ -308,7 +313,9 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
             EnvelopeAction::Drop => return Vec::new(),
             EnvelopeAction::Replace(text) => return vec![OutputItem::UserMessage { text }],
             EnvelopeAction::Keep => {
-                return vec![OutputItem::UserMessage { text: s.to_string() }];
+                return vec![OutputItem::UserMessage {
+                    text: s.to_string(),
+                }];
             }
         }
     }
@@ -329,7 +336,9 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
                     }
                     match classify_envelope(text) {
                         EnvelopeAction::Drop => continue,
-                        EnvelopeAction::Replace(t) => items.push(OutputItem::UserMessage { text: t }),
+                        EnvelopeAction::Replace(t) => {
+                            items.push(OutputItem::UserMessage { text: t })
+                        }
                         EnvelopeAction::Keep => items.push(OutputItem::UserMessage {
                             text: text.to_string(),
                         }),
@@ -561,7 +570,8 @@ mod tests {
 
     #[test]
     fn transcript_user_text_prompt_as_string_becomes_user_message() {
-        let line = r#"{"type":"user","message":{"role":"user","content":"inline prompt"},"uuid":"u1"}"#;
+        let line =
+            r#"{"type":"user","message":{"role":"user","content":"inline prompt"},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
             [OutputItem::UserMessage { text }] => assert_eq!(text, "inline prompt"),
@@ -775,7 +785,9 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"AAAA"}},{"text":"check this","type":"text"}]},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         assert_eq!(items.len(), 2, "items: {items:#?}");
-        assert!(matches!(&items[0], OutputItem::UserAttachment { mime, data_b64 } if mime == "image/jpeg" && data_b64 == "AAAA"));
+        assert!(
+            matches!(&items[0], OutputItem::UserAttachment { mime, data_b64 } if mime == "image/jpeg" && data_b64 == "AAAA")
+        );
         assert!(matches!(&items[1], OutputItem::UserMessage { text } if text == "check this"));
     }
 
@@ -823,7 +835,9 @@ mod tests {
         // last-prompt) are all bookkeeping and produce nothing.
         assert_eq!(items.len(), 6, "items: {items:#?}");
         assert!(matches!(&items[0], OutputItem::UserMessage { text } if text == "hello claude"));
-        assert!(matches!(&items[1], OutputItem::Thinking { text } if text == "let me think about this"));
+        assert!(
+            matches!(&items[1], OutputItem::Thinking { text } if text == "let me think about this")
+        );
         assert!(matches!(&items[2], OutputItem::Text { text } if text.starts_with("Hi!")));
         assert!(matches!(&items[3], OutputItem::ToolStart { tool, .. } if tool == "Bash"));
         assert!(

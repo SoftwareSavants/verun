@@ -3018,12 +3018,8 @@ pub async fn send_side_question(
         .map(|proc| proc.stdin.clone())
         .ok_or_else(|| "No active session".to_string())?;
 
-    let (request_id, rx) = send_control_request(
-        &stdin,
-        Some(pending),
-        build_side_question_request(question),
-    )
-    .await?;
+    let (request_id, rx) =
+        send_control_request(&stdin, Some(pending), build_side_question_request(question)).await?;
     let rx = rx.expect("pending map provided");
 
     let result = tokio::time::timeout(Duration::from_secs(60), rx).await;

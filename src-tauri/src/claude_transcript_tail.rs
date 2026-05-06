@@ -414,7 +414,10 @@ mod tests {
         // content. If it incorrectly re-read from 0, we'd already see "old"
         // in the channel.
         tokio::time::sleep(Duration::from_millis(250)).await;
-        assert!(rx.try_recv().is_err(), "tail re-read content before start_offset");
+        assert!(
+            rx.try_recv().is_err(),
+            "tail re-read content before start_offset"
+        );
 
         append(
             &path,
@@ -563,7 +566,10 @@ mod tests {
             .expect("channel closed");
         assert_user_text(&item, "after-garbage");
         // Confirm the garbage line did not slip through.
-        assert!(rx.try_recv().is_err(), "unexpected extra item after garbage");
+        assert!(
+            rx.try_recv().is_err(),
+            "unexpected extra item after garbage"
+        );
 
         tail.stop().await;
     }

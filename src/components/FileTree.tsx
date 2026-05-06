@@ -5,7 +5,7 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { problemSeverityForPath } from '../store/problems'
 import { getFileIcon } from '../lib/fileIcons'
 import {
-  getDirContents, loadDirectory, loadDirectoryIfMissing, invalidateDirectory
+  getDirContents, loadDirectory, loadDirectoryIfMissing, invalidateDirectory, reloadAllCachedDirectoriesForTask
 } from '../store/files'
 import { isExpanded, toggleExpanded, expandDir, collapseDir, openFile, openFilePinned, revealRequest, mainView } from '../store/editorView'
 import { taskById } from '../store/tasks'
@@ -37,7 +37,10 @@ export const FileTree: Component<Props> = (props) => {
 
   // Listen for file system changes
   const unlistenPromise = listen<FileTreeChangedEvent>('file-tree-changed', (event) => {
-    if (event.payload.taskId === props.taskId) {
+    if (event.payload.taskId !== props.taskId) return
+    if (event.payload.ignoreRulesChanged) {
+      reloadAllCachedDirectoriesForTask(props.taskId)
+    } else {
       invalidateDirectory(props.taskId, event.payload.path)
     }
   })
@@ -337,7 +340,7 @@ export const FileTree: Component<Props> = (props) => {
                             : selectedIndex() === virtualRow.index
                               ? ' bg-surface-2 text-text-secondary'
                               : ' text-text-secondary hover:bg-surface-2'
-                        }`}
+                        }${n().entry.isGitignored ? ' opacity-60' : ''}`}
                         style={{
                           "padding-left": `${n().depth * 12 + 8}px`,
                           "box-shadow": !n().entry.isDir && mainView(props.taskId) === n().entry.relativePath
