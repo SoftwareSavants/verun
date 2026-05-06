@@ -198,7 +198,10 @@ pub async fn open_claude_terminal(
         );
         (None, Some(w))
     } else {
-        (Some(spawn_transcript_tail(&jsonl_path, start_offset, item_tx)), None)
+        (
+            Some(spawn_transcript_tail(&jsonl_path, start_offset, item_tx)),
+            None,
+        )
     };
 
     let driver_session_id = session_id.clone();
@@ -241,7 +244,9 @@ pub async fn close_claude_terminal(
     ct_map: ClaudeTerminalMap,
     session_id: String,
 ) -> Result<(), String> {
-    let terminal_id = ct_map.remove(&session_id).map(|(_, h)| h.terminal_id.clone());
+    let terminal_id = ct_map
+        .remove(&session_id)
+        .map(|(_, h)| h.terminal_id.clone());
     if let Some(tid) = terminal_id {
         tokio::task::spawn_blocking(move || pty::close_pty(&pty_map, &tid))
             .await
@@ -409,7 +414,9 @@ pub(crate) async fn build_persist_lines(
                     let bytes = match STANDARD.decode(data_b64.as_bytes()) {
                         Ok(b) => b,
                         Err(e) => {
-                            eprintln!("[verun][claude-terminal] dropping attachment with bad base64: {e}");
+                            eprintln!(
+                                "[verun][claude-terminal] dropping attachment with bad base64: {e}"
+                            );
                             continue;
                         }
                     };
@@ -542,10 +549,13 @@ async fn pre_trust_worktree_at(config_path: &Path, worktree_path: &str) -> Resul
     }
 
     entry_obj.insert("hasTrustDialogAccepted".to_string(), Value::Bool(true));
-    entry_obj.insert("hasCompletedProjectOnboarding".to_string(), Value::Bool(true));
+    entry_obj.insert(
+        "hasCompletedProjectOnboarding".to_string(),
+        Value::Bool(true),
+    );
 
-    let serialized = serde_json::to_vec_pretty(&config)
-        .map_err(|e| format!("serialize claude config: {e}"))?;
+    let serialized =
+        serde_json::to_vec_pretty(&config).map_err(|e| format!("serialize claude config: {e}"))?;
 
     // Atomic write: temp file in the same directory, then rename. If something
     // crashes between write and rename, the user's existing config is intact.
@@ -558,7 +568,13 @@ async fn pre_trust_worktree_at(config_path: &Path, worktree_path: &str) -> Resul
         .map_err(|e| format!("write {}: {e}", tmp_path.display()))?;
     tokio::fs::rename(&tmp_path, config_path)
         .await
-        .map_err(|e| format!("rename {} -> {}: {e}", tmp_path.display(), config_path.display()))?;
+        .map_err(|e| {
+            format!(
+                "rename {} -> {}: {e}",
+                tmp_path.display(),
+                config_path.display()
+            )
+        })?;
 
     Ok(())
 }
@@ -676,7 +692,6 @@ fn spawn_fresh_session_watcher_and_tail(
     })
 }
 
-
 /// Minimal POSIX single-quote wrapping. Single-quotes inside the input are
 /// replaced with `'\''` (close quote, escaped quote, open quote).
 fn shell_quote(s: &str) -> String {
@@ -784,7 +799,10 @@ mod tests {
 
         let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
         assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
-        assert_eq!(v["projects"]["/repo/wt"]["hasCompletedProjectOnboarding"], true);
+        assert_eq!(
+            v["projects"]["/repo/wt"]["hasCompletedProjectOnboarding"],
+            true
+        );
     }
 
     #[tokio::test]
@@ -811,7 +829,10 @@ mod tests {
         assert_eq!(v["projects"]["/repo/wt"]["allowedTools"], json!(["bash"]));
         assert_eq!(v["projects"]["/repo/wt"]["projectOnboardingSeenCount"], 1);
         assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
-        assert_eq!(v["projects"]["/repo/wt"]["hasCompletedProjectOnboarding"], true);
+        assert_eq!(
+            v["projects"]["/repo/wt"]["hasCompletedProjectOnboarding"],
+            true
+        );
     }
 
     #[tokio::test]
@@ -828,7 +849,10 @@ mod tests {
         pre_trust_worktree_at(&config, "/repo/wt").await.unwrap();
 
         let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
-        assert_eq!(v["projects"]["/repo/other"]["allowedTools"], json!(["bash"]));
+        assert_eq!(
+            v["projects"]["/repo/other"]["allowedTools"],
+            json!(["bash"])
+        );
         assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
     }
 
@@ -854,7 +878,10 @@ mod tests {
         pre_trust_worktree_at(&config, "/repo/wt").await.unwrap();
 
         let mtime_after = std::fs::metadata(&config).unwrap().modified().unwrap();
-        assert_eq!(mtime_before, mtime_after, "should be a no-op when already trusted");
+        assert_eq!(
+            mtime_before, mtime_after,
+            "should be a no-op when already trusted"
+        );
     }
 
     #[tokio::test]
@@ -865,7 +892,9 @@ mod tests {
         let config = dir.path().join(".claude.json");
         std::fs::write(&config, b"not json").unwrap();
 
-        let err = pre_trust_worktree_at(&config, "/repo/wt").await.unwrap_err();
+        let err = pre_trust_worktree_at(&config, "/repo/wt")
+            .await
+            .unwrap_err();
         assert!(err.contains("parse"));
     }
 
@@ -890,9 +919,18 @@ mod tests {
 
         close_all_for_task(&pty_map, &ct_map, "t-1");
 
-        assert!(ct_map.get("s-a").is_none(), "handle for t-1/s-a should be dropped");
-        assert!(ct_map.get("s-b").is_none(), "handle for t-1/s-b should be dropped");
-        assert!(ct_map.get("s-c").is_some(), "handle for t-2/s-c must survive");
+        assert!(
+            ct_map.get("s-a").is_none(),
+            "handle for t-1/s-a should be dropped"
+        );
+        assert!(
+            ct_map.get("s-b").is_none(),
+            "handle for t-1/s-b should be dropped"
+        );
+        assert!(
+            ct_map.get("s-c").is_some(),
+            "handle for t-2/s-c must survive"
+        );
     }
 
     #[test]
@@ -957,9 +995,16 @@ mod tests {
     #[test]
     fn verun_items_line_serializes_multiple_kinds_in_order() {
         let items = vec![
-            OutputItem::Text { text: "first".into() },
-            OutputItem::Thinking { text: "thought".into() },
-            OutputItem::ToolStart { tool: "Read".into(), input: "{}".into() },
+            OutputItem::Text {
+                text: "first".into(),
+            },
+            OutputItem::Thinking {
+                text: "thought".into(),
+            },
+            OutputItem::ToolStart {
+                tool: "Read".into(),
+                input: "{}".into(),
+            },
         ];
         let line = verun_items_line(&items);
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -976,13 +1021,17 @@ mod tests {
     // happy path is also covered so we know the validator doesn't reject a
     // perfectly good session.
 
-    use crate::db::tests::{make_project, make_session, make_task, process_write_for_tests, test_pool};
+    use crate::db::tests::{
+        make_project, make_session, make_task, process_write_for_tests, test_pool,
+    };
     use crate::db::DbWrite;
 
     #[tokio::test]
     async fn validate_session_for_terminal_errors_when_session_missing() {
         let pool = test_pool().await;
-        let err = validate_session_for_terminal(&pool, "s-none").await.unwrap_err();
+        let err = validate_session_for_terminal(&pool, "s-none")
+            .await
+            .unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
     }
 
@@ -998,9 +1047,13 @@ mod tests {
         let mut s = make_session("t-001");
         s.agent_type = "codex".into();
         s.resume_session_id = Some("r-1".into());
-        process_write_for_tests(&pool, DbWrite::CreateSession(s)).await.unwrap();
+        process_write_for_tests(&pool, DbWrite::CreateSession(s))
+            .await
+            .unwrap();
 
-        let err = validate_session_for_terminal(&pool, "s-001").await.unwrap_err();
+        let err = validate_session_for_terminal(&pool, "s-001")
+            .await
+            .unwrap_err();
         assert!(err.contains("Claude sessions"), "got: {err}");
         assert!(err.contains("codex"), "should name the actual agent: {err}");
     }
@@ -1038,7 +1091,9 @@ mod tests {
             .unwrap();
         let mut s = make_session("t-001");
         s.resume_session_id = Some("resume-uuid-abc".into());
-        process_write_for_tests(&pool, DbWrite::CreateSession(s)).await.unwrap();
+        process_write_for_tests(&pool, DbWrite::CreateSession(s))
+            .await
+            .unwrap();
 
         let validated = validate_session_for_terminal(&pool, "s-001").await.unwrap();
         assert_eq!(validated.task.id, "t-001");
@@ -1058,7 +1113,9 @@ mod tests {
             .unwrap();
         let mut s = make_session("t-001");
         s.model = Some("opus".into());
-        process_write_for_tests(&pool, DbWrite::CreateSession(s)).await.unwrap();
+        process_write_for_tests(&pool, DbWrite::CreateSession(s))
+            .await
+            .unwrap();
 
         let validated = validate_session_for_terminal(&pool, "s-001").await.unwrap();
         assert_eq!(validated.model, Some("opus".into()));
@@ -1145,10 +1202,18 @@ mod tests {
     #[test]
     fn partition_tail_batch_groups_user_content_into_a_single_segment() {
         let items = vec![
-            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "AAAA".into() },
-            OutputItem::UserMessage { text: "look".into() },
+            OutputItem::UserAttachment {
+                mime: "image/png".into(),
+                data_b64: "AAAA".into(),
+            },
+            OutputItem::UserMessage {
+                text: "look".into(),
+            },
             OutputItem::Text { text: "ok".into() },
-            OutputItem::ToolStart { tool: "Read".into(), input: "{}".into() },
+            OutputItem::ToolStart {
+                tool: "Read".into(),
+                input: "{}".into(),
+            },
         ];
         let segs = partition_tail_batch(&items);
         assert_eq!(segs.len(), 2, "segments: {segs:?}");
@@ -1191,9 +1256,10 @@ mod tests {
     #[test]
     fn partition_tail_batch_attachment_only_yields_user_segment_with_empty_text() {
         // Image-only paste — text is empty, attachments populated.
-        let items = vec![
-            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "AAAA".into() },
-        ];
+        let items = vec![OutputItem::UserAttachment {
+            mime: "image/png".into(),
+            data_b64: "AAAA".into(),
+        }];
         let segs = partition_tail_batch(&items);
         assert_eq!(segs.len(), 1);
         match &segs[0] {
@@ -1210,9 +1276,15 @@ mod tests {
         // If a tick captures two distinct user turns separated by an
         // assistant chunk, each should be its own segment.
         let items = vec![
-            OutputItem::UserMessage { text: "first".into() },
-            OutputItem::Text { text: "reply".into() },
-            OutputItem::UserMessage { text: "second".into() },
+            OutputItem::UserMessage {
+                text: "first".into(),
+            },
+            OutputItem::Text {
+                text: "reply".into(),
+            },
+            OutputItem::UserMessage {
+                text: "second".into(),
+            },
         ];
         let segs = partition_tail_batch(&items);
         assert_eq!(segs.len(), 3);
@@ -1240,7 +1312,10 @@ mod tests {
     #[test]
     fn live_items_for_emit_filters_user_attachments() {
         let items = vec![
-            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "AAAA".into() },
+            OutputItem::UserAttachment {
+                mime: "image/png".into(),
+                data_b64: "AAAA".into(),
+            },
             OutputItem::UserMessage { text: "hi".into() },
             OutputItem::Text { text: "ok".into() },
         ];
@@ -1259,8 +1334,13 @@ mod tests {
         let data_b64 = STANDARD.encode(bytes);
 
         let items = vec![
-            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: data_b64.clone() },
-            OutputItem::UserMessage { text: "look at this".into() },
+            OutputItem::UserAttachment {
+                mime: "image/png".into(),
+                data_b64: data_b64.clone(),
+            },
+            OutputItem::UserMessage {
+                text: "look at this".into(),
+            },
         ];
 
         let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
@@ -1277,7 +1357,9 @@ mod tests {
         assert_eq!(hash.len(), 64, "sha256 hex");
 
         // Bytes are now in the blob store under the expected hash.
-        let stored = crate::blob::read_blob_bytes(dir.path(), hash).await.unwrap();
+        let stored = crate::blob::read_blob_bytes(dir.path(), hash)
+            .await
+            .unwrap();
         assert_eq!(stored, bytes);
     }
 
@@ -1286,8 +1368,13 @@ mod tests {
         let pool = test_pool().await;
         let dir = tempfile::tempdir().unwrap();
         let items = vec![
-            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: "not!!base64".into() },
-            OutputItem::UserMessage { text: "still text".into() },
+            OutputItem::UserAttachment {
+                mime: "image/png".into(),
+                data_b64: "not!!base64".into(),
+            },
+            OutputItem::UserMessage {
+                text: "still text".into(),
+            },
         ];
         let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
         assert_eq!(lines.len(), 1);
@@ -1303,8 +1390,13 @@ mod tests {
         let pool = test_pool().await;
         let dir = tempfile::tempdir().unwrap();
         let items = vec![
-            OutputItem::Text { text: "hello".into() },
-            OutputItem::ToolStart { tool: "Read".into(), input: "{}".into() },
+            OutputItem::Text {
+                text: "hello".into(),
+            },
+            OutputItem::ToolStart {
+                tool: "Read".into(),
+                input: "{}".into(),
+            },
         ];
         let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
         assert_eq!(lines.len(), 1);
@@ -1323,9 +1415,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let png_b64 = STANDARD.encode(b"img");
         let items = vec![
-            OutputItem::UserAttachment { mime: "image/png".into(), data_b64: png_b64 },
-            OutputItem::UserMessage { text: "what's this".into() },
-            OutputItem::Text { text: "an image".into() },
+            OutputItem::UserAttachment {
+                mime: "image/png".into(),
+                data_b64: png_b64,
+            },
+            OutputItem::UserMessage {
+                text: "what's this".into(),
+            },
+            OutputItem::Text {
+                text: "an image".into(),
+            },
         ];
         let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
         assert_eq!(lines.len(), 2);
@@ -1358,7 +1457,9 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let err = validate_session_for_terminal(&pool, "s-orphan").await.unwrap_err();
+        let err = validate_session_for_terminal(&pool, "s-orphan")
+            .await
+            .unwrap_err();
         assert!(err.contains("Task t-missing not found"), "got: {err}");
     }
 }

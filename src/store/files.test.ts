@@ -4,14 +4,14 @@ vi.mock('../lib/ipc', () => ({
   listDirectory: vi.fn().mockResolvedValue([]),
 }))
 
-import { loadDirectory, loadDirectoryIfMissing, clearTaskFileCache, getDirContents } from './files'
+import { loadDirectory, loadDirectoryIfMissing, clearTaskFileCache, getDirContents, reloadAllCachedDirectoriesForTask } from './files'
 import * as ipc from '../lib/ipc'
 
 describe('loadDirectoryIfMissing', () => {
   beforeEach(() => {
     vi.mocked(ipc.listDirectory).mockReset()
     vi.mocked(ipc.listDirectory).mockResolvedValue([
-      { name: 'src', relativePath: 'src', isDir: true, isSymlink: false, size: null },
+      { name: 'src', relativePath: 'src', isDir: true, isSymlink: false, size: null, isGitignored: false },
     ])
   })
 
@@ -32,5 +32,33 @@ describe('loadDirectoryIfMissing', () => {
     clearTaskFileCache('t-clear')
     await loadDirectoryIfMissing('t-clear', '')
     expect(vi.mocked(ipc.listDirectory)).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('reloadAllCachedDirectoriesForTask', () => {
+  beforeEach(() => {
+    vi.mocked(ipc.listDirectory).mockReset()
+    vi.mocked(ipc.listDirectory).mockResolvedValue([])
+  })
+
+  test('refetches list_directory for each cached path of that task', async () => {
+    await loadDirectory('t-multi', '')
+    await loadDirectory('t-multi', 'src')
+    vi.mocked(ipc.listDirectory).mockClear()
+    reloadAllCachedDirectoriesForTask('t-multi')
+    await vi.waitFor(() => {
+      expect(vi.mocked(ipc.listDirectory)).toHaveBeenCalledTimes(2)
+    })
+    expect(vi.mocked(ipc.listDirectory)).toHaveBeenCalledWith('t-multi', '')
+    expect(vi.mocked(ipc.listDirectory)).toHaveBeenCalledWith('t-multi', 'src')
+  })
+
+  test('does not touch other tasks', async () => {
+    await loadDirectory('t-a', '')
+    await loadDirectory('t-b', 'x')
+    vi.mocked(ipc.listDirectory).mockClear()
+    reloadAllCachedDirectoriesForTask('t-a')
+    await vi.waitFor(() => expect(vi.mocked(ipc.listDirectory)).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(ipc.listDirectory)).toHaveBeenCalledWith('t-a', '')
   })
 })

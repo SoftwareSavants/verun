@@ -1,10 +1,10 @@
+use crate::claude_terminal::{self, ClaudeTerminalMap, OpenClaudeTerminalResult};
 use crate::db::{self, DbWriteTx, OutputLine, Project, Session, Step, Task};
 use crate::file_search::{SearchMap, SearchOpts};
 use crate::git_ops;
 use crate::github;
 use crate::github_remote;
 use crate::lsp::LspMap;
-use crate::claude_terminal::{self, ClaudeTerminalMap, OpenClaudeTerminalResult};
 use crate::pty::{self, ActivePtyMap};
 use crate::task::{
     self, ActiveMap, ApprovalResponse, HookPtyMap, PendingApprovalEntry, PendingApprovalMeta,
@@ -44,9 +44,7 @@ fn emit_github_remote_invalidated(app: &AppHandle, task_id: &str, scopes: &[&str
     );
 }
 
-fn github_remote_invalidator(
-    app: &AppHandle,
-) -> github_remote::InvalidateFn {
+fn github_remote_invalidator(app: &AppHandle) -> github_remote::InvalidateFn {
     let app = app.clone();
     Arc::new(move |task_id, scopes| {
         let _ = app.emit(
@@ -2461,6 +2459,50 @@ pub async fn list_worktree_files(
     )
 }
 
+/// Returns worktree-relative paths that `git check-ignore` reports as ignored.
+/// Empty `paths` yields an empty set. Exit status 1 (nothing ignored) is normal.
+fn git_check_ignore_matching(
+    worktree_path: &str,
+    paths: &[String],
+) -> Result<std::collections::HashSet<String>, String> {
+    use std::collections::HashSet;
+    use std::io::Write;
+
+    if paths.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(worktree_path)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_WORK_TREE")
+        .args(["check-ignore", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run git check-ignore: {e}"))?;
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for p in paths {
+            writeln!(stdin, "{p}").ok();
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("git check-ignore failed: {e}"))?;
+
+    // git check-ignore exits 1 if no paths are ignored — not an error
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.to_string())
+        .collect())
+}
+
 #[tauri::command]
 pub async fn check_gitignored(
     pool: State<'_, SqlitePool>,
@@ -2473,36 +2515,7 @@ pub async fn check_gitignored(
 
     flatten_join(
         tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new("git");
-            cmd.current_dir(&t.worktree_path)
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_INDEX_FILE")
-                .env_remove("GIT_WORK_TREE")
-                .args(["check-ignore", "--stdin"])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null());
-
-            let mut child = cmd
-                .spawn()
-                .map_err(|e| format!("Failed to run git check-ignore: {e}"))?;
-            {
-                use std::io::Write;
-                let stdin = child.stdin.as_mut().unwrap();
-                for p in &paths {
-                    writeln!(stdin, "{p}").ok();
-                }
-            }
-
-            let output = child
-                .wait_with_output()
-                .map_err(|e| format!("git check-ignore failed: {e}"))?;
-
-            // git check-ignore exits 1 if no paths are ignored — not an error
-            Ok(String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(|l| l.to_string())
-                .collect())
+            git_check_ignore_matching(&t.worktree_path, &paths).map(|s| s.into_iter().collect())
         })
         .await,
     )
@@ -2555,6 +2568,7 @@ pub struct FileEntry {
     pub is_dir: bool,
     pub is_symlink: bool,
     pub size: Option<u64>,
+    pub is_gitignored: bool,
 }
 
 /// Build a `FileEntry` for a single path, resolving symlinks so that a link
@@ -2595,6 +2609,7 @@ fn build_file_entry(
         is_dir,
         is_symlink,
         size,
+        is_gitignored: false,
     })
 }
 
@@ -2610,29 +2625,19 @@ pub async fn list_directory(
 
     flatten_join(
         tokio::task::spawn_blocking(move || {
-            use ignore::WalkBuilder;
-
             let base = std::path::Path::new(&t.worktree_path).join(&relative_path);
-            if !base.exists() {
+            if !base.is_dir() {
                 return Err(format!("Directory not found: {relative_path}"));
             }
 
             let worktree_path = std::path::Path::new(&t.worktree_path);
             let mut entries = Vec::new();
-            for result in WalkBuilder::new(&base)
-                .max_depth(Some(1))
-                .hidden(false)
-                .git_ignore(false)
-                .git_global(false)
-                .git_exclude(false)
-                .build()
-            {
-                let entry = result.map_err(|e| format!("Walk error: {e}"))?;
-                // Skip the root directory itself
-                if entry.path() == base {
-                    continue;
-                }
-                let file_entry = build_file_entry(entry.path(), worktree_path)
+            let read_dir =
+                std::fs::read_dir(&base).map_err(|e| format!("Failed to read directory: {e}"))?;
+            for result in read_dir {
+                let dir_entry = result.map_err(|e| format!("Directory read error: {e}"))?;
+                let path = dir_entry.path();
+                let file_entry = build_file_entry(&path, worktree_path)
                     .map_err(|e| format!("Metadata error: {e}"))?;
                 entries.push(file_entry);
             }
@@ -2643,6 +2648,13 @@ pub async fn list_directory(
                     .cmp(&a.is_dir)
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             });
+
+            let paths: Vec<String> = entries.iter().map(|e| e.relative_path.clone()).collect();
+            if let Ok(ignored) = git_check_ignore_matching(&t.worktree_path, &paths) {
+                for e in &mut entries {
+                    e.is_gitignored = ignored.contains(&e.relative_path);
+                }
+            }
 
             Ok(entries)
         })
@@ -3238,6 +3250,71 @@ mod tests {
         assert!(!entry.is_dir);
         assert!(!entry.is_symlink);
         assert_eq!(entry.size, Some(2));
+        assert!(!entry.is_gitignored);
+    }
+
+    #[test]
+    fn git_check_ignore_matching_detects_ignored_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&root)
+            .output()
+            .expect("git init");
+        std::fs::write(format!("{root}/.gitignore"), "secret.txt\nbuild/\n").unwrap();
+        std::fs::write(format!("{root}/secret.txt"), "x").unwrap();
+        std::fs::write(format!("{root}/readme.md"), "x").unwrap();
+        std::fs::create_dir(format!("{root}/build")).unwrap();
+        std::fs::write(format!("{root}/build/out.bin"), "x").unwrap();
+
+        let paths = vec![
+            "secret.txt".into(),
+            "readme.md".into(),
+            "build".into(),
+            "build/out.bin".into(),
+        ];
+        let m = git_check_ignore_matching(&root, &paths).unwrap();
+        assert!(m.contains("secret.txt"));
+        assert!(m.contains("build"));
+        assert!(m.contains("build/out.bin"));
+        assert!(!m.contains("readme.md"));
+    }
+
+    /// `list_directory` must not use `ignore::WalkBuilder` defaults: with
+    /// `git_ignore(false)` alone, `.ignore` and other matchers still hid paths.
+    #[test]
+    fn read_dir_lists_paths_that_ignore_files_would_exclude() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join(".gitignore"), "gitignored.txt\n").unwrap();
+        std::fs::write(root.join(".ignore"), "dot_ignored.txt\n").unwrap();
+        std::fs::write(root.join("gitignored.txt"), "").unwrap();
+        std::fs::write(root.join("dot_ignored.txt"), "").unwrap();
+        std::fs::write(root.join("visible.txt"), "").unwrap();
+
+        let names: std::collections::HashSet<String> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+
+        assert!(names.contains("gitignored.txt"));
+        assert!(names.contains("dot_ignored.txt"));
+        assert!(names.contains("visible.txt"));
+    }
+
+    #[test]
+    fn file_entry_serializes_is_gitignored_camel_case() {
+        let e = FileEntry {
+            name: "a".into(),
+            relative_path: "a".into(),
+            is_dir: false,
+            is_symlink: false,
+            size: None,
+            is_gitignored: true,
+        };
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v.get("isGitignored"), Some(&serde_json::Value::Bool(true)));
     }
 
     /// Regression: GUI-launched apps on macOS inherit a stripped PATH.

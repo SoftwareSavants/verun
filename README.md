@@ -31,7 +31,7 @@ Pluggable agent backend with first-class support for Claude Code and Codex (plan
 - **Side-by-side diffs** - syntax-highlighted diffs for working-tree changes and individual commits
 - **Git workflow** - commit, push, create PR, merge, and inspect branch-scoped GitHub Actions/PR state without leaving the app; remote refresh is cached and only invalidated when relevant GitHub state changes
 - **Integrated terminal** - drop into any task's worktree with a built-in shell
-- **File tree & Quick Open** - browse files, fuzzy-find with CMD+P, preview media and markdown inline
+- **File tree & Quick Open** - browse files (gitignored entries shown dimmed like VS Code), fuzzy-find with CMD+P, preview media and markdown inline
 - **Workspace search** - Cmd+Shift+F content search across the task's worktree with case/whole-word/regex toggles and include/exclude globs, powered by embedded ripgrep
 - **Multi-window** - pop any task into its own window for side-by-side work across monitors
 - **Bootstrap from Better-T-Stack** - create a new project inside Verun via an in-app [Better-T-Stack](https://better-t-stack.dev) builder: big icon-and-description cards per option, a left category rail, a `~`-anchored folder picker with keyboard completion, live command preview, and `⌘↵` to scaffold. Verun runs the CLI (no install required), writes a sensible `.verun.json`, and hands off to the Add Project dialog

@@ -188,7 +188,8 @@ fn singleflight_gates() -> &'static TokioMutex<HashMap<String, Arc<TokioMutex<()
 
 async fn singleflight_gate(cache_key: &str) -> Arc<TokioMutex<()>> {
     let mut gates = singleflight_gates().lock().await;
-    gates.entry(cache_key.to_string())
+    gates
+        .entry(cache_key.to_string())
         .or_insert_with(|| Arc::new(TokioMutex::new(())))
         .clone()
 }
@@ -521,8 +522,10 @@ async fn fetch_log_and_store(
 ) -> Result<WorkflowLogSnapshot, String> {
     let worktree_path = worktree_path.to_string();
     let full_text = flatten_join(
-        tokio::task::spawn_blocking(move || github::get_failed_step_logs(&worktree_path, job_id, 0))
-            .await,
+        tokio::task::spawn_blocking(move || {
+            github::get_failed_step_logs(&worktree_path, job_id, 0)
+        })
+        .await,
     )?;
     let payload = LogPayload {
         job_id,
@@ -747,8 +750,7 @@ pub async fn get_actions(
             return Ok(actions_snapshot(payload, &entry, limit, true));
         }
         CacheState::Stale(payload, entry)
-            if payload.cached_limit >= limit
-                && mode == RemoteFetchMode::StaleWhileRevalidate =>
+            if payload.cached_limit >= limit && mode == RemoteFetchMode::StaleWhileRevalidate =>
         {
             emit_debug(
                 on_debug.as_ref(),
@@ -1395,7 +1397,9 @@ mod tests {
 
     #[tokio::test]
     async fn smaller_actions_limit_reuses_larger_cached_result() {
-        let _lock = test_env_lock().lock().unwrap_or_else(|poison| poison.into_inner());
+        let _lock = test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let pool = test_pool().await;
         let (_temp, repo) = setup_git_repo();
         let bin_dir = repo.join("bin");
@@ -1440,7 +1444,9 @@ mod tests {
 
     #[tokio::test]
     async fn stale_while_revalidate_refreshes_actions_and_notifies() {
-        let _lock = test_env_lock().lock().unwrap_or_else(|poison| poison.into_inner());
+        let _lock = test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let pool = test_pool().await;
         let (_temp, repo) = setup_git_repo();
         let bin_dir = repo.join("bin");
@@ -1527,7 +1533,9 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_actions_fetches_singleflight_on_cold_cache() {
-        let _lock = test_env_lock().lock().unwrap_or_else(|poison| poison.into_inner());
+        let _lock = test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let pool = test_pool().await;
         let (_temp, repo) = setup_git_repo();
         let bin_dir = repo.join("bin");
@@ -1566,7 +1574,9 @@ mod tests {
 
     #[tokio::test]
     async fn network_only_bypasses_fresh_actions_cache() {
-        let _lock = test_env_lock().lock().unwrap_or_else(|poison| poison.into_inner());
+        let _lock = test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let pool = test_pool().await;
         let (_temp, repo) = setup_git_repo();
         let bin_dir = repo.join("bin");
@@ -1610,7 +1620,9 @@ mod tests {
 
     #[tokio::test]
     async fn expired_actions_cache_falls_back_to_miss() {
-        let _lock = test_env_lock().lock().unwrap_or_else(|poison| poison.into_inner());
+        let _lock = test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let pool = test_pool().await;
         let (_temp, repo) = setup_git_repo();
         let bin_dir = repo.join("bin");
