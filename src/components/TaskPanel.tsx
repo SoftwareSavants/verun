@@ -387,7 +387,7 @@ export const TaskPanel: Component = () => {
                                   class="toolbar-btn gap-1 px-2"
                                   onClick={handleStart}
                                   disabled={setupRunning()}
-                                  title={setupRunning() ? 'Waiting for setup hook…' : hasStartCommand() ? `Run: ${project()!.startCommand} (F5)` : 'Set up a start command'}
+                                  title={setupRunning() ? 'Waiting for setup hook…' : hasStartCommand() ? 'Start project (F5)' : 'Set up a start command'}
                                 >
                                   <Play size={12} />
                                   <span>Start</span>
