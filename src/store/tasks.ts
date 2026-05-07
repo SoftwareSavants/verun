@@ -68,6 +68,14 @@ export const activeTasksForProject = (projectId: string) =>
 export const archivedTasksForProject = (projectId: string) =>
   tasks.filter(t => t.projectId === projectId && t.archived)
 
+// Pinned workspaces (#61) — pinned tasks (main, trunk, etc.) live in a separate
+// sidebar section above regular tasks; they skip archive / merge / PR flows.
+export const pinnedTasksForProject = (projectId: string) =>
+  tasks.filter(t => t.projectId === projectId && !t.archived && t.isPinned)
+
+export const unpinnedActiveTasksForProject = (projectId: string) =>
+  tasks.filter(t => t.projectId === projectId && !t.archived && !t.isPinned)
+
 export async function createTask(projectId: string, baseBranch?: string): Promise<{ task: Task; session: Session }> {
   const result = await ipc.createTask(projectId, baseBranch)
   setTasks(produce(t => t.unshift(result.task)))
@@ -93,6 +101,7 @@ export function startTaskCreation(projectId: string, baseBranch: string, agentTy
     lastCommitMessage: null,
     parentTaskId: null,
     agentType,
+    isPinned: false,
   }
 
   setTasks(produce(t => t.unshift(placeholder)))

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Sidebar now surfaces a separate "pinned workspaces" section above regular tasks for long-lived branches. Every project auto-gets a `main` pinned row that runs sessions directly in the repo root (no worktree); use the `+ Pin branch` button in the project header to attach worktrees for branches like `trunk` or `develop`. The pin dialog filters local branches, previews the target worktree path, and hides branches that are already pinned. Pinned rows skip the archive/merge/PR flow and wear a dedicated Pin badge in the TaskPanel header (labeled `Main` for the repo-root pin); right-click → Unpin removes non-main pins (#61)
 - Start button tooltip now reads "Start project (F5)" instead of inlining the raw start command, so a long `pnpm tauri dev --config ... --features ...` no longer overflows or wraps the OS tooltip. The full command is still visible in project Settings
 - `classify_envelope` rustdoc wraps XML/path samples in text-markdown fences so `cargo test --doc` does not compile them as Rust (indented `///` blocks are doctests by default)
 - Saving `.gitignore` or `.git/info/exclude` triggers a full refresh of cached file-tree listings for the task so ignored/dimmed state updates immediately (not only the ignore file’s parent folder)

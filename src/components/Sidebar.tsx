@@ -13,10 +13,9 @@ import {
 } from "solid-js";
 import { taskGit, refreshTaskGit } from "../store/git";
 import { newTaskIds } from "../lib/taskDiff";
-import { projects } from "../store/projects";
+import { projects, projectById } from "../store/projects";
 import {
   tasks,
-  activeTasksForProject,
   loadTasks,
   archiveTask,
   isTaskCreating,
@@ -39,7 +38,9 @@ import {
   isTaskWindowed,
   markTaskWindowed,
   requestNewTaskForProject,
+  requestPinBranchForProject,
   focusOrSelectTask,
+  addToast,
 } from "../store/ui";
 import { sessions, loadSessions } from "../store/sessions";
 import { isStartCommandRunning } from "../store/terminals";
@@ -62,6 +63,7 @@ import {
   Archive,
   Settings,
   Play,
+  Pin,
 } from "lucide-solid";
 import { clsx } from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -171,6 +173,42 @@ interface MenuPos {
 }
 type MenuItem = ContextMenuItem;
 
+// ---------------------------------------------------------------------------
+// Task context menu builder (#61) — extracted so we can unit-test the branching
+// for pinned vs unpinned tasks without rendering the full sidebar.
+// ---------------------------------------------------------------------------
+
+export interface TaskMenuActions {
+  openWindow: () => void
+  startRename: () => void
+  openInFinder: () => void
+  unpin: () => void
+  archive: () => void
+}
+
+export function buildTaskMenuItems(
+  task: { isPinned: boolean; worktreePath: string },
+  project: { repoPath: string } | undefined,
+  actions: TaskMenuActions,
+): MenuItem[] {
+  const isMainPinned = task.isPinned && project?.repoPath === task.worktreePath
+  const items: MenuItem[] = [
+    { label: "Open in New Window", icon: ExternalLink, action: actions.openWindow },
+    { label: "Rename", icon: Pencil, action: actions.startRename },
+    { label: "Open in Finder", icon: FolderOpen, action: actions.openInFinder },
+  ]
+  if (task.isPinned) {
+    if (!isMainPinned) {
+      items.push({ separator: true })
+      items.push({ label: "Unpin", icon: Archive, action: actions.unpin })
+    }
+  } else {
+    items.push({ separator: true })
+    items.push({ label: "Archive Task", icon: Archive, action: actions.archive })
+  }
+  return items
+}
+
 export const Sidebar: Component = () => {
   const [contextMenu, setContextMenu] = createSignal<{
     pos: MenuPos;
@@ -184,17 +222,34 @@ export const Sidebar: Component = () => {
   const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null);
   const [renamingTaskId, setRenamingTaskId] = createSignal<string | null>(null);
 
-  const activeTasksByProject = createMemo(() => {
-    const byProject: Record<string, typeof tasks> = {}
-    for (const p of projects) byProject[p.id] = activeTasksForProject(p.id)
-    return byProject
+  // Partition tasks once per reactive update. Calling
+  // pinnedTasksForProject/unpinnedActiveTasksForProject per project re-scans
+  // `tasks` for every project (O(P*T)); a single pass over `tasks` is O(T).
+  const partitioned = createMemo(() => {
+    const pinned: Record<string, typeof tasks> = {}
+    const unpinned: Record<string, typeof tasks> = {}
+    for (const p of projects) {
+      pinned[p.id] = []
+      unpinned[p.id] = []
+    }
+    for (const t of tasks) {
+      if (t.archived) continue
+      if (t.isPinned) pinned[t.projectId]?.push(t)
+      else unpinned[t.projectId]?.push(t)
+    }
+    return { pinned, unpinned }
   })
+  const pinnedByProject = () => partitioned().pinned
+  const unpinnedByProject = () => partitioned().unpinned
 
+  // Cmd+1..Cmd+9 skip pinned tasks — those get their own label-less rows.
+  // Bindings flow through unpinned tasks in project order so the numbering
+  // matches what users see in the "regular tasks" section.
   const taskBindingById = createMemo(() => {
     const map: Record<string, number | null> = {}
     let idx = 0
     for (const p of projects) {
-      for (const t of activeTasksByProject()[p.id] || []) {
+      for (const t of unpinnedByProject()[p.id] || []) {
         map[t.id] = idx < 9 ? idx : null
         idx++
       }
@@ -307,35 +362,129 @@ export const Sidebar: Component = () => {
     e.preventDefault();
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
-    setContextMenu({
-      pos: { x: e.clientX, y: e.clientY },
-      items: [
-        {
-          label: "Open in New Window",
-          icon: ExternalLink,
-          action: () => ipc.openTaskWindow(task.id, task.name || undefined),
-        },
-        {
-          label: "Rename",
-          icon: Pencil,
-          action: () => setRenamingTaskId(taskId),
-        },
-        {
-          label: "Open in Finder",
-          icon: FolderOpen,
-          action: () => ipc.openInFinder(task.worktreePath),
-        },
-        { separator: true },
-        {
-          label: "Archive Task",
-          icon: Archive,
-          action: () => setArchiveTaskTarget(taskId),
-        },
-      ],
+    const project = projectById(task.projectId);
+    const items = buildTaskMenuItems(task, project, {
+      openWindow: () => ipc.openTaskWindow(task.id, task.name || undefined),
+      startRename: () => setRenamingTaskId(taskId),
+      openInFinder: () => ipc.openInFinder(task.worktreePath),
+      unpin: () => {
+        ipc.unpinTask(task.id).catch((e) => {
+          addToast(`Could not unpin: ${String(e)}`, 'error')
+        })
+      },
+      archive: () => setArchiveTaskTarget(taskId),
     });
+    setContextMenu({ pos: { x: e.clientX, y: e.clientY }, items });
   };
 
   const closeMenu = () => setContextMenu(null);
+
+  const renderTaskRow = (task: typeof tasks[number]) => {
+    const phase = () => taskPhase(task.id, sessionPhaseByTask());
+    const config = () => PHASE_CONFIG[phase()];
+    const creating = () => isTaskCreating(task.id);
+    const archiving = () => isTaskArchiving(task.id);
+    const hasError = () => !!getTaskError(task.id);
+    const attention = () => isTaskAttention(task.id);
+    const unread = () => !attention() && isTaskUnread(task.id);
+    const hasIndicator = () => attention() || unread();
+    const disabled = () => creating() || archiving();
+    const windowed = () => isTaskWindowed(task.id);
+    const bindingIdx = () => taskBindingIndex(task.id);
+
+    const handleClick = () => focusOrSelectTask(task);
+    const isSelected = () => !windowed() && selectedTaskId() === task.id;
+
+    // Pinned tasks: skip PR/merge phase icons (they never take that path) and
+    // hide the archive button — they live in a separate section above tasks.
+    const rowPhase = () => task.isPinned && (phase() === 'pr-open' || phase() === 'pr-merged' || phase() === 'ci-failed' || phase() === 'conflicts') ? 'idle' : phase();
+
+    return (
+      <div
+        class={clsx(
+          "group/task relative pl-3 pr-2 py-1.5 rounded-md flex items-center gap-2 cursor-pointer",
+          isSelected() ? "bg-surface-2" : "hover:bg-surface-2",
+          !isSelected() && attention() && "task-attention-pulse",
+          !isSelected() && !attention() && unread() && "task-unread-pulse",
+          archiving() && "opacity-50 pointer-events-none",
+          windowed() && "opacity-50",
+        )}
+        style={isSelected() ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
+        onClick={handleClick}
+        onDblClick={() => { if (!disabled() && !hasError()) ipc.openTaskWindow(task.id, task.name || undefined) }}
+        onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
+        title={windowed() ? 'Open in separate window — click to focus' : archiving() ? 'Archiving…' : creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
+      >
+        <span class={clsx("shrink-0", disabled() ? 'text-accent' : hasError() ? 'text-status-error' : task.isPinned ? 'text-accent/80' : PHASE_CONFIG[rowPhase()].color)}>
+          {disabled() ? <Loader2 size={12} class="animate-spin" /> : hasError() ? <AlertCircle size={12} /> : task.isPinned ? <Pin size={12} /> : <PhaseIcon phase={rowPhase()} />}
+        </span>
+        <div class={clsx("flex-1 min-w-0", bindingIdx() !== null && "pr-4")}>
+          <Show when={renamingTaskId() === task.id} fallback={
+            <div class={clsx(
+              "text-xs truncate",
+              hasIndicator() || isSelected() ? "text-text-primary font-medium" : "text-text-secondary"
+            )}>
+              {task.name || (task.isPinned ? task.branch : "New task")}
+            </div>
+          }>
+            <input
+              class="text-xs bg-bg-secondary text-text-primary border border-border-active rounded px-1 py-0 w-full outline-none"
+              value={task.name || ""}
+              ref={(el) => requestAnimationFrame(() => { el.focus(); el.select() })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const val = e.currentTarget.value.trim()
+                  if (val) updateTaskName(task.id, val)
+                  setRenamingTaskId(null)
+                } else if (e.key === 'Escape') {
+                  setRenamingTaskId(null)
+                }
+              }}
+              onBlur={(e) => {
+                const val = e.currentTarget.value.trim()
+                if (val) updateTaskName(task.id, val)
+                setRenamingTaskId(null)
+              }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </Show>
+          <Show when={!task.isPinned || task.name}>
+            <div class={clsx("text-[10px] truncate flex items-center gap-1", hasIndicator() || isSelected() ? "text-text-muted" : "text-text-dim")}>
+              <Show when={task.parentTaskId}>
+                <GitBranch size={9} class="shrink-0 text-text-dim/70" />
+              </Show>
+              {task.branch}
+              <Show when={isStartCommandRunning(task.id)}>
+                <Play size={9} class="shrink-0 text-green-400 fill-green-400 animate-pulse" />
+              </Show>
+              <Show when={isTaskWindowed(task.id)}>
+                <ExternalLink size={9} class="shrink-0 text-accent/60" />
+              </Show>
+            </div>
+          </Show>
+        </div>
+        <Show when={!archiving()}>
+          <Show when={bindingIdx() !== null}>
+            <kbd class="absolute right-2 top-1/2 -translate-y-1/2 -mt-px h-5 flex items-center leading-none text-[10px] font-mono text-text-dim pointer-events-none group-hover/task:opacity-0 transition-opacity">
+              {'\u2318'}{bindingIdx()! + 1}
+            </kbd>
+          </Show>
+          <Show when={!task.isPinned}>
+            <button
+              class="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 text-text-dim hover:text-text-muted bg-surface-2"
+              onClick={(e) => {
+                e.stopPropagation();
+                setArchiveTaskTarget(task.id);
+              }}
+              title="Archive task"
+            >
+              <Archive size={12} />
+            </button>
+          </Show>
+        </Show>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -395,19 +544,32 @@ export const Sidebar: Component = () => {
                       {project.name}
                     </span>
                   </span>
-                  <button
-                    class="p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-secondary shrink-0"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      requestNewTaskForProject(project.id);
-                    }}
-                    title="New Task (⌘N)"
-                  >
-                    <Plus size={12} />
-                  </button>
+                  <span class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      class="p-0.5 rounded text-text-muted hover:text-text-secondary shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        requestPinBranchForProject(project.id);
+                      }}
+                      title="Pin branch as workspace"
+                      aria-label="Pin branch"
+                    >
+                      <Pin size={12} />
+                    </button>
+                    <button
+                      class="p-0.5 rounded text-text-muted hover:text-text-secondary shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        requestNewTaskForProject(project.id);
+                      }}
+                      title="New Task (⌘N)"
+                    >
+                      <Plus size={12} />
+                    </button>
+                  </span>
                 </div>
 
-                <Show when={(activeTasksByProject()[project.id] || []).length === 0}>
+                <Show when={(pinnedByProject()[project.id] || []).length === 0 && (unpinnedByProject()[project.id] || []).length === 0}>
                   <div class="px-2 pt-1">
                     <button
                       class="text-[10px] text-text-dim hover:text-text-muted transition-colors cursor-pointer"
@@ -418,112 +580,26 @@ export const Sidebar: Component = () => {
                   </div>
                 </Show>
 
-                <Show when={(activeTasksByProject()[project.id] || []).length > 0}>
-                  <div class="mt-1 flex flex-col gap-0.5">
-                    <For each={activeTasksByProject()[project.id] || []}>
-                      {(task) => {
-                        const phase = () => taskPhase(task.id, sessionPhaseByTask());
-                        const config = () => PHASE_CONFIG[phase()];
-                        const creating = () => isTaskCreating(task.id);
-                        const archiving = () => isTaskArchiving(task.id);
-                        const hasError = () => !!getTaskError(task.id);
-                        const attention = () => isTaskAttention(task.id);
-                        const unread = () => !attention() && isTaskUnread(task.id);
-                        const hasIndicator = () => attention() || unread();
-                        const disabled = () => creating() || archiving();
-                        const windowed = () => isTaskWindowed(task.id);
-                        const bindingIdx = () => taskBindingIndex(task.id);
+                <Show when={(pinnedByProject()[project.id] || []).length > 0}>
+                  <div
+                    class="mt-1 flex flex-col gap-0.5"
+                    data-testid="pinned-section"
+                    aria-label="Pinned workspaces"
+                  >
+                    <For each={pinnedByProject()[project.id] || []}>
+                      {(task) => renderTaskRow(task)}
+                    </For>
+                  </div>
+                </Show>
 
-                        const handleClick = () => focusOrSelectTask(task);
+                <Show when={(pinnedByProject()[project.id] || []).length > 0 && (unpinnedByProject()[project.id] || []).length > 0}>
+                  <div class="h-px bg-border-subtle mx-2 my-1" />
+                </Show>
 
-                        const isSelected = () => !windowed() && selectedTaskId() === task.id;
-
-                        return (
-                          <div
-                            class={clsx(
-                              "group/task relative pl-3 pr-2 py-1.5 rounded-md flex items-center gap-2 cursor-pointer",
-                              isSelected()
-                                ? "bg-surface-2"
-                                : "hover:bg-surface-2",
-                              !isSelected() && attention() && "task-attention-pulse",
-                              !isSelected() && !attention() && unread() && "task-unread-pulse",
-                              archiving() && "opacity-50 pointer-events-none",
-                              windowed() && "opacity-50",
-                            )}
-                            style={isSelected() ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
-                            onClick={handleClick}
-                            onDblClick={() => { if (!disabled() && !hasError()) ipc.openTaskWindow(task.id, task.name || undefined) }}
-                            onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
-                            title={windowed() ? 'Open in separate window — click to focus' : archiving() ? 'Archiving…' : creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
-                          >
-                            <span
-                              class={clsx("shrink-0", disabled() ? 'text-accent' : hasError() ? 'text-status-error' : config().color)}
-                            >
-                              {disabled() ? <Loader2 size={12} class="animate-spin" /> : hasError() ? <AlertCircle size={12} /> : <PhaseIcon phase={phase()} />}
-                            </span>
-                            <div class={clsx("flex-1 min-w-0", bindingIdx() !== null && "pr-4")}>
-                              <Show when={renamingTaskId() === task.id} fallback={
-                                <div class={clsx(
-                                  "text-xs truncate",
-                                  hasIndicator() || isSelected() ? "text-text-primary font-medium" : "text-text-secondary"
-                                )}>
-                                  {task.name || "New task"}
-                                </div>
-                              }>
-                                <input
-                                  class="text-xs bg-bg-secondary text-text-primary border border-border-active rounded px-1 py-0 w-full outline-none"
-                                  value={task.name || ""}
-                                  ref={(el) => requestAnimationFrame(() => { el.focus(); el.select() })}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      const val = e.currentTarget.value.trim()
-                                      if (val) updateTaskName(task.id, val)
-                                      setRenamingTaskId(null)
-                                    } else if (e.key === 'Escape') {
-                                      setRenamingTaskId(null)
-                                    }
-                                  }}
-                                  onBlur={(e) => {
-                                    const val = e.currentTarget.value.trim()
-                                    if (val) updateTaskName(task.id, val)
-                                    setRenamingTaskId(null)
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                />
-                              </Show>
-                              <div class={clsx("text-[10px] truncate flex items-center gap-1", hasIndicator() || isSelected() ? "text-text-muted" : "text-text-dim")}>
-                                <Show when={task.parentTaskId}>
-                                  <GitBranch size={9} class="shrink-0 text-text-dim/70" />
-                                </Show>
-                                {task.branch}
-                                <Show when={isStartCommandRunning(task.id)}>
-                                  <Play size={9} class="shrink-0 text-green-400 fill-green-400 animate-pulse" />
-                                </Show>
-                                <Show when={isTaskWindowed(task.id)}>
-                                  <ExternalLink size={9} class="shrink-0 text-accent/60" />
-                                </Show>
-                              </div>
-                            </div>
-                            <Show when={!archiving()}>
-                              <Show when={bindingIdx() !== null}>
-                                <kbd class="absolute right-2 top-1/2 -translate-y-1/2 -mt-px h-5 flex items-center leading-none text-[10px] font-mono text-text-dim pointer-events-none group-hover/task:opacity-0 transition-opacity">
-                                  {'\u2318'}{bindingIdx()! + 1}
-                                </kbd>
-                              </Show>
-                              <button
-                                class="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 text-text-dim hover:text-text-muted bg-surface-2"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setArchiveTaskTarget(task.id);
-                                }}
-                                title="Archive task"
-                              >
-                                <Archive size={12} />
-                              </button>
-                            </Show>
-                          </div>
-                        );
-                      }}
+                <Show when={(unpinnedByProject()[project.id] || []).length > 0}>
+                  <div class="mt-1 flex flex-col gap-0.5" data-testid="tasks-section">
+                    <For each={unpinnedByProject()[project.id] || []}>
+                      {(task) => renderTaskRow(task)}
                     </For>
                   </div>
                 </Show>

@@ -142,6 +142,74 @@ pub fn create_worktree(repo_path: &str, branch: &str, base_branch: &str) -> Resu
     Ok(abs_path)
 }
 
+/// Attach a worktree to an already-existing local branch.
+/// Does NOT create the branch — caller must pin only branches that already exist.
+/// Returns the canonicalized worktree path on success.
+pub fn attach_worktree_for_existing_branch(
+    repo_path: &str,
+    branch: &str,
+) -> Result<String, String> {
+    validate_git_installed()?;
+    validate_branch_name(branch)?;
+
+    if !Path::new(repo_path).exists() {
+        return Err(format!("Repository path does not exist: {repo_path}"));
+    }
+
+    let branch_exists = git(repo_path)
+        .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !branch_exists {
+        return Err(format!("branch does not exist locally: {branch}"));
+    }
+
+    let worktree_path = format!("{}/.verun/worktrees/{}", repo_path, branch);
+
+    let output = git(repo_path)
+        .args(["worktree", "add", &worktree_path, branch])
+        .output()
+        .map_err(|e| format!("Failed to create worktree: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git worktree add failed: {stderr}"));
+    }
+
+    let abs_path = std::fs::canonicalize(&worktree_path)
+        .map_err(|e| format!("Failed to resolve worktree path: {e}"))?
+        .to_string_lossy()
+        .to_string();
+
+    Ok(abs_path)
+}
+
+/// List local branch names for a repo, sorted lexicographically.
+pub fn list_local_branches(repo_path: &str) -> Result<Vec<String>, String> {
+    validate_git_installed()?;
+
+    let output = git(repo_path)
+        .args(["branch", "--format=%(refname:short)"])
+        .output()
+        .map_err(|e| format!("Failed to list branches: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git branch failed: {stderr}"));
+    }
+
+    let mut branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    branches.sort();
+    branches.dedup();
+    Ok(branches)
+}
+
 /// Build env vars for a task: VERUN_PORT_0–9 and VERUN_REPO_PATH.
 pub fn verun_env_vars(port_offset: i64, repo_path: &str) -> Vec<(String, String)> {
     let base_port = 10000 + port_offset * 10;
@@ -834,5 +902,93 @@ mod tests {
         assert_eq!(port_9.1, "10039");
         let repo = vars.iter().find(|(k, _)| k == "VERUN_REPO_PATH").unwrap();
         assert_eq!(repo.1, "/repo");
+    }
+
+    // -- Pinned branch helpers (#61) --
+
+    #[test]
+    fn attach_worktree_for_existing_branch_succeeds() {
+        let (_dir, repo_path) = init_test_repo();
+        git(&repo_path)
+            .args(["branch", "trunk"])
+            .output()
+            .unwrap();
+
+        let wt_path = attach_worktree_for_existing_branch(&repo_path, "trunk").unwrap();
+        assert!(Path::new(&wt_path).exists());
+        assert!(wt_path.contains("trunk"));
+    }
+
+    #[test]
+    fn attach_worktree_for_existing_branch_rejects_nonexistent_branch() {
+        let (_dir, repo_path) = init_test_repo();
+        let result = attach_worktree_for_existing_branch(&repo_path, "nope-not-here");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("does not exist") || err.contains("not a valid"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn attach_worktree_for_existing_branch_rejects_invalid_name() {
+        let (_dir, repo_path) = init_test_repo();
+        let result = attach_worktree_for_existing_branch(&repo_path, "bad name");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn list_local_branches_returns_all_branches() {
+        let (_dir, repo_path) = init_test_repo();
+        git(&repo_path)
+            .args(["branch", "trunk"])
+            .output()
+            .unwrap();
+        git(&repo_path)
+            .args(["branch", "develop"])
+            .output()
+            .unwrap();
+
+        let branches = list_local_branches(&repo_path).unwrap();
+        assert!(branches.contains(&"trunk".to_string()));
+        assert!(branches.contains(&"develop".to_string()));
+        assert!(branches.contains(&"main".to_string()) || branches.contains(&"master".to_string()));
+    }
+
+    #[test]
+    fn list_local_branches_is_sorted_and_deduped() {
+        let (_dir, repo_path) = init_test_repo();
+        for name in ["zeta", "alpha", "mid", "alpha"] {
+            // dup "alpha" is a no-op (git refuses to re-create a branch), but
+            // keep it in the list to prove the output is stable regardless.
+            let _ = git(&repo_path).args(["branch", name]).output();
+        }
+        let branches = list_local_branches(&repo_path).unwrap();
+        let mut expected = branches.clone();
+        expected.sort();
+        expected.dedup();
+        assert_eq!(branches, expected, "branches must be sorted and unique");
+    }
+
+    #[test]
+    fn attach_worktree_for_existing_branch_refuses_second_attach() {
+        // A branch can only be checked out in one worktree at a time — the
+        // second `git worktree add` must error out with a clear message. The
+        // UI relies on this to prevent pinning the same branch twice.
+        let (_dir, repo_path) = init_test_repo();
+        git(&repo_path)
+            .args(["branch", "trunk"])
+            .output()
+            .unwrap();
+
+        let first = attach_worktree_for_existing_branch(&repo_path, "trunk").unwrap();
+        assert!(Path::new(&first).exists());
+
+        let err = attach_worktree_for_existing_branch(&repo_path, "trunk").unwrap_err();
+        assert!(
+            err.contains("already") || err.contains("checked out") || err.contains("exists"),
+            "expected git to reject double-attach, got: {err}"
+        );
     }
 }
