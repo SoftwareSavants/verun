@@ -22,7 +22,8 @@ import { TerminalPanel } from './TerminalPanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { selectSettingsSection } from './SettingsPage'
 import { openTabs, mainView, setMainView, setActiveTab, requestCloseTab, forceCloseTab, pendingClose, cancelCloseTab, pinTab, closeOtherTabs, closeAllTabs, revealFileInTree, restoreTabState } from '../store/editorView'
-import { Square, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy, GitCompare } from 'lucide-solid'
+import { Square, X, PanelRightClose, PanelRightOpen, Terminal, ChevronDown, Loader2, AlertCircle, RotateCcw, Trash2, Archive, Play, TerminalSquare, ClipboardCopy, GitCompare, FolderOpen, Rocket } from 'lucide-solid'
+import { CloneIcon } from './icons/CloneIcon'
 import { GitActions, hasGitActionsContent } from './GitActions'
 import { NewSessionMenu } from './NewSessionMenu'
 import { ContextMenu } from './ContextMenu'
@@ -294,24 +295,30 @@ export const TaskPanel: Component = () => {
                     <p class="text-xs text-text-dim leading-relaxed mb-4">
                       Point Verun at a git repo, clone one from GitHub, or bootstrap a new one to spin up parallel worktrees.
                     </p>
-                    <div class="flex items-center justify-center gap-2 flex-wrap">
+                    <div class="flex items-stretch justify-center gap-2">
                       <button
-                        class="btn-primary text-xs"
+                        class="flex flex-col items-start justify-center gap-1.5 w-32 h-14 px-3 rounded-md bg-surface-2 ring-1 ring-white/8 text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors whitespace-nowrap"
                         onClick={pickAndAddProject}
+                        title="Add an existing project (\u2318O)"
                       >
-                        Add Project <kbd class="ml-1.5 px-1 py-0.5 rounded bg-outline/8 text-[10px] font-mono">{'\u2318'}O</kbd>
+                        <FolderOpen size={14} />
+                        <span class="text-[11px]">Add project</span>
                       </button>
                       <button
-                        class="btn-ghost text-xs ring-1 ring-white/8"
+                        class="flex flex-col items-start justify-center gap-1.5 w-32 h-14 px-3 rounded-md bg-surface-2 ring-1 ring-white/8 text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors whitespace-nowrap"
                         onClick={() => setShowCloneRepo(true)}
+                        title="Clone a GitHub repository"
                       >
-                        Clone repo
+                        <CloneIcon size={14} />
+                        <span class="text-[11px]">Clone repo</span>
                       </button>
                       <button
-                        class="btn-ghost text-xs ring-1 ring-white/8"
+                        class="flex flex-col items-start justify-center gap-1.5 w-32 h-14 px-3 rounded-md bg-surface-2 ring-1 ring-white/8 text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors whitespace-nowrap"
                         onClick={() => setShowBtsBuilder(true)}
+                        title="Bootstrap a new project"
                       >
-                        Bootstrap new
+                        <Rocket size={14} />
+                        <span class="text-[11px]">Bootstrap new</span>
                       </button>
                     </div>
                   </>

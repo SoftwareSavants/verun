@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL \
+  GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_PREFIX
+  
 echo "→ Checking frontend types..."
 pnpm check
 
