@@ -35,7 +35,6 @@ pub struct Sample {
     pub sampled_at_ms: i64,
 }
 
-#[allow(dead_code)] // produced by sysinfo source / consumed by attribute() in a later phase
 #[derive(Debug, Clone)]
 pub struct ProcRow {
     pub pid: u32,
@@ -44,7 +43,7 @@ pub struct ProcRow {
     pub cpu_pct: f32,
 }
 
-#[allow(dead_code)] // implemented by SysinfoSource in a later phase
+#[allow(dead_code)] // consumed by ResourceSampler in a later phase
 pub trait ProcessSource {
     fn snapshot(&mut self) -> Vec<ProcRow>;
 }
@@ -137,6 +136,49 @@ pub fn attribute(
         app: ProcessStat { rss_bytes: app_rss, cpu_pct: app_cpu },
         tasks,
         sampled_at_ms,
+    }
+}
+
+#[allow(dead_code)] // consumed by ResourceSampler in a later phase
+pub struct SysinfoSource {
+    sys: sysinfo::System,
+}
+
+impl SysinfoSource {
+    #[allow(dead_code)] // consumed by ResourceSampler in a later phase
+    pub fn new() -> Self {
+        let mut sys = sysinfo::System::new();
+        // First refresh primes the CPU baseline; subsequent snapshots compute deltas.
+        sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::new().with_cpu().with_memory(),
+        );
+        Self { sys }
+    }
+}
+
+impl Default for SysinfoSource {
+    fn default() -> Self { Self::new() }
+}
+
+impl ProcessSource for SysinfoSource {
+    fn snapshot(&mut self) -> Vec<ProcRow> {
+        self.sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::new().with_cpu().with_memory(),
+        );
+        self.sys
+            .processes()
+            .iter()
+            .map(|(pid, p)| ProcRow {
+                pid: pid.as_u32(),
+                parent_pid: p.parent().map(|pp| pp.as_u32()),
+                rss_bytes: p.memory(),
+                cpu_pct: p.cpu_usage(),
+            })
+            .collect()
     }
 }
 
@@ -259,5 +301,15 @@ mod tests {
 
         assert_eq!(s.tasks.len(), 1);
         assert_eq!(s.tasks[0].task_name, "(unknown)");
+    }
+
+    #[test]
+    fn sysinfo_source_returns_self_pid() {
+        let mut src = SysinfoSource::new();
+        let snap = src.snapshot();
+        let self_pid = std::process::id();
+        let me = snap.iter().find(|r| r.pid == self_pid)
+            .expect("self process must be in the snapshot");
+        assert!(me.rss_bytes > 0, "self process RSS should be > 0");
     }
 }
