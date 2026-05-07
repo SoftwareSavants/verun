@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
-import { render, cleanup } from '@solidjs/testing-library'
+import { render, cleanup, fireEvent } from '@solidjs/testing-library'
 import { buildPrMessage } from './GitActions'
 import type { TaskGitState } from '../store/git'
 
@@ -17,9 +17,10 @@ vi.mock('../lib/ipc', () => ({
 }))
 vi.mock('../lib/dismissable', () => ({ registerDismissable: vi.fn(() => () => {}) }))
 vi.mock('../store/sessions', () => ({ sessionById: vi.fn(() => null), sendMessage: vi.fn() }))
+const archiveTaskMock = vi.fn()
 vi.mock('../store/tasks', () => ({
   taskById: vi.fn(() => ({ id: 't-001', name: 'task', projectId: 'p-001', worktreePath: '/wt' })),
-  archiveTask: vi.fn(),
+  archiveTask: (...args: unknown[]) => archiveTaskMock(...args),
 }))
 vi.mock('../store/projects', () => ({
   projectById: vi.fn(() => ({ id: 'p-001', repoPath: '/repo', baseBranch: 'main' })),
@@ -80,6 +81,55 @@ describe('closed PR treated as no PR', () => {
     }))
     const { getByText } = render(() => <GitActions taskId="t-001" sessionId="s-001" />)
     expect(getByText('Create PR')).toBeTruthy()
+  })
+})
+
+describe('archive action confirmation dialog', () => {
+  beforeEach(() => {
+    cleanup()
+    archiveTaskMock.mockReset()
+  })
+
+  test('clicking the Archive primary action opens the confirm dialog instead of archiving immediately', () => {
+    // Merged PR + clean tree → primaryAction is Archive.
+    taskGitMock.mockReturnValue(makeGitState({
+      number: 42, title: 'merged PR', state: 'MERGED', url: 'https://github.com/x', isDraft: false,
+      mergeable: 'MERGEABLE', body: '',
+    }))
+    const { getByText, queryByText } = render(() => <GitActions taskId="t-001" sessionId="s-001" />)
+
+    fireEvent.click(getByText('Archive'))
+
+    expect(queryByText('This will stop all sessions and archive this task.')).toBeTruthy()
+    expect(archiveTaskMock).not.toHaveBeenCalled()
+  })
+
+  test('confirming the archive dialog calls archiveTask with the task id', () => {
+    taskGitMock.mockReturnValue(makeGitState({
+      number: 42, title: 'merged PR', state: 'MERGED', url: 'https://github.com/x', isDraft: false,
+      mergeable: 'MERGEABLE', body: '',
+    }))
+    const { getByText, getAllByText } = render(() => <GitActions taskId="t-001" sessionId="s-001" />)
+
+    fireEvent.click(getByText('Archive'))
+    // Dialog confirm button uses the same "Archive" label — pick the one inside the dialog footer.
+    const archiveButtons = getAllByText('Archive')
+    fireEvent.click(archiveButtons[archiveButtons.length - 1])
+
+    expect(archiveTaskMock).toHaveBeenCalledWith('t-001')
+  })
+
+  test('cancelling the archive dialog does not call archiveTask', () => {
+    taskGitMock.mockReturnValue(makeGitState({
+      number: 42, title: 'merged PR', state: 'MERGED', url: 'https://github.com/x', isDraft: false,
+      mergeable: 'MERGEABLE', body: '',
+    }))
+    const { getByText } = render(() => <GitActions taskId="t-001" sessionId="s-001" />)
+
+    fireEvent.click(getByText('Archive'))
+    fireEvent.click(getByText('Cancel'))
+
+    expect(archiveTaskMock).not.toHaveBeenCalled()
   })
 })
 

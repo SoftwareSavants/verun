@@ -12,6 +12,7 @@ import { taskGit, refreshTaskGit, invalidateRemote, type TaskGitState } from '..
 import { taskById } from '../store/tasks'
 import { projectById } from '../store/projects'
 import { registerDismissable } from '../lib/dismissable'
+import { ConfirmDialog } from './ConfirmDialog'
 
 export function buildPrMessage(git: TaskGitState, base: string, isDraft: boolean): string {
   const draftPart = isDraft ? 'draft ' : ''
@@ -80,6 +81,7 @@ export const GitActions: Component<Props> = (props) => {
   const [mergeFailure, setMergeFailure] = createSignal<string | null>(null)
   const [deleteBranch, setDeleteBranch] = createSignal(false)
   const [merging, setMerging] = createSignal(false)
+  const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null)
 
   // Read all git state from the centralized store
   const git = () => taskGit(props.taskId)
@@ -110,7 +112,7 @@ export const GitActions: Component<Props> = (props) => {
   }
 
   const needsConfirmation = (label: string) =>
-    label === 'Push' || label === 'Commit & Push' || label === 'Archive'
+    label === 'Push' || label === 'Commit & Push'
 
   const runAction = async (a: GitAction) => {
     if (needsConfirmation(a.label) && confirming() !== a.label) {
@@ -234,7 +236,7 @@ export const GitActions: Component<Props> = (props) => {
   const resolveConflictsAction = (): GitAction => ({ icon: Swords, label: 'Resolve conflicts', message: `rebase this branch onto ${baseBranch()} and resolve any conflicts. Use git rebase, not merge. If conflicts arise during rebase, resolve them and continue with git rebase --continue` })
   const mergePrAction = (): GitAction => ({ icon: GitMerge, label: 'Merge PR', action: async () => openMergePanel() })
   const readyForReviewAction = (): GitAction => ({ icon: Eye, label: 'Ready for Review', action: doMarkReady })
-  const archiveAction = (): GitAction => ({ icon: Archive, label: 'Archive', action: async () => { await archiveTask(props.taskId) } })
+  const archiveAction = (): GitAction => ({ icon: Archive, label: 'Archive', action: async () => { setArchiveTaskTarget(props.taskId) } })
 
   const isDraft = () => pr()?.isDraft ?? false
   const isBehind = () => behind() > 0
@@ -483,6 +485,19 @@ export const GitActions: Component<Props> = (props) => {
           </Show>
         </div>
       </Show>
+
+      <ConfirmDialog
+        open={!!archiveTaskTarget()}
+        title="Archive Task"
+        message="This will stop all sessions and archive this task."
+        confirmLabel="Archive"
+        onConfirm={() => {
+          const target = archiveTaskTarget()
+          if (target) archiveTask(target)
+          setArchiveTaskTarget(null)
+        }}
+        onCancel={() => setArchiveTaskTarget(null)}
+      />
     </div>
   )
 }

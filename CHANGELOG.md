@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The Archive action in the GitActions toolbar (the primary button after a PR merges with a clean tree) now opens the same `Archive Task` confirmation dialog as the sidebar context menu and the per-task archive icon, replacing the inline "Confirm Archive?" amber-pulse two-click pattern. Single source of truth for the archive confirmation flow.
 - Start button tooltip now reads "Start project (F5)" instead of inlining the raw start command, so a long `pnpm tauri dev --config ... --features ...` no longer overflows or wraps the OS tooltip. The full command is still visible in project Settings
 - `classify_envelope` rustdoc wraps XML/path samples in text-markdown fences so `cargo test --doc` does not compile them as Rust (indented `///` blocks are doctests by default)
 - Saving `.gitignore` or `.git/info/exclude` triggers a full refresh of cached file-tree listings for the task so ignored/dimmed state updates immediately (not only the ignore file’s parent folder)
