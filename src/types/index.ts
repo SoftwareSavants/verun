@@ -336,6 +336,24 @@ export interface PrInfo {
   isDraft: boolean;
 }
 
+export interface GhStatus {
+  installed: boolean
+  authenticated: boolean
+  account: string | null
+}
+
+export interface RemoteRepo {
+  nameWithOwner: string
+  description: string | null
+  url: string
+  sshUrl: string
+  isPrivate: boolean
+  isFork: boolean
+  isArchived: boolean
+  updatedAt: string | null
+  starCount: number
+}
+
 export interface CiCheck {
   name: string;
   status: string;

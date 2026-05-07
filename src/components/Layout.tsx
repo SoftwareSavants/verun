@@ -6,8 +6,9 @@ import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from '.
 import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { AddProjectDialog } from './AddProjectDialog'
+import { CloneRepoDialog } from './CloneRepoDialog'
 import { BtsBuilderDialog } from './BtsBuilderDialog'
-import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId, siblingTaskInList, nextSessionIdInTask } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, showCloneRepo, setShowCloneRepo, setSelectedProjectId, siblingTaskInList, nextSessionIdInTask } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
 import { activeTasksForProject, taskById } from '../store/tasks'
@@ -370,6 +371,10 @@ export const Layout: Component = () => {
           setShowBtsBuilder(false)
           setAddProjectPath(path)
         }}
+      />
+      <CloneRepoDialog
+        open={showCloneRepo()}
+        onClose={() => setShowCloneRepo(false)}
       />
       <GlobalCommandPalette />
       <ModelPicker

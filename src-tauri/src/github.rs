@@ -24,6 +24,28 @@ pub struct PrInfo {
     pub is_draft: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhStatus {
+    pub installed: bool,
+    pub authenticated: bool,
+    pub account: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteRepo {
+    pub name_with_owner: String,
+    pub description: Option<String>,
+    pub url: String,
+    pub ssh_url: String,
+    pub is_private: bool,
+    pub is_fork: bool,
+    pub is_archived: bool,
+    pub updated_at: Option<String>,
+    pub star_count: u32,
+}
+
 // ---------------------------------------------------------------------------
 // gh CLI helpers
 // ---------------------------------------------------------------------------
@@ -48,6 +70,173 @@ pub fn check_gh_installed() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Richer status check used by the "Clone GitHub repo" flow. Distinguishes
+/// "not installed" from "not authenticated" and surfaces the active account
+/// so the UI can label the picker.
+pub fn gh_status() -> GhStatus {
+    let output = Command::new("gh").args(["auth", "status"]).output();
+    let Ok(out) = output else {
+        return GhStatus {
+            installed: false,
+            authenticated: false,
+            account: None,
+        };
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // gh prints to stderr by default but some versions/locales print to stdout.
+    let combined = if stderr.trim().is_empty() {
+        stdout.into_owned()
+    } else {
+        stderr.into_owned()
+    };
+    parse_auth_status(out.status.success(), &combined)
+}
+
+/// Parse the output of `gh auth status` into a structured status. Pure (no I/O)
+/// so it's easy to unit-test against representative outputs.
+fn parse_auth_status(exit_success: bool, output: &str) -> GhStatus {
+    let lower = output.to_lowercase();
+    let authenticated = exit_success && !lower.contains("not logged in");
+    let mut account: Option<String> = None;
+    if authenticated {
+        for line in output.lines() {
+            if let Some(idx) = line.find("account ") {
+                let rest = &line[idx + "account ".len()..];
+                let token: String = rest
+                    .chars()
+                    .take_while(|c| !c.is_whitespace() && *c != '(')
+                    .collect();
+                if !token.is_empty() {
+                    account = Some(token);
+                    break;
+                }
+            }
+        }
+    }
+    GhStatus {
+        installed: true,
+        authenticated,
+        account,
+    }
+}
+
+/// List the repositories the authenticated user can access — including org
+/// and collaborator repos, not just their own. We hit `/user/repos` directly
+/// because `gh repo list` defaults to `--owner=@me` and silently hides org
+/// repositories the user has access to. Sorted by recent activity so the
+/// typeahead surfaces what the user is most likely to want.
+pub fn list_user_repos(_limit: u32) -> Result<Vec<RemoteRepo>, String> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "GET",
+            "-H",
+            "Accept: application/vnd.github+json",
+            "/user/repos?per_page=100&affiliation=owner,collaborator,organization_member&sort=updated",
+        ])
+        .output()
+        .map_err(|e| format!("gh CLI failed to launch: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.to_lowercase().contains("not logged in") {
+            return Err("Not logged in to GitHub. Run `gh auth login` first.".to_string());
+        }
+        return Err(format!("gh api /user/repos failed: {}", stderr.trim()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_user_repos_api(&stdout)
+}
+
+fn parse_user_repos_api(json_str: &str) -> Result<Vec<RemoteRepo>, String> {
+    #[derive(Deserialize)]
+    struct Raw {
+        full_name: String,
+        description: Option<String>,
+        html_url: String,
+        ssh_url: Option<String>,
+        clone_url: Option<String>,
+        #[serde(default)]
+        private: bool,
+        #[serde(default)]
+        fork: bool,
+        #[serde(default)]
+        archived: bool,
+        updated_at: Option<String>,
+        #[serde(default)]
+        stargazers_count: u32,
+    }
+    let raw: Vec<Raw> = serde_json::from_str(json_str)
+        .map_err(|e| format!("Failed to parse gh api /user/repos output: {e}"))?;
+    Ok(raw
+        .into_iter()
+        .map(|r| RemoteRepo {
+            name_with_owner: r.full_name,
+            description: r.description,
+            url: r.html_url,
+            ssh_url: r.ssh_url.or(r.clone_url).unwrap_or_default(),
+            is_private: r.private,
+            is_fork: r.fork,
+            is_archived: r.archived,
+            updated_at: r.updated_at,
+            star_count: r.stargazers_count,
+        })
+        .collect())
+}
+
+/// Resolve the canonical clone URLs for a `owner/repo` via `gh repo view`. We
+/// re-fetch (rather than trust the list payload) so the URL we hand to git is
+/// always live — orgs can rename repos, change visibility, etc.
+pub fn resolve_repo_clone_urls(name_with_owner: &str) -> Result<RemoteRepo, String> {
+    let output = Command::new("gh")
+        .args([
+            "repo",
+            "view",
+            name_with_owner,
+            "--json",
+            "nameWithOwner,description,url,sshUrl,isPrivate,isFork,isArchived,updatedAt",
+        ])
+        .output()
+        .map_err(|e| format!("gh CLI failed to launch: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh repo view failed: {}", stderr.trim()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<RemoteRepo>(&stdout)
+        .map_err(|e| format!("Failed to parse gh repo view output: {e}"))
+}
+
+/// Clone a repo into `<parent_dir>/<repo-name>`. Prefers SSH; falls back to
+/// HTTPS if the SSH URL is missing. Returns the absolute path of the cloned
+/// directory.
+pub fn clone_repo(remote_url: &str, parent_dir: &str, dir_name: &str) -> Result<String, String> {
+    use std::path::Path;
+    let parent = Path::new(parent_dir);
+    if !parent.is_dir() {
+        return Err(format!("Destination parent does not exist: {parent_dir}"));
+    }
+    let target = parent.join(dir_name);
+    if target.exists() {
+        return Err(format!("Destination already exists: {}", target.display()));
+    }
+
+    let output = Command::new("git")
+        .current_dir(parent_dir)
+        .args(["clone", remote_url, dir_name])
+        .output()
+        .map_err(|e| format!("git failed to launch: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git clone failed: {}", stderr.trim()));
+    }
+    Ok(target.to_string_lossy().into_owned())
 }
 
 /// Detect if a repo has a GitHub remote. Parses `origin` URL.
@@ -857,5 +1046,81 @@ mod tests {
         assert!(result.is_empty() || result == "é");
         // Key invariant: result is valid UTF-8 (asserted implicitly by String type).
         assert!(result.as_bytes().iter().all(|&b| b < 0x80) || result.chars().count() <= 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Repo listing + auth status (clone-from-github flow)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_user_repos_api_basic() {
+        // Trimmed shape of GET /user/repos. Field names are snake_case (REST),
+        // and we expect to surface both personal and org repos identically.
+        let json = r#"[
+            {"full_name":"alice/hello","description":"hello","html_url":"https://github.com/alice/hello","ssh_url":"git@github.com:alice/hello.git","clone_url":"https://github.com/alice/hello.git","private":true,"fork":false,"archived":false,"updated_at":"2026-04-20T10:00:00Z","stargazers_count":42},
+            {"full_name":"acme-corp/web","description":null,"html_url":"https://github.com/acme-corp/web","ssh_url":"git@github.com:acme-corp/web.git","clone_url":"https://github.com/acme-corp/web.git","private":true,"fork":false,"archived":false,"updated_at":"2026-04-19T09:00:00Z","stargazers_count":0},
+            {"full_name":"alice/forked","description":null,"html_url":"https://github.com/alice/forked","ssh_url":"git@github.com:alice/forked.git","clone_url":"https://github.com/alice/forked.git","private":false,"fork":true,"archived":true,"updated_at":"2026-04-18T08:00:00Z","stargazers_count":3}
+        ]"#;
+        let repos = parse_user_repos_api(json).unwrap();
+        assert_eq!(repos.len(), 3);
+        assert_eq!(repos[0].name_with_owner, "alice/hello");
+        assert_eq!(repos[0].description.as_deref(), Some("hello"));
+        assert!(repos[0].is_private);
+        assert_eq!(repos[0].ssh_url, "git@github.com:alice/hello.git");
+        assert_eq!(repos[0].url, "https://github.com/alice/hello");
+        assert_eq!(repos[0].star_count, 42);
+        assert_eq!(repos[1].name_with_owner, "acme-corp/web");
+        assert_eq!(repos[1].description, None);
+        assert_eq!(repos[1].star_count, 0);
+        assert!(repos[2].is_archived);
+        assert!(repos[2].is_fork);
+        assert!(!repos[2].is_private);
+        assert_eq!(repos[2].star_count, 3);
+    }
+
+    #[test]
+    fn parse_user_repos_api_falls_back_to_clone_url_when_ssh_missing() {
+        // Some repos (e.g. with SSH disabled at the org level) omit ssh_url.
+        let json = r#"[{"full_name":"alice/x","description":null,"html_url":"https://github.com/alice/x","clone_url":"https://github.com/alice/x.git","private":false,"fork":false,"archived":false,"updated_at":null}]"#;
+        let repos = parse_user_repos_api(json).unwrap();
+        assert_eq!(repos[0].ssh_url, "https://github.com/alice/x.git");
+    }
+
+    #[test]
+    fn parse_user_repos_api_empty() {
+        let repos = parse_user_repos_api("[]").unwrap();
+        assert!(repos.is_empty());
+    }
+
+    #[test]
+    fn parse_user_repos_api_invalid_json() {
+        assert!(parse_user_repos_api("not json").is_err());
+    }
+
+    #[test]
+    fn parse_auth_status_authed_extracts_account() {
+        let stderr = "github.com\n  ✓ Logged in to github.com account alice (oauth_token)\n  - Active account: true\n  - Git operations protocol: ssh\n  - Token: gho_***\n";
+        let status = parse_auth_status(true, stderr);
+        assert!(status.installed);
+        assert!(status.authenticated);
+        assert_eq!(status.account.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn parse_auth_status_not_logged_in() {
+        let stderr = "You are not logged into any GitHub hosts. To log in, run: gh auth login\n";
+        let status = parse_auth_status(false, stderr);
+        assert!(status.installed);
+        assert!(!status.authenticated);
+        assert_eq!(status.account, None);
+    }
+
+    #[test]
+    fn parse_auth_status_authed_without_account_pattern() {
+        // Older gh versions or unusual locale: still authed, but account line absent.
+        let stderr = "github.com\n  ✓ Logged in to github.com (keyring)\n";
+        let status = parse_auth_status(true, stderr);
+        assert!(status.authenticated);
+        assert_eq!(status.account, None);
     }
 }

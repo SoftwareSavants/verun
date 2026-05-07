@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add **Clone from GitHub** on the first-screen empty state (no projects yet) and **Clone GitHub repo...** in the sidebar `+` menu — both open the same dialog: typeahead over your GitHub repos (sourced via `gh api /user/repos`), destination folder picker, then clone and register the project in one flow. Falls back to a "paste a Git URL" input when `gh` is missing or unauthenticated.
 - Start button tooltip now reads "Start project (F5)" instead of inlining the raw start command, so a long `pnpm tauri dev --config ... --features ...` no longer overflows or wraps the OS tooltip. The full command is still visible in project Settings
 - `classify_envelope` rustdoc wraps XML/path samples in text-markdown fences so `cargo test --doc` does not compile them as Rust (indented `///` blocks are doctests by default)
 - Saving `.gitignore` or `.git/info/exclude` triggers a full refresh of cached file-tree listings for the task so ignored/dimmed state updates immediately (not only the ignore file’s parent folder)

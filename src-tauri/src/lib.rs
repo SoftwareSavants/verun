@@ -256,6 +256,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Projects
             ipc::add_project,
+            ipc::gh_status,
+            ipc::list_user_github_repos,
+            ipc::clone_github_repo_and_add,
             ipc::list_projects,
             ipc::delete_project,
             ipc::update_project_base_branch,

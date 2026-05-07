@@ -1,5 +1,5 @@
 import { Component, Show, For, createEffect, on, createSignal, onCleanup } from 'solid-js'
-import { selectedTaskId, selectedSessionId, setSelectedSessionIdForTask, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth, consumePendingSessionNav, getLastSessionForTask, pickAndAddProject, setShowBtsBuilder } from '../store/ui'
+import { selectedTaskId, selectedSessionId, setSelectedSessionIdForTask, addToast, showTerminal, setShowTerminal, setShowSettings, toggleTerminal, terminalHeight, setTerminalHeightAndPersist, isSessionUnread, clearSessionUnread, rightPanelWidth, setRightPanelWidth, consumePendingSessionNav, getLastSessionForTask, pickAndAddProject, setShowBtsBuilder, setShowCloneRepo } from '../store/ui'
 import { refitActiveTerminal, setActiveTerminalForTask, startCommandTerminalId, isStartCommandRunning, spawnStartCommand, stopStartCommand } from '../store/terminals'
 import { projects, projectById } from '../store/projects'
 import { taskById, isTaskCreating, getTaskError, retryTaskCreation, removePlaceholderTask, restoreTask } from '../store/tasks'
@@ -292,14 +292,20 @@ export const TaskPanel: Component = () => {
                   <>
                     <p class="text-sm text-text-secondary mb-1">Add a project to get started</p>
                     <p class="text-xs text-text-dim leading-relaxed mb-4">
-                      Point Verun at a git repo, or bootstrap a new one to spin up parallel worktrees.
+                      Point Verun at a git repo, clone one from GitHub, or bootstrap a new one to spin up parallel worktrees.
                     </p>
-                    <div class="flex items-center justify-center gap-2">
+                    <div class="flex items-center justify-center gap-2 flex-wrap">
                       <button
                         class="btn-primary text-xs"
                         onClick={pickAndAddProject}
                       >
                         Add Project <kbd class="ml-1.5 px-1 py-0.5 rounded bg-outline/8 text-[10px] font-mono">{'\u2318'}O</kbd>
+                      </button>
+                      <button
+                        class="btn-ghost text-xs ring-1 ring-white/8"
+                        onClick={() => setShowCloneRepo(true)}
+                      >
+                        Clone repo
                       </button>
                       <button
                         class="btn-ghost text-xs ring-1 ring-white/8"
