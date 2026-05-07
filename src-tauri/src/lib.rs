@@ -18,6 +18,7 @@ mod markdown_skills;
 pub mod mcp;
 mod policy;
 mod pty;
+mod resource_monitor;
 mod snapshots;
 mod stream;
 mod task;
