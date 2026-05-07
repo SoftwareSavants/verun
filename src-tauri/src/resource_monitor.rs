@@ -2,21 +2,20 @@
 //!
 //! Splits a process snapshot of Verun's process tree into per-task subtrees
 //! (rooted at each live session PID) plus an "app" bucket for everything else
-//! still under the Verun root. The `SysinfoSource` and `ResourceSampler` that
-//! feed and drive this module land in subsequent tasks; until then the public
-//! surface carries `#[allow(dead_code)]`.
+//! still under the Verun root. `SysinfoSource` is the live `ProcessSource`
+//! that drives this on real systems; `ResourceSampler` spawns the periodic
+//! tokio loop that emits `resource_usage` Tauri events. IPC wiring lands in
+//! a later phase, so the sampler entry points still carry `#[allow(dead_code)]`.
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
-#[allow(dead_code)] // wired in by the resource sampler in a later phase
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ProcessStat {
     pub rss_bytes: u64,
     pub cpu_pct: f32,
 }
 
-#[allow(dead_code)] // wired in by the resource sampler in a later phase
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskStat {
     pub task_id: String,
@@ -26,7 +25,6 @@ pub struct TaskStat {
     pub cpu_pct: f32,
 }
 
-#[allow(dead_code)] // wired in by the resource sampler in a later phase
 #[derive(Debug, Clone, Serialize)]
 pub struct Sample {
     pub total: ProcessStat,
@@ -43,7 +41,6 @@ pub struct ProcRow {
     pub cpu_pct: f32,
 }
 
-#[allow(dead_code)] // consumed by ResourceSampler in a later phase
 pub trait ProcessSource {
     fn snapshot(&mut self) -> Vec<ProcRow>;
 }
@@ -51,7 +48,6 @@ pub trait ProcessSource {
 /// Pure function: turn a process snapshot + ActiveMap data into a Sample.
 /// `active` is `(task_id, session_pid)` pairs. Multiple sessions per task are summed.
 /// Sessions whose `session_pid` is missing from the snapshot (process died) are dropped.
-#[allow(dead_code)] // wired in by the resource sampler in a later phase
 pub fn attribute(
     snapshot: &[ProcRow],
     verun_pid: u32,
@@ -139,13 +135,11 @@ pub fn attribute(
     }
 }
 
-#[allow(dead_code)] // consumed by ResourceSampler in a later phase
 pub struct SysinfoSource {
     sys: sysinfo::System,
 }
 
 impl SysinfoSource {
-    #[allow(dead_code)] // consumed by ResourceSampler in a later phase
     pub fn new() -> Self {
         let mut sys = sysinfo::System::new();
         // First refresh primes the CPU baseline; subsequent snapshots compute deltas.
@@ -180,6 +174,150 @@ impl ProcessSource for SysinfoSource {
             })
             .collect()
     }
+}
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub struct ResourceSampler {
+    cadence: Arc<AtomicU64>,
+    notify: Arc<tokio::sync::Notify>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl ResourceSampler {
+    /// Production constructor: spawns the sampling loop. `task_names_provider`
+    /// is called once per tick with the active task_ids and returns
+    /// `task_id -> task_name`. The provider is responsible for whatever
+    /// async/sync gymnastics it needs to fetch from the DB.
+    #[allow(dead_code)] // wired into IPC in a later phase
+    pub fn spawn<S, F>(
+        app: tauri::AppHandle,
+        active: crate::task::ActiveMap,
+        mut source: S,
+        task_names_provider: F,
+    ) -> Self
+    where
+        S: ProcessSource + Send + 'static,
+        F: Fn(&[String]) -> HashMap<String, String> + Send + Sync + 'static,
+    {
+        let cadence = Arc::new(AtomicU64::new(2000));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let cadence_clone = cadence.clone();
+        let notify_clone = notify.clone();
+
+        let handle = tokio::spawn(async move {
+            let verun_pid = std::process::id();
+            loop {
+                let active_pairs: Vec<(String, u32)> = active
+                    .iter()
+                    .filter_map(|entry| {
+                        entry
+                            .value()
+                            .child
+                            .id()
+                            .map(|pid| (entry.value().task_id.clone(), pid))
+                    })
+                    .collect();
+
+                let task_ids: Vec<String> =
+                    active_pairs.iter().map(|(t, _)| t.clone()).collect();
+                let names = task_names_provider(&task_ids);
+
+                let snap = source.snapshot();
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+
+                let sample = attribute(&snap, verun_pid, &active_pairs, &names, now_ms);
+
+                use tauri::Emitter;
+                let _ = app.emit("resource_usage", &sample);
+
+                let wait_ms = cadence_clone.load(Ordering::Relaxed);
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms)) => {}
+                    _ = notify_clone.notified() => {}
+                }
+            }
+        });
+
+        Self {
+            cadence,
+            notify,
+            handle: Some(handle),
+        }
+    }
+
+    #[allow(dead_code)] // wired into IPC in a later phase
+    pub fn set_overlay_open(&self, open: bool) {
+        self.cadence
+            .store(if open { 1000 } else { 2000 }, Ordering::Relaxed);
+        self.notify.notify_one();
+    }
+
+    #[allow(dead_code)] // wired into IPC in a later phase
+    pub fn cadence_ms(&self) -> u64 {
+        self.cadence.load(Ordering::Relaxed)
+    }
+
+    /// Build a sampler without spawning the loop. Used only by unit tests
+    /// that exercise cadence switching.
+    #[cfg(test)]
+    pub fn new_for_test() -> Self {
+        Self {
+            cadence: Arc::new(AtomicU64::new(2000)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+            handle: None,
+        }
+    }
+}
+
+impl Drop for ResourceSampler {
+    fn drop(&mut self) {
+        if let Some(h) = self.handle.take() {
+            h.abort();
+        }
+    }
+}
+
+/// On-demand sample for the IPC `get_resource_usage_now` command. Used so the
+/// overlay's first paint isn't blank for up to one tick.
+///
+/// Builds its own short-lived `SysinfoSource` (does NOT reuse the live sampler's),
+/// pauses 100 ms between two refreshes so CPU% has a delta, then runs `attribute`.
+/// Caller is responsible for ensuring this is invoked from a blocking-friendly
+/// context (e.g. `tokio::task::spawn_blocking`); it sleeps the calling thread.
+#[allow(dead_code)] // wired into IPC in a later phase
+pub fn sample_now<F>(active: &crate::task::ActiveMap, task_names_provider: F) -> Sample
+where
+    F: Fn(&[String]) -> HashMap<String, String>,
+{
+    let mut src = SysinfoSource::new();
+    let _ = src.snapshot();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let snap = src.snapshot();
+
+    let active_pairs: Vec<(String, u32)> = active
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .value()
+                .child
+                .id()
+                .map(|pid| (entry.value().task_id.clone(), pid))
+        })
+        .collect();
+    let task_ids: Vec<String> = active_pairs.iter().map(|(t, _)| t.clone()).collect();
+    let names = task_names_provider(&task_ids);
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    attribute(&snap, std::process::id(), &active_pairs, &names, now_ms)
 }
 
 #[cfg(test)]
@@ -311,5 +449,20 @@ mod tests {
         let me = snap.iter().find(|r| r.pid == self_pid)
             .expect("self process must be in the snapshot");
         assert!(me.rss_bytes > 0, "self process RSS should be > 0");
+    }
+
+    #[test]
+    fn sampler_cadence_defaults_to_idle() {
+        let s = ResourceSampler::new_for_test();
+        assert_eq!(s.cadence_ms(), 2000);
+    }
+
+    #[test]
+    fn sampler_cadence_switches_on_overlay_open() {
+        let s = ResourceSampler::new_for_test();
+        s.set_overlay_open(true);
+        assert_eq!(s.cadence_ms(), 1000);
+        s.set_overlay_open(false);
+        assert_eq!(s.cadence_ms(), 2000);
     }
 }
