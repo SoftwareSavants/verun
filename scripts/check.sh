@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+echo "→ Ensuring MCP relay sidecar placeholder..."
+node src-tauri/scripts/copy-relay-sidecar.mjs
+
 echo "→ Checking frontend types..."
 pnpm check
 

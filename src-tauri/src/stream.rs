@@ -82,6 +82,16 @@ pub enum OutputItem {
     #[serde(rename_all = "camelCase")]
     TurnSnapshot { message_uuid: String },
 
+    /// A user-style message that originated outside the UI (e.g. an agent
+    /// sending via the MCP `verun_send_message` tool). The frontend
+    /// optimistically inserts UI-sent messages on submit, so this variant
+    /// is only emitted for messages it didn't witness locally.
+    #[serde(rename_all = "camelCase")]
+    UserMessage {
+        text: String,
+        timestamp: Option<i64>,
+    },
+
     /// Codex plan-mode update. Carries the current checklist and an optional
     /// explanation string. Emitted from `turn/plan/updated` notifications;
     /// the frontend renders this as a plan card distinct from assistant text.
@@ -121,7 +131,7 @@ pub enum OutputItem {
     /// tailing the on-disk transcript for a PTY-backed session.
     #[serde(rename_all = "camelCase")]
     #[allow(dead_code)] // constructed by the transcript tailer in the next phase
-    UserMessage { text: String },
+    TranscriptUserMessage { text: String },
 
     /// Pasted-image attachment carried alongside a transcript user message.
     /// Holds the still-base64 data straight from the JSONL so the driver can
