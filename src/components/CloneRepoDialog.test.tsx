@@ -47,7 +47,7 @@ describe('CloneRepoDialog', () => {
     expect(await findByText('alice/dotfiles')).toBeTruthy()
     expect(await findByText('@alice')).toBeTruthy()
 
-    const filter = await findByPlaceholderText('Filter your repositories...') as HTMLInputElement
+    const filter = await findByPlaceholderText('Search repos, paste a Git URL, or owner/repo...') as HTMLInputElement
     fireEvent.input(filter, { target: { value: 'cool' } })
     await waitFor(() => {
       expect(queryByText('alice/dotfiles')).toBeNull()

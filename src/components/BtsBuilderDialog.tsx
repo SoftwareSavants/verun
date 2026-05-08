@@ -338,11 +338,8 @@ export const BtsBuilderDialog: Component<Props> = (props) => {
           />
         }
       >
-        <div class="flex items-center justify-between mb-3">
-          <div class="flex items-center gap-2">
-            <Rocket size={16} class="text-accent" />
-            <h2 class="text-sm font-semibold text-text-primary">Bootstrap a new project</h2>
-          </div>
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-sm font-semibold text-text-primary">Bootstrap a new project</h2>
           <a
             class="text-[10px] text-text-dim hover:text-text-secondary transition-colors"
             href="https://better-t-stack.dev"
