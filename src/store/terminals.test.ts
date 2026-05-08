@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { createRoot, createEffect } from 'solid-js'
 
 const listenCallbacks = new Map<string, (e: { payload: unknown }) => void>()
 vi.mock('@tauri-apps/api/event', () => ({
@@ -28,6 +29,8 @@ import {
   registerXterm,
   initTerminalListeners,
   closeTerminalsForTask,
+  spawnTerminal,
+  activeTerminalId,
 } from './terminals'
 import type { PtyListEntry, PtyOutputEvent } from '../types'
 
@@ -197,6 +200,40 @@ describe('pty-output seq dedupe', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerXterm('p-pending', term as any, { fit: vi.fn() } as any)
     expect(term.write).toHaveBeenCalledWith('early')
+  })
+
+  test('spawnTerminal lands the new instance and the active id atomically', async () => {
+    // Reactive consumers (e.g. <For> inside TerminalPanel) may read both the
+    // terminals store and activeTerminalId in one effect. If the two updates
+    // are not batched, there is a window where the new terminal is in the
+    // list but activeId still points to the previous one — which causes its
+    // wrapper div to mount with display:none, leaving xterm with 0x0 dims.
+    vi.mocked(ipc.ptySpawn).mockResolvedValueOnce({ terminalId: 'p-new', shellName: 'zsh' })
+
+    const observations: Array<{ ids: string[]; active: string | null }> = []
+    let dispose: (() => void) | undefined
+
+    await new Promise<void>((resolve) => {
+      createRoot((d) => {
+        dispose = d
+        createEffect(() => {
+          observations.push({
+            ids: terminalsForTask('t-1').map(t => t.id),
+            active: activeTerminalId('t-1'),
+          })
+        })
+        spawnTerminal('t-1', 24, 80).then(() => resolve())
+      })
+    })
+    dispose?.()
+
+    // No observation should show the new terminal in the list while activeId
+    // still points elsewhere (or nowhere).
+    for (const o of observations) {
+      if (o.ids.includes('p-new')) {
+        expect(o.active).toBe('p-new')
+      }
+    }
   })
 
   test('filters pending chunks already covered by a snapshot replay', async () => {

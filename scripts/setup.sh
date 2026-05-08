@@ -27,6 +27,10 @@ fi
 # Install frontend deps
 pnpm install
 
+# Drop the MCP relay sidecar placeholder so tauri-build's externalBin check
+# passes on first build (before cargo has produced the real binary).
+node src-tauri/scripts/copy-relay-sidecar.mjs
+
 # Check Tauri system deps (macOS only)
 if [[ "$OSTYPE" == "darwin"* ]]; then
   if ! command -v xcode-select &> /dev/null; then

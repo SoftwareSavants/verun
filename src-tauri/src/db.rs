@@ -365,6 +365,29 @@ pub struct OutputLine {
     pub emitted_at: i64,
 }
 
+/// Joined task + project row used by the MCP `verun_list_tasks` tool.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveTaskRow {
+    pub task_id: String,
+    pub task_name: Option<String>,
+    pub project_id: String,
+    pub project_name: String,
+    pub branch: String,
+    pub agent_type: String,
+    pub created_at: i64,
+}
+
+/// Bounded slice of session output for the MCP `verun_read_task_output` tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TailOutput {
+    pub lines: Vec<OutputLine>,
+    pub bytes: i64,
+    pub more_available: bool,
+    pub next_cursor: Option<i64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionTokenTotals {
@@ -699,7 +722,7 @@ async fn drain_refs_for_sessions(
     Ok(hashes)
 }
 
-async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Error> {
+pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Error> {
     match write {
         // -- Projects --
         DbWrite::InsertProject(p) => {
@@ -1664,6 +1687,128 @@ pub async fn connect(app_data_dir: &std::path::Path) -> Result<SqlitePool, Strin
     });
 
     Ok(pool)
+}
+
+// ---------------------------------------------------------------------------
+// MCP-facing read APIs
+// ---------------------------------------------------------------------------
+
+/// List non-archived tasks joined with their project name, ordered newest first.
+///
+/// Powers the MCP `verun_list_tasks` tool. `project_filter` scopes to a single
+/// project when `Some`. `before_created_at` is a pagination cursor: pass the
+/// `created_at` of the last item from the previous page to fetch the next page.
+pub async fn list_active_tasks(
+    pool: &SqlitePool,
+    project_filter: Option<&str>,
+    limit: i64,
+    before_created_at: Option<i64>,
+) -> Result<Vec<ActiveTaskRow>, String> {
+    let mut sql = String::from(
+        "SELECT t.id AS task_id, t.name AS task_name, t.project_id, \
+                p.name AS project_name, t.branch, t.agent_type, t.created_at \
+         FROM tasks t \
+         JOIN projects p ON p.id = t.project_id \
+         WHERE t.archived = 0",
+    );
+    if project_filter.is_some() {
+        sql.push_str(" AND t.project_id = ?");
+    }
+    if before_created_at.is_some() {
+        sql.push_str(" AND t.created_at < ?");
+    }
+    sql.push_str(" ORDER BY t.created_at DESC LIMIT ?");
+
+    let mut q = sqlx::query_as::<_, ActiveTaskRow>(&sql);
+    if let Some(pid) = project_filter {
+        q = q.bind(pid);
+    }
+    if let Some(cursor) = before_created_at {
+        q = q.bind(cursor);
+    }
+    q = q.bind(limit);
+
+    q.fetch_all(pool).await.map_err(|e| e.to_string())
+}
+
+/// Most-recently-started session for a task (active or closed). Used by the
+/// MCP `verun_read_task_output` tool to default to "the current session" when
+/// the caller didn't specify one.
+pub async fn latest_session_for_task(
+    pool: &SqlitePool,
+    task_id: &str,
+) -> Result<Option<Session>, String> {
+    sqlx::query_as::<_, Session>(
+        "SELECT * FROM sessions WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
+    )
+    .bind(task_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Bounded tail of session output: returns up to `byte_budget` bytes worth
+/// of the most-recent lines (or older if `before_id` is set), in chronological
+/// order. Always emits at least one line if any exist (so a single oversized
+/// line doesn't get silently dropped). Hard caps at 1000 rows per call to
+/// keep query cost predictable; pagination via `next_cursor` walks older.
+pub async fn tail_session_output(
+    pool: &SqlitePool,
+    session_id: &str,
+    byte_budget: i64,
+    before_id: Option<i64>,
+) -> Result<TailOutput, String> {
+    let rows: Vec<OutputLine> = match before_id {
+        Some(before) => sqlx::query_as::<_, OutputLine>(
+            "SELECT * FROM output_lines WHERE session_id = ? AND id < ? \
+             ORDER BY id DESC LIMIT 1001",
+        )
+        .bind(session_id)
+        .bind(before)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?,
+        None => sqlx::query_as::<_, OutputLine>(
+            "SELECT * FROM output_lines WHERE session_id = ? \
+             ORDER BY id DESC LIMIT 1001",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?,
+    };
+
+    let hard_cap_hit = rows.len() > 1000;
+    let rows: Vec<OutputLine> = rows.into_iter().take(1000).collect();
+
+    let mut taken: Vec<OutputLine> = Vec::new();
+    let mut bytes: i64 = 0;
+    let mut byte_truncated = false;
+
+    for line in rows {
+        let len = line.line.len() as i64;
+        if !taken.is_empty() && bytes + len > byte_budget {
+            byte_truncated = true;
+            break;
+        }
+        bytes += len;
+        taken.push(line);
+    }
+
+    let more_available = byte_truncated || hard_cap_hit;
+    let next_cursor = if more_available && !taken.is_empty() {
+        Some(taken.last().expect("non-empty").id)
+    } else {
+        None
+    };
+    taken.reverse();
+
+    Ok(TailOutput {
+        lines: taken,
+        bytes,
+        more_available,
+        next_cursor,
+    })
 }
 
 // ---------------------------------------------------------------------------
