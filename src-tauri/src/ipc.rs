@@ -3175,6 +3175,50 @@ pub async fn migrate_legacy_attachments(
     blob::migrate_legacy_attachments(pool.inner(), &app_data.0).await
 }
 
+// Resource monitor: toggle the live sampler's cadence (idle vs overlay-open)
+// from the frontend. Cheap; just flips two atomics.
+#[tauri::command]
+pub async fn set_resource_monitor_overlay_open(
+    sampler: State<'_, std::sync::Arc<crate::resource_monitor::ResourceSampler>>,
+    open: bool,
+) -> Result<(), String> {
+    sampler.set_overlay_open(open);
+    Ok(())
+}
+
+// Resource monitor: produce a sample on demand so the overlay's first paint
+// isn't blank for up to one tick. `sample_now` blocks the calling thread for
+// ~100ms (CPU% delta), so we hop onto a blocking thread and host a small
+// current-thread runtime there to drive the async DB lookup.
+#[tauri::command]
+pub async fn get_resource_usage_now(
+    pool: State<'_, SqlitePool>,
+    active: State<'_, crate::task::ActiveMap>,
+) -> Result<crate::resource_monitor::Sample, String> {
+    let active_clone = (*active).clone();
+    let pool_clone = (*pool).clone();
+    let sample = tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        let names_provider = |ids: &[String]| -> std::collections::HashMap<String, String> {
+            rt.block_on(async {
+                crate::db::task_names_for_ids(&pool_clone, ids)
+                    .await
+                    .unwrap_or_default()
+            })
+        };
+        Ok::<_, String>(crate::resource_monitor::sample_now(
+            &active_clone,
+            names_provider,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(sample)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

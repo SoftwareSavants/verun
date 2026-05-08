@@ -1315,6 +1315,33 @@ pub async fn get_task(pool: &SqlitePool, id: &str) -> Result<Option<Task>, Strin
         .map_err(|e| e.to_string())
 }
 
+/// Bulk-fetch task names by id. Returns a `task_id -> task_name` map.
+/// Used by the resource monitor's per-tick names provider so the sampler can
+/// label each subtree without an N+1 fan-out of `get_task` calls.
+pub async fn task_names_for_ids(
+    pool: &SqlitePool,
+    ids: &[String],
+) -> Result<std::collections::HashMap<String, String>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let mut q = String::from("SELECT id, name FROM tasks WHERE id IN (");
+    for i in 0..ids.len() {
+        if i > 0 {
+            q.push(',');
+        }
+        q.push('?');
+    }
+    q.push(')');
+
+    let mut query = sqlx::query_as::<_, (String, String)>(&q);
+    for id in ids {
+        query = query.bind(id);
+    }
+    let rows: Vec<(String, String)> = query.fetch_all(pool).await?;
+    Ok(rows.into_iter().collect())
+}
+
 pub async fn list_tasks_for_project(
     pool: &SqlitePool,
     project_id: &str,

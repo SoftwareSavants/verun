@@ -4,8 +4,9 @@
 //! (rooted at each live session PID) plus an "app" bucket for everything else
 //! still under the Verun root. `SysinfoSource` is the live `ProcessSource`
 //! that drives this on real systems; `ResourceSampler` spawns the periodic
-//! tokio loop that emits `resource_usage` Tauri events. IPC wiring lands in
-//! a later phase, so the sampler entry points still carry `#[allow(dead_code)]`.
+//! tokio loop that emits `resource_usage` Tauri events. The sampler is spawned
+//! in `lib.rs` and exposed via `set_resource_monitor_overlay_open` and
+//! `get_resource_usage_now` IPC commands.
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -190,7 +191,6 @@ impl ResourceSampler {
     /// is called once per tick with the active task_ids and returns
     /// `task_id -> task_name`. The provider is responsible for whatever
     /// async/sync gymnastics it needs to fetch from the DB.
-    #[allow(dead_code)] // wired into IPC in a later phase
     pub fn spawn<S, F>(
         app: tauri::AppHandle,
         active: crate::task::ActiveMap,
@@ -250,7 +250,6 @@ impl ResourceSampler {
         }
     }
 
-    #[allow(dead_code)] // wired into IPC in a later phase
     pub fn set_overlay_open(&self, open: bool) {
         self.cadence
             .store(if open { 1000 } else { 2000 }, Ordering::Relaxed);
@@ -289,7 +288,6 @@ impl Drop for ResourceSampler {
 /// pauses 100 ms between two refreshes so CPU% has a delta, then runs `attribute`.
 /// Caller is responsible for ensuring this is invoked from a blocking-friendly
 /// context (e.g. `tokio::task::spawn_blocking`); it sleeps the calling thread.
-#[allow(dead_code)] // wired into IPC in a later phase
 pub fn sample_now<F>(active: &crate::task::ActiveMap, task_names_provider: F) -> Sample
 where
     F: Fn(&[String]) -> HashMap<String, String>,

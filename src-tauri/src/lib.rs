@@ -205,6 +205,32 @@ pub fn run() {
                 });
             }
 
+            // Resource monitor: live sampler that emits per-task RAM/CPU breakdown
+            // for the sidebar chip + overlay. Spawned after the pool is managed
+            // so the names provider can fetch task names from the DB.
+            let active_for_monitor =
+                std::sync::Arc::clone(&*app.state::<crate::task::ActiveMap>());
+            let pool_for_monitor = app.state::<sqlx::sqlite::SqlitePool>().inner().clone();
+            let monitor_handle = app.handle().clone();
+            let names_provider = move |ids: &[String]| -> std::collections::HashMap<String, String> {
+                let pool = pool_for_monitor.clone();
+                let ids = ids.to_vec();
+                tauri::async_runtime::block_on(async move {
+                    crate::db::task_names_for_ids(&pool, &ids)
+                        .await
+                        .unwrap_or_default()
+                })
+            };
+            let sampler = std::sync::Arc::new(
+                crate::resource_monitor::ResourceSampler::spawn(
+                    monitor_handle,
+                    active_for_monitor,
+                    crate::resource_monitor::SysinfoSource::new(),
+                    names_provider,
+                ),
+            );
+            app.manage(sampler);
+
             // Auto-check for updates after a short delay
             let update_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -439,6 +465,9 @@ pub fn run() {
             ipc::get_storage_stats,
             ipc::run_blob_gc,
             ipc::migrate_legacy_attachments,
+            // Resource monitor
+            ipc::set_resource_monitor_overlay_open,
+            ipc::get_resource_usage_now,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")
