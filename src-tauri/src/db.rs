@@ -1334,12 +1334,20 @@ pub async fn task_names_for_ids(
     }
     q.push(')');
 
-    let mut query = sqlx::query_as::<_, (String, String)>(&q);
+    let mut query = sqlx::query_as::<_, (String, Option<String>)>(&q);
     for id in ids {
         query = query.bind(id);
     }
-    let rows: Vec<(String, String)> = query.fetch_all(pool).await?;
-    Ok(rows.into_iter().collect())
+    let rows: Vec<(String, Option<String>)> = query.fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| {
+            let label = name
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "New task".into());
+            (id, label)
+        })
+        .collect())
 }
 
 pub async fn list_tasks_for_project(
@@ -2050,6 +2058,42 @@ pub(crate) mod tests {
 
         let t = get_task(&pool, "t-001").await.unwrap().unwrap();
         assert_eq!(t.name.as_deref(), Some("Fix auth bug"));
+    }
+
+    #[tokio::test]
+    async fn task_names_for_ids_falls_back_for_null_names() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        let mut t2 = make_task("p-001");
+        t2.id = "t-002".into();
+        t2.branch = "another-branch".into();
+        t2.worktree_path = "/tmp/myapp/.verun/worktrees/another-branch".into();
+        process_write(&pool, DbWrite::InsertTask(t2)).await.unwrap();
+        process_write(
+            &pool,
+            DbWrite::UpdateTaskName {
+                id: "t-002".into(),
+                name: "Fix auth bug".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let names =
+            task_names_for_ids(&pool, &["t-001".into(), "t-002".into()])
+                .await
+                .unwrap();
+
+        assert_eq!(names.get("t-001").map(String::as_str), Some("New task"));
+        assert_eq!(
+            names.get("t-002").map(String::as_str),
+            Some("Fix auth bug")
+        );
     }
 
     #[tokio::test]
