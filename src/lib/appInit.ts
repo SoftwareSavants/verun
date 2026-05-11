@@ -9,6 +9,7 @@ import { initGitHubDebugListeners } from '../store/githubDebug'
 import { initActionsListeners } from '../store/actions'
 import { initOpenFilesRefresh } from '../store/fileSync'
 import { initSetupListeners } from '../store/setup'
+import { initResourceMonitor } from '../store/resource-monitor'
 import { loadTasks, taskById } from '../store/tasks'
 import { loadSessions } from '../store/sessions'
 import { refreshTaskGit } from '../store/git'
@@ -47,6 +48,7 @@ export async function initListeners() {
     initProjectListeners(),
     initSetupListeners(),
     initAgentListeners(),
+    initResourceMonitor(),
   ])
   initWindowFocusRefresh()
   initSessionWindowFocusRefresh()
