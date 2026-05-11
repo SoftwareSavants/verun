@@ -567,6 +567,7 @@ export interface ProcessStat {
 export interface TaskStat {
   taskId: string
   taskName: string
+  branch: string
   pid: number
   rssBytes: number
   cpuPct: number

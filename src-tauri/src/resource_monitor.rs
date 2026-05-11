@@ -23,6 +23,7 @@ pub struct ProcessStat {
 pub struct TaskStat {
     pub task_id: String,
     pub task_name: String,
+    pub branch: String,
     pub pid: u32,
     pub rss_bytes: u64,
     pub cpu_pct: f32,
@@ -56,7 +57,7 @@ pub fn attribute(
     snapshot: &[ProcRow],
     verun_pid: u32,
     active: &[(String, u32)],
-    task_names: &HashMap<String, String>,
+    task_labels: &HashMap<String, crate::db::TaskLabel>,
     sampled_at_ms: i64,
 ) -> Sample {
     let by_pid: HashMap<u32, &ProcRow> = snapshot.iter().map(|r| (r.pid, r)).collect();
@@ -115,15 +116,19 @@ pub fn attribute(
 
     let mut tasks: Vec<TaskStat> = task_totals
         .into_iter()
-        .map(|(task_id, (pid, rss, cpu))| TaskStat {
-            task_name: task_names
+        .map(|(task_id, (pid, rss, cpu))| {
+            let (task_name, branch) = task_labels
                 .get(&task_id)
-                .cloned()
-                .unwrap_or_else(|| "(unknown)".into()),
-            task_id,
-            pid,
-            rss_bytes: rss,
-            cpu_pct: cpu,
+                .map(|l| (l.name.clone(), l.branch.clone()))
+                .unwrap_or_else(|| ("(unknown)".into(), String::new()));
+            TaskStat {
+                task_id,
+                task_name,
+                branch,
+                pid,
+                rss_bytes: rss,
+                cpu_pct: cpu,
+            }
         })
         .collect();
     tasks.sort_by(|a, b| b.rss_bytes.cmp(&a.rss_bytes));
@@ -224,10 +229,10 @@ impl ResourceSampler {
 
                 let task_ids: Vec<String> =
                     active_pairs.iter().map(|(t, _)| t.clone()).collect();
-                let names = crate::db::task_names_for_ids(&pool, &task_ids)
+                let labels = crate::db::task_labels_for_ids(&pool, &task_ids)
                     .await
                     .unwrap_or_else(|e| {
-                        eprintln!("[resource_monitor] task_names_for_ids failed: {e}");
+                        eprintln!("[resource_monitor] task_labels_for_ids failed: {e}");
                         std::collections::HashMap::new()
                     });
 
@@ -237,7 +242,7 @@ impl ResourceSampler {
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
 
-                let sample = attribute(&snap, verun_pid, &active_pairs, &names, now_ms);
+                let sample = attribute(&snap, verun_pid, &active_pairs, &labels, now_ms);
 
                 use tauri::Emitter;
                 let _ = app.emit("resource_usage", &sample);
@@ -315,10 +320,10 @@ pub async fn sample_now(
         })
         .collect();
     let task_ids: Vec<String> = active_pairs.iter().map(|(t, _)| t.clone()).collect();
-    let names = crate::db::task_names_for_ids(pool, &task_ids)
+    let labels = crate::db::task_labels_for_ids(pool, &task_ids)
         .await
         .unwrap_or_else(|e| {
-            eprintln!("[resource_monitor] task_names_for_ids failed: {e}");
+            eprintln!("[resource_monitor] task_labels_for_ids failed: {e}");
             std::collections::HashMap::new()
         });
 
@@ -327,7 +332,7 @@ pub async fn sample_now(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 
-    attribute(&snap, std::process::id(), &active_pairs, &names, now_ms)
+    attribute(&snap, std::process::id(), &active_pairs, &labels, now_ms)
 }
 
 #[cfg(test)]
@@ -338,8 +343,19 @@ mod tests {
         ProcRow { pid, parent_pid: parent, rss_bytes: rss, cpu_pct: cpu }
     }
 
-    fn names(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    fn labels(pairs: &[(&str, &str, &str)]) -> HashMap<String, crate::db::TaskLabel> {
+        pairs
+            .iter()
+            .map(|(id, name, branch)| {
+                (
+                    id.to_string(),
+                    crate::db::TaskLabel {
+                        name: name.to_string(),
+                        branch: branch.to_string(),
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Tree:
@@ -358,9 +374,9 @@ mod tests {
             row(5, Some(1), 300, 20.0),
         ];
         let active = vec![("ta".into(), 3), ("tb".into(), 5)];
-        let names = names(&[("ta", "Task A"), ("tb", "Task B")]);
+        let labels = labels(&[("ta", "Task A", "branch-a"), ("tb", "Task B", "branch-b")]);
 
-        let s = attribute(&snap, 1, &active, &names, 42);
+        let s = attribute(&snap, 1, &active, &labels, 42);
 
         assert_eq!(s.app.rss_bytes, 100 + 20);
         assert!((s.app.cpu_pct - 1.5).abs() < 1e-3);
@@ -368,9 +384,11 @@ mod tests {
         let task_a = s.tasks.iter().find(|t| t.task_id == "ta").unwrap();
         assert_eq!(task_a.rss_bytes, 200 + 50);
         assert!((task_a.cpu_pct - 12.0).abs() < 1e-3);
+        assert_eq!(task_a.branch, "branch-a");
 
         let task_b = s.tasks.iter().find(|t| t.task_id == "tb").unwrap();
         assert_eq!(task_b.rss_bytes, 300);
+        assert_eq!(task_b.branch, "branch-b");
 
         assert_eq!(s.total.rss_bytes, 100 + 20 + 200 + 50 + 300);
         assert_eq!(s.sampled_at_ms, 42);
@@ -380,9 +398,9 @@ mod tests {
     fn dead_session_pid_is_excluded() {
         let snap = vec![row(1, None, 100, 0.0)];
         let active = vec![("ta".into(), 999)];
-        let names = names(&[("ta", "Task A")]);
+        let labels = labels(&[("ta", "Task A", "branch-a")]);
 
-        let s = attribute(&snap, 1, &active, &names, 0);
+        let s = attribute(&snap, 1, &active, &labels, 0);
 
         assert_eq!(s.tasks.len(), 0);
         assert_eq!(s.app.rss_bytes, 100);
@@ -397,9 +415,9 @@ mod tests {
             row(11, Some(1), 200, 10.0),
         ];
         let active = vec![("ta".into(), 10), ("ta".into(), 11)];
-        let names = names(&[("ta", "Task A")]);
+        let labels = labels(&[("ta", "Task A", "branch-a")]);
 
-        let s = attribute(&snap, 1, &active, &names, 0);
+        let s = attribute(&snap, 1, &active, &labels, 0);
 
         assert_eq!(s.tasks.len(), 1);
         assert_eq!(s.tasks[0].rss_bytes, 300);
@@ -409,9 +427,9 @@ mod tests {
     #[test]
     fn empty_active_map_yields_no_tasks_and_total_eq_app() {
         let snap = vec![row(1, None, 100, 5.0), row(2, Some(1), 50, 1.0)];
-        let names = HashMap::new();
+        let labels = HashMap::new();
 
-        let s = attribute(&snap, 1, &[], &names, 0);
+        let s = attribute(&snap, 1, &[], &labels, 0);
 
         assert!(s.tasks.is_empty());
         assert_eq!(s.app.rss_bytes, 150);
@@ -431,24 +449,29 @@ mod tests {
             ("big".into(), 20),
             ("mid".into(), 30),
         ];
-        let names = names(&[("small", "S"), ("big", "B"), ("mid", "M")]);
+        let labels = labels(&[
+            ("small", "S", "br-s"),
+            ("big", "B", "br-b"),
+            ("mid", "M", "br-m"),
+        ]);
 
-        let s = attribute(&snap, 1, &active, &names, 0);
+        let s = attribute(&snap, 1, &active, &labels, 0);
 
         let ids: Vec<_> = s.tasks.iter().map(|t| t.task_id.as_str()).collect();
         assert_eq!(ids, vec!["big", "mid", "small"]);
     }
 
     #[test]
-    fn unknown_task_id_falls_back_to_placeholder_name() {
+    fn unknown_task_id_falls_back_to_placeholder_name_and_empty_branch() {
         let snap = vec![row(1, None, 0, 0.0), row(2, Some(1), 10, 0.0)];
         let active = vec![("unknown_id".into(), 2)];
-        let names = HashMap::new();
+        let labels = HashMap::new();
 
-        let s = attribute(&snap, 1, &active, &names, 0);
+        let s = attribute(&snap, 1, &active, &labels, 0);
 
         assert_eq!(s.tasks.len(), 1);
         assert_eq!(s.tasks[0].task_name, "(unknown)");
+        assert_eq!(s.tasks[0].branch, "");
     }
 
     #[test]
