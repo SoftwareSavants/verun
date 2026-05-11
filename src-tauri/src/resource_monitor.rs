@@ -12,12 +12,14 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProcessStat {
     pub rss_bytes: u64,
     pub cpu_pct: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskStat {
     pub task_id: String,
     pub task_name: String,
@@ -27,6 +29,7 @@ pub struct TaskStat {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Sample {
     pub total: ProcessStat,
     pub app: ProcessStat,
