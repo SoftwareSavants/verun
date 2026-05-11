@@ -194,14 +194,39 @@ pub struct ResourceSampler {
     handle: Option<tauri::async_runtime::JoinHandle<()>>,
 }
 
+/// Collect every `(task_id, pid)` we own across the running session,
+/// LSP, and PTY/terminal trees. Each pair becomes a subtree root that
+/// `attribute()` rolls up under the task. Multiple pairs per task merge.
+fn task_root_pids(
+    active: &crate::task::ActiveMap,
+    lsp_map: &crate::lsp::LspMap,
+    pty_map: &crate::pty::ActivePtyMap,
+) -> Vec<(String, u32)> {
+    let mut out: Vec<(String, u32)> = active
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .value()
+                .child
+                .id()
+                .map(|pid| (entry.value().task_id.clone(), pid))
+        })
+        .collect();
+    out.extend(crate::lsp::pids_for_tasks(lsp_map));
+    out.extend(crate::pty::pids_for_tasks(pty_map));
+    out
+}
+
 impl ResourceSampler {
     /// Production constructor: spawns the sampling loop on the tauri async
-    /// runtime. The loop fetches task names from the DB directly via
-    /// `crate::db::task_names_for_ids` each tick, so no sync/async bridge
+    /// runtime. The loop fetches task labels from the DB directly via
+    /// `crate::db::task_labels_for_ids` each tick, so no sync/async bridge
     /// closure is needed.
     pub fn spawn<S>(
         app: tauri::AppHandle,
         active: crate::task::ActiveMap,
+        lsp_map: crate::lsp::LspMap,
+        pty_map: crate::pty::ActivePtyMap,
         mut source: S,
         pool: sqlx::sqlite::SqlitePool,
     ) -> Self
@@ -216,16 +241,7 @@ impl ResourceSampler {
         let handle = tauri::async_runtime::spawn(async move {
             let verun_pid = std::process::id();
             loop {
-                let active_pairs: Vec<(String, u32)> = active
-                    .iter()
-                    .filter_map(|entry| {
-                        entry
-                            .value()
-                            .child
-                            .id()
-                            .map(|pid| (entry.value().task_id.clone(), pid))
-                    })
-                    .collect();
+                let active_pairs = task_root_pids(&active, &lsp_map, &pty_map);
 
                 let task_ids: Vec<String> =
                     active_pairs.iter().map(|(t, _)| t.clone()).collect();
@@ -302,6 +318,8 @@ impl Drop for ResourceSampler {
 /// once the sample is ready.
 pub async fn sample_now(
     active: &crate::task::ActiveMap,
+    lsp_map: &crate::lsp::LspMap,
+    pty_map: &crate::pty::ActivePtyMap,
     pool: &sqlx::sqlite::SqlitePool,
 ) -> Sample {
     let mut src = SysinfoSource::new();
@@ -309,16 +327,7 @@ pub async fn sample_now(
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let snap = src.snapshot();
 
-    let active_pairs: Vec<(String, u32)> = active
-        .iter()
-        .filter_map(|entry| {
-            entry
-                .value()
-                .child
-                .id()
-                .map(|pid| (entry.value().task_id.clone(), pid))
-        })
-        .collect();
+    let active_pairs = task_root_pids(active, lsp_map, pty_map);
     let task_ids: Vec<String> = active_pairs.iter().map(|(t, _)| t.clone()).collect();
     let labels = crate::db::task_labels_for_ids(pool, &task_ids)
         .await

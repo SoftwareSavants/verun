@@ -3193,8 +3193,16 @@ pub async fn set_resource_monitor_overlay_open(
 pub async fn get_resource_usage_now(
     pool: State<'_, SqlitePool>,
     active: State<'_, crate::task::ActiveMap>,
+    lsp_map: State<'_, crate::lsp::LspMap>,
+    pty_map: State<'_, crate::pty::ActivePtyMap>,
 ) -> Result<crate::resource_monitor::Sample, String> {
-    Ok(crate::resource_monitor::sample_now(active.inner(), pool.inner()).await)
+    Ok(crate::resource_monitor::sample_now(
+        active.inner(),
+        lsp_map.inner(),
+        pty_map.inner(),
+        pool.inner(),
+    )
+    .await)
 }
 
 #[cfg(test)]

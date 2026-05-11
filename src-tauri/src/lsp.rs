@@ -223,3 +223,18 @@ pub async fn stop_server(lsp_map: &LspMap, task_id: &str) {
         let _ = child.kill().await;
     }
 }
+
+/// Collect `(task_id, pid)` for every live LSP child. Used by the resource
+/// monitor to attribute LSP memory back to its task. Skips entries whose
+/// child mutex is currently held (busy writing a request) - the next tick
+/// will pick them up.
+pub fn pids_for_tasks(lsp_map: &LspMap) -> Vec<(String, u32)> {
+    lsp_map
+        .iter()
+        .filter_map(|entry| {
+            let task_id = entry.key().clone();
+            let guard = entry.value().child.try_lock().ok()?;
+            guard.id().map(|pid| (task_id, pid))
+        })
+        .collect()
+}
