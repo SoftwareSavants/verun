@@ -3,14 +3,14 @@ import { resourceSample } from '../store/resource-monitor'
 import { formatBytes, formatPct } from '../lib/format'
 
 interface Props {
-  onClick: () => void
+  onClick: (anchor: HTMLElement) => void
 }
 
 export const ResourceChip: Component<Props> = (props) => {
   return (
     <button
       data-testid="resource-chip"
-      onClick={() => props.onClick()}
+      onClick={(e) => props.onClick(e.currentTarget)}
       title="Activity"
       class="px-2 py-1 rounded-md text-xs tabular-nums text-text-dim hover:text-text-secondary hover:bg-surface-3 ring-1 ring-outline/8 transition-colors"
     >

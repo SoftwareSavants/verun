@@ -47,7 +47,7 @@ import { deleteProject } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ResourceChip } from "./ResourceChip";
-import { ResourceOverlayDialog } from "./ResourceOverlayDialog";
+import { ResourceOverlay } from "./ResourceOverlay";
 import { buildAddProjectMenuItems } from "../lib/addProjectMenu";
 import { selectSettingsSection } from "./SettingsPage";
 import {
@@ -186,6 +186,7 @@ export const Sidebar: Component = () => {
   const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null);
   const [renamingTaskId, setRenamingTaskId] = createSignal<string | null>(null);
   const [showResourceOverlay, setShowResourceOverlay] = createSignal(false);
+  const [resourceAnchor, setResourceAnchor] = createSignal<{ x: number; y: number } | undefined>(undefined);
 
   const activeTasksByProject = createMemo(() => {
     const byProject: Record<string, typeof tasks> = {}
@@ -538,7 +539,11 @@ export const Sidebar: Component = () => {
 
         {/* Footer — compact icon strip */}
         <div class="border-t border-border-subtle flex items-center gap-1 px-2 py-1.5 no-drag">
-          <ResourceChip onClick={() => setShowResourceOverlay(true)} />
+          <ResourceChip onClick={(anchor) => {
+            const r = anchor.getBoundingClientRect()
+            setResourceAnchor({ x: r.left, y: r.top })
+            setShowResourceOverlay(true)
+          }} />
           <button
             class={clsx(
               'p-1.5 rounded-md transition-colors',
@@ -602,9 +607,10 @@ export const Sidebar: Component = () => {
         onCancel={() => setArchiveTaskTarget(null)}
       />
 
-      <ResourceOverlayDialog
+      <ResourceOverlay
         open={showResourceOverlay()}
         onClose={() => setShowResourceOverlay(false)}
+        anchor={resourceAnchor()}
       />
 
     </>
