@@ -3187,36 +3187,14 @@ pub async fn set_resource_monitor_overlay_open(
 }
 
 // Resource monitor: produce a sample on demand so the overlay's first paint
-// isn't blank for up to one tick. `sample_now` blocks the calling thread for
-// ~100ms (CPU% delta), so we hop onto a blocking thread and host a small
-// current-thread runtime there to drive the async DB lookup.
+// isn't blank for up to one tick. `sample_now` awaits a 100ms CPU-delta sleep
+// and the DB lookup natively, so this collapses to a single `.await`.
 #[tauri::command]
 pub async fn get_resource_usage_now(
     pool: State<'_, SqlitePool>,
     active: State<'_, crate::task::ActiveMap>,
 ) -> Result<crate::resource_monitor::Sample, String> {
-    let active_clone = (*active).clone();
-    let pool_clone = (*pool).clone();
-    let sample = tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| e.to_string())?;
-        let names_provider = |ids: &[String]| -> std::collections::HashMap<String, String> {
-            rt.block_on(async {
-                crate::db::task_names_for_ids(&pool_clone, ids)
-                    .await
-                    .unwrap_or_default()
-            })
-        };
-        Ok::<_, String>(crate::resource_monitor::sample_now(
-            &active_clone,
-            names_provider,
-        ))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    Ok(sample)
+    Ok(crate::resource_monitor::sample_now(active.inner(), pool.inner()).await)
 }
 
 #[cfg(test)]

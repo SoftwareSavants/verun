@@ -183,30 +183,29 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub struct ResourceSampler {
     cadence: Arc<AtomicU64>,
     notify: Arc<tokio::sync::Notify>,
-    handle: Option<tokio::task::JoinHandle<()>>,
+    handle: Option<tauri::async_runtime::JoinHandle<()>>,
 }
 
 impl ResourceSampler {
-    /// Production constructor: spawns the sampling loop. `task_names_provider`
-    /// is called once per tick with the active task_ids and returns
-    /// `task_id -> task_name`. The provider is responsible for whatever
-    /// async/sync gymnastics it needs to fetch from the DB.
-    pub fn spawn<S, F>(
+    /// Production constructor: spawns the sampling loop on the tauri async
+    /// runtime. The loop fetches task names from the DB directly via
+    /// `crate::db::task_names_for_ids` each tick, so no sync/async bridge
+    /// closure is needed.
+    pub fn spawn<S>(
         app: tauri::AppHandle,
         active: crate::task::ActiveMap,
         mut source: S,
-        task_names_provider: F,
+        pool: sqlx::sqlite::SqlitePool,
     ) -> Self
     where
         S: ProcessSource + Send + 'static,
-        F: Fn(&[String]) -> HashMap<String, String> + Send + Sync + 'static,
     {
         let cadence = Arc::new(AtomicU64::new(2000));
         let notify = Arc::new(tokio::sync::Notify::new());
         let cadence_clone = cadence.clone();
         let notify_clone = notify.clone();
 
-        let handle = tokio::spawn(async move {
+        let handle = tauri::async_runtime::spawn(async move {
             let verun_pid = std::process::id();
             loop {
                 let active_pairs: Vec<(String, u32)> = active
@@ -222,7 +221,12 @@ impl ResourceSampler {
 
                 let task_ids: Vec<String> =
                     active_pairs.iter().map(|(t, _)| t.clone()).collect();
-                let names = task_names_provider(&task_ids);
+                let names = crate::db::task_names_for_ids(&pool, &task_ids)
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!("[resource_monitor] task_names_for_ids failed: {e}");
+                        std::collections::HashMap::new()
+                    });
 
                 let snap = source.snapshot();
                 let now_ms = std::time::SystemTime::now()
@@ -285,16 +289,16 @@ impl Drop for ResourceSampler {
 /// overlay's first paint isn't blank for up to one tick.
 ///
 /// Builds its own short-lived `SysinfoSource` (does NOT reuse the live sampler's),
-/// pauses 100 ms between two refreshes so CPU% has a delta, then runs `attribute`.
-/// Caller is responsible for ensuring this is invoked from a blocking-friendly
-/// context (e.g. `tokio::task::spawn_blocking`); it sleeps the calling thread.
-pub fn sample_now<F>(active: &crate::task::ActiveMap, task_names_provider: F) -> Sample
-where
-    F: Fn(&[String]) -> HashMap<String, String>,
-{
+/// awaits 100 ms between two refreshes so CPU% has a delta, then runs `attribute`.
+/// Awaits the DB lookup for task names inline, returning a future that completes
+/// once the sample is ready.
+pub async fn sample_now(
+    active: &crate::task::ActiveMap,
+    pool: &sqlx::sqlite::SqlitePool,
+) -> Sample {
     let mut src = SysinfoSource::new();
     let _ = src.snapshot();
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let snap = src.snapshot();
 
     let active_pairs: Vec<(String, u32)> = active
@@ -308,7 +312,12 @@ where
         })
         .collect();
     let task_ids: Vec<String> = active_pairs.iter().map(|(t, _)| t.clone()).collect();
-    let names = task_names_provider(&task_ids);
+    let names = crate::db::task_names_for_ids(pool, &task_ids)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("[resource_monitor] task_names_for_ids failed: {e}");
+            std::collections::HashMap::new()
+        });
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
