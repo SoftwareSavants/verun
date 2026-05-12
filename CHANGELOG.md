@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `pnpm-workspace.yaml` with `allowBuilds: { esbuild: true }` so CI release builds work under pnpm 11, which removed `onlyBuiltDependencies` and now hard-errors (`ERR_PNPM_IGNORED_BUILDS`) on unapproved dependency build scripts
+
 ## 0.11.0 — 2026-05-12
 
 ### Activity monitor
