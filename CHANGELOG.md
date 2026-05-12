@@ -50,6 +50,7 @@
 - Running terminals now repaint correctly when you flip dark ↔ light mode (xterm's WebGL renderer was caching the original palette)
 - Terminal panel chrome now tracks the active theme instead of staying black in light mode
 - Release builds no longer fail under pnpm 11, which removed `onlyBuiltDependencies` and now hard-errors (`ERR_PNPM_IGNORED_BUILDS`) on unapproved dependency build scripts; a `pnpm-workspace.yaml` now allows `esbuild`'s build script
+- Windows release builds no longer fail in WiX `light.exe`: the MSI bundle target is dropped (the release only ships the NSIS installer), so the bundled LSP `node_modules` tree no longer chokes the MSI packager
 
 ### Polish
 
