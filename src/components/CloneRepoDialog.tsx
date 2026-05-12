@@ -205,13 +205,6 @@ export const CloneRepoDialog: Component<Props> = (props) => {
           void cloneFromQuery()
         }
         break
-      case 'Backspace':
-        // Empty input → close (matches the "Back" affordance in the keyboard guide).
-        if (query().length === 0) {
-          e.preventDefault()
-          props.onClose()
-        }
-        break
     }
   }
 
@@ -349,10 +342,6 @@ export const CloneRepoDialog: Component<Props> = (props) => {
               <span class="flex items-center gap-1">
                 <kbd class="px-1 py-0.5 rounded bg-surface-3 text-text-muted font-mono">Enter</kbd>
                 Select
-              </span>
-              <span class="flex items-center gap-1">
-                <kbd class="px-1 py-0.5 rounded bg-surface-3 text-text-muted font-mono">Backspace</kbd>
-                Back
               </span>
               <span class="flex items-center gap-1">
                 <kbd class="px-1 py-0.5 rounded bg-surface-3 text-text-muted font-mono">Esc</kbd>
