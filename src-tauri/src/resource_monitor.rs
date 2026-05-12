@@ -322,8 +322,9 @@ pub async fn sample_now(
     pty_map: &crate::pty::ActivePtyMap,
     pool: &sqlx::sqlite::SqlitePool,
 ) -> Sample {
+    // SysinfoSource::new() already primes the CPU baseline; wait the
+    // minimum interval before the second refresh so CPU% has a delta.
     let mut src = SysinfoSource::new();
-    let _ = src.snapshot();
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let snap = src.snapshot();
 

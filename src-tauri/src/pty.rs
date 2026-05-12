@@ -401,7 +401,7 @@ pub fn pids_for_tasks(map: &ActivePtyMap) -> Vec<(String, u32)> {
     map.iter()
         .filter_map(|entry| {
             let h = entry.value();
-            let guard = h.child.lock().ok()?;
+            let guard = h.child.try_lock().ok()?;
             guard.process_id().map(|pid| (h.task_id.clone(), pid))
         })
         .collect()

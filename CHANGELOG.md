@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Sidebar footer chip showing total RAM/CPU% with an overlay breakdown per task
+- Activity chip in the window title-bar area showing total RAM/CPU% with a click-through overlay breaking it down per task (session + LSP + terminal subtrees attributed back to each task)
 - Start button tooltip now reads "Start project (F5)" instead of inlining the raw start command, so a long `pnpm tauri dev --config ... --features ...` no longer overflows or wraps the OS tooltip. The full command is still visible in project Settings
 - `classify_envelope` rustdoc wraps XML/path samples in text-markdown fences so `cargo test --doc` does not compile them as Rust (indented `///` blocks are doctests by default)
 - Saving `.gitignore` or `.git/info/exclude` triggers a full refresh of cached file-tree listings for the task so ignored/dimmed state updates immediately (not only the ignore file’s parent folder)
