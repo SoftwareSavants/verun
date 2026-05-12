@@ -23,7 +23,7 @@ export const ResourceOverlay: Component<Props> = (props) => {
       open={props.open}
       onClose={props.onClose}
       pos={props.anchor}
-      class="-translate-y-full -mt-2 w-80 p-3"
+      class="-translate-x-full w-80 p-3"
     >
       <div data-testid="resource-overlay">
         <Show

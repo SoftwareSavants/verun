@@ -12,7 +12,7 @@ export const ResourceChip: Component<Props> = (props) => {
       data-testid="resource-chip"
       onClick={(e) => props.onClick(e.currentTarget)}
       title="Activity"
-      class="px-2 py-1 rounded-md text-xs tabular-nums text-text-dim hover:text-text-secondary hover:bg-surface-3 ring-1 ring-outline/8 transition-colors"
+      class="px-2 py-1 rounded-md text-xs tabular-nums text-text-dim hover:text-text-secondary hover:bg-surface-3 transition-colors"
     >
       <Show
         when={resourceSample()}
