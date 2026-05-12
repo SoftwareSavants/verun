@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-- Add `pnpm-workspace.yaml` with `allowBuilds: { esbuild: true }` so CI release builds work under pnpm 11, which removed `onlyBuiltDependencies` and now hard-errors (`ERR_PNPM_IGNORED_BUILDS`) on unapproved dependency build scripts
-
 ## 0.11.0 — 2026-05-12
 
 ### Activity monitor
@@ -51,6 +49,7 @@
 - Fixed garbled text in all PTY views (Claude terminal, shell terminals, bootstrap log): multi-byte glyphs (😄, —, …) that spanned a read boundary were being split into replacement characters. The reader now buffers partial UTF-8 across reads so glyphs stay intact
 - Running terminals now repaint correctly when you flip dark ↔ light mode (xterm's WebGL renderer was caching the original palette)
 - Terminal panel chrome now tracks the active theme instead of staying black in light mode
+- Release builds no longer fail under pnpm 11, which removed `onlyBuiltDependencies` and now hard-errors (`ERR_PNPM_IGNORED_BUILDS`) on unapproved dependency build scripts; a `pnpm-workspace.yaml` now allows `esbuild`'s build script
 
 ### Polish
 
