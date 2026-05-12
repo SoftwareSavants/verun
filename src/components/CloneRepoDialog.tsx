@@ -222,7 +222,7 @@ export const CloneRepoDialog: Component<Props> = (props) => {
 
   return (
     <Dialog open={props.open} onClose={props.onClose} width="35rem">
-      <div class="flex items-center justify-between mb-2">
+      <div class="flex items-center justify-between mb-2 -mt-5">
         <h2 class="text-sm font-semibold text-text-primary">Clone GitHub repo</h2>
         <Show when={view().kind === 'ready' && (view() as { account: string | null }).account}>
           {(account) => (
@@ -284,7 +284,7 @@ export const CloneRepoDialog: Component<Props> = (props) => {
             />
           </div>
 
-          <div ref={listRef} class="border border-border rounded-md h-[28rem] overflow-y-auto bg-surface-1">
+          <div ref={listRef} class="border border-border rounded-md max-h-[45vh] overflow-y-auto bg-surface-1">
             <Show
               when={filtered().length > 0}
               fallback={
