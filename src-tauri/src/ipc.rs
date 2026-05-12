@@ -3175,6 +3175,36 @@ pub async fn migrate_legacy_attachments(
     blob::migrate_legacy_attachments(pool.inner(), &app_data.0).await
 }
 
+// Resource monitor: toggle the live sampler's cadence (idle vs overlay-open)
+// from the frontend. Cheap; just flips two atomics.
+#[tauri::command]
+pub async fn set_resource_monitor_overlay_open(
+    sampler: State<'_, std::sync::Arc<crate::resource_monitor::ResourceSampler>>,
+    open: bool,
+) -> Result<(), String> {
+    sampler.set_overlay_open(open);
+    Ok(())
+}
+
+// Resource monitor: produce a sample on demand so the overlay's first paint
+// isn't blank for up to one tick. `sample_now` awaits a 100ms CPU-delta sleep
+// and the DB lookup natively, so this collapses to a single `.await`.
+#[tauri::command]
+pub async fn get_resource_usage_now(
+    pool: State<'_, SqlitePool>,
+    active: State<'_, crate::task::ActiveMap>,
+    lsp_map: State<'_, crate::lsp::LspMap>,
+    pty_map: State<'_, crate::pty::ActivePtyMap>,
+) -> Result<crate::resource_monitor::Sample, String> {
+    Ok(crate::resource_monitor::sample_now(
+        active.inner(),
+        lsp_map.inner(),
+        pty_map.inner(),
+        pool.inner(),
+    )
+    .await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

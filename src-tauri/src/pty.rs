@@ -394,6 +394,19 @@ fn kill_handle(handle: PtyHandle) {
     }
 }
 
+/// Collect `(task_id, pid)` for every live PTY child. Used by the resource
+/// monitor to attribute PTY/terminal memory back to its task. Skips entries
+/// whose child mutex is poisoned or whose process has already exited.
+pub fn pids_for_tasks(map: &ActivePtyMap) -> Vec<(String, u32)> {
+    map.iter()
+        .filter_map(|entry| {
+            let h = entry.value();
+            let guard = h.child.try_lock().ok()?;
+            guard.process_id().map(|pid| (h.task_id.clone(), pid))
+        })
+        .collect()
+}
+
 /// Close a PTY: kill the child process and remove from the map.
 pub fn close_pty(map: &ActivePtyMap, terminal_id: &str) -> Result<(), String> {
     if let Some((_, handle)) = map.remove(terminal_id) {

@@ -598,6 +598,7 @@ export const Sidebar: Component = () => {
         onCancel={() => setArchiveTaskTarget(null)}
       />
 
+
     </>
   );
 };
