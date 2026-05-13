@@ -1,6 +1,6 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, on, onCleanup } from 'solid-js'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import { GitFork, Lock, Loader2, Archive, Search, Star, Copy, Check } from 'lucide-solid'
+import { GitFork, Lock, Loader2, Archive, Search, Star, Copy, Check, Building2 } from 'lucide-solid'
 
 const CommandBlock = (props: { command: string }) => {
   const [copied, setCopied] = createSignal(false)
@@ -15,10 +15,10 @@ const CommandBlock = (props: { command: string }) => {
   }
   return (
     <div class="relative">
-      <pre class="bg-surface-3 rounded-md p-2 pr-9 text-[11px] font-mono text-text-primary whitespace-pre">{props.command}</pre>
+      <pre class="bg-surface-3 rounded-lg p-2 pr-9 text-[11px] font-mono text-text-primary whitespace-pre">{props.command}</pre>
       <button
         type="button"
-        class="absolute top-1.5 right-1.5 p-1 rounded text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
+        class="absolute top-1.5 right-1.5 p-1 rounded-lg text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
         onClick={() => void handleCopy()}
         title={copied() ? 'Copied!' : 'Copy to clipboard'}
         aria-label="Copy command"
@@ -32,7 +32,6 @@ const CommandBlock = (props: { command: string }) => {
 }
 
 import { Dialog } from './Dialog'
-import { GithubIcon } from './icons/GithubIcon'
 import { addToast, setSelectedProjectId } from '../store/ui'
 import { setProjects } from '../store/projects'
 import { produce } from 'solid-js/store'
@@ -51,6 +50,19 @@ type View =
   | { kind: 'needs-auth' }
   | { kind: 'error'; message: string }
   | { kind: 'ready'; repos: RemoteRepo[]; account: string | null }
+
+// GitHub avatar URLs accept an `s` (pixels) query param. Request 2× the
+// rendered size so the image stays crisp on retina displays instead of
+// upscaling a tiny default thumbnail.
+const sizedAvatar = (url: string, px: number): string => {
+  try {
+    const u = new URL(url)
+    u.searchParams.set('s', String(px * 2))
+    return u.toString()
+  } catch {
+    return url
+  }
+}
 
 const looksLikeUrlOrSlug = (raw: string): boolean => {
   const s = raw.trim()
@@ -214,149 +226,170 @@ export const CloneRepoDialog: Component<Props> = (props) => {
   })
 
   return (
-    <Dialog open={props.open} onClose={props.onClose} width="35rem">
-      <div class="flex items-center justify-between mb-2 -mt-5">
-        <h2 class="text-sm font-semibold text-text-primary">Clone GitHub repo</h2>
-        <Show when={view().kind === 'ready' && (view() as { account: string | null }).account}>
-          {(account) => (
-            <span class="text-[10px] text-text-dim">@{account()}</span>
-          )}
+    <Dialog open={props.open} onClose={props.onClose} width="34rem" class="!p-4 !border-border-active !shadow-[0_16px_50px_-12px_rgba(0,0,0,0.55)]">
+      <div class="flex flex-col gap-5">
+        <div class="flex items-start justify-between">
+          <h2 class="m-0 text-[13px] font-semibold leading-tight text-text-primary">Clone GitHub repo</h2>
+          <Show when={view().kind === 'ready' && (view() as { account: string | null }).account}>
+            {(account) => (
+              <span class="text-[11px] text-text-dim">@{account()}</span>
+            )}
+          </Show>
+        </div>
+
+        <Show when={view().kind === 'checking'}>
+          <div class="py-3 flex items-center justify-center text-text-dim text-xs gap-2">
+            <Loader2 size={14} class="animate-spin" />
+            Checking GitHub CLI...
+          </div>
         </Show>
-      </div>
 
-      <Show when={view().kind === 'checking'}>
-        <div class="py-10 flex items-center justify-center text-text-dim text-xs gap-2">
-          <Loader2 size={14} class="animate-spin" />
-          Checking GitHub CLI...
-        </div>
-      </Show>
+        <Show when={view().kind === 'needs-install'}>
+          <div class="space-y-3 text-xs text-text-secondary">
+            <p>The GitHub CLI (<code class="text-accent">gh</code>) isn't installed or isn't on your PATH.</p>
+            <CommandBlock command={'brew install gh\ngh auth login'} />
+            <p class="text-text-dim">After installing, click Retry.</p>
+            <button class="btn-primary text-xs px-3 py-1.5" onClick={() => void refresh()}>Retry</button>
+          </div>
+        </Show>
 
-      <Show when={view().kind === 'needs-install'}>
-        <div class="space-y-3 text-xs text-text-secondary">
-          <p>The GitHub CLI (<code class="text-accent">gh</code>) isn't installed or isn't on your PATH.</p>
-          <CommandBlock command={'brew install gh\ngh auth login'} />
-          <p class="text-text-dim">After installing, click Retry.</p>
-          <button class="btn-primary text-xs px-3 py-1.5" onClick={() => void refresh()}>Retry</button>
-        </div>
-      </Show>
+        <Show when={view().kind === 'needs-auth'}>
+          <div class="space-y-3 text-xs text-text-secondary">
+            <p>The GitHub CLI is installed but not signed in.</p>
+            <CommandBlock command="gh auth login" />
+            <button class="btn-primary text-xs px-3 py-1.5" onClick={() => void refresh()}>Retry</button>
+          </div>
+        </Show>
 
-      <Show when={view().kind === 'needs-auth'}>
-        <div class="space-y-3 text-xs text-text-secondary">
-          <p>The GitHub CLI is installed but not signed in.</p>
-          <CommandBlock command="gh auth login" />
-          <button class="btn-primary text-xs px-3 py-1.5" onClick={() => void refresh()}>Retry</button>
-        </div>
-      </Show>
+        <Show when={view().kind === 'error'}>
+          {(_) => {
+            const v = view() as { kind: 'error'; message: string }
+            return (
+              <div class="space-y-3 text-xs">
+                <p class="text-red-400">{v.message}</p>
+                <button class="btn-primary text-xs px-3 py-1.5" onClick={() => void refresh()}>Retry</button>
+              </div>
+            )
+          }}
+        </Show>
 
-      <Show when={view().kind === 'error'}>
-        {(_) => {
-          const v = view() as { kind: 'error'; message: string }
-          return (
-            <div class="space-y-3 text-xs">
-              <p class="text-red-400">{v.message}</p>
-              <button class="btn-primary text-xs px-3 py-1.5" onClick={() => void refresh()}>Retry</button>
+        <Show when={view().kind === 'ready'}>
+          <div class="flex flex-col gap-5">
+            <div class="relative">
+              <Search size={15} class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                autofocus
+                placeholder="Search repos, paste a Git URL, or owner/repo..."
+                class="w-full rounded-lg bg-surface-3 py-2.5 pl-9 pr-3.5 text-sm text-text-primary placeholder:text-text-dim focus:outline-none focus:ring-1 focus:ring-accent/40"
+                value={query()}
+                onInput={(e) => setQuery(e.currentTarget.value)}
+                onKeyDown={handleListKeyDown}
+                disabled={cloning()}
+              />
             </div>
-          )
-        }}
-      </Show>
 
-      <Show when={view().kind === 'ready'}>
-        <div class="space-y-2">
-          <div class="relative">
-            <Search size={12} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-dim" />
-            <input
-              ref={searchInputRef}
-              type="text"
-              autofocus
-              placeholder="Search repos, paste a Git URL, or owner/repo..."
-              class="w-full bg-surface-3 rounded-md pl-7 pr-3 py-1.5 text-xs text-text-primary placeholder:text-text-dim focus:outline-none focus:ring-1 focus:ring-accent/40"
-              value={query()}
-              onInput={(e) => setQuery(e.currentTarget.value)}
-              onKeyDown={handleListKeyDown}
-              disabled={cloning()}
-            />
-          </div>
-
-          <div ref={listRef} class="border border-border rounded-md max-h-[45vh] overflow-y-auto bg-surface-1">
-            <Show
-              when={filtered().length > 0}
-              fallback={
-                <div class="px-3 py-6 text-center text-[11px] text-text-dim space-y-1">
-                  <div>No repos match "{query()}"</div>
-                  <Show when={looksLikeUrlOrSlug(query())}>
-                    <div class="text-text-secondary">
-                      Press <kbd class="px-1 py-0.5 rounded bg-surface-3 text-[10px] font-mono">Enter</kbd> to clone <span class="font-mono">{query().trim()}</span>
-                    </div>
-                  </Show>
-                </div>
-              }
-            >
-              <For each={filtered()}>
-                {(repo, i) => (
-                  <button
-                    data-repo
-                    class={clsx(
-                      'w-full text-left px-3 py-2 flex items-start gap-2.5 transition-colors',
-                      selectedIndex() === i()
-                        ? 'bg-surface-3 text-text-primary'
-                        : 'text-text-secondary hover:bg-surface-2',
-                    )}
-                    onMouseEnter={() => setSelectedIndex(i())}
-                    onClick={() => void cloneByRepo(repo)}
-                    disabled={cloning()}
-                  >
-                    <GithubIcon size={14} class="text-text-muted shrink-0 mt-0.5" />
-                    <div class="flex-1 min-w-0 flex flex-col gap-0.5">
-                      <div class="flex items-center gap-2 min-w-0">
-                        <span class="text-xs font-medium truncate">{repo.nameWithOwner}</span>
-                        <Show when={repo.isPrivate}><Lock size={10} class="text-text-dim shrink-0" /></Show>
-                        <Show when={repo.isFork}><GitFork size={10} class="text-text-dim shrink-0" /></Show>
-                        <Show when={repo.isArchived}><Archive size={10} class="text-text-dim shrink-0" /></Show>
-                        <Show when={repo.starCount > 0}>
-                          <span class="ml-auto flex items-center gap-0.5 text-[11px] text-text-dim shrink-0">
-                            <Star size={10} />
-                            {repo.starCount}
-                          </span>
-                        </Show>
+            <div ref={listRef} class="max-h-[46vh] overflow-y-auto rounded-lg bg-surface-1 p-2 ring-1 ring-border-active">
+              <Show
+                when={filtered().length > 0}
+                fallback={
+                  <div class="space-y-1.5 py-3 text-center text-[11px] text-text-dim">
+                    <div>No repos match "{query()}"</div>
+                    <Show when={looksLikeUrlOrSlug(query())}>
+                      <div class="text-text-secondary">
+                        Press <kbd class="rounded-lg bg-surface-3 px-1 py-0.5 text-[10px] font-mono">Enter</kbd> to clone <span class="font-mono">{query().trim()}</span>
                       </div>
-                      <Show
-                        when={repo.description}
-                        fallback={<div class="text-[11px] text-text-dim truncate font-mono">{repo.url}</div>}
+                    </Show>
+                  </div>
+                }
+              >
+                <div class="space-y-0.5">
+                  <For each={filtered()}>
+                    {(repo, i) => (
+                      <button
+                        data-repo
+                        class={clsx(
+                          'flex w-full items-center gap-4 rounded p-2 text-left transition-colors',
+                          selectedIndex() === i()
+                            ? 'bg-surface-3 text-text-primary'
+                            : 'text-text-secondary hover:bg-surface-2/70',
+                        )}
+                        onMouseEnter={() => setSelectedIndex(i())}
+                        onClick={() => void cloneByRepo(repo)}
+                        disabled={cloning()}
                       >
-                        <div class="text-[11px] text-text-dim truncate">{repo.description}</div>
-                      </Show>
-                    </div>
-                  </button>
-                )}
-              </For>
-            </Show>
-          </div>
+                        <Show
+                          when={repo.ownerAvatarUrl}
+                          fallback={(
+                            <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm ring-1 ring-outline/10 bg-surface-3 text-text-muted">
+                              <Building2 size={16} />
+                            </span>
+                          )}
+                        >
+                          {(src) => (
+                            <img
+                              src={sizedAvatar(src(), 24)}
+                              alt=""
+                              width={24}
+                              height={24}
+                              class="h-6 w-6 shrink-0 rounded-sm object-cover ring-1 ring-outline/10"
+                            />
+                          )}
+                        </Show>
+                        <div class="min-w-0 flex-1">
+                          <div class="flex min-w-0 items-center gap-2">
+                            <span class="truncate text-[13px] font-medium text-text-primary">{repo.nameWithOwner}</span>
+                            <Show when={repo.isPrivate}><Lock size={11} class="shrink-0 text-text-dim" /></Show>
+                            <Show when={repo.isFork}><GitFork size={11} class="shrink-0 text-text-dim" /></Show>
+                            <Show when={repo.isArchived}><Archive size={11} class="shrink-0 text-text-dim" /></Show>
+                            <Show when={repo.starCount > 0}>
+                              <span class="ml-auto flex shrink-0 items-center gap-1 text-[11px] text-text-dim">
+                                <Star size={11} />
+                                {repo.starCount}
+                              </span>
+                            </Show>
+                          </div>
+                          <Show
+                            when={repo.description}
+                            fallback={<div class="mt-0.5 truncate font-mono text-[11px] text-text-dim/80">{repo.url}</div>}
+                          >
+                            <div class="mt-0.5 truncate text-[12px] text-text-muted">{repo.description}</div>
+                          </Show>
+                        </div>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </div>
 
-          <div class="flex items-center justify-between pt-1.5 text-[10px] text-text-dim">
-            <div class="flex items-center gap-3">
-              <span class="flex items-center gap-1">
-                <kbd class="px-1 py-0.5 rounded bg-surface-3 text-text-muted font-mono">↑</kbd>
-                <kbd class="px-1 py-0.5 rounded bg-surface-3 text-text-muted font-mono">↓</kbd>
+            <div class="flex items-center gap-5 text-[11px] text-text-dim">
+              <span class="flex items-center gap-1.5">
+                <span class="flex items-center gap-0.5">
+                  <kbd class="rounded-lg bg-surface-3 px-1 py-0.5 font-mono text-text-muted">↑</kbd>
+                  <kbd class="rounded-lg bg-surface-3 px-1 py-0.5 font-mono text-text-muted">↓</kbd>
+                </span>
                 Navigate
               </span>
-              <span class="flex items-center gap-1">
-                <kbd class="px-1 py-0.5 rounded bg-surface-3 text-text-muted font-mono">Enter</kbd>
+              <span class="flex items-center gap-1.5">
+                <kbd class="rounded-lg bg-surface-3 px-1 py-0.5 font-mono text-text-muted">Enter</kbd>
                 Select
               </span>
-              <span class="flex items-center gap-1">
-                <kbd class="px-1 py-0.5 rounded bg-surface-3 text-text-muted font-mono">Esc</kbd>
+              <span class="flex items-center gap-1.5">
+                <kbd class="rounded-lg bg-surface-3 px-1 py-0.5 font-mono text-text-muted">Esc</kbd>
                 Close
               </span>
+              <Show when={cloning()}>
+                <span class="ml-auto flex items-center gap-1.5 text-text-muted">
+                  <Loader2 size={11} class="animate-spin" />
+                  Cloning...
+                </span>
+              </Show>
             </div>
-            <Show when={cloning()}>
-              <span class="flex items-center gap-1.5">
-                <Loader2 size={11} class="animate-spin" />
-                Cloning...
-              </span>
-            </Show>
           </div>
-        </div>
-      </Show>
+        </Show>
+      </div>
     </Dialog>
   )
 }

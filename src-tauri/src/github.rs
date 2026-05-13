@@ -44,6 +44,15 @@ pub struct RemoteRepo {
     pub is_archived: bool,
     pub updated_at: Option<String>,
     pub star_count: u32,
+    /// Avatar of the repo's owner — the organization's logo for org repos, the
+    /// user's profile photo for personal repos. `None` when the source payload
+    /// (e.g. `gh repo view`) doesn't include it.
+    #[serde(default)]
+    pub owner_avatar_url: Option<String>,
+    /// `"User"` or `"Organization"` — lets the UI shape the avatar (circle vs.
+    /// rounded square) the way GitHub does.
+    #[serde(default)]
+    pub owner_type: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +163,12 @@ pub fn list_user_repos(_limit: u32) -> Result<Vec<RemoteRepo>, String> {
 
 fn parse_user_repos_api(json_str: &str) -> Result<Vec<RemoteRepo>, String> {
     #[derive(Deserialize)]
+    struct RawOwner {
+        avatar_url: Option<String>,
+        #[serde(rename = "type")]
+        owner_type: Option<String>,
+    }
+    #[derive(Deserialize)]
     struct Raw {
         full_name: String,
         description: Option<String>,
@@ -169,21 +184,30 @@ fn parse_user_repos_api(json_str: &str) -> Result<Vec<RemoteRepo>, String> {
         updated_at: Option<String>,
         #[serde(default)]
         stargazers_count: u32,
+        owner: Option<RawOwner>,
     }
     let raw: Vec<Raw> = serde_json::from_str(json_str)
         .map_err(|e| format!("Failed to parse gh api /user/repos output: {e}"))?;
     Ok(raw
         .into_iter()
-        .map(|r| RemoteRepo {
-            name_with_owner: r.full_name,
-            description: r.description,
-            url: r.html_url,
-            ssh_url: r.ssh_url.or(r.clone_url).unwrap_or_default(),
-            is_private: r.private,
-            is_fork: r.fork,
-            is_archived: r.archived,
-            updated_at: r.updated_at,
-            star_count: r.stargazers_count,
+        .map(|r| {
+            let (owner_avatar_url, owner_type) = match r.owner {
+                Some(o) => (o.avatar_url, o.owner_type),
+                None => (None, None),
+            };
+            RemoteRepo {
+                name_with_owner: r.full_name,
+                description: r.description,
+                url: r.html_url,
+                ssh_url: r.ssh_url.or(r.clone_url).unwrap_or_default(),
+                is_private: r.private,
+                is_fork: r.fork,
+                is_archived: r.archived,
+                updated_at: r.updated_at,
+                star_count: r.stargazers_count,
+                owner_avatar_url,
+                owner_type,
+            }
         })
         .collect())
 }
@@ -1057,8 +1081,8 @@ mod tests {
         // Trimmed shape of GET /user/repos. Field names are snake_case (REST),
         // and we expect to surface both personal and org repos identically.
         let json = r#"[
-            {"full_name":"alice/hello","description":"hello","html_url":"https://github.com/alice/hello","ssh_url":"git@github.com:alice/hello.git","clone_url":"https://github.com/alice/hello.git","private":true,"fork":false,"archived":false,"updated_at":"2026-04-20T10:00:00Z","stargazers_count":42},
-            {"full_name":"acme-corp/web","description":null,"html_url":"https://github.com/acme-corp/web","ssh_url":"git@github.com:acme-corp/web.git","clone_url":"https://github.com/acme-corp/web.git","private":true,"fork":false,"archived":false,"updated_at":"2026-04-19T09:00:00Z","stargazers_count":0},
+            {"full_name":"alice/hello","description":"hello","html_url":"https://github.com/alice/hello","ssh_url":"git@github.com:alice/hello.git","clone_url":"https://github.com/alice/hello.git","private":true,"fork":false,"archived":false,"updated_at":"2026-04-20T10:00:00Z","stargazers_count":42,"owner":{"login":"alice","avatar_url":"https://avatars.githubusercontent.com/u/1?v=4","type":"User"}},
+            {"full_name":"acme-corp/web","description":null,"html_url":"https://github.com/acme-corp/web","ssh_url":"git@github.com:acme-corp/web.git","clone_url":"https://github.com/acme-corp/web.git","private":true,"fork":false,"archived":false,"updated_at":"2026-04-19T09:00:00Z","stargazers_count":0,"owner":{"login":"acme-corp","avatar_url":"https://avatars.githubusercontent.com/u/2?v=4","type":"Organization"}},
             {"full_name":"alice/forked","description":null,"html_url":"https://github.com/alice/forked","ssh_url":"git@github.com:alice/forked.git","clone_url":"https://github.com/alice/forked.git","private":false,"fork":true,"archived":true,"updated_at":"2026-04-18T08:00:00Z","stargazers_count":3}
         ]"#;
         let repos = parse_user_repos_api(json).unwrap();
@@ -1069,13 +1093,20 @@ mod tests {
         assert_eq!(repos[0].ssh_url, "git@github.com:alice/hello.git");
         assert_eq!(repos[0].url, "https://github.com/alice/hello");
         assert_eq!(repos[0].star_count, 42);
+        assert_eq!(
+            repos[0].owner_avatar_url.as_deref(),
+            Some("https://avatars.githubusercontent.com/u/1?v=4")
+        );
+        assert_eq!(repos[0].owner_type.as_deref(), Some("User"));
         assert_eq!(repos[1].name_with_owner, "acme-corp/web");
         assert_eq!(repos[1].description, None);
         assert_eq!(repos[1].star_count, 0);
+        assert_eq!(repos[1].owner_type.as_deref(), Some("Organization"));
         assert!(repos[2].is_archived);
         assert!(repos[2].is_fork);
         assert!(!repos[2].is_private);
         assert_eq!(repos[2].star_count, 3);
+        assert_eq!(repos[2].owner_avatar_url, None);
     }
 
     #[test]

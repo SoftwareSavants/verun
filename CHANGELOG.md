@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Clone GitHub repo dialog redesigned for a macOS command-palette feel: roomier modal padding, properly inset search field (icon + text spacing), padded scroll list with rounded hover/selected rows, vertically centred repo rows, stronger name/secondary-text hierarchy, and breathier footer shortcut groups. `Dialog` gained an optional `class` prop for per-modal chrome overrides
+- Clone GitHub repo dialog repo suggestions now show the owner's avatar — the organization's logo for org repos, the user's profile photo for personal repos (`/user/repos` now surfaces `owner.avatar_url` / `owner.type`) — falling back to a building icon when no avatar is available
 - Clone GitHub repo dialog footer no longer shows the Backspace shortcut hint; empty search no longer closes the dialog on Backspace (use Esc)
 - Add **Clone from GitHub** on the first-screen empty state (no projects yet) and **Clone GitHub repo...** in the sidebar `+` menu — both open the same dialog: typeahead over your GitHub repos (sourced via `gh api /user/repos`), destination folder picker, then clone and register the project in one flow. Falls back to a "paste a Git URL" input when `gh` is missing or unauthenticated.
 - Start button tooltip now reads "Start project (F5)" instead of inlining the raw start command, so a long `pnpm tauri dev --config ... --features ...` no longer overflows or wraps the OS tooltip. The full command is still visible in project Settings

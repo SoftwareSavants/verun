@@ -352,6 +352,10 @@ export interface RemoteRepo {
   isArchived: boolean
   updatedAt: string | null
   starCount: number
+  /** Owner avatar — the org's logo for org repos, the user's photo for personal repos. */
+  ownerAvatarUrl: string | null
+  /** "User" or "Organization". */
+  ownerType: string | null
 }
 
 export interface CiCheck {

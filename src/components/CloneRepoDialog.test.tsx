@@ -35,6 +35,32 @@ describe('CloneRepoDialog', () => {
     expect(await findByText('The GitHub CLI is installed but not signed in.')).toBeTruthy()
   })
 
+  it('shows the owner avatar on a repo suggestion when available', async () => {
+    ghStatusMock.mockResolvedValue({ installed: true, authenticated: true, account: 'alice' })
+    listUserGithubReposMock.mockResolvedValue([
+      { nameWithOwner: 'acme/web', description: 'app', url: 'https://github.com/acme/web', sshUrl: 's', isPrivate: false, isFork: false, isArchived: false, updatedAt: null, starCount: 12, ownerAvatarUrl: 'https://avatars.githubusercontent.com/u/2?v=4', ownerType: 'Organization' },
+    ])
+    const { findByText, container } = render(() => <CloneRepoDialog open={true} onClose={() => {}} />)
+    await findByText('acme/web')
+    const item = container.querySelector('button[data-repo]') as HTMLElement
+    const img = item.querySelector('img') as HTMLImageElement
+    expect(img).toBeTruthy()
+    // Owner avatar, upscaled via the `s` param so it stays crisp on retina.
+    expect(img.src).toBe('https://avatars.githubusercontent.com/u/2?v=4&s=48')
+  })
+
+  it('falls back to an organization icon when no owner avatar is available', async () => {
+    ghStatusMock.mockResolvedValue({ installed: true, authenticated: true, account: 'alice' })
+    listUserGithubReposMock.mockResolvedValue([
+      { nameWithOwner: 'alice/cool-app', description: 'app', url: 'https://github.com/alice/cool-app', sshUrl: 's', isPrivate: false, isFork: false, isArchived: false, updatedAt: null, starCount: 12, ownerAvatarUrl: null, ownerType: null },
+    ])
+    const { findByText, container } = render(() => <CloneRepoDialog open={true} onClose={() => {}} />)
+    await findByText('alice/cool-app')
+    const item = container.querySelector('button[data-repo]') as HTMLElement
+    expect(item.querySelector('img')).toBeNull()
+    expect(item.querySelector('.lucide-building-2')).toBeTruthy()
+  })
+
   it('lists repos and filters them by query', async () => {
     ghStatusMock.mockResolvedValue({ installed: true, authenticated: true, account: 'alice' })
     listUserGithubReposMock.mockResolvedValue([
