@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- "Ask sideways" pill no longer overlaps the last user bubble when the agent is idle and the user's message is the most recent one (e.g. after an interrupt) - the chat reserves extra bottom space in that case so the pill sits below the message
+- Side question requests now keep running in the background if the panel is closed mid-flight. The "Ask sideways" pill shows a spinner ("Asking sideways...") while a request is in progress, then switches to an "Answer ready" state (accent ring + sparkle icon) when the answer arrives while the panel is closed. Click the pill to reopen and view the answer, or the inline X to dismiss the notification without opening
+
 ## 0.11.0 — 2026-05-12
 
 ### Activity monitor

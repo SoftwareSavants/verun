@@ -3,14 +3,19 @@ import { createStore, produce, reconcile } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { OutputItem, SessionStatus, AttachmentRef } from '../types'
-import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp, MessageCircleQuestion } from 'lucide-solid'
+import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp, MessageCircleQuestion, Loader2, Sparkles } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
 import { Popover } from './Popover'
 import { parseMentions } from '../lib/mentions'
 import * as ipc from '../lib/ipc'
-import { openSideQuestion, sideQuestionPanel } from '../store/sideQuestion'
+import {
+  dismissSideQuestionUnread,
+  openSideQuestion,
+  sideQuestionPanel,
+  sideQuestionState,
+} from '../store/sideQuestion'
 import { addToast, setSelectedTaskId, setSelectedSessionIdForTask } from '../store/ui'
 import { setSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, sendMessage, createSession } from '../store/sessions'
 import { planModeForSession, thinkingModeForSession, fastModeForSession } from '../store/sessionContext'
@@ -841,6 +846,32 @@ export const ChatView: Component<Props> = (props) => {
   // Scroll to bottom button visibility
   const [isAtBottom, setIsAtBottom] = createSignal(true)
 
+  const hasAiTurn = () => props.output.some((i) => i.kind !== 'userMessage')
+  const btwState = () => props.sessionId ? sideQuestionState(props.sessionId) : undefined
+  // The pill is "sticky" (visible regardless of scroll position) when there's
+  // a side question in flight or an unread answer for this session - those are
+  // notification states the user shouldn't miss by scrolling away.
+  const btwSticky = () => !!btwState()?.loading || !!btwState()?.unread
+  const btwMode = (): 'idle' | 'loading' | 'unread' => {
+    const s = btwState()
+    if (s?.loading) return 'loading'
+    if (s?.unread) return 'unread'
+    return 'idle'
+  }
+  const showBtw = () =>
+    props.agentType === 'claude'
+    && !!props.sessionId
+    && sideQuestionPanel()?.sessionId !== props.sessionId
+    && (btwSticky() || (isAtBottom() && hasAiTurn()))
+  // Reserve extra bottom space only when the pill would otherwise sit on top
+  // of the user's last message: agent isn't streaming and the last rendered
+  // block is user-authored (e.g. user interrupted a turn). Checking the last
+  // *block* (not raw output) ignores trailing turnEnd/turnSnapshot items.
+  const needsBtwPad = () =>
+    showBtw()
+    && props.sessionStatus !== 'running'
+    && blocks[blocks.length - 1]?.type === 'user'
+
   // Search state
   const [showSearch, setShowSearch] = createSignal(false)
   const [searchQuery, setSearchQuery] = createSignal('')
@@ -1124,7 +1155,10 @@ export const ChatView: Component<Props> = (props) => {
         onScroll={handleScroll}
         onClick={handleLinkClick}
       >
-      <div ref={contentRef} class="flex flex-col gap-2 pt-4 pb-6">
+      <div
+        ref={contentRef}
+        class={clsx('flex flex-col gap-2 pt-4', needsBtwPad() ? 'pb-16' : 'pb-6')}
+      >
         <For each={blocks}>
           {(block) => (
             <Switch>
@@ -1316,21 +1350,22 @@ export const ChatView: Component<Props> = (props) => {
       </div>
       </div>
       {(() => {
-        const hasAiTurn = () => props.output.some((i) => i.kind !== 'userMessage')
-        const showBtw = () =>
-          isAtBottom()
-          && props.agentType === 'claude'
-          && !!props.sessionId
-          && hasAiTurn()
-          && sideQuestionPanel()?.sessionId !== props.sessionId
-        const showScroll = () => !isAtBottom()
-        // Both buttons share the same bottom-right pivot so they appear to
-        // morph out of/into the same anchor point instead of cross-fading
-        // as two competing rectangles.
+        // Scroll-down chevron hides when the pill is "sticky" (loading/unread)
+        // so the two never stack in the same anchor point.
+        const showScroll = () => !isAtBottom() && !btwSticky()
         const morph =
           'absolute bottom-0 right-0 origin-bottom-right will-change-[transform,opacity] '
           + 'transition-[opacity,transform] duration-[260ms] '
           + 'ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none'
+        const onPillClick = () => {
+          const sid = props.sessionId
+          if (sid) openSideQuestion(sid)
+        }
+        const onDismissUnread = (e: MouseEvent) => {
+          e.stopPropagation()
+          const sid = props.sessionId
+          if (sid) dismissSideQuestionUnread(sid)
+        }
         return (
           <div class="absolute bottom-4 right-4 z-10 pointer-events-none">
             <button
@@ -1348,28 +1383,67 @@ export const ChatView: Component<Props> = (props) => {
             >
               <ChevronDown size={15} />
             </button>
-            <button
+            <div
               class={clsx(
                 morph,
-                'h-7 px-2.5 flex items-center gap-1.5 whitespace-nowrap rounded-full bg-surface-2 ring-1 ring-outline/10 shadow-lg text-text-dim hover:text-text-secondary hover:ring-outline/20 text-[11px]',
+                'h-7 flex items-stretch whitespace-nowrap rounded-full bg-surface-2 ring-1 shadow-lg text-[11px]',
+                btwMode() === 'unread'
+                  ? 'ring-accent/40 text-text-primary'
+                  : 'ring-outline/10 text-text-dim',
                 showBtw()
                   ? 'opacity-100 scale-100 pointer-events-auto'
                   : 'opacity-0 scale-75 pointer-events-none',
               )}
-              onClick={() => {
-                const sid = props.sessionId
-                if (sid) openSideQuestion(sid)
-              }}
-              title="Ask Claude an ephemeral side question (does not enter conversation history)"
               aria-hidden={!showBtw()}
-              tabindex={showBtw() ? 0 : -1}
             >
-              <MessageCircleQuestion size={12} />
-              <span>
-                Ask sideways{' '}
-                <code class="ml-0.5 px-1 py-0.5 rounded bg-surface-3 text-text-dim text-[9px]">/btw</code>
-              </span>
-            </button>
+              <button
+                class={clsx(
+                  'h-full px-2.5 flex items-center gap-1.5 rounded-l-full',
+                  btwMode() === 'unread' ? 'rounded-r-none' : 'rounded-r-full',
+                  btwMode() === 'unread'
+                    ? 'hover:bg-accent/10'
+                    : 'hover:text-text-secondary hover:ring-outline/20',
+                )}
+                onClick={onPillClick}
+                title={
+                  btwMode() === 'loading'
+                    ? 'Side question in progress - click to reopen'
+                    : btwMode() === 'unread'
+                      ? 'Answer ready - click to view'
+                      : 'Ask Claude an ephemeral side question (does not enter conversation history)'
+                }
+                tabindex={showBtw() ? 0 : -1}
+              >
+                <Switch>
+                  <Match when={btwMode() === 'loading'}>
+                    <Loader2 size={12} class="animate-spin" />
+                    <span>Asking sideways...</span>
+                  </Match>
+                  <Match when={btwMode() === 'unread'}>
+                    <Sparkles size={12} class="text-accent" />
+                    <span>Answer ready</span>
+                  </Match>
+                  <Match when={btwMode() === 'idle'}>
+                    <MessageCircleQuestion size={12} />
+                    <span>
+                      Ask sideways{' '}
+                      <code class="ml-0.5 px-1 py-0.5 rounded bg-surface-3 text-text-dim text-[9px]">/btw</code>
+                    </span>
+                  </Match>
+                </Switch>
+              </button>
+              <Show when={btwMode() === 'unread'}>
+                <button
+                  class="px-2 flex items-center text-text-dim hover:text-text-primary border-l-1 border-l-solid border-l-outline/15 rounded-r-full"
+                  onClick={onDismissUnread}
+                  title="Dismiss"
+                  aria-label="Dismiss answer notification"
+                  tabindex={showBtw() ? 0 : -1}
+                >
+                  <X size={12} />
+                </button>
+              </Show>
+            </div>
           </div>
         )
       })()}
