@@ -11,7 +11,6 @@ import { ResourceMonitor } from './components/ResourceMonitor'
 import { initTheme } from './lib/theme'
 import { projects } from './store/projects'
 import { loadTasks, taskById } from './store/tasks'
-import { initProblemsListener } from './store/problems'
 import * as ipc from './lib/ipc'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setSelectedSessionIdForTask, markTaskUnread } from './store/ui'
 import { initNotifications } from './lib/notifications'
@@ -28,7 +27,6 @@ const MainApp: Component = () => {
     initQuitListener()
     installContextMenu(setSelMenu)
     await initListeners()
-    initProblemsListener()
     await loadInitialData()
 
     // Restore last selected task — validate it still exists and isn't archived

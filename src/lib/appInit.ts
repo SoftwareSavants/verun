@@ -10,6 +10,7 @@ import { initActionsListeners } from '../store/actions'
 import { initOpenFilesRefresh } from '../store/fileSync'
 import { initSetupListeners } from '../store/setup'
 import { initResourceMonitor } from '../store/resource-monitor'
+import { initProblemsListener } from '../store/problems'
 import { loadTasks, taskById } from '../store/tasks'
 import { loadSessions } from '../store/sessions'
 import { refreshTaskGit } from '../store/git'
@@ -54,6 +55,11 @@ export async function initListeners() {
   initSessionWindowFocusRefresh()
   initEnvPathFocusRefresh()
   initOpenFilesRefresh()
+  // LSP diagnostics: each window has its own `problems` signal, so the
+  // listener needs to register in detached task windows too — otherwise the
+  // Problems panel stays empty there even with the LSP running. Function is
+  // idempotent (initialized guard) so calling from both shells is safe.
+  initProblemsListener()
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') clearDeliveredNotifications()
   })

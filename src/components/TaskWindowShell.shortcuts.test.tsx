@@ -119,6 +119,13 @@ vi.mock('../lib/ipc', () => ({
   forceCloseTaskWindow: vi.fn(),
 }))
 
+vi.mock('../store/fileSync', () => ({
+  activeConflict: () => ({ taskId: 't-001', relativePath: 'src/a.ts', diskContent: 'a', verunContent: 'b' }),
+  dismissConflict: vi.fn(),
+  resolveConflictDiscard: vi.fn(),
+  resolveConflictOverwrite: vi.fn(),
+}))
+
 vi.mock('./TaskPanel', () => ({ TaskPanel: () => null }))
 vi.mock('./NewTaskDialog', () => ({ NewTaskDialog: () => null }))
 vi.mock('./ConfirmDialog', () => ({ ConfirmDialog: () => null }))
@@ -126,6 +133,9 @@ vi.mock('./ToastContainer', () => ({ ToastContainer: () => null }))
 vi.mock('./SelectionMenu', () => ({ SelectionMenu: () => null }))
 vi.mock('./ModelPicker', () => ({ ModelPicker: (props: { open: boolean }) => (
   <div data-testid="model-picker" data-open={String(props.open)} />
+) }))
+vi.mock('./FileConflictDialog', () => ({ FileConflictDialog: () => (
+  <div data-testid="file-conflict-dialog" />
 ) }))
 
 import { TaskWindowShell } from './TaskWindowShell'
@@ -169,5 +179,15 @@ describe('TaskWindowShell keyboard shortcuts (issue #243)', () => {
 
     const picker = await findByTestId('model-picker')
     expect(picker).toBeTruthy()
+  })
+
+  // Save-time disk-divergence checks live in the detached window's editor
+  // too, so the conflict dialog must mount here or saves fail silently.
+  test('renders FileConflictDialog so save-time disk conflicts can be resolved', async () => {
+    const { findByTestId } = render(() => <TaskWindowShell />)
+    await Promise.resolve()
+
+    const dialog = await findByTestId('file-conflict-dialog')
+    expect(dialog).toBeTruthy()
   })
 })

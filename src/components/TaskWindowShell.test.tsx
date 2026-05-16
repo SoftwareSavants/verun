@@ -129,6 +129,13 @@ vi.mock('../store/taskContext', () => ({
   selectedSessionForTask: () => null,
 }))
 
+vi.mock('../store/fileSync', () => ({
+  activeConflict: () => null,
+  dismissConflict: vi.fn(),
+  resolveConflictDiscard: vi.fn(),
+  resolveConflictOverwrite: vi.fn(),
+}))
+
 // Stub the heavy children so we don't drag in editor/xterm modules.
 vi.mock('./TaskPanel', () => ({ TaskPanel: () => null }))
 vi.mock('./NewTaskDialog', () => ({ NewTaskDialog: () => null }))
@@ -136,6 +143,7 @@ vi.mock('./ConfirmDialog', () => ({ ConfirmDialog: () => null }))
 vi.mock('./ToastContainer', () => ({ ToastContainer: () => null }))
 vi.mock('./SelectionMenu', () => ({ SelectionMenu: () => null }))
 vi.mock('./ModelPicker', () => ({ ModelPicker: () => null }))
+vi.mock('./FileConflictDialog', () => ({ FileConflictDialog: () => null }))
 
 import { TaskWindowShell } from './TaskWindowShell'
 
