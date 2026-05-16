@@ -30,8 +30,27 @@ vi.mock('../lib/notifications', () => ({
 
 import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, reopenSession, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
 import * as ipc from '../lib/ipc'
+import { setTasks } from './tasks'
+import { notify } from '../lib/notifications'
 import { setPlanFilePathForSession, planFilePathForSession, sessionContexts, setSessionContexts } from './sessionContext'
-import type { Session, OutputItem } from '../types'
+import type { Session, OutputItem, Task, ToolApprovalRequest } from '../types'
+
+const makeTask = (overrides: Partial<Task> = {}): Task => ({
+  id: 't-001',
+  projectId: 'p-001',
+  name: null,
+  worktreePath: '/tmp/wt',
+  branch: 'feature',
+  createdAt: 1000,
+  mergeBaseSha: null,
+  portOffset: 0,
+  archived: false,
+  archivedAt: null,
+  lastCommitMessage: null,
+  parentTaskId: null,
+  agentType: 'claude' as const,
+  ...overrides,
+})
 
 const makeSession = (overrides: Partial<Session> = {}): Session => ({
   id: 's-001',
@@ -592,5 +611,71 @@ describe('reopenSession', () => {
     })
     await reopenSession('s-race-reopen')
     expect(sessions.filter(x => x.id === 's-race-reopen').length).toBe(1)
+  })
+})
+
+// Issue #247 — notifications must prefer the session name over the task name
+// when the session has one, so a multi-session task gives precise context.
+describe('notification name selection', () => {
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setSessions([])
+    setTasks([])
+    vi.mocked(notify).mockClear()
+  })
+
+  test('session-status uses the session name when set', () => {
+    setTasks([makeTask({ id: 't-1', name: 'Refactor auth' })])
+    setSessions([makeSession({ id: 's-1', taskId: 't-1', name: 'Fix login retry', status: 'running' })])
+
+    listenCallbacks.get('session-status')!({ payload: { sessionId: 's-1', status: 'idle' } })
+
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(notify).mock.calls[0][0].body).toBe('Fix login retry')
+  })
+
+  test('session-status falls back to the task name when the session has no name', () => {
+    setTasks([makeTask({ id: 't-2', name: 'Refactor auth' })])
+    setSessions([makeSession({ id: 's-2', taskId: 't-2', name: null, status: 'running' })])
+
+    listenCallbacks.get('session-status')!({ payload: { sessionId: 's-2', status: 'idle' } })
+
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(notify).mock.calls[0][0].body).toBe('Refactor auth')
+  })
+
+  test('tool-approval-request uses the session name when set', () => {
+    setTasks([makeTask({ id: 't-3', name: 'Refactor auth' })])
+    setSessions([makeSession({ id: 's-3', taskId: 't-3', name: 'Fix login retry' })])
+    const req: ToolApprovalRequest = {
+      sessionId: 's-3',
+      requestId: 'r-1',
+      toolName: 'Bash',
+      toolInput: {},
+    }
+
+    listenCallbacks.get('tool-approval-request')!({ payload: req })
+
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(notify).mock.calls[0][0].body).toBe('Fix login retry: Bash')
+  })
+
+  test('tool-approval-request falls back to task name when session has no name', () => {
+    setTasks([makeTask({ id: 't-4', name: 'Refactor auth' })])
+    setSessions([makeSession({ id: 's-4', taskId: 't-4', name: null })])
+    const req: ToolApprovalRequest = {
+      sessionId: 's-4',
+      requestId: 'r-2',
+      toolName: 'Bash',
+      toolInput: {},
+    }
+
+    listenCallbacks.get('tool-approval-request')!({ payload: req })
+
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(notify).mock.calls[0][0].body).toBe('Refactor auth: Bash')
   })
 })
