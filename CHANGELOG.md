@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Per-task keyboard shortcuts (Cmd+T new session, Cmd+P quick open, Cmd+Shift+F search, Cmd+E, Cmd+W, Cmd+Shift+T, Cmd+Alt+Arrow, Ctrl+`, Ctrl+Shift+`, Cmd+Shift+B, F5, Cmd+\, Ctrl+Tab, Ctrl+1-9) now share a single `useTaskShortcuts` hook used by both the main window and detached task windows, so shortcuts can't drift between shells. Fixes Cmd+T in detached task windows (#243), unifies behaviors that had silently diverged (e.g. Cmd+Shift+F now also seeds the search query from the text selection inside detached windows), and the new-session model picker now mounts in detached windows so ActionsPanel's "Fix in new session" button also surfaces there
 - "Ask sideways" pill no longer overlaps the last user bubble when the agent is idle and the user's message is the most recent one (e.g. after an interrupt) - the chat reserves extra bottom space in that case so the pill sits below the message
 - Side question requests now keep running in the background if the panel is closed mid-flight. The "Ask sideways" pill shows a spinner ("Asking sideways...") while a request is in progress, then switches to an "Answer ready" state (accent ring + sparkle icon) when the answer arrives while the panel is closed. Click the pill to reopen and view the answer, or the inline X to dismiss the notification without opening
 

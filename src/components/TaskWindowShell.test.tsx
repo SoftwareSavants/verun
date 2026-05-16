@@ -114,12 +114,28 @@ vi.mock('../lib/ipc', () => ({
   forceCloseTaskWindow: vi.fn(),
 }))
 
+vi.mock('../store/modelPicker', () => ({
+  modelPickerRequest: () => null,
+  openModelPicker: vi.fn(),
+  closeModelPicker: vi.fn(),
+}))
+
+vi.mock('../store/sessions', () => ({
+  createSession: vi.fn(),
+  sessionsForTask: () => [],
+}))
+
+vi.mock('../store/taskContext', () => ({
+  selectedSessionForTask: () => null,
+}))
+
 // Stub the heavy children so we don't drag in editor/xterm modules.
 vi.mock('./TaskPanel', () => ({ TaskPanel: () => null }))
 vi.mock('./NewTaskDialog', () => ({ NewTaskDialog: () => null }))
 vi.mock('./ConfirmDialog', () => ({ ConfirmDialog: () => null }))
 vi.mock('./ToastContainer', () => ({ ToastContainer: () => null }))
 vi.mock('./SelectionMenu', () => ({ SelectionMenu: () => null }))
+vi.mock('./ModelPicker', () => ({ ModelPicker: () => null }))
 
 import { TaskWindowShell } from './TaskWindowShell'
 
