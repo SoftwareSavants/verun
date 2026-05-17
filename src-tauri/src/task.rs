@@ -961,23 +961,27 @@ pub async fn create_task(
             .map_err(|e| format!("Join error: {e}"))?
     }?;
 
-    // Inject .mcp.json so Claude Code in this worktree can call back into
-    // Verun via the relay binary. Failure is non-fatal — task creation
-    // shouldn't break if the relay/socket can't be resolved. Unix only:
-    // the MCP server uses Unix domain sockets, so we skip on Windows.
+    // Write per-task verun MCP config under the app data dir (never the
+    // project worktree, so committed `.mcp.json` files are left untouched).
+    // Claude Code picks it up via `--mcp-config <path>` on session spawn.
+    // Failure is non-fatal — task creation shouldn't break if the relay/socket
+    // can't be resolved. Unix only: the MCP server uses Unix domain sockets,
+    // so we skip on Windows.
     #[cfg(unix)]
     {
         let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
         let socket_path = mcp::socket_path(&app_data);
         match mcp::relay_binary_path() {
             Ok(relay) => {
-                if let Err(e) = mcp::write_mcp_config(
+                if let Err(e) =
+                    mcp::write_verun_mcp_config(&app_data, &id, &socket_path, &relay)
+                {
+                    eprintln!("[verun] failed to write verun mcp config for task {id}: {e}");
+                }
+                if let Err(e) = mcp::pre_approve_verun_in_claude_settings(
                     std::path::Path::new(&worktree_path),
-                    &id,
-                    &socket_path,
-                    &relay,
                 ) {
-                    eprintln!("[verun] failed to write .mcp.json for task {id}: {e}");
+                    eprintln!("[verun] failed to pre-approve verun in claude settings: {e}");
                 }
             }
             Err(e) => eprintln!("[verun] could not resolve relay binary path: {e}"),
@@ -1938,6 +1942,8 @@ async fn spawn_codex_app_server_session(
         prewarm,
     } = params;
 
+    let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
+    let mcp_config_path = mcp::verun_mcp_config_path(&app_data, &task_id);
     let args_list = agent.build_session_args(&crate::agent::SessionArgs {
         resume_session_id: None,
         model: model.as_deref(),
@@ -1948,6 +1954,7 @@ async fn spawn_codex_app_server_session(
         worktree_path: &worktree_path,
         repo_path: &repo_path,
         message: &message,
+        verun_mcp_config_path: Some(&mcp_config_path),
     });
 
     eprintln!(
@@ -2449,6 +2456,8 @@ pub async fn spawn_session_process(
         prewarm,
     } = params;
     let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
+    let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
+    let mcp_config_path = mcp::verun_mcp_config_path(&app_data, &task_id);
     let session_args = crate::agent::SessionArgs {
         resume_session_id: resume_id,
         model: model.as_deref(),
@@ -2459,6 +2468,7 @@ pub async fn spawn_session_process(
         worktree_path: &worktree_path,
         repo_path: &repo_path,
         message: &message,
+        verun_mcp_config_path: Some(&mcp_config_path),
     };
 
     let args_list = agent.build_session_args(&session_args);
