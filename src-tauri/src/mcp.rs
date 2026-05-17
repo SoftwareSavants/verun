@@ -1716,62 +1716,42 @@ fn find_start_command_pty(map: &crate::pty::ActivePtyMap, task_id: &str) -> Opti
         .map(|e| e.key().clone())
 }
 
-/// Write `<worktree>/.mcp.json` so Claude Code launches our relay as the
-/// `verun` MCP server with the right env vars baked in. If the file
-/// already exists (e.g. the project root commits one), parse + merge so
-/// pre-existing servers survive; only the `verun` entry is overwritten.
-pub fn write_mcp_config(
-    worktree_path: &Path,
+/// Path to the per-task verun MCP config file: `<app_data>/mcp-configs/<task-id>.json`.
+/// Living under the app data dir keeps the project worktree clean — the
+/// project's `.mcp.json` is never read or written. Claude Code picks this
+/// file up via `--mcp-config <path>`.
+pub fn verun_mcp_config_path(app_data_dir: &Path, task_id: &str) -> PathBuf {
+    app_data_dir.join("mcp-configs").join(format!("{task_id}.json"))
+}
+
+/// Write the per-task verun MCP config file containing only the `verun`
+/// server entry, pointing Claude Code at our relay binary with the task's
+/// socket path baked in. The file is replaced on each call (no merge).
+pub fn write_verun_mcp_config(
+    app_data_dir: &Path,
     task_id: &str,
     socket_path: &Path,
     relay_binary: &Path,
 ) -> std::io::Result<()> {
-    let path = worktree_path.join(".mcp.json");
-    let mut root: Value = if path.exists() {
-        match std::fs::read_to_string(&path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| json!({})),
-            Err(_) => json!({}),
-        }
-    } else {
-        json!({})
-    };
-    if !root.is_object() {
-        root = json!({});
+    let path = verun_mcp_config_path(app_data_dir, task_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-
-    let obj = root.as_object_mut().expect("root is object");
-    let servers = obj
-        .entry("mcpServers".to_string())
-        .or_insert_with(|| json!({}));
-    if !servers.is_object() {
-        *servers = json!({});
-    }
-    servers.as_object_mut().expect("servers is object").insert(
-        "verun".to_string(),
-        json!({
-            "command": relay_binary.to_string_lossy(),
-            "args": [],
-            "env": {
-                "VERUN_TASK_ID": task_id,
-                "VERUN_MCP_SOCKET": socket_path.to_string_lossy(),
+    let root = json!({
+        "mcpServers": {
+            "verun": {
+                "command": relay_binary.to_string_lossy(),
+                "args": [],
+                "env": {
+                    "VERUN_TASK_ID": task_id,
+                    "VERUN_MCP_SOCKET": socket_path.to_string_lossy(),
+                }
             }
-        }),
-    );
-
+        }
+    });
     let mut pretty = serde_json::to_string_pretty(&root).map_err(std::io::Error::other)?;
     pretty.push('\n');
     std::fs::write(&path, pretty)?;
-
-    // Pre-approve our server in `.claude/settings.local.json` so Claude Code
-    // doesn't prompt for trust on first launch. Best-effort: failure here
-    // just means the user gets a one-time approval prompt.
-    let _ = pre_approve_verun_in_claude_settings(worktree_path);
-
-    // Hide our generated files from `git status` for this worktree by
-    // appending to .git/info/exclude. No-op if the project already commits
-    // them (gitignore rules don't apply to tracked files). Best-effort: a
-    // missing or unwritable git dir shouldn't fail task creation.
-    let _ = ensure_mcp_excluded(worktree_path);
     Ok(())
 }
 
@@ -1780,7 +1760,7 @@ pub fn write_mcp_config(
 /// to untrusted; pre-approving here lets new tasks "just work" without a
 /// per-task user gesture. Merges into an existing settings file (and
 /// recovers gracefully from garbage).
-fn pre_approve_verun_in_claude_settings(worktree_path: &Path) -> std::io::Result<()> {
+pub fn pre_approve_verun_in_claude_settings(worktree_path: &Path) -> std::io::Result<()> {
     let dir = worktree_path.join(".claude");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("settings.local.json");
@@ -1852,66 +1832,6 @@ const SAFE_AUTO_APPROVED_TOOLS: &[&str] = &[
     "verun_app_stop",
     "verun_app_restart",
 ];
-
-/// Idempotently add `.mcp.json` to the repo's `.git/info/exclude` so our
-/// injected file doesn't pollute the user's `git status`. `info/exclude`
-/// lives in the *common* git dir - per-worktree `info/` directories are
-/// not consulted by git for ignore rules - so for a linked worktree we
-/// walk from `<main>/.git/worktrees/<n>` back up to `<main>/.git`.
-fn ensure_mcp_excluded(worktree_path: &Path) -> std::io::Result<()> {
-    let git_path = worktree_path.join(".git");
-    if !git_path.exists() {
-        return Ok(());
-    }
-    let linked_git_dir = if git_path.is_file() {
-        let contents = std::fs::read_to_string(&git_path)?;
-        let line = contents
-            .lines()
-            .find_map(|l| l.strip_prefix("gitdir:"))
-            .ok_or_else(|| std::io::Error::other("gitfile has no gitdir line"))?;
-        let raw = PathBuf::from(line.trim());
-        if raw.is_absolute() {
-            raw
-        } else {
-            worktree_path.join(raw)
-        }
-    } else {
-        git_path
-    };
-
-    // For a linked worktree, walk `<main>/.git/worktrees/<name>` back up to
-    // `<main>/.git`. For a regular checkout, `linked_git_dir` already is the
-    // common dir.
-    let common_git_dir = linked_git_dir
-        .parent()
-        .filter(|p| p.file_name().is_some_and(|n| n == "worktrees"))
-        .and_then(|p| p.parent())
-        .map(Path::to_path_buf)
-        .unwrap_or(linked_git_dir);
-
-    let info_dir = common_git_dir.join("info");
-    std::fs::create_dir_all(&info_dir)?;
-    let exclude_path = info_dir.join("exclude");
-    let existing = std::fs::read_to_string(&exclude_path).unwrap_or_default();
-    let want = [".mcp.json", ".claude/settings.local.json"];
-    let mut content = existing.clone();
-    let mut changed = false;
-    for entry in want {
-        if existing.lines().any(|l| l.trim() == entry) {
-            continue;
-        }
-        if !content.is_empty() && !content.ends_with('\n') {
-            content.push('\n');
-        }
-        content.push_str(entry);
-        content.push('\n');
-        changed = true;
-    }
-    if !changed {
-        return Ok(());
-    }
-    std::fs::write(&exclude_path, content)
-}
 
 /// Canonical Unix socket path for the in-app MCP host. macOS caps
 /// `sockaddr_un.sun_path` at 104 bytes, so the obvious choice
@@ -2830,232 +2750,17 @@ mod tests {
         server.abort();
     }
 
-    #[test]
-    fn write_mcp_config_creates_fresh_file_with_verun_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = std::path::Path::new("/tmp/v.sock");
-        let relay = std::path::Path::new("/usr/local/bin/verun-mcp-relay");
-        write_mcp_config(dir.path(), "task-42", socket, relay).unwrap();
-
-        let path = dir.path().join(".mcp.json");
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let v: Value = serde_json::from_str(&raw).unwrap();
-        let server = &v["mcpServers"]["verun"];
-        assert_eq!(server["command"], "/usr/local/bin/verun-mcp-relay");
-        assert_eq!(server["args"], json!([]));
-        assert_eq!(server["env"]["VERUN_TASK_ID"], "task-42");
-        assert_eq!(server["env"]["VERUN_MCP_SOCKET"], "/tmp/v.sock");
-        assert!(raw.ends_with('\n'), "file should end with newline");
-    }
+    // ── pre_approve_verun_in_claude_settings ────────────────────────────
+    //
+    // Writes `.claude/settings.local.json` in the worktree to (1) auto-trust
+    // the `verun` MCP server and (2) auto-approve our read-only and
+    // worktree-scoped lifecycle tools. The file is local-scope (typically
+    // gitignored) so it doesn't pollute committed state.
 
     #[test]
-    fn write_mcp_config_preserves_other_servers_in_existing_file() {
+    fn pre_approve_adds_verun_to_enabled_mcpjson_servers() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".mcp.json");
-        std::fs::write(
-            &path,
-            r#"{
-  "mcpServers": {
-    "context7": { "command": "/opt/context7", "args": [] }
-  }
-}"#,
-        )
-        .unwrap();
-
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
-
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(v["mcpServers"]["context7"]["command"], "/opt/context7");
-        assert_eq!(v["mcpServers"]["verun"]["command"], "/relay");
-        assert_eq!(v["mcpServers"]["verun"]["env"]["VERUN_TASK_ID"], "t-1");
-    }
-
-    #[test]
-    fn write_mcp_config_overwrites_existing_verun_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".mcp.json");
-        std::fs::write(
-            &path,
-            r#"{
-  "mcpServers": {
-    "verun": { "command": "/old/path", "args": [], "env": { "VERUN_TASK_ID": "old" } }
-  }
-}"#,
-        )
-        .unwrap();
-
-        write_mcp_config(
-            dir.path(),
-            "new-task",
-            std::path::Path::new("/new-sock"),
-            std::path::Path::new("/new-relay"),
-        )
-        .unwrap();
-
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(v["mcpServers"]["verun"]["command"], "/new-relay");
-        assert_eq!(v["mcpServers"]["verun"]["env"]["VERUN_TASK_ID"], "new-task");
-        assert_eq!(
-            v["mcpServers"]["verun"]["env"]["VERUN_MCP_SOCKET"],
-            "/new-sock"
-        );
-    }
-
-    #[test]
-    fn write_mcp_config_recovers_when_existing_file_is_garbage() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".mcp.json");
-        std::fs::write(&path, "not json at all{{").unwrap();
-
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
-
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(v["mcpServers"]["verun"]["command"], "/relay");
-    }
-
-    #[test]
-    fn write_mcp_config_recovers_when_root_is_array_not_object() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".mcp.json");
-        std::fs::write(&path, r#"["not", "an", "object"]"#).unwrap();
-
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
-
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(v["mcpServers"]["verun"]["command"], "/relay");
-    }
-
-    #[test]
-    fn write_mcp_config_recovers_when_mcpservers_field_is_not_object() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".mcp.json");
-        std::fs::write(&path, r#"{"mcpServers": "broken"}"#).unwrap();
-
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
-
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(v["mcpServers"]["verun"]["command"], "/relay");
-    }
-
-    #[test]
-    fn write_mcp_config_appends_to_git_info_exclude_for_dir_gitdir() {
-        let dir = tempfile::tempdir().unwrap();
-        let info = dir.path().join(".git").join("info");
-        std::fs::create_dir_all(&info).unwrap();
-
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
-
-        let exclude = std::fs::read_to_string(info.join("exclude")).unwrap();
-        assert!(exclude.lines().any(|l| l.trim() == ".mcp.json"));
-    }
-
-    #[test]
-    fn write_mcp_config_appends_to_common_git_info_exclude_for_gitfile_worktree() {
-        let dir = tempfile::tempdir().unwrap();
-        let main_repo = dir.path().join("main");
-        let worktree = dir.path().join("wt");
-        let worktree_gitdir = main_repo.join(".git/worktrees/wt");
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::create_dir_all(&worktree_gitdir).unwrap();
-        // Linked worktrees use .git as a *file* with `gitdir: <path>`.
-        std::fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}\n", worktree_gitdir.display()),
-        )
-        .unwrap();
-
-        write_mcp_config(
-            &worktree,
-            "t-2",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
-
-        // Git only consults info/exclude in the *common* git dir, not the
-        // per-worktree one - so we must write to <main>/.git/info/exclude.
-        let common_exclude =
-            std::fs::read_to_string(main_repo.join(".git/info/exclude")).unwrap();
-        assert!(common_exclude.lines().any(|l| l.trim() == ".mcp.json"));
-        // Per-worktree info/ should NOT have been used.
-        assert!(!worktree_gitdir.join("info/exclude").exists());
-    }
-
-    #[test]
-    fn write_mcp_config_does_not_duplicate_exclude_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let info = dir.path().join(".git").join("info");
-        std::fs::create_dir_all(&info).unwrap();
-        std::fs::write(info.join("exclude"), "# user notes\n.mcp.json\n").unwrap();
-
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
-
-        let exclude = std::fs::read_to_string(info.join("exclude")).unwrap();
-        let count = exclude.lines().filter(|l| l.trim() == ".mcp.json").count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn write_mcp_config_no_op_when_no_git_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        // No .git inside the worktree.
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
-        // .mcp.json was still written successfully.
-        assert!(dir.path().join(".mcp.json").exists());
-    }
-
-    #[test]
-    fn write_mcp_config_pre_approves_verun_in_claude_settings() {
-        let dir = tempfile::tempdir().unwrap();
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
+        pre_approve_verun_in_claude_settings(dir.path()).unwrap();
         let settings_path = dir.path().join(".claude/settings.local.json");
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
@@ -3064,25 +2769,17 @@ mod tests {
     }
 
     #[test]
-    fn write_mcp_config_merges_into_existing_claude_settings() {
+    fn pre_approve_merges_into_existing_claude_settings() {
         let dir = tempfile::tempdir().unwrap();
         let settings_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&settings_dir).unwrap();
-        // User already has settings with another enabled server + an unrelated
-        // top-level field; both must survive.
         std::fs::write(
             settings_dir.join("settings.local.json"),
             r#"{"enabledMcpjsonServers":["other"],"theme":"dark"}"#,
         )
         .unwrap();
 
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
+        pre_approve_verun_in_claude_settings(dir.path()).unwrap();
 
         let v: Value = serde_json::from_str(
             &std::fs::read_to_string(settings_dir.join("settings.local.json")).unwrap(),
@@ -3096,7 +2793,7 @@ mod tests {
     }
 
     #[test]
-    fn write_mcp_config_does_not_duplicate_verun_in_claude_settings() {
+    fn pre_approve_does_not_duplicate_verun_in_claude_settings() {
         let dir = tempfile::tempdir().unwrap();
         let settings_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&settings_dir).unwrap();
@@ -3106,13 +2803,7 @@ mod tests {
         )
         .unwrap();
 
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
+        pre_approve_verun_in_claude_settings(dir.path()).unwrap();
 
         let v: Value = serde_json::from_str(
             &std::fs::read_to_string(settings_dir.join("settings.local.json")).unwrap(),
@@ -3127,19 +2818,13 @@ mod tests {
     }
 
     #[test]
-    fn write_mcp_config_recovers_when_claude_settings_is_garbage() {
+    fn pre_approve_recovers_when_claude_settings_is_garbage() {
         let dir = tempfile::tempdir().unwrap();
         let settings_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&settings_dir).unwrap();
         std::fs::write(settings_dir.join("settings.local.json"), "not json").unwrap();
 
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
+        pre_approve_verun_in_claude_settings(dir.path()).unwrap();
 
         let v: Value = serde_json::from_str(
             &std::fs::read_to_string(settings_dir.join("settings.local.json")).unwrap(),
@@ -3153,15 +2838,9 @@ mod tests {
     }
 
     #[test]
-    fn write_mcp_config_pre_approves_safe_verun_tools() {
+    fn pre_approve_pre_approves_safe_verun_tools() {
         let dir = tempfile::tempdir().unwrap();
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
+        pre_approve_verun_in_claude_settings(dir.path()).unwrap();
         let v: Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join(".claude/settings.local.json")).unwrap(),
         )
@@ -3189,7 +2868,7 @@ mod tests {
     }
 
     #[test]
-    fn write_mcp_config_merges_allow_into_existing_permissions() {
+    fn pre_approve_merges_allow_into_existing_permissions() {
         let dir = tempfile::tempdir().unwrap();
         let settings_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&settings_dir).unwrap();
@@ -3199,13 +2878,7 @@ mod tests {
         )
         .unwrap();
 
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
+        pre_approve_verun_in_claude_settings(dir.path()).unwrap();
 
         let v: Value = serde_json::from_str(
             &std::fs::read_to_string(settings_dir.join("settings.local.json")).unwrap(),
@@ -3229,7 +2902,7 @@ mod tests {
     }
 
     #[test]
-    fn write_mcp_config_does_not_duplicate_safe_tool_allows() {
+    fn pre_approve_does_not_duplicate_safe_tool_allows() {
         let dir = tempfile::tempdir().unwrap();
         let settings_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&settings_dir).unwrap();
@@ -3239,13 +2912,7 @@ mod tests {
         )
         .unwrap();
 
-        write_mcp_config(
-            dir.path(),
-            "t-1",
-            std::path::Path::new("/sock"),
-            std::path::Path::new("/relay"),
-        )
-        .unwrap();
+        pre_approve_verun_in_claude_settings(dir.path()).unwrap();
 
         let v: Value = serde_json::from_str(
             &std::fs::read_to_string(settings_dir.join("settings.local.json")).unwrap(),
@@ -3260,24 +2927,92 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    #[test]
-    fn write_mcp_config_excludes_claude_settings_local_too() {
-        let dir = tempfile::tempdir().unwrap();
-        let info = dir.path().join(".git").join("info");
-        std::fs::create_dir_all(&info).unwrap();
+    // ── verun_mcp_config_path / write_verun_mcp_config ──────────────────
+    //
+    // The per-task verun MCP server config lives under the app data dir, not
+    // the project worktree, so projects with a committed `.mcp.json` are
+    // never modified. Claude Code picks it up via `--mcp-config <path>`.
 
-        write_mcp_config(
+    #[test]
+    fn verun_mcp_config_path_lives_under_app_data_dir() {
+        let app_data = std::path::Path::new("/tmp/verun-app");
+        let path = verun_mcp_config_path(app_data, "task-42");
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/tmp/verun-app/mcp-configs/task-42.json")
+        );
+    }
+
+    #[test]
+    fn verun_mcp_config_path_is_deterministic_per_task() {
+        let app_data = std::path::Path::new("/tmp/verun-app");
+        assert_eq!(
+            verun_mcp_config_path(app_data, "t-1"),
+            verun_mcp_config_path(app_data, "t-1")
+        );
+        assert_ne!(
+            verun_mcp_config_path(app_data, "t-1"),
+            verun_mcp_config_path(app_data, "t-2")
+        );
+    }
+
+    #[test]
+    fn write_verun_mcp_config_creates_per_task_file_with_verun_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = std::path::Path::new("/tmp/v.sock");
+        let relay = std::path::Path::new("/usr/local/bin/verun-mcp-relay");
+        write_verun_mcp_config(dir.path(), "task-42", socket, relay).unwrap();
+
+        let path = verun_mcp_config_path(dir.path(), "task-42");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let v: Value = serde_json::from_str(&raw).unwrap();
+        let server = &v["mcpServers"]["verun"];
+        assert_eq!(server["command"], "/usr/local/bin/verun-mcp-relay");
+        assert_eq!(server["args"], json!([]));
+        assert_eq!(server["env"]["VERUN_TASK_ID"], "task-42");
+        assert_eq!(server["env"]["VERUN_MCP_SOCKET"], "/tmp/v.sock");
+        assert!(raw.ends_with('\n'), "file should end with newline");
+    }
+
+    #[test]
+    fn write_verun_mcp_config_creates_parent_dir_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!dir.path().join("mcp-configs").exists());
+        write_verun_mcp_config(
             dir.path(),
-            "t-1",
+            "task-42",
             std::path::Path::new("/sock"),
             std::path::Path::new("/relay"),
         )
         .unwrap();
+        assert!(dir.path().join("mcp-configs/task-42.json").exists());
+    }
 
-        let exclude = std::fs::read_to_string(info.join("exclude")).unwrap();
-        assert!(exclude
-            .lines()
-            .any(|l| l.trim() == ".claude/settings.local.json"));
+    #[test]
+    fn write_verun_mcp_config_overwrites_stale_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = verun_mcp_config_path(dir.path(), "task-42");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"verun":{"command":"/old","args":[],"env":{"VERUN_MCP_SOCKET":"/old-sock"}}}}"#,
+        )
+        .unwrap();
+
+        write_verun_mcp_config(
+            dir.path(),
+            "task-42",
+            std::path::Path::new("/new-sock"),
+            std::path::Path::new("/new-relay"),
+        )
+        .unwrap();
+
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["verun"]["command"], "/new-relay");
+        assert_eq!(
+            v["mcpServers"]["verun"]["env"]["VERUN_MCP_SOCKET"],
+            "/new-sock"
+        );
     }
 
     #[test]
