@@ -80,4 +80,35 @@ describe('ipc', () => {
       await expect(ipc.askSideQuestion('s1', 'q?')).rejects.toThrow('No active session')
     })
   })
+
+  describe('setResourceMonitorOverlayOpen', () => {
+    test('invokes set_resource_monitor_overlay_open with { open: true }', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce(undefined)
+      await ipc.setResourceMonitorOverlayOpen(true)
+      expect(invoke).toHaveBeenCalledWith('set_resource_monitor_overlay_open', { open: true })
+    })
+
+    test('passes false through', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce(undefined)
+      await ipc.setResourceMonitorOverlayOpen(false)
+      expect(invoke).toHaveBeenCalledWith('set_resource_monitor_overlay_open', { open: false })
+    })
+  })
+
+  describe('getResourceUsageNow', () => {
+    test('invokes get_resource_usage_now and returns the sample', async () => {
+      const sample = {
+        total: { rssBytes: 1000, cpuPct: 1.5 },
+        app: { rssBytes: 200, cpuPct: 0.5 },
+        tasks: [
+          { taskId: 'a', taskName: 'Task A', pid: 100, rssBytes: 800, cpuPct: 1.0 },
+        ],
+        sampledAtMs: 1234,
+      }
+      vi.mocked(invoke).mockResolvedValueOnce(sample)
+      const result = await ipc.getResourceUsageNow()
+      expect(invoke).toHaveBeenCalledWith('get_resource_usage_now')
+      expect(result).toEqual(sample)
+    })
+  })
 })

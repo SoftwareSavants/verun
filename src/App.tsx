@@ -7,6 +7,7 @@ import { SelectionMenu } from './components/SelectionMenu'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { FileConflictDialog } from './components/FileConflictDialog'
 import { ToastContainer } from './components/ToastContainer'
+import { ResourceMonitor } from './components/ResourceMonitor'
 import { initTheme } from './lib/theme'
 import { projects } from './store/projects'
 import { loadTasks, taskById } from './store/tasks'
@@ -79,6 +80,7 @@ const MainApp: Component = () => {
   return (
     <>
       <Layout />
+      <ResourceMonitor />
       <ToastContainer />
       <SelectionMenu pos={selMenu()} onClose={() => setSelMenu(null)} />
       <ConfirmDialog

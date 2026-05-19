@@ -36,6 +36,64 @@
 - Drag-and-drop now works in the Claude Code terminal view: drop one or more files anywhere over the terminal area and the absolute paths are typed into the PTY (single-quoted with POSIX escaping for spaces and quotes), so Claude's TUI picks them up the same way it would from a native terminal. Drops are forwarded directly via the `tauri://drag-drop` event with no bbox hit-test, so subsequent drops keep working after layout shifts (the previous version compared Tauri's physical-pixel position against `getBoundingClientRect`'s CSS pixels and silently dropped events after the first one). MessageInput is unmounted in terminal mode, so there's no competing drop target to disambiguate
 - Cmd+V now pastes images into the Claude terminal view by letting xterm.js's native paste flow forward the bracketed-paste sequence to the PTY untouched (new `disableCmdVIntercept` prop on `ShellTerminal`). Claude Code's TUI polls NSPasteboard itself when it sees the paste sequence and renders the image as `[Image #1]`, matching its behavior in Apple Terminal. The previous approach saved the clipboard image to a temp file and typed the path - this turned out to be unnecessary because Claude Code reads the OS clipboard directly
 - Fix garbled text in every PTY view (Claude terminal, shell terminals, bootstrap scaffold log): the reader was decoding each `read()` chunk with `String::from_utf8_lossy` independently, so any multi-byte codepoint that straddled a 4 KiB read boundary (😄 = 4 bytes, — = 3 bytes, … = 3 bytes - all common in Claude TUI output) got split into U+FFFD replacement characters. The `???` and `??` blobs and stray-letter artifacts users saw mid-frame were those replacement chars; later cell-position writes downstream of the corrupt chars then mis-rendered. Reader now keeps a partial-UTF-8 buffer across reads, emits only the longest valid prefix, and holds the trailing partial bytes for the next chunk. Genuinely invalid bytes still get replaced per the standard. Also swapped `WebglAddon` for `@xterm/addon-canvas` and dropped `customGlyphs` + `rescaleOverlappingGlyphs` while debugging - canvas + simpler config is a fine default; the UTF-8 fix is the actual root cause
+- Projects that commit `.mcp.json` are no longer modified on task creation. Verun now writes its per-task `verun` MCP server entry to `<app_data>/mcp-configs/<task-id>.json` and passes it to Claude Code via `--mcp-config`, so the project's MCP config is never read or written. Migration: if a previous version added a `verun` entry to your `.mcp.json`, run `git checkout .mcp.json` once to clean it up
+- "Ask sideways" pill no longer overlaps the last user bubble when the agent is idle and the user's message is the most recent one (e.g. after an interrupt) - the chat reserves extra bottom space in that case so the pill sits below the message
+- Side question requests now keep running in the background if the panel is closed mid-flight. The "Ask sideways" pill shows a spinner ("Asking sideways...") while a request is in progress, then switches to an "Answer ready" state (accent ring + sparkle icon) when the answer arrives while the panel is closed. Click the pill to reopen and view the answer, or the inline X to dismiss the notification without opening
+- Desktop notifications (task completed/failed, approval needed, question from task) now use the session name when set, falling back to the task name - gives precise context when a task has multiple named sessions (#247)
+
+## 0.11.0 — 2026-05-12
+
+### Activity monitor
+
+- Activity chip in the window's title-bar area shows total RAM and CPU% at a glance. Click it to open a per-task breakdown listing each running task's RAM, CPU, and branch. Verun walks its own process tree and attributes the session agent, LSP, and terminals back to each task, so you can see which task is hot rather than just "Verun is using X memory"
+
+### Claude Code: UI ↔ Terminal toggle
+
+- Each Claude session now has a UI / Terminal toggle in the session tab. UI mode is the familiar chat view; Terminal mode runs `claude --resume <id>` in a real PTY so you get the unmodified TUI. Verun keeps tailing the session's history file in both modes, so fork, branch, and search keep working with no data gap. Mode is sticky per session, survives restarts, and has a global default under Settings → General → Claude Code. Ctrl+D / `/exit` / crash exposes a one-click Reconnect
+- Fresh Claude sessions can opt into Terminal mode before sending the first message - Verun watches for the new session file Claude writes on first turn and routes subsequent reopens through `--resume`
+- Drag-and-drop in the Terminal view: drop one or more files anywhere over the terminal and their absolute paths are typed into the PTY (POSIX-quoted), so Claude's TUI picks them up the same as a native terminal
+- Cmd+V pastes images into the Terminal view through xterm.js's bracketed paste, so Claude's TUI reads them from the OS clipboard and renders `[Image #1]` - same behavior as Apple Terminal
+- Pasted images in the Claude terminal also show up in the UI chat: the transcript tail decodes image blocks and persists them as user-message attachments, so toggling back to UI mode shows the same image bubble
+- Slash commands run in the Terminal (`/model`, `/clear`, `/exit`, ...) now show in the UI chat as a clean `/<name> <args>` line instead of leaking through as raw XML + ANSI escapes when you toggle back to UI mode
+- Switching between two Terminal-mode Claude sessions in the same task now shows each session's own PTY (previously the visible terminal stayed on whichever mounted first). PTYs stay alive across switches and UI ↔ Terminal toggles, with real cleanup at session close
+- Skip the "Do you trust this folder?" prompt that Claude's TUI shows on first launch in a new worktree - Verun created the worktree and is the one running `claude`, so the prompt is pure friction
+- Terminal-mode sessions honor the per-session model pick
+- A centered "Starting Claude Code…" spinner overlays the terminal during the boot gap so you see feedback instead of an empty xterm
+- Fix: the Terminal toggle no longer stays disabled after a fresh session's first message - the new resume id is now broadcast to the UI as soon as Claude writes it
+
+### Side questions for Claude
+
+- Ask an ephemeral question without polluting the transcript: type `/btw <question>` in the composer (auto-completes from the slash-command palette), or - while the agent is streaming and you've scrolled to the bottom - click the "Ask sideways /btw" pill that takes the scroll-to-bottom button's place. Q/A is not persisted to history and never re-enters the conversation on resume
+
+### File tree and .gitignore
+
+- Gitignored paths now stay visible but appear dimmed, matching the usual editor convention - instead of being hidden entirely
+- Editing `.gitignore` or `.git/info/exclude` immediately refreshes the whole task's file-tree dimming (previously only the parent folder of the ignore file was updated)
+
+### Git status and PR refresh
+
+- Editing files in a task's worktree now triggers an automatic, debounced local git refresh, so status / commits / branch state update as you code, without hitting GitHub
+- Successful `gh pr create/reopen/close/ready/merge` commands from chat refresh the GitHub overview instantly instead of waiting for the next background poll
+- The selected task refreshes GitHub overview at session end when an agent likely changed remote state. Dev builds also show a live GitHub debug panel with cache/fetch activity
+- Local git refreshes use read-only commands that don't rewrite `.git/index`, so viewing status no longer self-triggers watcher loops
+- GitHub sidebar/PR/Actions data is now cached in Rust with scope-based invalidation, so local git changes stop fan-out refreshing remote state and Actions/PR data refresh only when it actually changed
+
+### Shortcuts
+
+- Cmd+Alt+Left/Right cycles between sessions in the current task when viewing a session (wraps at edges); still cycles editor tabs when a file is open
+
+### Reliability
+
+- Mid-loop API errors (e.g. ConnectionRefused after tools have already run) now offer a `Continue` button that resumes from persisted tool results instead of redoing the whole turn from the original prompt. Fresh-failure turns keep the Retry pair
+- Fixed garbled text in all PTY views (Claude terminal, shell terminals, bootstrap log): multi-byte glyphs (😄, —, …) that spanned a read boundary were being split into replacement characters. The reader now buffers partial UTF-8 across reads so glyphs stay intact
+- Running terminals now repaint correctly when you flip dark ↔ light mode (xterm's WebGL renderer was caching the original palette)
+- Terminal panel chrome now tracks the active theme instead of staying black in light mode
+- Release builds no longer fail under pnpm 11, which removed `onlyBuiltDependencies` and now hard-errors (`ERR_PNPM_IGNORED_BUILDS`) on unapproved dependency build scripts; a `pnpm-workspace.yaml` now allows `esbuild`'s build script
+- Windows release builds no longer fail in WiX `light.exe`: the MSI bundle target is dropped (the release only ships the NSIS installer), so the bundled LSP `node_modules` tree no longer chokes the MSI packager
+
+### Polish
+
+- The Start button tooltip reads "Start project (F5)" instead of inlining the raw start command, so a long `pnpm tauri dev --config ... --features ...` no longer overflows the OS tooltip. The full command is still visible in project Settings
 
 ## 0.10.0 — 2026-04-28
 

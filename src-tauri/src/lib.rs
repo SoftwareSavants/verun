@@ -18,6 +18,7 @@ mod markdown_skills;
 pub mod mcp;
 mod policy;
 mod pty;
+mod resource_monitor;
 mod snapshots;
 mod stream;
 mod task;
@@ -203,6 +204,28 @@ pub fn run() {
                     mcp::run_action_worker(mcp_worker_handle, rx).await;
                 });
             }
+
+            // Resource monitor: live sampler that emits per-task RAM/CPU breakdown
+            // for the sidebar chip + overlay. Spawned after the pool is managed
+            // so the loop can fetch task labels from the DB on each tick.
+            // Subtree roots per task: the running agent process + each LSP +
+            // each PTY/terminal (claude terminals, hook PTYs, user shells).
+            let active_for_monitor = std::sync::Arc::clone(&*app.state::<crate::task::ActiveMap>());
+            let lsp_for_monitor = std::sync::Arc::clone(&*app.state::<crate::lsp::LspMap>());
+            let pty_for_monitor = std::sync::Arc::clone(&*app.state::<crate::pty::ActivePtyMap>());
+            let pool_for_monitor = app.state::<sqlx::sqlite::SqlitePool>().inner().clone();
+            let monitor_handle = app.handle().clone();
+            let sampler = std::sync::Arc::new(
+                crate::resource_monitor::ResourceSampler::spawn(
+                    monitor_handle,
+                    active_for_monitor,
+                    lsp_for_monitor,
+                    pty_for_monitor,
+                    crate::resource_monitor::SysinfoSource::new(),
+                    pool_for_monitor,
+                ),
+            );
+            app.manage(sampler);
 
             // Auto-check for updates after a short delay
             let update_handle = app.handle().clone();
@@ -441,6 +464,9 @@ pub fn run() {
             ipc::get_storage_stats,
             ipc::run_blob_gc,
             ipc::migrate_legacy_attachments,
+            // Resource monitor
+            ipc::set_resource_monitor_overlay_open,
+            ipc::get_resource_usage_now,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Verun")

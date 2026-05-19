@@ -1315,6 +1315,50 @@ pub async fn get_task(pool: &SqlitePool, id: &str) -> Result<Option<Task>, Strin
         .map_err(|e| e.to_string())
 }
 
+/// Display label for a task: its (possibly-fallback) name plus its branch.
+/// `name` falls back to "New task" when the underlying row is NULL or empty,
+/// matching the sidebar UI convention. `branch` is always present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskLabel {
+    pub name: String,
+    pub branch: String,
+}
+
+/// Bulk-fetch task labels by id. Returns a `task_id -> TaskLabel` map.
+/// Used by the resource monitor's per-tick names provider so the sampler can
+/// label each subtree without an N+1 fan-out of `get_task` calls.
+pub async fn task_labels_for_ids(
+    pool: &SqlitePool,
+    ids: &[String],
+) -> Result<std::collections::HashMap<String, TaskLabel>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let mut q = String::from("SELECT id, name, branch FROM tasks WHERE id IN (");
+    for i in 0..ids.len() {
+        if i > 0 {
+            q.push(',');
+        }
+        q.push('?');
+    }
+    q.push(')');
+
+    let mut query = sqlx::query_as::<_, (String, Option<String>, String)>(&q);
+    for id in ids {
+        query = query.bind(id);
+    }
+    let rows: Vec<(String, Option<String>, String)> = query.fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, branch)| {
+            let name = name
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "New task".into());
+            (id, TaskLabel { name, branch })
+        })
+        .collect())
+}
+
 pub async fn list_tasks_for_project(
     pool: &SqlitePool,
     project_id: &str,
@@ -2023,6 +2067,51 @@ pub(crate) mod tests {
 
         let t = get_task(&pool, "t-001").await.unwrap().unwrap();
         assert_eq!(t.name.as_deref(), Some("Fix auth bug"));
+    }
+
+    #[tokio::test]
+    async fn task_labels_for_ids_returns_name_branch_with_null_fallback() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        let mut t2 = make_task("p-001");
+        t2.id = "t-002".into();
+        t2.branch = "another-branch".into();
+        t2.worktree_path = "/tmp/myapp/.verun/worktrees/another-branch".into();
+        process_write(&pool, DbWrite::InsertTask(t2)).await.unwrap();
+        process_write(
+            &pool,
+            DbWrite::UpdateTaskName {
+                id: "t-002".into(),
+                name: "Fix auth bug".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let labels =
+            task_labels_for_ids(&pool, &["t-001".into(), "t-002".into()])
+                .await
+                .unwrap();
+
+        assert_eq!(
+            labels.get("t-001"),
+            Some(&TaskLabel {
+                name: "New task".into(),
+                branch: "silly-penguin".into(),
+            })
+        );
+        assert_eq!(
+            labels.get("t-002"),
+            Some(&TaskLabel {
+                name: "Fix auth bug".into(),
+                branch: "another-branch".into(),
+            })
+        );
     }
 
     #[tokio::test]

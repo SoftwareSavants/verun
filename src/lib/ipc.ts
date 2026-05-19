@@ -573,3 +573,31 @@ export interface MigrationReport {
 
 export const migrateLegacyAttachments = (): Promise<MigrationReport> =>
   invoke<MigrationReport>('migrate_legacy_attachments')
+
+// Resource monitor (activity overlay)
+export interface ProcessStat {
+  rssBytes: number
+  cpuPct: number
+}
+
+export interface TaskStat {
+  taskId: string
+  taskName: string
+  branch: string
+  pid: number
+  rssBytes: number
+  cpuPct: number
+}
+
+export interface ResourceSample {
+  total: ProcessStat
+  app: ProcessStat
+  tasks: TaskStat[]
+  sampledAtMs: number
+}
+
+export const setResourceMonitorOverlayOpen = (open: boolean) =>
+  invoke<void>('set_resource_monitor_overlay_open', { open })
+
+export const getResourceUsageNow = () =>
+  invoke<ResourceSample>('get_resource_usage_now')

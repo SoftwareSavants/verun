@@ -256,6 +256,10 @@ pub struct SessionArgs<'a> {
     pub repo_path: &'a str,
     /// For `PositionalOrStdin` agents: the user message appended as the final positional arg.
     pub message: &'a str,
+    /// Path to the per-task verun MCP config file. When set, agents that
+    /// support `--mcp-config` (currently Claude Code) pass it on the CLI so
+    /// the project's `.mcp.json` is never modified.
+    pub verun_mcp_config_path: Option<&'a std::path::Path>,
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +631,7 @@ mod tests {
             worktree_path: "",
             repo_path: "",
             message: "",
+            verun_mcp_config_path: None,
         }
     }
 
@@ -708,6 +713,31 @@ mod tests {
         });
         assert!(args.contains(&"--effort".to_string()));
         assert!(args.contains(&"low".to_string()));
+    }
+
+    #[test]
+    fn claude_build_args_emits_mcp_config_flag_when_path_set() {
+        let agent = Claude;
+        let path = std::path::Path::new("/tmp/verun/mcp-configs/task-42.json");
+        let args = agent.build_session_args(&SessionArgs {
+            verun_mcp_config_path: Some(path),
+            ..default_args()
+        });
+        let i = args
+            .iter()
+            .position(|a| a == "--mcp-config")
+            .expect("--mcp-config flag present");
+        assert_eq!(
+            args[i + 1],
+            "/tmp/verun/mcp-configs/task-42.json".to_string()
+        );
+    }
+
+    #[test]
+    fn claude_build_args_omits_mcp_config_flag_when_path_unset() {
+        let agent = Claude;
+        let args = agent.build_session_args(&default_args());
+        assert!(!args.iter().any(|a| a == "--mcp-config"));
     }
 
     #[test]

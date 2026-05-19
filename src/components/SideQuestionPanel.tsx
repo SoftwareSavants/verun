@@ -2,15 +2,14 @@ import { Component, createSignal, createEffect, on, onMount, onCleanup, Show } f
 import { Portal } from 'solid-js/web'
 import { X, Loader2, ArrowUp } from 'lucide-solid'
 import { clsx } from 'clsx'
-import { askSideQuestion } from '../lib/ipc'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import { registerDismissable } from '../lib/dismissable'
 import {
   closeSideQuestion,
-  getRememberedSideQuestion,
   rememberSideQuestion,
+  sideQuestionState,
+  submitSideQuestion,
 } from '../store/sideQuestion'
-import type { SideQuestionResponse } from '../types'
 
 interface Props {
   sessionId: string
@@ -24,40 +23,24 @@ interface Props {
 
 export const SideQuestionPanel: Component<Props> = (props) => {
   const [question, setQuestion] = createSignal('')
-  const [loading, setLoading] = createSignal(false)
-  const [answer, setAnswer] = createSignal<SideQuestionResponse | null | undefined>(undefined)
-  const [error, setError] = createSignal<string | null>(null)
   let inputRef: HTMLTextAreaElement | undefined
+
+  const stored = () => sideQuestionState(props.sessionId)
+  const loading = () => stored()?.loading ?? false
+  const answer = () => stored()?.answer
+  const error = () => stored()?.error ?? null
 
   const seed = (prefill: string | undefined, sessionId: string) => {
     if (prefill !== undefined) {
       setQuestion(prefill)
-      setAnswer(undefined)
-      setError(null)
       return
     }
-    const mem = getRememberedSideQuestion(sessionId)
-    if (mem) {
-      setQuestion(mem.question)
-      setAnswer(mem.answer ?? undefined)
-      setError(mem.error ?? null)
-    } else {
-      setQuestion('')
-      setAnswer(undefined)
-      setError(null)
-    }
+    const mem = sideQuestionState(sessionId)
+    setQuestion(mem?.question ?? '')
   }
 
   // Initial seed (synchronous so first paint has the right values).
   seed(props.prefill, props.sessionId)
-
-  const persist = () => {
-    rememberSideQuestion(props.sessionId, {
-      question: question(),
-      answer: answer() ?? null,
-      error: error(),
-    })
-  }
 
   const focusAndSelectAll = () => {
     if (!inputRef) return
@@ -71,23 +54,12 @@ export const SideQuestionPanel: Component<Props> = (props) => {
   const submit = async () => {
     const q = question().trim()
     if (!q || loading()) return
-    setError(null)
-    setAnswer(undefined)
-    setLoading(true)
     // Keep the question highlighted while the request is in flight so the
     // user can see what they asked and instantly retype to replace.
     inputRef?.focus()
     inputRef?.select()
-    try {
-      const result = await askSideQuestion(props.sessionId, q)
-      setAnswer(result)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setLoading(false)
-      persist()
-      focusAndSelectAll()
-    }
+    await submitSideQuestion(props.sessionId, q)
+    focusAndSelectAll()
   }
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -105,7 +77,9 @@ export const SideQuestionPanel: Component<Props> = (props) => {
     const unregister = registerDismissable(closeSideQuestion)
     onCleanup(() => {
       unregister()
-      persist()
+      // Persist the question text so re-opening shows what the user typed.
+      // Loading/answer/error/unread are owned by the store, not us.
+      rememberSideQuestion(props.sessionId, { question: question() })
     })
     if (props.autoSubmit && question().trim()) {
       submit()
