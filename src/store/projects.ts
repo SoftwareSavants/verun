@@ -1,3 +1,4 @@
+import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { Project } from '../types'
@@ -7,6 +8,15 @@ import { taskById } from './tasks'
 import { clearRecentFilesForProject } from './recentFiles'
 
 export const [projects, setProjects] = createStore<Project[]>([])
+
+const [deletingProjects, setDeletingProjects] = createSignal<Set<string>>(new Set())
+export const isProjectDeleting = (id: string) => deletingProjects().has(id)
+function addDeleting(id: string) {
+  setDeletingProjects(prev => new Set([...prev, id]))
+}
+function removeDeleting(id: string) {
+  setDeletingProjects(prev => { const s = new Set(prev); s.delete(id); return s })
+}
 
 export async function loadProjects() {
   const list = await ipc.listProjects()
@@ -20,21 +30,26 @@ export async function addProject(repoPath: string): Promise<Project> {
 }
 
 export async function deleteProject(id: string) {
-  await ipc.deleteProject(id)
-  setProjects(prev => prev.filter(p => p.id !== id))
-  clearRecentFilesForProject(id)
+  addDeleting(id)
+  try {
+    await ipc.deleteProject(id)
+    setProjects(prev => prev.filter(p => p.id !== id))
+    clearRecentFilesForProject(id)
 
-  // Clear selection if the selected task belongs to the deleted project
-  const tid = selectedTaskId()
-  if (tid) {
-    const task = taskById(tid)
-    if (!task || task.projectId === id) {
-      setSelectedSessionIdForTask(tid, null)
-      setSelectedTaskId(null)
+    // Clear selection if the selected task belongs to the deleted project
+    const tid = selectedTaskId()
+    if (tid) {
+      const task = taskById(tid)
+      if (!task || task.projectId === id) {
+        setSelectedSessionIdForTask(tid, null)
+        setSelectedTaskId(null)
+      }
     }
-  }
-  if (selectedProjectId() === id) {
-    setSelectedProjectId(null)
+    if (selectedProjectId() === id) {
+      setSelectedProjectId(null)
+    }
+  } finally {
+    removeDeleting(id)
   }
 }
 

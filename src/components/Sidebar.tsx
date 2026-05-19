@@ -43,7 +43,7 @@ import {
 } from "../store/ui";
 import { sessions, loadSessions } from "../store/sessions";
 import { isStartCommandRunning } from "../store/terminals";
-import { deleteProject } from "../store/projects";
+import { deleteProject, isProjectDeleting } from "../store/projects";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { buildAddProjectMenuItems } from "../lib/addProjectMenu";
@@ -375,8 +375,10 @@ export const Sidebar: Component = () => {
         {/* Project + task list */}
         <div class="flex-1 overflow-y-auto overflow-x-hidden px-2 no-drag">
           <For each={projects}>
-            {(project) => (
-              <div class="mb-3">
+            {(project) => {
+              const deleting = () => isProjectDeleting(project.id);
+              return (
+              <div class={clsx("mb-3", deleting() && "opacity-50 pointer-events-none")}>
                 <div
                   class="w-full text-left px-2 py-1 rounded-md flex items-center justify-between group cursor-pointer min-w-0 hover:bg-surface-2"
                   onContextMenu={(e) => showProjectMenu(e, project.id)}
@@ -389,10 +391,19 @@ export const Sidebar: Component = () => {
                         color: projectColor(project.id),
                       }}
                     >
-                      {project.name.charAt(0)}
+                      <Show when={deleting()} fallback={project.name.charAt(0)}>
+                        <Loader2 size={10} class="animate-spin" />
+                      </Show>
                     </span>
-                    <span class="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">
-                      {project.name}
+                    <span class="flex flex-col min-w-0">
+                      <span class="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">
+                        {project.name}
+                      </span>
+                      <Show when={deleting()}>
+                        <span class="text-[9px] text-text-dim truncate normal-case">
+                          Deleting…
+                        </span>
+                      </Show>
                     </span>
                   </span>
                   <button
@@ -492,15 +503,21 @@ export const Sidebar: Component = () => {
                                 />
                               </Show>
                               <div class={clsx("text-[10px] truncate flex items-center gap-1", hasIndicator() || isSelected() ? "text-text-muted" : "text-text-dim")}>
-                                <Show when={task.parentTaskId}>
-                                  <GitBranch size={9} class="shrink-0 text-text-dim/70" />
-                                </Show>
-                                {task.branch}
-                                <Show when={isStartCommandRunning(task.id)}>
-                                  <Play size={9} class="shrink-0 text-green-400 fill-green-400 animate-pulse" />
-                                </Show>
-                                <Show when={isTaskWindowed(task.id)}>
-                                  <ExternalLink size={9} class="shrink-0 text-accent/60" />
+                                <Show when={archiving()} fallback={
+                                  <>
+                                    <Show when={task.parentTaskId}>
+                                      <GitBranch size={9} class="shrink-0 text-text-dim/70" />
+                                    </Show>
+                                    {task.branch}
+                                    <Show when={isStartCommandRunning(task.id)}>
+                                      <Play size={9} class="shrink-0 text-green-400 fill-green-400 animate-pulse" />
+                                    </Show>
+                                    <Show when={isTaskWindowed(task.id)}>
+                                      <ExternalLink size={9} class="shrink-0 text-accent/60" />
+                                    </Show>
+                                  </>
+                                }>
+                                  Archiving…
                                 </Show>
                               </div>
                             </div>
@@ -529,7 +546,8 @@ export const Sidebar: Component = () => {
                 </Show>
 
               </div>
-            )}
+              );
+            }}
           </For>
         </div>
 

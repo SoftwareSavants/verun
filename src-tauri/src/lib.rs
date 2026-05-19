@@ -215,16 +215,14 @@ pub fn run() {
             let pty_for_monitor = std::sync::Arc::clone(&*app.state::<crate::pty::ActivePtyMap>());
             let pool_for_monitor = app.state::<sqlx::sqlite::SqlitePool>().inner().clone();
             let monitor_handle = app.handle().clone();
-            let sampler = std::sync::Arc::new(
-                crate::resource_monitor::ResourceSampler::spawn(
-                    monitor_handle,
-                    active_for_monitor,
-                    lsp_for_monitor,
-                    pty_for_monitor,
-                    crate::resource_monitor::SysinfoSource::new(),
-                    pool_for_monitor,
-                ),
-            );
+            let sampler = std::sync::Arc::new(crate::resource_monitor::ResourceSampler::spawn(
+                monitor_handle,
+                active_for_monitor,
+                lsp_for_monitor,
+                pty_for_monitor,
+                crate::resource_monitor::SysinfoSource::new(),
+                pool_for_monitor,
+            ));
             app.manage(sampler);
 
             // Auto-check for updates after a short delay

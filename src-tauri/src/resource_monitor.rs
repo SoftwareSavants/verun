@@ -72,9 +72,13 @@ pub fn attribute(
         let mut seen = HashSet::new();
         let mut stack = vec![root];
         while let Some(p) = stack.pop() {
-            if !seen.insert(p) { continue; }
+            if !seen.insert(p) {
+                continue;
+            }
             if let Some(kids) = children.get(&p) {
-                for &k in kids { stack.push(k); }
+                for &k in kids {
+                    stack.push(k);
+                }
             }
         }
         seen
@@ -84,7 +88,9 @@ pub fn attribute(
     let mut task_totals: HashMap<String, (u32, u64, f32)> = HashMap::new();
 
     for (task_id, session_pid) in active {
-        if !by_pid.contains_key(session_pid) { continue; }
+        if !by_pid.contains_key(session_pid) {
+            continue;
+        }
         let subtree = descendants_inclusive(*session_pid);
         let mut subtree_rss = 0u64;
         let mut subtree_cpu = 0f32;
@@ -107,7 +113,9 @@ pub fn attribute(
     let mut app_rss = 0u64;
     let mut app_cpu = 0f32;
     for pid in &verun_subtree {
-        if attributed.contains(pid) { continue; }
+        if attributed.contains(pid) {
+            continue;
+        }
         if let Some(row) = by_pid.get(pid) {
             app_rss += row.rss_bytes;
             app_cpu += row.cpu_pct;
@@ -131,14 +139,19 @@ pub fn attribute(
             }
         })
         .collect();
-    tasks.sort_by(|a, b| b.rss_bytes.cmp(&a.rss_bytes));
-
+    tasks.sort_by_key(|t| std::cmp::Reverse(t.rss_bytes));
     let total_rss = app_rss + tasks.iter().map(|t| t.rss_bytes).sum::<u64>();
     let total_cpu = app_cpu + tasks.iter().map(|t| t.cpu_pct).sum::<f32>();
 
     Sample {
-        total: ProcessStat { rss_bytes: total_rss, cpu_pct: total_cpu },
-        app: ProcessStat { rss_bytes: app_rss, cpu_pct: app_cpu },
+        total: ProcessStat {
+            rss_bytes: total_rss,
+            cpu_pct: total_cpu,
+        },
+        app: ProcessStat {
+            rss_bytes: app_rss,
+            cpu_pct: app_cpu,
+        },
         tasks,
         sampled_at_ms,
     }
@@ -162,7 +175,9 @@ impl SysinfoSource {
 }
 
 impl Default for SysinfoSource {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProcessSource for SysinfoSource {
@@ -185,8 +200,8 @@ impl ProcessSource for SysinfoSource {
     }
 }
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 pub struct ResourceSampler {
     cadence: Arc<AtomicU64>,
@@ -243,8 +258,7 @@ impl ResourceSampler {
             loop {
                 let active_pairs = task_root_pids(&active, &lsp_map, &pty_map);
 
-                let task_ids: Vec<String> =
-                    active_pairs.iter().map(|(t, _)| t.clone()).collect();
+                let task_ids: Vec<String> = active_pairs.iter().map(|(t, _)| t.clone()).collect();
                 let labels = crate::db::task_labels_for_ids(&pool, &task_ids)
                     .await
                     .unwrap_or_else(|e| {
@@ -350,7 +364,12 @@ mod tests {
     use super::*;
 
     fn row(pid: u32, parent: Option<u32>, rss: u64, cpu: f32) -> ProcRow {
-        ProcRow { pid, parent_pid: parent, rss_bytes: rss, cpu_pct: cpu }
+        ProcRow {
+            pid,
+            parent_pid: parent,
+            rss_bytes: rss,
+            cpu_pct: cpu,
+        }
     }
 
     fn labels(pairs: &[(&str, &str, &str)]) -> HashMap<String, crate::db::TaskLabel> {
@@ -454,11 +473,7 @@ mod tests {
             row(20, Some(1), 500, 0.0),
             row(30, Some(1), 250, 0.0),
         ];
-        let active = vec![
-            ("small".into(), 10),
-            ("big".into(), 20),
-            ("mid".into(), 30),
-        ];
+        let active = vec![("small".into(), 10), ("big".into(), 20), ("mid".into(), 30)];
         let labels = labels(&[
             ("small", "S", "br-s"),
             ("big", "B", "br-b"),
@@ -489,7 +504,9 @@ mod tests {
         let mut src = SysinfoSource::new();
         let snap = src.snapshot();
         let self_pid = std::process::id();
-        let me = snap.iter().find(|r| r.pid == self_pid)
+        let me = snap
+            .iter()
+            .find(|r| r.pid == self_pid)
             .expect("self process must be in the snapshot");
         assert!(me.rss_bytes > 0, "self process RSS should be > 0");
     }

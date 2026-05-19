@@ -973,14 +973,12 @@ pub async fn create_task(
         let socket_path = mcp::socket_path(&app_data);
         match mcp::relay_binary_path() {
             Ok(relay) => {
-                if let Err(e) =
-                    mcp::write_verun_mcp_config(&app_data, &id, &socket_path, &relay)
-                {
+                if let Err(e) = mcp::write_verun_mcp_config(&app_data, &id, &socket_path, &relay) {
                     eprintln!("[verun] failed to write verun mcp config for task {id}: {e}");
                 }
-                if let Err(e) = mcp::pre_approve_verun_in_claude_settings(
-                    std::path::Path::new(&worktree_path),
-                ) {
+                if let Err(e) =
+                    mcp::pre_approve_verun_in_claude_settings(std::path::Path::new(&worktree_path))
+                {
                     eprintln!("[verun] failed to pre-approve verun in claude settings: {e}");
                 }
             }
