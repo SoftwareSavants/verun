@@ -17,7 +17,9 @@ async fn main() -> ExitCode {
     use std::path::PathBuf;
     use verun_lib::mcp;
 
-    let task_id = std::env::var("VERUN_TASK_ID").ok().filter(|s| !s.is_empty());
+    let task_id = std::env::var("VERUN_TASK_ID")
+        .ok()
+        .filter(|s| !s.is_empty());
     let socket = match std::env::var("VERUN_MCP_SOCKET") {
         Ok(s) if !s.is_empty() => PathBuf::from(s),
         _ => {

@@ -52,8 +52,19 @@ export function clearTaskError(id: string) {
 
 export async function loadTasks(projectId: string) {
   const list = await ipc.listTasks(projectId)
-  // Replace tasks for this project, keep tasks from other projects
-  setTasks(prev => [...prev.filter(t => t.projectId !== projectId), ...list])
+  setTasks(prev => {
+    // Preserve the existing in-store order for tasks we already know about
+    // (so a reload while archiving doesn't shuffle the in-flight row to the
+    // bottom via DB's ORDER BY archived ASC). New tasks from the DB are
+    // appended at the end in their DB order.
+    const incoming = new Map(list.map(t => [t.id, t]))
+    const preserved = prev
+      .filter(t => t.projectId === projectId && incoming.has(t.id))
+      .map(t => incoming.get(t.id)!)
+    const preservedIds = new Set(preserved.map(t => t.id))
+    const added = list.filter(t => !preservedIds.has(t.id))
+    return [...prev.filter(t => t.projectId !== projectId), ...preserved, ...added]
+  })
 }
 
 export const activeTasks = () =>
@@ -63,7 +74,7 @@ export const tasksForProject = (projectId: string) =>
   tasks.filter(t => t.projectId === projectId)
 
 export const activeTasksForProject = (projectId: string) =>
-  tasks.filter(t => t.projectId === projectId && !t.archived)
+  tasks.filter(t => t.projectId === projectId && (!t.archived || isTaskArchiving(t.id)))
 
 export const archivedTasksForProject = (projectId: string) =>
   tasks.filter(t => t.projectId === projectId && t.archived)

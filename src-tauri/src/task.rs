@@ -973,14 +973,12 @@ pub async fn create_task(
         let socket_path = mcp::socket_path(&app_data);
         match mcp::relay_binary_path() {
             Ok(relay) => {
-                if let Err(e) =
-                    mcp::write_verun_mcp_config(&app_data, &id, &socket_path, &relay)
-                {
+                if let Err(e) = mcp::write_verun_mcp_config(&app_data, &id, &socket_path, &relay) {
                     eprintln!("[verun] failed to write verun mcp config for task {id}: {e}");
                 }
-                if let Err(e) = mcp::pre_approve_verun_in_claude_settings(
-                    std::path::Path::new(&worktree_path),
-                ) {
+                if let Err(e) =
+                    mcp::pre_approve_verun_in_claude_settings(std::path::Path::new(&worktree_path))
+                {
                     eprintln!("[verun] failed to pre-approve verun in claude settings: {e}");
                 }
             }
@@ -1206,28 +1204,26 @@ pub async fn archive_task(
     let wtp = task.worktree_path.clone();
     let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
     let task_id = task.id.clone();
-    let db_tx_bg = db_tx.clone();
-    tokio::spawn(async move {
-        let last_commit_message = tokio::task::spawn_blocking(move || {
-            if !hook.is_empty() {
-                if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
-                    eprintln!("[verun] destroy hook failed: {e}");
-                }
-            }
-            worktree::last_commit_message(&rp, &branch)
-        })
-        .await
-        .unwrap_or(None);
 
-        if last_commit_message.is_some() {
-            let _ = db_tx_bg
-                .send(db::DbWrite::SetLastCommitMessage {
-                    id: task_id,
-                    msg: last_commit_message,
-                })
-                .await;
+    let last_commit_message = tokio::task::spawn_blocking(move || {
+        if !hook.is_empty() {
+            if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
+                eprintln!("[verun] destroy hook failed: {e}");
+            }
         }
-    });
+        worktree::last_commit_message(&rp, &branch)
+    })
+    .await
+    .unwrap_or(None);
+
+    if last_commit_message.is_some() {
+        let _ = db_tx
+            .send(db::DbWrite::SetLastCommitMessage {
+                id: task_id,
+                msg: last_commit_message,
+            })
+            .await;
+    }
 
     Ok(())
 }

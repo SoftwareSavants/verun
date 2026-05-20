@@ -312,14 +312,9 @@ async fn tool_list_tasks(ctx: &McpContext, args: Value) -> Result<String, JsonRp
         Some(task.project_id)
     };
 
-    let rows = db::list_active_tasks(
-        &ctx.pool,
-        project_filter.as_deref(),
-        limit + 1,
-        cursor,
-    )
-    .await
-    .map_err(internal)?;
+    let rows = db::list_active_tasks(&ctx.pool, project_filter.as_deref(), limit + 1, cursor)
+        .await
+        .map_err(internal)?;
 
     let truncated = rows.len() as i64 > limit;
     let visible: Vec<&db::ActiveTaskRow> = rows.iter().take(limit as usize).collect();
@@ -333,10 +328,7 @@ async fn tool_list_tasks(ctx: &McpContext, args: Value) -> Result<String, JsonRp
     let items: Vec<Value> = visible
         .iter()
         .map(|r| {
-            let display_name = r
-                .task_name
-                .clone()
-                .unwrap_or_else(|| r.branch.clone());
+            let display_name = r.task_name.clone().unwrap_or_else(|| r.branch.clone());
             json!({
                 "task_id": r.task_id,
                 "name": display_name,
@@ -385,16 +377,14 @@ async fn tool_list_sessions(ctx: &McpContext, args: Value) -> Result<String, Jso
         .map_err(internal)?
         .ok_or_else(|| JsonRpcError {
             code: E_INVALID_PARAMS,
-            message: format!(
-                "Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."
-            ),
+            message: format!("Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."),
         })?;
 
     let mut sessions = db::list_sessions_for_task(&ctx.pool, &task.id)
         .await
         .map_err(internal)?;
     // running/idle first, newest-started first.
-    sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.started_at));
 
     if include_closed {
         let closed = db::list_closed_sessions_for_task(&ctx.pool, &task.id)
@@ -506,9 +496,7 @@ async fn tool_read_task_output(ctx: &McpContext, args: Value) -> Result<String, 
         .map_err(internal)?
         .ok_or_else(|| JsonRpcError {
             code: E_INVALID_PARAMS,
-            message: format!(
-                "Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."
-            ),
+            message: format!("Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."),
         })?;
 
     let session = if let Some(session_id) = args.get("session_id").and_then(|v| v.as_str()) {
@@ -559,10 +547,7 @@ async fn tool_read_task_output(ctx: &McpContext, args: Value) -> Result<String, 
         .await
         .map_err(internal)?;
 
-    let display_name = task
-        .name
-        .clone()
-        .unwrap_or_else(|| task.branch.clone());
+    let display_name = task.name.clone().unwrap_or_else(|| task.branch.clone());
 
     let payload = json!({
         "task_id": task.id,
@@ -632,9 +617,7 @@ async fn tool_send_message(ctx: &McpContext, args: Value) -> Result<String, Json
         .map_err(internal)?
         .ok_or_else(|| JsonRpcError {
             code: E_INVALID_PARAMS,
-            message: format!(
-                "Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."
-            ),
+            message: format!("Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."),
         })?;
 
     let session = if let Some(session_id) = args.get("session_id").and_then(|v| v.as_str()) {
@@ -672,7 +655,8 @@ async fn tool_send_message(ctx: &McpContext, args: Value) -> Result<String, Json
 
     let actions = ctx.actions.as_ref().ok_or_else(|| JsonRpcError {
         code: E_INTERNAL,
-        message: "verun_send_message: server is not configured to perform side-effect actions.".into(),
+        message: "verun_send_message: server is not configured to perform side-effect actions."
+            .into(),
     })?;
 
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -697,10 +681,7 @@ async fn tool_send_message(ctx: &McpContext, args: Value) -> Result<String, Json
         message: e,
     })?;
 
-    let display_name = task
-        .name
-        .clone()
-        .unwrap_or_else(|| task.branch.clone());
+    let display_name = task.name.clone().unwrap_or_else(|| task.branch.clone());
 
     let payload = json!({
         "task_id": task.id,
@@ -788,9 +769,7 @@ async fn tool_create_session(ctx: &McpContext, args: Value) -> Result<String, Js
         .map_err(internal)?
         .ok_or_else(|| JsonRpcError {
             code: E_INVALID_PARAMS,
-            message: format!(
-                "Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."
-            ),
+            message: format!("Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."),
         })?;
 
     // Resolve agent_type: explicit > task's latest session's agent > project default.
@@ -829,9 +808,8 @@ async fn tool_create_session(ctx: &McpContext, args: Value) -> Result<String, Js
         Some(m) if m.trim().is_empty() => {
             return Err(JsonRpcError {
                 code: E_INVALID_PARAMS,
-                message:
-                    "verun_create_session: 'initial_message' must not be empty when provided."
-                        .into(),
+                message: "verun_create_session: 'initial_message' must not be empty when provided."
+                    .into(),
             });
         }
         Some(m) => Some(m.to_string()),
@@ -840,9 +818,8 @@ async fn tool_create_session(ctx: &McpContext, args: Value) -> Result<String, Js
 
     let actions = ctx.actions.as_ref().ok_or_else(|| JsonRpcError {
         code: E_INTERNAL,
-        message:
-            "verun_create_session: server is not configured to perform side-effect actions."
-                .into(),
+        message: "verun_create_session: server is not configured to perform side-effect actions."
+            .into(),
     })?;
 
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -1045,23 +1022,17 @@ async fn resolve_task_id(ctx: &McpContext, args: &Value) -> Result<String, JsonR
         .map(|s| s.to_string());
     let task_id = match raw {
         Some(t) => t,
-        None => ctx
-            .caller_task_id
-            .clone()
-            .ok_or_else(|| JsonRpcError {
-                code: E_INVALID_PARAMS,
-                message: "task_id is required when there is no caller task to infer one from."
-                    .into(),
-            })?,
+        None => ctx.caller_task_id.clone().ok_or_else(|| JsonRpcError {
+            code: E_INVALID_PARAMS,
+            message: "task_id is required when there is no caller task to infer one from.".into(),
+        })?,
     };
     db::get_task(&ctx.pool, &task_id)
         .await
         .map_err(internal)?
         .ok_or_else(|| JsonRpcError {
             code: E_INVALID_PARAMS,
-            message: format!(
-                "Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."
-            ),
+            message: format!("Task '{task_id}' not found. Use verun_list_tasks to find valid IDs."),
         })?;
     Ok(task_id)
 }
@@ -1071,8 +1042,7 @@ async fn tool_app_start(ctx: &McpContext, args: Value) -> Result<String, JsonRpc
 
     let actions = ctx.actions.as_ref().ok_or_else(|| JsonRpcError {
         code: E_INTERNAL,
-        message: "verun_app_start: server is not configured to perform side-effect actions."
-            .into(),
+        message: "verun_app_start: server is not configured to perform side-effect actions.".into(),
     })?;
 
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -1111,8 +1081,7 @@ async fn tool_app_stop(ctx: &McpContext, args: Value) -> Result<String, JsonRpcE
 
     let actions = ctx.actions.as_ref().ok_or_else(|| JsonRpcError {
         code: E_INTERNAL,
-        message: "verun_app_stop: server is not configured to perform side-effect actions."
-            .into(),
+        message: "verun_app_stop: server is not configured to perform side-effect actions.".into(),
     })?;
 
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -1155,8 +1124,7 @@ async fn tool_app_logs(ctx: &McpContext, args: Value) -> Result<String, JsonRpcE
 
     let actions = ctx.actions.as_ref().ok_or_else(|| JsonRpcError {
         code: E_INTERNAL,
-        message: "verun_app_logs: server is not configured to perform side-effect actions."
-            .into(),
+        message: "verun_app_logs: server is not configured to perform side-effect actions.".into(),
     })?;
 
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -1261,14 +1229,9 @@ pub async fn run_action_worker(app: tauri::AppHandle, mut rx: mpsc::Receiver<Mcp
                 initial_message,
                 reply,
             } => {
-                let result = perform_spawn_task(
-                    &app,
-                    project_id,
-                    base_branch,
-                    agent_type,
-                    initial_message,
-                )
-                .await;
+                let result =
+                    perform_spawn_task(&app, project_id, base_branch, agent_type, initial_message)
+                        .await;
                 let _ = reply.send(result);
             }
             McpAction::AppStart { task_id, reply } => {
@@ -1294,14 +1257,8 @@ pub async fn run_action_worker(app: tauri::AppHandle, mut rx: mpsc::Receiver<Mcp
                 initial_message,
                 reply,
             } => {
-                let result = perform_create_session(
-                    &app,
-                    task_id,
-                    agent_type,
-                    model,
-                    initial_message,
-                )
-                .await;
+                let result =
+                    perform_create_session(&app, task_id, agent_type, model, initial_message).await;
                 let _ = reply.send(result);
             }
         }
@@ -1532,10 +1489,7 @@ async fn perform_app_start(
     })
 }
 
-async fn perform_app_stop(
-    app: &tauri::AppHandle,
-    task_id: &str,
-) -> Result<AppStopOutcome, String> {
+async fn perform_app_stop(app: &tauri::AppHandle, task_id: &str) -> Result<AppStopOutcome, String> {
     use tauri::Manager;
 
     let pool = app.state::<SqlitePool>();
@@ -1721,7 +1675,9 @@ fn find_start_command_pty(map: &crate::pty::ActivePtyMap, task_id: &str) -> Opti
 /// project's `.mcp.json` is never read or written. Claude Code picks this
 /// file up via `--mcp-config <path>`.
 pub fn verun_mcp_config_path(app_data_dir: &Path, task_id: &str) -> PathBuf {
-    app_data_dir.join("mcp-configs").join(format!("{task_id}.json"))
+    app_data_dir
+        .join("mcp-configs")
+        .join(format!("{task_id}.json"))
 }
 
 /// Write the per-task verun MCP config file containing only the `verun`
@@ -2016,8 +1972,7 @@ mod tests {
     }
 
     async fn insert_output(pool: &SqlitePool, session_id: &str, lines: &[&str]) {
-        let lines: Vec<(String, i64)> =
-            lines.iter().map(|l| ((*l).to_string(), 1000)).collect();
+        let lines: Vec<(String, i64)> = lines.iter().map(|l| ((*l).to_string(), 1000)).collect();
         process_write(
             pool,
             DbWrite::InsertOutputLines {
@@ -2074,15 +2029,21 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-2", "App Two")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::InsertTask(task("t-b", "p-1", "beta", 2000)))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-c", "p-2", "gamma", 3000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-c", "p-2", "gamma", 3000)),
+        )
+        .await
+        .unwrap();
 
         let ctx = McpContext {
             pool: pool.clone(),
@@ -2114,12 +2075,18 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-2", "App Two")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-c", "p-2", "gamma", 3000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-c", "p-2", "gamma", 3000)),
+        )
+        .await
+        .unwrap();
 
         let ctx = McpContext {
             pool: pool.clone(),
@@ -2298,9 +2265,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let ctx = McpContext {
             pool: pool.clone(),
@@ -2380,20 +2350,19 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let ctx = McpContext {
             pool: pool.clone(),
             caller_task_id: Some("t-a".into()),
             actions: None,
         };
-        let resp = dispatch(
-            &ctx,
-            call_list_tasks(json!({ "cursor": "not-a-number" })),
-        )
-        .await;
+        let resp = dispatch(&ctx, call_list_tasks(json!({ "cursor": "not-a-number" }))).await;
         let p = extract_payload(&resp);
         // Garbage cursor is treated as "no cursor" - we get the full result rather
         // than failing the whole request.
@@ -2430,12 +2399,17 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "Verun")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "fragile-stalestate-29", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "fragile-stalestate-29", 1000)),
+        )
+        .await
+        .unwrap();
         let mut t_named = task("t-b", "p-1", "frosty-bagel-42", 2000);
         t_named.name = Some("Add MCP server".into());
-        process_write(&pool, DbWrite::InsertTask(t_named)).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(t_named))
+            .await
+            .unwrap();
 
         let ctx = McpContext {
             pool: pool.clone(),
@@ -2541,12 +2515,18 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-2", "App Two")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-c", "p-2", "gamma", 2000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-c", "p-2", "gamma", 2000)),
+        )
+        .await
+        .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("v.sock");
@@ -2584,9 +2564,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("v.sock");
@@ -2714,7 +2697,10 @@ mod tests {
         // Server should drop the connection - read_line returns 0 bytes.
         let mut buf = String::new();
         let n = reader.read_line(&mut buf).await.unwrap();
-        assert_eq!(n, 0, "expected EOF after invalid identity frame, got {buf:?}");
+        assert_eq!(
+            n, 0,
+            "expected EOF after invalid identity frame, got {buf:?}"
+        );
 
         server.abort();
     }
@@ -3058,9 +3044,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("v.sock");
@@ -3116,15 +3105,21 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-2", "App Two")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::InsertTask(task("t-b", "p-1", "beta", 2000)))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-c", "p-2", "gamma", 3000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-c", "p-2", "gamma", 3000)),
+        )
+        .await
+        .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("v.sock");
@@ -3186,7 +3181,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(err.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused),
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ),
             "unexpected error kind: {:?}",
             err.kind()
         );
@@ -3207,9 +3205,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::CreateSession(session("s-old", "t-a", 100)))
             .await
             .unwrap();
@@ -3224,11 +3225,7 @@ mod tests {
             caller_task_id: Some("t-a".into()),
             actions: None,
         };
-        let resp = dispatch(
-            &ctx,
-            call_read_task_output(json!({ "task_id": "t-a" })),
-        )
-        .await;
+        let resp = dispatch(&ctx, call_read_task_output(json!({ "task_id": "t-a" }))).await;
         let payload = extract_payload(&resp);
 
         assert_eq!(payload["session_id"], "s-new");
@@ -3248,9 +3245,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::InsertTask(task("t-b", "p-1", "beta", 2000)))
             .await
             .unwrap();
@@ -3281,11 +3281,7 @@ mod tests {
             caller_task_id: None,
             actions: None,
         };
-        let resp = dispatch(
-            &ctx,
-            call_read_task_output(json!({ "task_id": "ghost" })),
-        )
-        .await;
+        let resp = dispatch(&ctx, call_read_task_output(json!({ "task_id": "ghost" }))).await;
         let err = resp.error.unwrap();
         assert_eq!(err.code, E_INVALID_PARAMS);
         assert!(err.message.contains("verun_list_tasks"));
@@ -3297,19 +3293,18 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         let ctx = McpContext {
             pool: pool.clone(),
             caller_task_id: None,
             actions: None,
         };
-        let resp = dispatch(
-            &ctx,
-            call_read_task_output(json!({ "task_id": "t-a" })),
-        )
-        .await;
+        let resp = dispatch(&ctx, call_read_task_output(json!({ "task_id": "t-a" }))).await;
         let err = resp.error.unwrap();
         assert_eq!(err.code, E_INVALID_PARAMS);
         assert!(err.message.contains("no sessions"));
@@ -3321,9 +3316,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let ctx = McpContext {
             pool: pool.clone(),
@@ -3360,9 +3358,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::CreateSession(session("s-a", "t-a", 100)))
             .await
             .unwrap();
@@ -3416,9 +3417,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::CreateSession(session("s-a", "t-a", 100)))
             .await
             .unwrap();
@@ -3462,11 +3466,7 @@ mod tests {
             caller_task_id: None,
             actions: None,
         };
-        let resp = dispatch(
-            &ctx,
-            call_read_task_output(json!({ "task_id": "t-a" })),
-        )
-        .await;
+        let resp = dispatch(&ctx, call_read_task_output(json!({ "task_id": "t-a" }))).await;
         let p = extract_payload(&resp);
         assert_eq!(p["task_id"], "t-a");
         assert_eq!(p["task_name"], "Fix Auth");
@@ -3524,10 +3524,7 @@ mod tests {
                         message,
                         reply,
                     } => {
-                        captured_for_worker
-                            .lock()
-                            .await
-                            .push((session_id, message));
+                        captured_for_worker.lock().await.push((session_id, message));
                         let _ = reply.send(reply_with.clone());
                     }
                     McpAction::SpawnTask { reply, .. } => {
@@ -3557,9 +3554,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::CreateSession(session("s-old", "t-a", 100)))
             .await
             .unwrap();
@@ -3595,9 +3595,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::CreateSession(session("s-old", "t-a", 100)))
             .await
             .unwrap();
@@ -3633,9 +3636,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::InsertTask(task("t-b", "p-1", "beta", 2000)))
             .await
             .unwrap();
@@ -3695,9 +3701,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (tx, _) = spawn_capture_worker(Ok(()));
         let ctx = McpContext {
@@ -3726,9 +3735,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (tx, _) = spawn_capture_worker(Ok(()));
         let ctx = McpContext {
@@ -3805,9 +3817,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::CreateSession(session("s-a", "t-a", 100)))
             .await
             .unwrap();
@@ -3832,9 +3847,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::CreateSession(session("s-a", "t-a", 100)))
             .await
             .unwrap();
@@ -3961,9 +3979,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-2", "App Two")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (tx, captured) = spawn_capture_spawn_worker(outcome("t-new", "s-new"));
         let ctx = McpContext {
@@ -3993,9 +4014,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-2", "App Two")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (tx, captured) = spawn_capture_spawn_worker(outcome("t-new", "s-new"));
         let ctx = McpContext {
@@ -4036,11 +4060,7 @@ mod tests {
             caller_task_id: None,
             actions: Some(tx),
         };
-        let resp = dispatch(
-            &ctx,
-            call_spawn_task(json!({ "project_id": "p-ghost" })),
-        )
-        .await;
+        let resp = dispatch(&ctx, call_spawn_task(json!({ "project_id": "p-ghost" }))).await;
         let err = resp.error.expect("expected error");
         assert_eq!(err.code, E_INVALID_PARAMS);
         assert!(err.message.contains("p-ghost"));
@@ -4052,9 +4072,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (tx, captured) = spawn_capture_spawn_worker(outcome("t-new", "s-new"));
         let ctx = McpContext {
@@ -4073,9 +4096,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (tx, _) = spawn_capture_spawn_worker(outcome("t-new", "s-new"));
         let ctx = McpContext {
@@ -4099,9 +4125,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (tx, captured) = spawn_capture_spawn_worker(outcome("t-new", "s-new"));
         let ctx = McpContext {
@@ -4109,11 +4138,7 @@ mod tests {
             caller_task_id: Some("t-a".into()),
             actions: Some(tx),
         };
-        let _ = dispatch(
-            &ctx,
-            call_spawn_task(json!({ "base_branch": "develop" })),
-        )
-        .await;
+        let _ = dispatch(&ctx, call_spawn_task(json!({ "base_branch": "develop" }))).await;
         let calls = captured.lock().await;
         assert_eq!(calls[0].base_branch.as_deref(), Some("develop"));
     }
@@ -4124,9 +4149,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let mut o = outcome("t-new", "s-new");
         o.initial_message_delivered = true;
@@ -4154,9 +4182,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (tx, _) = spawn_capture_spawn_worker(outcome("t-new", "s-new"));
         let ctx = McpContext {
@@ -4164,16 +4195,11 @@ mod tests {
             caller_task_id: Some("t-a".into()),
             actions: Some(tx),
         };
-        let resp = dispatch(
-            &ctx,
-            call_spawn_task(json!({ "initial_message": "  " })),
-        )
-        .await;
+        let resp = dispatch(&ctx, call_spawn_task(json!({ "initial_message": "  " }))).await;
         let err = resp.error.expect("expected error");
         assert_eq!(err.code, E_INVALID_PARAMS);
         assert!(
-            err.message.to_lowercase().contains("empty")
-                || err.message.contains("initial_message")
+            err.message.to_lowercase().contains("empty") || err.message.contains("initial_message")
         );
     }
 
@@ -4183,9 +4209,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let ctx = McpContext {
             pool: pool.clone(),
@@ -4203,9 +4232,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (tx, mut rx) = mpsc::channel::<McpAction>(4);
         tokio::spawn(async move {
@@ -4232,9 +4264,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (tx, _) = spawn_capture_spawn_worker(SpawnTaskOutcome {
             task_id: "t-new".into(),
@@ -4393,9 +4428,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (start, stop, logs) = default_outcomes();
         let (tx, captured) = spawn_capture_app_worker(start, stop, logs);
@@ -4419,9 +4457,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::InsertTask(task("t-b", "p-1", "beta", 2000)))
             .await
             .unwrap();
@@ -4475,9 +4516,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         let ctx = McpContext {
             pool: pool.clone(),
             caller_task_id: Some("t-a".into()),
@@ -4494,9 +4538,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (mut start, stop, logs) = default_outcomes();
         start.already_running = true;
@@ -4519,9 +4566,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (start, stop, logs) = default_outcomes();
         let (tx, captured) = spawn_capture_app_worker(start, stop, logs);
@@ -4544,9 +4594,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (start, mut stop, logs) = default_outcomes();
         stop.stopped = false;
@@ -4587,9 +4640,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (start, stop, logs) = default_outcomes();
         let (tx, captured) = spawn_capture_app_worker(start, stop, logs);
@@ -4616,9 +4672,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (start, stop, logs) = default_outcomes();
         let (tx, captured) = spawn_capture_app_worker(start, stop, logs);
@@ -4644,9 +4703,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
 
         let (start, stop, mut logs) = default_outcomes();
         logs.running = false;
@@ -4769,13 +4831,19 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         // running session
-        process_write(&pool, DbWrite::CreateSession(session("s-running", "t-a", 2000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::CreateSession(session("s-running", "t-a", 2000)),
+        )
+        .await
+        .unwrap();
         // closed session
         let mut closed = session("s-closed", "t-a", 1500);
         closed.status = "closed".into();
@@ -4799,10 +4867,9 @@ mod tests {
             actions: None,
         };
         let resp = dispatch(&ctx, call_list_sessions(json!({}))).await;
-        let payload: Value = serde_json::from_str(
-            resp.result.unwrap()["content"][0]["text"].as_str().unwrap(),
-        )
-        .unwrap();
+        let payload: Value =
+            serde_json::from_str(resp.result.unwrap()["content"][0]["text"].as_str().unwrap())
+                .unwrap();
         let items = payload["items"].as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["session_id"], "s-running");
@@ -4819,9 +4886,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         process_write(&pool, DbWrite::CreateSession(session("s-r", "t-a", 2000)))
             .await
             .unwrap();
@@ -4843,14 +4913,15 @@ mod tests {
             caller_task_id: Some("t-a".into()),
             actions: None,
         };
-        let resp =
-            dispatch(&ctx, call_list_sessions(json!({ "include_closed": true }))).await;
-        let payload: Value = serde_json::from_str(
-            resp.result.unwrap()["content"][0]["text"].as_str().unwrap(),
-        )
-        .unwrap();
+        let resp = dispatch(&ctx, call_list_sessions(json!({ "include_closed": true }))).await;
+        let payload: Value =
+            serde_json::from_str(resp.result.unwrap()["content"][0]["text"].as_str().unwrap())
+                .unwrap();
         let items = payload["items"].as_array().unwrap();
-        let ids: Vec<&str> = items.iter().map(|i| i["session_id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = items
+            .iter()
+            .map(|i| i["session_id"].as_str().unwrap())
+            .collect();
         assert!(ids.contains(&"s-r"));
         assert!(ids.contains(&"s-c"));
     }
@@ -4863,11 +4934,7 @@ mod tests {
             caller_task_id: None,
             actions: None,
         };
-        let resp = dispatch(
-            &ctx,
-            call_list_sessions(json!({ "task_id": "t-nope" })),
-        )
-        .await;
+        let resp = dispatch(&ctx, call_list_sessions(json!({ "task_id": "t-nope" }))).await;
         let err = resp.error.unwrap();
         assert_eq!(err.code, E_INVALID_PARAMS);
         assert!(err.message.contains("verun_list_tasks"));
@@ -4925,20 +4992,19 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         let (tx, _rx) = mpsc::channel::<McpAction>(1);
         let ctx = McpContext {
             pool,
             caller_task_id: Some("t-a".into()),
             actions: Some(tx),
         };
-        let resp = dispatch(
-            &ctx,
-            call_create_session(json!({ "agent_type": "bogus" })),
-        )
-        .await;
+        let resp = dispatch(&ctx, call_create_session(json!({ "agent_type": "bogus" }))).await;
         let err = resp.error.unwrap();
         assert_eq!(err.code, E_INVALID_PARAMS);
         assert!(err.message.contains("unknown agent_type"));
@@ -4950,9 +5016,12 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
         let (tx, _rx) = mpsc::channel::<McpAction>(1);
         let ctx = McpContext {
             pool,
@@ -4978,11 +5047,7 @@ mod tests {
             caller_task_id: None,
             actions: Some(tx),
         };
-        let resp = dispatch(
-            &ctx,
-            call_create_session(json!({ "task_id": "t-nope" })),
-        )
-        .await;
+        let resp = dispatch(&ctx, call_create_session(json!({ "task_id": "t-nope" }))).await;
         let err = resp.error.unwrap();
         assert_eq!(err.code, E_INVALID_PARAMS);
         assert!(err.message.contains("verun_list_tasks"));
@@ -4994,12 +5059,18 @@ mod tests {
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
             .await
             .unwrap();
-        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
-            .await
-            .unwrap();
-        process_write(&pool, DbWrite::CreateSession(session("s-prev", "t-a", 1500)))
-            .await
-            .unwrap();
+        process_write(
+            &pool,
+            DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)),
+        )
+        .await
+        .unwrap();
+        process_write(
+            &pool,
+            DbWrite::CreateSession(session("s-prev", "t-a", 1500)),
+        )
+        .await
+        .unwrap();
 
         let (tx, mut rx) = mpsc::channel::<McpAction>(2);
         tokio::spawn(async move {
@@ -5033,10 +5104,9 @@ mod tests {
             call_create_session(json!({ "initial_message": "hello fresh" })),
         )
         .await;
-        let payload: Value = serde_json::from_str(
-            resp.result.unwrap()["content"][0]["text"].as_str().unwrap(),
-        )
-        .unwrap();
+        let payload: Value =
+            serde_json::from_str(resp.result.unwrap()["content"][0]["text"].as_str().unwrap())
+                .unwrap();
         assert_eq!(payload["task_id"], "t-a");
         assert_eq!(payload["session_id"], "s-new");
         assert_eq!(payload["initial_message_delivered"], true);

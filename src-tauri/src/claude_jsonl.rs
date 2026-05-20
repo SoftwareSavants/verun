@@ -312,9 +312,13 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
         }
         match classify_envelope(s) {
             EnvelopeAction::Drop => return Vec::new(),
-            EnvelopeAction::Replace(text) => return vec![OutputItem::TranscriptUserMessage { text }],
+            EnvelopeAction::Replace(text) => {
+                return vec![OutputItem::TranscriptUserMessage { text }]
+            }
             EnvelopeAction::Keep => {
-                return vec![OutputItem::TranscriptUserMessage { text: s.to_string() }];
+                return vec![OutputItem::TranscriptUserMessage {
+                    text: s.to_string(),
+                }];
             }
         }
     }
@@ -335,7 +339,9 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
                     }
                     match classify_envelope(text) {
                         EnvelopeAction::Drop => continue,
-                        EnvelopeAction::Replace(t) => items.push(OutputItem::TranscriptUserMessage { text: t }),
+                        EnvelopeAction::Replace(t) => {
+                            items.push(OutputItem::TranscriptUserMessage { text: t })
+                        }
                         EnvelopeAction::Keep => items.push(OutputItem::TranscriptUserMessage {
                             text: text.to_string(),
                         }),
@@ -674,7 +680,9 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":"how do i write <command-name>foo</command-name>?"},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
-            [OutputItem::TranscriptUserMessage { text }] => assert!(text.contains("how do i write")),
+            [OutputItem::TranscriptUserMessage { text }] => {
+                assert!(text.contains("how do i write"))
+            }
             other => panic!("expected UserMessage, got {other:?}"),
         }
     }
@@ -785,7 +793,9 @@ mod tests {
         assert!(
             matches!(&items[0], OutputItem::UserAttachment { mime, data_b64 } if mime == "image/jpeg" && data_b64 == "AAAA")
         );
-        assert!(matches!(&items[1], OutputItem::TranscriptUserMessage { text } if text == "check this"));
+        assert!(
+            matches!(&items[1], OutputItem::TranscriptUserMessage { text } if text == "check this")
+        );
     }
 
     #[test]
@@ -831,7 +841,9 @@ mod tests {
         // remaining 6 lines (queue-operation, 3 attachments, ai-title,
         // last-prompt) are all bookkeeping and produce nothing.
         assert_eq!(items.len(), 6, "items: {items:#?}");
-        assert!(matches!(&items[0], OutputItem::TranscriptUserMessage { text } if text == "hello claude"));
+        assert!(
+            matches!(&items[0], OutputItem::TranscriptUserMessage { text } if text == "hello claude")
+        );
         assert!(
             matches!(&items[1], OutputItem::Thinking { text } if text == "let me think about this")
         );
