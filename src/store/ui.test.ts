@@ -15,6 +15,11 @@ import {
   requestNewTaskForProject,
   focusOrSelectTask,
   markTaskWindowed,
+  markTaskUnread,
+  markTaskAttention,
+  isTaskUnread,
+  isTaskAttention,
+  clearTaskIndicators,
   selectedTaskId,
   setSelectedTaskId,
   selectedProjectId,
@@ -41,6 +46,39 @@ describe('new-task dialog signal', () => {
   test('requestNewTaskForProject sets newTaskProjectId so the dialog opens', () => {
     requestNewTaskForProject('p-001')
     expect(newTaskProjectId()).toBe('p-001')
+  })
+})
+
+describe('unread / attention indicators vs detached windows', () => {
+  beforeEach(() => {
+    setSelectedTaskId(null)
+    markTaskWindowed('t-win', false)
+    clearTaskIndicators('t-win')
+  })
+
+  // Regression: when a task is open in a detached window, the user sees its
+  // output there in real time. The main window also receives the session
+  // status event and used to mark the task unread because it wasn't the
+  // currently-selected task in main. Closing the detached window then left
+  // a stale unread badge on the sidebar even though the user had seen it.
+  test('markTaskUnread skips when the task is open in a detached window', () => {
+    markTaskWindowed('t-win', true)
+    expect(isTaskUnread('t-win')).toBe(false)
+    markTaskUnread('t-win')
+    expect(isTaskUnread('t-win')).toBe(false)
+  })
+
+  test('markTaskAttention skips when the task is open in a detached window', () => {
+    markTaskWindowed('t-win', true)
+    markTaskAttention('t-win')
+    expect(isTaskAttention('t-win')).toBe(false)
+  })
+
+  test('markTaskUnread still marks the task once the detached window has closed', () => {
+    markTaskWindowed('t-win', true)
+    markTaskWindowed('t-win', false)
+    markTaskUnread('t-win')
+    expect(isTaskUnread('t-win')).toBe(true)
   })
 })
 
