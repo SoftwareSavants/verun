@@ -464,10 +464,10 @@ export async function initSessionListeners() {
     if (wasRunning && (status === 'idle' || status === 'error') && prevSession) {
       markTaskUnread(prevSession.taskId)
       markSessionUnread(sessionId)
-      const taskName = taskById(prevSession.taskId)?.name || 'Task'
+      const displayName = prevSession.name || taskById(prevSession.taskId)?.name || 'Task'
       notify({
         title: status === 'error' ? 'Task failed' : 'Task completed',
-        body: taskName,
+        body: displayName,
         taskId: prevSession.taskId,
         sessionId,
       })
@@ -488,13 +488,13 @@ export async function initSessionListeners() {
     const session = sessions.find(s => s.id === req.sessionId)
     if (session) {
       markTaskAttention(session.taskId)
-      const taskName = taskById(session.taskId)?.name || 'Task'
+      const displayName = session.name || taskById(session.taskId)?.name || 'Task'
       const isQuestion = req.toolName === 'AskUserQuestion'
       notify({
         title: isQuestion ? 'Question from task' : 'Approval needed',
         body: isQuestion
-          ? `${taskName}: ${(req.toolInput?.question as string)?.slice(0, 100) || 'has a question'}`
-          : `${taskName}: ${req.toolName}`,
+          ? `${displayName}: ${(req.toolInput?.question as string)?.slice(0, 100) || 'has a question'}`
+          : `${displayName}: ${req.toolName}`,
         taskId: session.taskId,
         sessionId: req.sessionId,
       })

@@ -6,8 +6,10 @@
 - File-conflict dialog now mounts in detached task windows. Previously, saving an edit in a detached window where the file had changed on disk would silently abort without prompting the user to discard or overwrite, since the dialog was only rendered in the main window
 - LSP diagnostics now populate in detached task windows. The Problems panel was empty there because `initProblemsListener` only ran in the main window; it now registers from the shared `initListeners()` path so both shells pick it up
 - Sidebar no longer shows a stale unread badge for a task you watched in a detached window: `markTaskUnread` / `markTaskAttention` now skip when the task is already open in another window, since the user is seeing the output there in real time
+- Projects that commit `.mcp.json` are no longer modified on task creation. Verun now writes its per-task `verun` MCP server entry to `<app_data>/mcp-configs/<task-id>.json` and passes it to Claude Code via `--mcp-config`, so the project's MCP config is never read or written. Migration: if a previous version added a `verun` entry to your `.mcp.json`, run `git checkout .mcp.json` once to clean it up
 - "Ask sideways" pill no longer overlaps the last user bubble when the agent is idle and the user's message is the most recent one (e.g. after an interrupt) - the chat reserves extra bottom space in that case so the pill sits below the message
 - Side question requests now keep running in the background if the panel is closed mid-flight. The "Ask sideways" pill shows a spinner ("Asking sideways...") while a request is in progress, then switches to an "Answer ready" state (accent ring + sparkle icon) when the answer arrives while the panel is closed. Click the pill to reopen and view the answer, or the inline X to dismiss the notification without opening
+- Desktop notifications (task completed/failed, approval needed, question from task) now use the session name when set, falling back to the task name - gives precise context when a task has multiple named sessions (#247)
 
 ## 0.11.0 — 2026-05-12
 

@@ -78,6 +78,14 @@ impl Agent for Claude {
             "stdio".into(),
         ];
 
+        // Inject the per-task verun MCP server via `--mcp-config` rather than
+        // writing into the project's `.mcp.json`. Without `--strict-mcp-config`
+        // this is additive: the user's project, user, and local MCP configs
+        // still load alongside ours.
+        if let Some(path) = args.verun_mcp_config_path {
+            v.extend(["--mcp-config".into(), path.to_string_lossy().into_owned()]);
+        }
+
         if args.plan_mode {
             v.extend(["--permission-mode".into(), "plan".into()]);
         }
