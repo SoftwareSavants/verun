@@ -1361,6 +1361,7 @@ async fn perform_send_user_message(
             task_name: task.name,
             agent_type: session.agent_type,
             external: true,
+            wakeup_reason: None,
         },
     )
     .await
@@ -1447,6 +1448,7 @@ async fn perform_spawn_task(
                 task_name: task.name.clone(),
                 agent_type: agent_type.clone(),
                 external: true,
+                wakeup_reason: None,
             },
         )
         .await;
@@ -1629,6 +1631,7 @@ async fn perform_create_session(
                 task_name: task.name.clone(),
                 agent_type: agent_type.clone(),
                 external: true,
+                wakeup_reason: None,
             },
         )
         .await;

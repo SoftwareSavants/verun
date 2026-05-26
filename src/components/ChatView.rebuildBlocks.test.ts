@@ -64,6 +64,58 @@ describe('rebuildBlocks turnEnd rendering', () => {
   })
 })
 
+describe('rebuildBlocks scheduled wakeups (issue #230)', () => {
+  test('userMessage with wakeupReason renders a wakeup block, not a user bubble', () => {
+    const items: OutputItem[] = [
+      {
+        kind: 'userMessage',
+        text: 'Check the build now',
+        wakeupReason: 'polling CI',
+        timestamp: 1,
+      } as OutputItem,
+    ]
+    const blocks = rebuildBlocks(items)
+    const wakeup = blocks.find(b => b.type === 'wakeup') as
+      | { type: 'wakeup'; prompt: string; reason?: string }
+      | undefined
+    expect(wakeup).toBeDefined()
+    expect(wakeup!.prompt).toBe('Check the build now')
+    expect(wakeup!.reason).toBe('polling CI')
+    expect(blocks.find(b => b.type === 'user')).toBeUndefined()
+  })
+
+  test('userMessage without wakeupReason still renders as a user bubble', () => {
+    const items: OutputItem[] = [
+      { kind: 'userMessage', text: 'hello', timestamp: 1 } as OutputItem,
+    ]
+    const blocks = rebuildBlocks(items)
+    expect(blocks.find(b => b.type === 'user')).toBeDefined()
+    expect(blocks.find(b => b.type === 'wakeup')).toBeUndefined()
+  })
+
+  test('transcriptUserMessage with isMeta=true renders as a wakeup block', () => {
+    const items: OutputItem[] = [
+      {
+        kind: 'transcriptUserMessage',
+        text: 'Check if there are any local changes',
+        isMeta: true,
+      } as OutputItem,
+    ]
+    const blocks = rebuildBlocks(items)
+    expect(blocks.find(b => b.type === 'wakeup')).toBeDefined()
+    expect(blocks.find(b => b.type === 'user')).toBeUndefined()
+  })
+
+  test('transcriptUserMessage without isMeta renders as a user bubble', () => {
+    const items: OutputItem[] = [
+      { kind: 'transcriptUserMessage', text: 'a real human typed this' } as OutputItem,
+    ]
+    const blocks = rebuildBlocks(items)
+    expect(blocks.find(b => b.type === 'user')).toBeDefined()
+    expect(blocks.find(b => b.type === 'wakeup')).toBeUndefined()
+  })
+})
+
 describe('rebuildBlocks codex plan/diff updates', () => {
   test('planUpdate renders a plan block with the latest items', () => {
     const items: OutputItem[] = [

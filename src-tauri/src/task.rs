@@ -1345,6 +1345,11 @@ pub struct SendMessageParams {
     /// inserts its own user message on submit; external messages need an
     /// explicit `session-output` event so the active view picks them up.
     pub external: bool,
+    /// Set only when the wakeup scheduler is firing a `ScheduleWakeup`
+    /// follow-up (issue #230). Threaded through to the persisted user
+    /// message so the chat renders a wakeup marker rather than a green
+    /// user bubble. UI and MCP sends always leave this `None`.
+    pub wakeup_reason: Option<String>,
 }
 
 /// Send a message to the agent's CLI in this session's worktree.
@@ -1383,6 +1388,7 @@ pub async fn send_message(
         task_name,
         agent_type,
         external,
+        wakeup_reason,
     } = params;
     let agent = AgentKind::parse(&agent_type).implementation();
     let is_first_turn = resume_session_id.as_ref().is_none_or(|s| s.is_empty());
@@ -1497,6 +1503,7 @@ pub async fn send_message(
                     thinking_mode,
                     fast_mode,
                     external,
+                    wakeup_reason.clone(),
                 )
                 .await;
                 spawn_session_title_generation(
@@ -1575,6 +1582,7 @@ pub async fn send_message(
                     thinking_mode,
                     fast_mode,
                     external,
+                    wakeup_reason.clone(),
                 )
                 .await;
                 spawn_session_title_generation(
@@ -1685,6 +1693,7 @@ pub async fn send_message(
         thinking_mode,
         fast_mode,
         external,
+        wakeup_reason.clone(),
     )
     .await;
 
@@ -1734,6 +1743,7 @@ async fn persist_verun_user_message(
     thinking_mode: bool,
     fast_mode: bool,
     external: bool,
+    wakeup_reason: Option<String>,
 ) {
     let refs: Vec<AttachmentRef> = attachments
         .iter()
@@ -1745,15 +1755,21 @@ async fn persist_verun_user_message(
         })
         .collect();
     let now = epoch_ms();
-    let user_line = serde_json::json!({
+    let mut user_obj = serde_json::json!({
         "type": "verun_user_message",
         "text": message,
         "attachments": refs,
         "plan_mode": plan_mode,
         "thinking_mode": thinking_mode,
         "fast_mode": fast_mode,
-    })
-    .to_string();
+    });
+    // Record the wakeup tag in the persisted line so the chat renders the
+    // marker on reload, not just on the live emit (issue #230). We always
+    // include the field when set, even if the reason string is empty.
+    if let Some(reason) = wakeup_reason.as_ref() {
+        user_obj["wakeup_reason"] = serde_json::Value::String(reason.clone());
+    }
+    let user_line = user_obj.to_string();
     let _ = db_tx
         .send(db::DbWrite::InsertOutputLines {
             session_id: session_id.to_string(),
@@ -1763,7 +1779,7 @@ async fn persist_verun_user_message(
     // UI sends are already inserted optimistically by the frontend before
     // this runs; emitting again would duplicate the message. External
     // sends (MCP `verun_send_message`) need the push so the live view
-    // updates without a session reload.
+    // updates without a session reload. Wakeups are always external.
     if external {
         let _ = app.emit(
             "session-output",
@@ -1772,6 +1788,7 @@ async fn persist_verun_user_message(
                 items: vec![stream::OutputItem::UserMessage {
                     text: message.to_string(),
                     timestamp: Some(now),
+                    wakeup_reason,
                 }],
             },
         );
