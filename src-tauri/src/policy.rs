@@ -112,6 +112,17 @@ pub fn evaluate(
         };
     }
 
+    // AskUserQuestion always requires approval — auto-allowing it echoes the
+    // original tool_input back without an `answers` map, so the question UI
+    // never shows and the agent silently continues thinking the user gave no
+    // answer (see #216 sibling bug).
+    if tool_name == "AskUserQuestion" {
+        return PolicyResult {
+            decision: PolicyDecision::RequireApproval,
+            reason: "user question always requires user answer".into(),
+        };
+    }
+
     // Hard blocks — always require approval regardless of trust level.
     // Verun manages worktree lifecycle; Claude must never touch it.
     if tool_name == "Bash" {
@@ -725,6 +736,46 @@ mod tests {
         let result = evaluate(
             "Read",
             &json!({"file_path": "/tmp/project/src/main.rs"}),
+            WORKTREE,
+            REPO,
+            TrustLevel::Supervised,
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    // AskUserQuestion must always reach the user — auto-allowing it ships an
+    // empty answers map back to the agent, so the question UI never renders
+    // and the agent silently continues with no input. Mirrors the ExitPlanMode
+    // carve-out above.
+    #[test]
+    fn ask_user_question_requires_approval_under_full_auto() {
+        let result = evaluate(
+            "AskUserQuestion",
+            &json!({"questions": [{"question": "pick one", "options": []}]}),
+            WORKTREE,
+            REPO,
+            TrustLevel::FullAuto,
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn ask_user_question_requires_approval_under_normal() {
+        let result = evaluate(
+            "AskUserQuestion",
+            &json!({"questions": [{"question": "pick one", "options": []}]}),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn ask_user_question_requires_approval_under_supervised() {
+        let result = evaluate(
+            "AskUserQuestion",
+            &json!({"questions": [{"question": "pick one", "options": []}]}),
             WORKTREE,
             REPO,
             TrustLevel::Supervised,
