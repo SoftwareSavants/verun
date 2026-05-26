@@ -742,6 +742,7 @@ pub async fn send_message(
             task_name: t.name,
             agent_type: session.agent_type.clone(),
             external: false,
+            wakeup_reason: None,
         },
     )
     .await

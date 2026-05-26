@@ -303,6 +303,13 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
         None => return Vec::new(),
     };
 
+    // CLI tags synthesised turns (e.g. ScheduleWakeup follow-ups) with
+    // `isMeta:true`. Real human input has the field absent or false.
+    let is_meta = value
+        .get("isMeta")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     // The user prompt form comes as either a raw string or as an array of
     // text blocks. Tool results always come as an array with `tool_result`
     // blocks.
@@ -312,9 +319,14 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
         }
         match classify_envelope(s) {
             EnvelopeAction::Drop => return Vec::new(),
-            EnvelopeAction::Replace(text) => return vec![OutputItem::TranscriptUserMessage { text }],
+            EnvelopeAction::Replace(text) => {
+                return vec![OutputItem::TranscriptUserMessage { text, is_meta }];
+            }
             EnvelopeAction::Keep => {
-                return vec![OutputItem::TranscriptUserMessage { text: s.to_string() }];
+                return vec![OutputItem::TranscriptUserMessage {
+                    text: s.to_string(),
+                    is_meta,
+                }];
             }
         }
     }
@@ -335,9 +347,13 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
                     }
                     match classify_envelope(text) {
                         EnvelopeAction::Drop => continue,
-                        EnvelopeAction::Replace(t) => items.push(OutputItem::TranscriptUserMessage { text: t }),
+                        EnvelopeAction::Replace(t) => items.push(OutputItem::TranscriptUserMessage {
+                            text: t,
+                            is_meta,
+                        }),
                         EnvelopeAction::Keep => items.push(OutputItem::TranscriptUserMessage {
                             text: text.to_string(),
+                            is_meta,
                         }),
                     }
                 }
@@ -560,7 +576,38 @@ mod tests {
         let line = r#"{"parentUuid":null,"type":"user","message":{"role":"user","content":[{"text":"hello claude","type":"text"}]},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
-            [OutputItem::TranscriptUserMessage { text }] => assert_eq!(text, "hello claude"),
+            [OutputItem::TranscriptUserMessage { text, is_meta }] => {
+                assert_eq!(text, "hello claude");
+                assert!(!is_meta);
+            }
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    // Issue #230: when the TUI fires a ScheduleWakeup follow-up the synthesised
+    // user turn is tagged `isMeta:true` in the JSONL. The parser must surface
+    // that flag so the chat renders a wakeup marker on terminal->UI toggle.
+    #[test]
+    fn transcript_user_is_meta_true_flows_through() {
+        let line = r#"{"type":"user","message":{"role":"user","content":"Check if there are local changes"},"isMeta":true,"uuid":"u-wakeup"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::TranscriptUserMessage { text, is_meta }] => {
+                assert_eq!(text, "Check if there are local changes");
+                assert!(*is_meta, "is_meta should be true for CLI-synthesised turns");
+            }
+            other => panic!("unexpected items: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_user_is_meta_defaults_false_when_field_absent() {
+        let line = r#"{"type":"user","message":{"role":"user","content":"a real human typed this"},"uuid":"u1"}"#;
+        let items = parse_transcript_line(line);
+        match items.as_slice() {
+            [OutputItem::TranscriptUserMessage { is_meta, .. }] => {
+                assert!(!is_meta);
+            }
             other => panic!("unexpected items: {other:?}"),
         }
     }
@@ -571,7 +618,7 @@ mod tests {
             r#"{"type":"user","message":{"role":"user","content":"inline prompt"},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
-            [OutputItem::TranscriptUserMessage { text }] => assert_eq!(text, "inline prompt"),
+            [OutputItem::TranscriptUserMessage { text, .. }] => assert_eq!(text, "inline prompt"),
             other => panic!("unexpected items: {other:?}"),
         }
     }
@@ -594,7 +641,7 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":"<command-message>adapt</command-message>\n<command-name>/adapt</command-name>\n<command-args>wassup</command-args>"},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
-            [OutputItem::TranscriptUserMessage { text }] => assert_eq!(text, "/adapt wassup"),
+            [OutputItem::TranscriptUserMessage { text, .. }] => assert_eq!(text, "/adapt wassup"),
             other => panic!("expected one transformed UserMessage, got {other:?}"),
         }
     }
@@ -604,7 +651,7 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":"<command-name>/exit</command-name>\n<command-args></command-args>"},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
-            [OutputItem::TranscriptUserMessage { text }] => assert_eq!(text, "/exit"),
+            [OutputItem::TranscriptUserMessage { text, .. }] => assert_eq!(text, "/exit"),
             other => panic!("expected /exit, got {other:?}"),
         }
     }
@@ -616,7 +663,7 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: foo.</local-command-caveat>\n<command-name>/model</command-name>\n<command-args>opus</command-args>"},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
-            [OutputItem::TranscriptUserMessage { text }] => assert_eq!(text, "/model opus"),
+            [OutputItem::TranscriptUserMessage { text, .. }] => assert_eq!(text, "/model opus"),
             other => panic!("got {other:?}"),
         }
     }
@@ -661,7 +708,7 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<command-name>/exit</command-name>\n<command-args></command-args>"}]},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
-            [OutputItem::TranscriptUserMessage { text }] => assert_eq!(text, "/exit"),
+            [OutputItem::TranscriptUserMessage { text, .. }] => assert_eq!(text, "/exit"),
             other => panic!("got {other:?}"),
         }
     }
@@ -674,7 +721,7 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":"how do i write <command-name>foo</command-name>?"},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
-            [OutputItem::TranscriptUserMessage { text }] => assert!(text.contains("how do i write")),
+            [OutputItem::TranscriptUserMessage { text, .. }] => assert!(text.contains("how do i write")),
             other => panic!("expected UserMessage, got {other:?}"),
         }
     }
@@ -785,7 +832,7 @@ mod tests {
         assert!(
             matches!(&items[0], OutputItem::UserAttachment { mime, data_b64 } if mime == "image/jpeg" && data_b64 == "AAAA")
         );
-        assert!(matches!(&items[1], OutputItem::TranscriptUserMessage { text } if text == "check this"));
+        assert!(matches!(&items[1], OutputItem::TranscriptUserMessage { text, .. } if text == "check this"));
     }
 
     #[test]
@@ -831,7 +878,7 @@ mod tests {
         // remaining 6 lines (queue-operation, 3 attachments, ai-title,
         // last-prompt) are all bookkeeping and produce nothing.
         assert_eq!(items.len(), 6, "items: {items:#?}");
-        assert!(matches!(&items[0], OutputItem::TranscriptUserMessage { text } if text == "hello claude"));
+        assert!(matches!(&items[0], OutputItem::TranscriptUserMessage { text, .. } if text == "hello claude"));
         assert!(
             matches!(&items[1], OutputItem::Thinking { text } if text == "let me think about this")
         );
