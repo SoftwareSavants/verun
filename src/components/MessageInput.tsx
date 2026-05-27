@@ -24,6 +24,8 @@ import { BlobImage } from './BlobImage'
 import { openSideQuestion } from '../store/sideQuestion'
 import { serializeAttachments, deserializeAttachments, uploadAttachments } from '../lib/binary'
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
+import { decidePlanAction } from '../lib/planAction'
+import { decideQuestionKeyAction, QUESTION_SKIP_MESSAGE } from '../lib/questionKeyAction'
 
 interface Props {
   sessionId: string | null
@@ -601,45 +603,42 @@ export const MessageInput: Component<Props> = (props) => {
 
   // Handles both live ExitPlanMode approval and persisted plan viewer
   const handlePlanViewerAction = async (feedback: string) => {
-    if (planActionPending()) return
-    const sid = props.sessionId
-    if (!sid) return
+    const action = decidePlanAction({
+      sessionId: props.sessionId,
+      feedback,
+      approval: currentApproval(),
+      pending: planActionPending(),
+    })
+    if (action.kind === 'noop') return
     setPlanActionPending(true)
-    const approval = currentApproval()
-    if (feedback) {
-      // Request changes
-      setPlanChanges('')
-      try {
-        if (approval && isExitPlanMode()) {
+    try {
+      switch (action.kind) {
+        case 'deny':
+          setPlanChanges('')
+          setPlanFilePathForSession(action.sessionId, null)
           // Forward the feedback as the tool-deny message so Claude sees it as
           // the reason and continues the same turn. No separate sendMessage.
-          setPlanFilePathForSession(approval.sessionId, null)
-          await denyToolUse(approval.requestId, approval.sessionId, feedback)
-        } else {
-          // Persisted plan viewer — no live approval, send as a new message.
-          setPlanFilePathForSession(sid, null)
-          await sendMessage(sid, feedback, undefined, currentModel(), true)
-        }
-      } catch (error) {
-        setPlanActionPending(false)
-        throw error
+          await denyToolUse(action.requestId, action.sessionId, action.message)
+          break
+        case 'sendFeedback':
+          setPlanChanges('')
+          setPlanFilePathForSession(action.sessionId, null)
+          await sendMessage(action.sessionId, action.message, undefined, currentModel(), true)
+          break
+        case 'approve':
+          setPlanMode(false)
+          setPlanFilePathForSession(action.sessionId, null)
+          await approveToolUse(action.requestId, action.sessionId)
+          break
+        case 'sendImplementation':
+          setPlanMode(false)
+          setPlanFilePathForSession(action.sessionId, null)
+          await sendMessage(action.sessionId, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+          break
       }
-    } else {
-      // Approve the plan and persist local plan mode/file state.
-      setPlanMode(false)
-      setPlanFilePathForSession(sid, null)
-      try {
-        if (approval && isExitPlanMode()) {
-          await approveToolUse(approval.requestId, approval.sessionId)
-          return
-        }
-        // Persisted plan review has no live approval waiting on the backend, so
-        // we still need to send the implementation message explicitly.
-        await sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
-      } catch (error) {
-        setPlanActionPending(false)
-        throw error
-      }
+    } catch (error) {
+      setPlanActionPending(false)
+      throw error
     }
   }
 
@@ -1521,31 +1520,44 @@ export const MessageInput: Component<Props> = (props) => {
       if (!approval) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
 
-      // AskUserQuestion: number keys select options, Escape to skip
+      // AskUserQuestion: number keys select options, Escape to skip.
+      // When any input is focused (e.g. custom-answer field), printable keys
+      // must reach the input — only Escape still skips. See decideQuestionKeyAction.
       if (isQuestion()) {
-        if (e.key === 'Escape') {
-          e.preventDefault()
-          denyToolUse(approval.requestId, approval.sessionId)
-          return
-        }
         const q = currentQuestion()
         if (!q) return
-        const num = parseInt(e.key)
-        const optCount = q.options?.length ?? 0
-        if (num >= 1 && num <= optCount) {
-          e.preventDefault()
-          selectQuestionOption(q.options![num - 1].label)
-        } else if (num === optCount + 1) {
-          e.preventDefault()
-          customAnswerRef?.focus()
-        } else if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault()
-          const qs = questions()
-          if (questionIndex() < qs.length - 1) {
+        const active = document.activeElement
+        const isInputFocused = !!(active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA'))
+        const action = decideQuestionKeyAction({
+          key: e.key,
+          shiftKey: e.shiftKey,
+          isInputFocused,
+          options: q.options ?? [],
+          hasMoreQuestions: questionIndex() < questions().length - 1,
+        })
+        switch (action.kind) {
+          case 'deny':
+            e.preventDefault()
+            denyToolUse(approval.requestId, approval.sessionId, action.message)
+            break
+          case 'selectOption':
+            e.preventDefault()
+            selectQuestionOption(action.label)
+            break
+          case 'focusCustom':
+            e.preventDefault()
+            customAnswerRef?.focus()
+            break
+          case 'next':
+            e.preventDefault()
             setQuestionIndex(i => i + 1)
-          } else {
+            break
+          case 'submit':
+            e.preventDefault()
             submitQuestionAnswers()
-          }
+            break
+          case 'noop':
+            break
         }
         return
       }
@@ -1675,7 +1687,7 @@ export const MessageInput: Component<Props> = (props) => {
                 </div>
                 <button
                   class="p-1 rounded-md text-text-dim hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                  onClick={() => denyToolUse(currentApproval()!.requestId, currentApproval()!.sessionId)}
+                  onClick={() => denyToolUse(currentApproval()!.requestId, currentApproval()!.sessionId, QUESTION_SKIP_MESSAGE)}
                   title="Skip (Esc)"
                 >
                   <X size={14} />
