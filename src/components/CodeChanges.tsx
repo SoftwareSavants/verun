@@ -4,7 +4,7 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { ChangesHeader } from './ChangesHeader'
 import { FileSection, type SectionKind, type BulkAction } from './FileSection'
 import { FileRow } from './FileRow'
-import { CommitComposer } from './CommitComposer'
+import { CommitComposer, type CommitComposerApi } from './CommitComposer'
 import { ConflictStageDialog, type ConflictChoice } from './ConflictStageDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { BranchCommits } from './BranchCommits'
@@ -163,11 +163,16 @@ export const CodeChanges: Component<Props> = (props) => {
     }
   }
 
+  // Read-only view: when the user is inspecting a past commit, working-tree
+  // mutations (stage/unstage/discard, bulk + context-menu equivalents) make no
+  // sense and would silently target the wrong files. Hide them all.
+  const isCommitView = () => selectedCommit() !== null
+
   const conflictBulk: BulkAction[] = []
-  const stagedBulk = (): BulkAction[] => [
+  const stagedBulk = (): BulkAction[] => isCommitView() ? [] : [
     { icon: Minus, title: 'Unstage all', onClick: () => unstageAll(props.taskId) },
   ]
-  const changesBulk = (): BulkAction[] => [
+  const changesBulk = (): BulkAction[] => isCommitView() ? [] : [
     { icon: Plus, title: 'Stage all', onClick: () => stageAll(props.taskId) },
     {
       icon: Undo2,
@@ -187,7 +192,6 @@ export const CodeChanges: Component<Props> = (props) => {
     localStorage.setItem(sectionOpenKey(kind), String(value))
   }
   const toggleSection = (kind: SectionKind) => writeSectionOpen(kind, !sectionsOpen()[kind])
-  const onJumpToSection = (kind: SectionKind) => writeSectionOpen(kind, true)
 
   const canCommit = () => conflicts().length === 0 && allEntries().length > 0
   const canAmend = () => taskGit(props.taskId).commits.length > 0 && conflicts().length === 0
@@ -196,19 +200,33 @@ export const CodeChanges: Component<Props> = (props) => {
   const onCommitAndPush = async (msg: string) => commitAndPush(props.taskId, msg)
   const onAmend = (msg: string) => commitAmend(props.taskId, msg)
 
+  let composerApi: CommitComposerApi | undefined
+  const runUndo = async () => {
+    // Capture the last commit's message BEFORE the IPC so we can prefill the
+    // composer on success without re-fetching.
+    const last = taskGit(props.taskId).commits[0]
+    const ok = await undoLastCommit(props.taskId)
+    if (!ok) return
+    // Drop any commit selection so the view returns to the working tree where
+    // the undone changes are now staged (and the composer is visible again).
+    selectCommit(null)
+    if (last) composerApi?.setDraftIfEmpty(last.message)
+  }
+  // Working-tree file count, ignoring whatever commit the user might currently be viewing.
+  const workingChangeCount = () => taskGit(props.taskId).status?.files.length ?? 0
   const onUndoLast = () => {
-    // Confirm only if there are local files that would be merged with the undone commit's
-    // staged content (otherwise it's trivially reversible).
-    if (allEntries().length > 0) {
+    // Confirm only if there are local files in the working tree that would be merged
+    // with the undone commit's staged content (otherwise it's trivially reversible).
+    if (workingChangeCount() > 0) {
       setUndoConfirm(true)
     } else {
-      undoLastCommit(props.taskId)
+      runUndo()
     }
   }
   const onRevertRequest = (commit: BranchCommit) => setRevertTarget(commit)
   const confirmUndo = () => {
     setUndoConfirm(false)
-    undoLastCommit(props.taskId)
+    runUndo()
   }
   const confirmRevert = () => {
     const c = revertTarget()
@@ -232,17 +250,19 @@ export const CodeChanges: Component<Props> = (props) => {
       { label: 'Open Diff',       icon: GitCompare,   action: () => { openDiff(e, { pinned: true }); closeFileMenu() } },
       { label: 'Open File',       icon: FileText,     action: () => { openFile(e); closeFileMenu() } },
       { label: 'Open in VS Code', icon: ExternalLink, action: () => { ipc.openInApp(fullPath(path), 'Visual Studio Code'); closeFileMenu() } },
-      { separator: true },
     ]
-    if (e.kind === 'conflict') {
-      items.push({ label: 'Stage…',  icon: Plus,  action: () => { setConflictDialogPath(path); closeFileMenu() } })
-    } else if (e.kind === 'staged') {
-      items.push({ label: 'Unstage', icon: Minus, action: () => { unstageOne(props.taskId, path); closeFileMenu() } })
-    } else {
-      items.push({ label: 'Stage',   icon: Plus,  action: () => { stageOne(props.taskId, path); closeFileMenu() } })
-    }
-    if (e.kind !== 'conflict') {
-      items.push({ label: 'Discard', icon: X, action: () => { setDiscardTarget(path); closeFileMenu() } })
+    if (!isCommitView()) {
+      items.push({ separator: true })
+      if (e.kind === 'conflict') {
+        items.push({ label: 'Stage…',  icon: Plus,  action: () => { setConflictDialogPath(path); closeFileMenu() } })
+      } else if (e.kind === 'staged') {
+        items.push({ label: 'Unstage', icon: Minus, action: () => { unstageOne(props.taskId, path); closeFileMenu() } })
+      } else {
+        items.push({ label: 'Stage',   icon: Plus,  action: () => { stageOne(props.taskId, path); closeFileMenu() } })
+      }
+      if (e.kind !== 'conflict') {
+        items.push({ label: 'Discard', icon: X, action: () => { setDiscardTarget(path); closeFileMenu() } })
+      }
     }
     items.push(
       { separator: true },
@@ -267,8 +287,8 @@ export const CodeChanges: Component<Props> = (props) => {
         onOpenDiff={() => openDiff(entry)}
         onOpenDiffPinned={() => openDiff(entry, { pinned: true })}
         onOpenFile={() => openFile(entry)}
-        onPrimary={() => onPrimary(entry)}
-        onDiscard={() => onDiscard(entry)}
+        onPrimary={isCommitView() ? undefined : () => onPrimary(entry)}
+        onDiscard={isCommitView() ? undefined : () => onDiscard(entry)}
         onContextMenu={(e: MouseEvent) => { e.preventDefault(); setFileMenu({ x: e.clientX, y: e.clientY, entry }) }}
       />
     )
@@ -288,7 +308,6 @@ export const CodeChanges: Component<Props> = (props) => {
         loading={loading()}
         selectedCommitShortHash={selectedCommit() ? selectedCommitInfo()?.shortHash : undefined}
         onRefresh={refresh}
-        onJumpToSection={onJumpToSection}
       />
 
       <Show when={error()}>
@@ -344,6 +363,7 @@ export const CodeChanges: Component<Props> = (props) => {
           onCommit={onCommit}
           onCommitAndPush={onCommitAndPush}
           onAmend={onAmend}
+          apiRef={(api) => { composerApi = api }}
         />
       </Show>
 
@@ -375,7 +395,7 @@ export const CodeChanges: Component<Props> = (props) => {
       <ConfirmDialog
         open={undoConfirm()}
         title="Undo last commit?"
-        message={`Local changes are present. Undoing will move ${allEntries().length} local change${allEntries().length === 1 ? '' : 's'} into the same staging area as the undone commit's content. You won't lose any work, but the two sets of changes will be mixed together.`}
+        message={`Local changes are present. Undoing will move ${workingChangeCount()} local change${workingChangeCount() === 1 ? '' : 's'} into the same staging area as the undone commit's content. You won't lose any work, but the two sets of changes will be mixed together.`}
         confirmLabel="Undo"
         onConfirm={confirmUndo}
         onCancel={() => setUndoConfirm(false)}

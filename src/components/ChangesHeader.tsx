@@ -1,6 +1,5 @@
 import { Component, Show } from 'solid-js'
 import { RefreshCw } from 'lucide-solid'
-import type { SectionKind } from './FileSection'
 
 interface Props {
   conflicts: number
@@ -11,7 +10,6 @@ interface Props {
   loading: boolean
   selectedCommitShortHash?: string
   onRefresh: () => void
-  onJumpToSection: (kind: SectionKind) => void
 }
 
 export const ChangesHeader: Component<Props> = (props) => {
@@ -26,33 +24,21 @@ export const ChangesHeader: Component<Props> = (props) => {
         </Show>
 
         <Show when={props.conflicts > 0}>
-          <button
-            data-testid="conflict-seg"
-            class="text-red-400 animate-pulse hover:underline shrink-0 tabular-nums"
-            onClick={() => props.onJumpToSection('conflicts')}
-          >
+          <span data-testid="conflict-seg" class="text-red-400 animate-pulse shrink-0 tabular-nums">
             !{props.conflicts} conflict{props.conflicts !== 1 ? 's' : ''}
-          </button>
+          </span>
         </Show>
         <Show when={props.staged > 0}>
           <Show when={props.conflicts > 0}><span class="text-text-dim shrink-0">·</span></Show>
-          <button
-            data-testid="staged-seg"
-            class="hover:underline shrink-0 tabular-nums"
-            onClick={() => props.onJumpToSection('staged')}
-          >
+          <span data-testid="staged-seg" class="shrink-0 tabular-nums">
             {props.staged} staged
-          </button>
+          </span>
         </Show>
         <Show when={props.changes > 0}>
           <Show when={props.conflicts > 0 || props.staged > 0}><span class="text-text-dim shrink-0">·</span></Show>
-          <button
-            data-testid="changes-seg"
-            class="hover:underline shrink-0 tabular-nums"
-            onClick={() => props.onJumpToSection('changes')}
-          >
+          <span data-testid="changes-seg" class="shrink-0 tabular-nums">
             {props.changes} change{props.changes !== 1 ? 's' : ''}
-          </button>
+          </span>
         </Show>
 
         <Show when={props.totalInsertions > 0}>

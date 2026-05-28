@@ -187,15 +187,16 @@ export async function commitAmend(taskId: string, message: string): Promise<void
   await refreshTaskGit(taskId, { force: true })
 }
 
-export async function undoLastCommit(taskId: string): Promise<void> {
+export async function undoLastCommit(taskId: string): Promise<boolean> {
   try {
     await ipc.gitUndoLastCommit(taskId)
   } catch (e: unknown) {
     addToast(`Undo failed: ${e}`, 'error')
-    return
+    return false
   }
   addToast('Last commit undone', 'success')
   await refreshTaskGit(taskId, { force: true })
+  return true
 }
 
 export async function revertCommit(taskId: string, hash: string): Promise<void> {

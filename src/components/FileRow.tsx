@@ -11,8 +11,9 @@ interface Props {
   onOpenDiff: () => void
   onOpenDiffPinned?: () => void
   onOpenFile: () => void
-  onPrimary: () => void   // stage on unstaged, unstage on staged, conflict-stage on conflict
-  onDiscard: () => void
+  // Undefined when the row is read-only (e.g. viewing a commit, not the working tree).
+  onPrimary?: () => void   // stage on unstaged, unstage on staged, conflict-stage on conflict
+  onDiscard?: () => void
   onContextMenu?: (e: MouseEvent) => void
 }
 
@@ -26,7 +27,8 @@ export const FileRow: Component<Props> = (props) => {
 
   const isStaged = () => props.entry.kind === 'staged'
   const isConflict = () => props.entry.kind === 'conflict'
-  const showDiscard = () => !isConflict()
+  const showDiscard = () => !isConflict() && !!props.onDiscard
+  const showPrimary = () => !!props.onPrimary
 
   const primaryTitle = () => isStaged() ? 'Unstage' : 'Stage'
   const PrimaryIcon = () => isStaged() ? <Minus size={12} /> : <Plus size={12} />
@@ -62,18 +64,20 @@ export const FileRow: Component<Props> = (props) => {
           <button
             class="h-4 w-4 flex items-center justify-center rounded text-text-dim hover:text-text-secondary hover:bg-surface-3"
             title="Discard"
-            onClick={(e) => { e.stopPropagation(); props.onDiscard() }}
+            onClick={(e) => { e.stopPropagation(); props.onDiscard?.() }}
           >
             <Undo2 size={12} />
           </button>
         </Show>
-        <button
-          class="h-4 w-4 flex items-center justify-center rounded hover:bg-surface-3 text-text-dim hover:text-text-secondary"
-          title={primaryTitle()}
-          onClick={(e) => { e.stopPropagation(); props.onPrimary() }}
-        >
-          <PrimaryIcon />
-        </button>
+        <Show when={showPrimary()}>
+          <button
+            class="h-4 w-4 flex items-center justify-center rounded hover:bg-surface-3 text-text-dim hover:text-text-secondary"
+            title={primaryTitle()}
+            onClick={(e) => { e.stopPropagation(); props.onPrimary?.() }}
+          >
+            <PrimaryIcon />
+          </button>
+        </Show>
       </span>
 
       <Show when={props.insertions || props.deletions}>

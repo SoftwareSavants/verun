@@ -90,4 +90,20 @@ describe('<FileRow />', () => {
     expect(view.queryByTitle('Stage')).toBeTruthy()
     expect(view.queryByTitle('Discard')).toBeFalsy()
   })
+
+  test('omitting onPrimary and onDiscard hides those buttons (read-only commit view)', () => {
+    cleanup()
+    const view = render(() => (
+      <FileRow
+        entry={entry()}
+        active={false}
+        onOpenDiff={() => {}}
+        onOpenFile={() => {}}
+      />
+    ))
+    expect(view.queryByTitle('Open File')).toBeTruthy()
+    expect(view.queryByTitle('Stage')).toBeFalsy()
+    expect(view.queryByTitle('Unstage')).toBeFalsy()
+    expect(view.queryByTitle('Discard')).toBeFalsy()
+  })
 })

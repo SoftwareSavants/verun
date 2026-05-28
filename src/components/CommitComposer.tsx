@@ -2,6 +2,11 @@ import { Component, createEffect, createSignal, on, Show } from 'solid-js'
 import { ChevronDown, Loader2, History, ArrowUpFromLine } from 'lucide-solid'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 
+export interface CommitComposerApi {
+  /** Set the draft message only when the textarea is currently empty. */
+  setDraftIfEmpty: (message: string) => void
+}
+
 interface Props {
   taskId: string
   canCommit: boolean      // there is at least one staged/unstaged/untracked file
@@ -10,6 +15,7 @@ interface Props {
   onCommit: (message: string) => Promise<void>
   onCommitAndPush: (message: string) => Promise<void>
   onAmend: (message: string) => Promise<void>
+  apiRef?: (api: CommitComposerApi) => void
 }
 
 const KEY = (taskId: string) => `verun:changes:msg:${taskId}`
@@ -32,6 +38,12 @@ export const CommitComposer: Component<Props> = (props) => {
     if (m) localStorage.setItem(KEY(props.taskId), m)
     else localStorage.removeItem(KEY(props.taskId))
   }))
+
+  props.apiRef?.({
+    setDraftIfEmpty(message: string) {
+      if (!msg().trim()) setMsg(message)
+    },
+  })
 
   const submitDisabled = () => busy() || !msg().trim() || !props.canCommit
   const buttonLabel = () => amendMode() ? 'Amend' : 'Commit'
@@ -129,14 +141,16 @@ export const CommitComposer: Component<Props> = (props) => {
             </Show>
             {buttonLabel()}
           </button>
-          <span class="w-px self-stretch bg-outline/8" />
-          <button
-            ref={chevronRef}
-            class="flex items-center px-1.5 hover:bg-surface-2"
-            onClick={toggleMenu}
-          >
-            <ChevronDown size={11} />
-          </button>
+          <Show when={!amendMode()}>
+            <span class="w-px self-stretch bg-outline/8" />
+            <button
+              ref={chevronRef}
+              class="flex items-center px-1.5 hover:bg-surface-2"
+              onClick={toggleMenu}
+            >
+              <ChevronDown size={11} />
+            </button>
+          </Show>
         </div>
         <Show when={amendMode()}>
           <button

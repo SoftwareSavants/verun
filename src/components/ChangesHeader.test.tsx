@@ -14,7 +14,6 @@ describe('<ChangesHeader />', () => {
         totalDeletions={3}
         loading={false}
         onRefresh={() => {}}
-        onJumpToSection={() => {}}
       />
     ))
     expect(container.textContent).not.toContain('conflicts')
@@ -35,32 +34,12 @@ describe('<ChangesHeader />', () => {
         totalDeletions={0}
         loading={false}
         onRefresh={() => {}}
-        onJumpToSection={() => {}}
       />
     ))
     const seg = container.querySelector('[data-testid=conflict-seg]') as HTMLElement
     expect(seg).toBeTruthy()
     expect(seg.className).toContain('red')
     expect(seg.className).toContain('animate-pulse')
-  })
-
-  test('clicking a segment calls onJumpToSection', () => {
-    cleanup()
-    const onJump = vi.fn()
-    const { getByTestId } = render(() => (
-      <ChangesHeader
-        conflicts={1}
-        staged={2}
-        changes={3}
-        totalInsertions={0}
-        totalDeletions={0}
-        loading={false}
-        onRefresh={() => {}}
-        onJumpToSection={onJump}
-      />
-    ))
-    fireEvent.click(getByTestId('staged-seg'))
-    expect(onJump).toHaveBeenCalledWith('staged')
   })
 
   test('refresh button calls onRefresh', () => {
@@ -72,7 +51,6 @@ describe('<ChangesHeader />', () => {
         totalInsertions={0} totalDeletions={0}
         loading={false}
         onRefresh={onRefresh}
-        onJumpToSection={() => {}}
       />
     ))
     fireEvent.click(getByTitle('Refresh'))
