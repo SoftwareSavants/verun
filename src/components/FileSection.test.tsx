@@ -20,6 +20,8 @@ describe('<FileSection />', () => {
         entries={[e('a.ts', 'staged'), e('b.ts', 'staged')]}
         renderRow={noopRow}
         bulkActions={[]}
+        open={true}
+        onToggle={() => {}}
       />
     ))
     expect(container.textContent).toContain('Staged Changes')
@@ -35,27 +37,45 @@ describe('<FileSection />', () => {
         entries={[]}
         renderRow={noopRow}
         bulkActions={[]}
+        open={true}
+        onToggle={() => {}}
       />
     ))
     expect(container.textContent).not.toContain('Staged Changes')
   })
 
-  test('clicking the header toggles open state', () => {
+  test('clicking the header fires onToggle', () => {
     cleanup()
-    localStorage.removeItem('verun:changes:section:staged:open')
-    const { container, getByText } = render(() => (
+    const onToggle = vi.fn()
+    const { getByText } = render(() => (
       <FileSection
         kind="staged"
         title="Staged"
         entries={[e('a.ts', 'staged')]}
         renderRow={() => <div data-testid="row">row</div>}
         bulkActions={[]}
+        open={true}
+        onToggle={onToggle}
       />
     ))
-    expect(container.querySelector('[data-testid=row]')).toBeTruthy()
     fireEvent.click(getByText('Staged'))
+    expect(onToggle).toHaveBeenCalledOnce()
+  })
+
+  test('rows are hidden when open is false', () => {
+    cleanup()
+    const { container } = render(() => (
+      <FileSection
+        kind="staged"
+        title="Staged"
+        entries={[e('a.ts', 'staged')]}
+        renderRow={() => <div data-testid="row">row</div>}
+        bulkActions={[]}
+        open={false}
+        onToggle={() => {}}
+      />
+    ))
     expect(container.querySelector('[data-testid=row]')).toBeFalsy()
-    expect(localStorage.getItem('verun:changes:section:staged:open')).toBe('false')
   })
 
   test('bulk action button fires its handler', () => {
@@ -68,6 +88,8 @@ describe('<FileSection />', () => {
         entries={[e('a.ts')]}
         renderRow={noopRow}
         bulkActions={[{ icon: () => <span>+</span>, title: 'Stage All', onClick }]}
+        open={true}
+        onToggle={() => {}}
       />
     ))
     fireEvent.click(getByTitle('Stage All'))

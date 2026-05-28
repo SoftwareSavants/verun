@@ -1,5 +1,5 @@
-import { Component, createSignal, Show, onCleanup } from 'solid-js'
-import { FileText, Plus, Minus, X } from 'lucide-solid'
+import { Component, Show } from 'solid-js'
+import { SquareArrowOutUpRight, Undo2, Plus, Minus } from 'lucide-solid'
 import { getFileIcon } from '../lib/fileIcons'
 import { badgeForEntry, type FileEntry } from '../lib/gitStatus'
 
@@ -17,11 +17,6 @@ interface Props {
 }
 
 export const FileRow: Component<Props> = (props) => {
-  const [confirming, setConfirming] = createSignal(false)
-  let confirmTimer: ReturnType<typeof setTimeout> | undefined
-
-  onCleanup(() => { if (confirmTimer) clearTimeout(confirmTimer) })
-
   const badge = () => badgeForEntry(props.entry)
   const fileName = () => props.entry.file.path.split('/').pop() || props.entry.file.path
   const FileIcon = () => {
@@ -36,22 +31,10 @@ export const FileRow: Component<Props> = (props) => {
   const primaryTitle = () => isStaged() ? 'Unstage' : 'Stage'
   const PrimaryIcon = () => isStaged() ? <Minus size={12} /> : <Plus size={12} />
 
-  const handleDiscard = (e: MouseEvent) => {
-    e.stopPropagation()
-    if (!confirming()) {
-      setConfirming(true)
-      confirmTimer = setTimeout(() => setConfirming(false), 3000)
-      return
-    }
-    if (confirmTimer) clearTimeout(confirmTimer)
-    setConfirming(false)
-    props.onDiscard()
-  }
-
   return (
     <div
       data-testid="file-row"
-      class={`group flex items-center gap-2 px-3 py-1.5 cursor-pointer text-xs ${
+      class={`group flex items-center gap-2 px-3 h-7 cursor-pointer text-xs ${
         props.active ? 'bg-surface-2 text-text-primary' : 'hover:bg-surface-2 text-text-secondary'
       }`}
       style={{ 'box-shadow': props.active ? 'inset 2px 0 0 #2d6e4f' : undefined }}
@@ -69,28 +52,28 @@ export const FileRow: Component<Props> = (props) => {
 
       <span class="shrink-0 hidden group-hover:flex items-center gap-0.5">
         <button
-          class="p-0.5 rounded hover:bg-surface-3 text-text-dim hover:text-text-secondary"
+          class="h-4 w-4 flex items-center justify-center rounded hover:bg-surface-3 text-text-dim hover:text-text-secondary"
           title="Open File"
           onClick={(e) => { e.stopPropagation(); props.onOpenFile() }}
         >
-          <FileText size={12} />
+          <SquareArrowOutUpRight size={12} />
         </button>
+        <Show when={showDiscard()}>
+          <button
+            class="h-4 w-4 flex items-center justify-center rounded text-text-dim hover:text-text-secondary hover:bg-surface-3"
+            title="Discard"
+            onClick={(e) => { e.stopPropagation(); props.onDiscard() }}
+          >
+            <Undo2 size={12} />
+          </button>
+        </Show>
         <button
-          class="p-0.5 rounded hover:bg-surface-3 text-text-dim hover:text-text-secondary"
+          class="h-4 w-4 flex items-center justify-center rounded hover:bg-surface-3 text-text-dim hover:text-text-secondary"
           title={primaryTitle()}
           onClick={(e) => { e.stopPropagation(); props.onPrimary() }}
         >
           <PrimaryIcon />
         </button>
-        <Show when={showDiscard()}>
-          <button
-            class={`p-0.5 rounded ${confirming() ? 'bg-red-500/20 text-red-300' : 'text-text-dim hover:text-text-secondary hover:bg-surface-3'}`}
-            title={confirming() ? 'Confirm discard?' : 'Discard'}
-            onClick={handleDiscard}
-          >
-            <X size={12} />
-          </button>
-        </Show>
       </span>
 
       <Show when={props.insertions || props.deletions}>

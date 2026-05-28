@@ -1,15 +1,19 @@
 import { Component, createSignal, createMemo, Show, For } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
-import { ChevronDown, ChevronRight, GitCommit, Circle } from 'lucide-solid'
+import { openUrl } from '@tauri-apps/plugin-opener'
+import { ChevronDown, ChevronRight, GitCommit, Circle, ClipboardCopy, Tag, ExternalLink, Undo2, RotateCcw } from 'lucide-solid'
 import { clsx } from 'clsx'
 import { taskGit } from '../store/git'
 import type { BranchCommit } from '../types'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 
 interface Props {
   taskId: string
   selectedCommit: string | null
   uncommittedCount: number
   onSelectCommit: (hash: string | null) => void
+  onUndoLastCommit: () => void
+  onRevertCommit: (commit: BranchCommit) => void
 }
 
 export const BranchCommits: Component<Props> = (props) => {
@@ -45,6 +49,53 @@ export const BranchCommits: Component<Props> = (props) => {
       lane: 0,
     }))
   })
+
+  const [menu, setMenu] = createSignal<{ x: number; y: number; commit: BranchCommit; isLast: boolean } | null>(null)
+  const closeMenu = () => setMenu(null)
+
+  const commitUrl = (hash: string): string | null => {
+    const gh = taskGit(props.taskId).github
+    if (!gh?.url) return null
+    return `${gh.url.replace(/\/+$/, '')}/commit/${hash}`
+  }
+
+  const menuItems = (): ContextMenuItem[] => {
+    const m = menu()
+    if (!m) return []
+    const items: ContextMenuItem[] = []
+    if (m.isLast) {
+      items.push({
+        label: 'Undo last commit',
+        icon: Undo2,
+        action: () => { props.onUndoLastCommit(); closeMenu() },
+      })
+    }
+    items.push({
+      label: 'Revert this commit',
+      icon: RotateCcw,
+      action: () => { props.onRevertCommit(m.commit); closeMenu() },
+    })
+    items.push({ separator: true })
+    items.push({
+      label: 'Copy SHA',
+      icon: ClipboardCopy,
+      action: () => { navigator.clipboard.writeText(m.commit.hash); closeMenu() },
+    })
+    items.push({
+      label: 'Copy message',
+      icon: Tag,
+      action: () => { navigator.clipboard.writeText(m.commit.message); closeMenu() },
+    })
+    const url = commitUrl(m.commit.hash)
+    if (url) {
+      items.push({
+        label: 'Open on GitHub',
+        icon: ExternalLink,
+        action: () => { openUrl(url); closeMenu() },
+      })
+    }
+    return items
+  }
 
   const formatTime = (ts: number) => {
     const d = new Date(ts * 1000)
@@ -111,6 +162,10 @@ export const BranchCommits: Component<Props> = (props) => {
                             'box-shadow': isSelected() ? 'inset 2px 0 0 #2d6e4f' : undefined,
                           }}
                           onClick={() => props.onSelectCommit(c().hash)}
+                          onContextMenu={(e) => {
+                            e.preventDefault()
+                            setMenu({ x: e.clientX, y: e.clientY, commit: c(), isLast: vrow.index === 0 })
+                          }}
                         >
                           <span class="font-mono text-text-dim text-[10px] shrink-0">{c().shortHash}</span>
                           <span class="truncate flex-1 text-left">{c().message}</span>
@@ -131,6 +186,14 @@ export const BranchCommits: Component<Props> = (props) => {
           </Show>
         </div>
       </Show>
+
+      <ContextMenu
+        open={!!menu()}
+        onClose={closeMenu}
+        pos={menu() ? { x: menu()!.x, y: menu()!.y } : undefined}
+        minWidth="min-w-44"
+        items={menuItems()}
+      />
     </div>
   )
 }

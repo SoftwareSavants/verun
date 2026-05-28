@@ -1,6 +1,6 @@
-import { Component, createSignal, Show, For, JSX } from 'solid-js'
+import { Component, Show, For, JSX } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
-import { ChevronDown, ChevronRight, Loader2 } from 'lucide-solid'
+import { ChevronDown, ChevronRight } from 'lucide-solid'
 import type { FileEntry } from '../lib/gitStatus'
 
 export type SectionKind = 'conflicts' | 'staged' | 'changes'
@@ -17,20 +17,12 @@ interface Props {
   entries: FileEntry[]
   renderRow: (entry: FileEntry, index: number) => JSX.Element
   bulkActions: BulkAction[]
-  bulkInflight?: boolean
+  open: boolean
+  onToggle: () => void
 }
 
-const STORAGE_KEY = (kind: SectionKind) => `verun:changes:section:${kind}:open`
-
 export const FileSection: Component<Props> = (props) => {
-  const [open, setOpen] = createSignal(localStorage.getItem(STORAGE_KEY(props.kind)) !== 'false')
   let scrollRef: HTMLDivElement | undefined
-
-  const toggle = () => {
-    const next = !open()
-    setOpen(next)
-    localStorage.setItem(STORAGE_KEY(props.kind), String(next))
-  }
 
   const virt = createVirtualizer({
     get count() { return props.entries.length },
@@ -57,21 +49,18 @@ export const FileSection: Component<Props> = (props) => {
   return (
     <Show when={props.entries.length > 0}>
       <div class="flex flex-col min-h-0">
-        <div class="group flex items-center gap-1.5 px-3 h-7 hover:bg-surface-2 cursor-pointer select-none" onClick={toggle}>
-          {open() ? <ChevronDown size={12} class="text-text-dim shrink-0" /> : <ChevronRight size={12} class="text-text-dim shrink-0" />}
+        <div class="group flex items-center gap-1.5 px-3 h-7 hover:bg-surface-2 cursor-pointer select-none" onClick={props.onToggle}>
+          {props.open ? <ChevronDown size={12} class="text-text-dim shrink-0" /> : <ChevronRight size={12} class="text-text-dim shrink-0" />}
           <span class="text-xs font-medium text-text-secondary uppercase tracking-wide">{props.title}</span>
           <span class="text-[10px] text-text-dim tabular-nums">({props.entries.length})</span>
           <span class="flex-1" />
-          <Show when={props.bulkInflight}>
-            <Loader2 size={11} class="animate-spin text-text-dim" />
-          </Show>
           <span class="hidden group-hover:flex items-center gap-0.5 shrink-0">
             <For each={props.bulkActions}>
               {(action) => {
                 const Icon = action.icon
                 return (
                   <button
-                    class="p-0.5 rounded text-text-dim hover:text-text-secondary hover:bg-surface-3"
+                    class="h-4 w-4 flex items-center justify-center rounded text-text-dim hover:text-text-secondary hover:bg-surface-3"
                     title={action.title}
                     onClick={(e) => { e.stopPropagation(); action.onClick() }}
                   >
@@ -83,7 +72,7 @@ export const FileSection: Component<Props> = (props) => {
           </span>
         </div>
 
-        <Show when={open()}>
+        <Show when={props.open}>
           <div ref={scrollRef} class="overflow-auto" style={{ 'max-height': '40vh' }}>
             <div style={{ height: `${virt.getTotalSize()}px`, width: '100%', position: 'relative' }}>
               <For each={visibleRows()}>

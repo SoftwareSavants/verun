@@ -186,3 +186,26 @@ export async function commitAmend(taskId: string, message: string): Promise<void
   }
   await refreshTaskGit(taskId, { force: true })
 }
+
+export async function undoLastCommit(taskId: string): Promise<void> {
+  try {
+    await ipc.gitUndoLastCommit(taskId)
+  } catch (e: unknown) {
+    addToast(`Undo failed: ${e}`, 'error')
+    return
+  }
+  addToast('Last commit undone', 'success')
+  await refreshTaskGit(taskId, { force: true })
+}
+
+export async function revertCommit(taskId: string, hash: string): Promise<void> {
+  try {
+    await ipc.gitRevertCommit(taskId, hash)
+  } catch (e: unknown) {
+    addToast(`Revert failed: ${e}. Conflicts may need to be resolved manually.`, 'error')
+    await refreshTaskGit(taskId, { force: true })
+    return
+  }
+  addToast(`Reverted ${hash.slice(0, 7)}`, 'success')
+  await refreshTaskGit(taskId, { force: true })
+}

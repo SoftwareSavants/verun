@@ -1,5 +1,6 @@
 import { Component, createEffect, createSignal, on, Show } from 'solid-js'
-import { ChevronDown, Loader2 } from 'lucide-solid'
+import { ChevronDown, Loader2, History, ArrowUpFromLine } from 'lucide-solid'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 
 interface Props {
   taskId: string
@@ -15,9 +16,12 @@ const KEY = (taskId: string) => `verun:changes:msg:${taskId}`
 
 export const CommitComposer: Component<Props> = (props) => {
   const [msg, setMsg] = createSignal(localStorage.getItem(KEY(props.taskId)) ?? '')
-  const [open, setOpen] = createSignal(false)
+  const [menuPos, setMenuPos] = createSignal<{ x: number; y: number } | undefined>()
   const [busy, setBusy] = createSignal(false)
   const [amendMode, setAmendMode] = createSignal(false)
+  // Snapshot of the draft taken when entering amend mode, so Cancel can restore it.
+  let preAmendDraft = ''
+  let chevronRef: HTMLButtonElement | undefined
 
   createEffect(on(() => props.taskId, (id) => {
     setMsg(localStorage.getItem(KEY(id)) ?? '')
@@ -30,7 +34,7 @@ export const CommitComposer: Component<Props> = (props) => {
   }))
 
   const submitDisabled = () => busy() || !msg().trim() || !props.canCommit
-  const buttonLabel = () => amendMode() ? 'Commit (amend)' : 'Commit'
+  const buttonLabel = () => amendMode() ? 'Amend' : 'Commit'
 
   const runWith = async (op: 'commit' | 'push' | 'amend') => {
     if (submitDisabled() && op !== 'amend') return
@@ -51,8 +55,45 @@ export const CommitComposer: Component<Props> = (props) => {
     if (succeeded) {
       setMsg('')
       setAmendMode(false)
-      setOpen(false)
+      setMenuPos(undefined)
     }
+  }
+
+  const toggleMenu = () => {
+    if (menuPos()) { setMenuPos(undefined); return }
+    if (!chevronRef) return
+    const r = chevronRef.getBoundingClientRect()
+    const menuWidth = 180
+    const menuHeight = 60
+    setMenuPos({ x: r.right - menuWidth, y: r.top - menuHeight - 4 })
+  }
+
+  const enterAmendMode = () => {
+    if (!props.canAmend) return
+    preAmendDraft = msg()
+    setAmendMode(true)
+    setMenuPos(undefined)
+    setMsg(props.amendDefaultMessage)
+  }
+
+  const menuItems = (): ContextMenuItem[] => [
+    {
+      label: 'Amend last commit',
+      icon: History,
+      disabled: !props.canAmend,
+      action: enterAmendMode,
+    },
+    {
+      label: 'Commit & Push',
+      icon: ArrowUpFromLine,
+      disabled: submitDisabled(),
+      action: () => runWith('push'),
+    },
+  ]
+
+  const cancelAmend = () => {
+    setAmendMode(false)
+    setMsg(preAmendDraft)
   }
 
   const handleKey = (e: KeyboardEvent) => {
@@ -60,14 +101,10 @@ export const CommitComposer: Component<Props> = (props) => {
       e.preventDefault()
       if (amendMode()) runWith('amend')
       else runWith('commit')
+    } else if (e.key === 'Escape' && amendMode()) {
+      e.preventDefault()
+      cancelAmend()
     }
-  }
-
-  const enterAmendMode = () => {
-    if (!props.canAmend) return
-    setAmendMode(true)
-    setOpen(false)
-    if (!msg().trim()) setMsg(props.amendDefaultMessage)
   }
 
   return (
@@ -94,40 +131,32 @@ export const CommitComposer: Component<Props> = (props) => {
           </button>
           <span class="w-px self-stretch bg-outline/8" />
           <button
+            ref={chevronRef}
             class="flex items-center px-1.5 hover:bg-surface-2"
-            onClick={() => setOpen(!open())}
+            onClick={toggleMenu}
           >
             <ChevronDown size={11} />
           </button>
         </div>
-        <span class="text-[10px] text-text-dim ml-auto">⌘↵</span>
-
-        <Show when={open()}>
-          <div class="absolute bottom-7 left-0 z-50 bg-surface-2 ring-1 ring-outline/8 rounded shadow-xl py-1 min-w-44">
-            <button
-              class="menu-item w-full text-left disabled:opacity-40"
-              disabled={!props.canAmend}
-              onClick={enterAmendMode}
-            >
-              Amend last commit
-            </button>
-            <button
-              class="menu-item w-full text-left disabled:opacity-40"
-              disabled={submitDisabled()}
-              onClick={() => runWith('push')}
-            >
-              Commit & Push
-            </button>
-            <button
-              class="menu-item w-full text-left disabled:opacity-40"
-              disabled={submitDisabled()}
-              onClick={() => runWith('commit')}
-            >
-              Stage All & Commit
-            </button>
-          </div>
+        <Show when={amendMode()}>
+          <button
+            class="h-6 px-2 text-[11px] text-text-dim hover:text-text-secondary hover:bg-surface-2 rounded"
+            onClick={cancelAmend}
+            title="Cancel amend (Esc)"
+          >
+            Cancel
+          </button>
         </Show>
+        <span class="text-[10px] text-text-dim ml-auto">⌘↵</span>
       </div>
+
+      <ContextMenu
+        open={!!menuPos()}
+        pos={menuPos()}
+        items={menuItems()}
+        onClose={() => setMenuPos(undefined)}
+        minWidth="min-w-44"
+      />
     </div>
   )
 }

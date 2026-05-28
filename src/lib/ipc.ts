@@ -238,6 +238,12 @@ export const gitResolveConflict = (taskId: string, filePath: string, choice: 'ou
 export const gitCommitAmend = (taskId: string, message: string) =>
   invoke<string>('git_commit_amend', { taskId, message })
 
+export const gitUndoLastCommit = (taskId: string) =>
+  invoke<void>('git_undo_last_commit', { taskId })
+
+export const gitRevertCommit = (taskId: string, hash: string) =>
+  invoke<void>('git_revert_commit', { taskId, hash })
+
 export const getStagedDiff = (taskId: string, filePath: string, contextLines?: number, ignoreWhitespace?: boolean) =>
   invoke<FileDiff>('get_staged_diff', { taskId, filePath, contextLines, ignoreWhitespace })
 

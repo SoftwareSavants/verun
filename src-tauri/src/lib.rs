@@ -381,6 +381,8 @@ pub fn run() {
             ipc::git_unstage_all,
             ipc::git_resolve_conflict,
             ipc::git_commit_amend,
+            ipc::git_undo_last_commit,
+            ipc::git_revert_commit,
             ipc::get_staged_diff,
             ipc::get_unstaged_diff,
             ipc::get_staged_diff_contents,

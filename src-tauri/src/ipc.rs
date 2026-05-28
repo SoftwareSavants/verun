@@ -1550,6 +1550,41 @@ pub async fn git_commit_amend(
 }
 
 #[tauri::command]
+pub async fn git_undo_last_commit(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::undo_last_commit(&t.worktree_path)).await,
+    )?;
+    emit_git_local_changed(&app, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn git_revert_commit(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    hash: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::revert_commit(&t.worktree_path, &hash)).await,
+    )?;
+    emit_git_local_changed(&app, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_staged_diff(
     pool: State<'_, SqlitePool>,
     task_id: String,

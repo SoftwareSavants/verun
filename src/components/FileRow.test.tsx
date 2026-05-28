@@ -30,7 +30,7 @@ describe('<FileRow />', () => {
     expect(container.textContent).toContain('M')
   })
 
-  test('first × click does not call onDiscard; second click within window does', () => {
+  test('clicking the discard button fires onDiscard immediately (confirmation lives in a dialog upstream)', () => {
     cleanup()
     const onDiscard = vi.fn()
     const { getByTitle } = render(() => (
@@ -43,10 +43,7 @@ describe('<FileRow />', () => {
         onDiscard={onDiscard}
       />
     ))
-    const btn = getByTitle('Discard')
-    fireEvent.click(btn)
-    expect(onDiscard).not.toHaveBeenCalled()
-    fireEvent.click(btn) // confirm
+    fireEvent.click(getByTitle('Discard'))
     expect(onDiscard).toHaveBeenCalledTimes(1)
   })
 

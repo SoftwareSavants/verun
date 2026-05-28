@@ -1175,6 +1175,38 @@ pub fn commit_amend(worktree_path: &str, message: &str) -> Result<String, String
     Ok(String::from_utf8_lossy(&hash_out.stdout).trim().to_string())
 }
 
+/// Undo the last commit, keeping its changes staged (`git reset --soft HEAD~1`).
+pub fn undo_last_commit(worktree_path: &str) -> Result<(), String> {
+    let out = git(worktree_path)
+        .args(["reset", "--soft", "HEAD~1"])
+        .output()
+        .map_err(|e| format!("Failed to undo last commit: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git reset --soft HEAD~1 failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+/// Revert a commit by creating a new commit that inverts its changes
+/// (`git revert --no-edit <hash>`). May produce conflicts that the user must
+/// resolve in the Changes pane before the revert commit is finalized.
+pub fn revert_commit(worktree_path: &str, hash: &str) -> Result<(), String> {
+    let out = git(worktree_path)
+        .args(["revert", "--no-edit", hash])
+        .output()
+        .map_err(|e| format!("Failed to revert commit: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git revert failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve a conflict by taking either side, then stage the file.
 /// `choice` must be "ours" or "theirs".
 pub fn resolve_conflict(
@@ -1819,6 +1851,65 @@ mod tests {
         let (_dir, rp) = init_test_repo();
         let err = resolve_conflict(&rp, "any.txt", "neither").unwrap_err();
         assert!(err.contains("ours") || err.contains("theirs"));
+    }
+
+    #[test]
+    fn undo_last_commit_keeps_changes_staged() {
+        let (_dir, rp) = init_test_repo();
+
+        let head_before = git_read_only(&rp).args(["rev-parse", "HEAD"]).output().unwrap();
+        let hash_before = String::from_utf8_lossy(&head_before.stdout).trim().to_string();
+
+        fs::write(format!("{rp}/new.txt"), "hello\n").unwrap();
+        git(&rp).args(["add", "new.txt"]).output().unwrap();
+        git(&rp).args(["commit", "-m", "add new"]).output().unwrap();
+
+        let head_committed = git_read_only(&rp).args(["rev-parse", "HEAD"]).output().unwrap();
+        let hash_committed = String::from_utf8_lossy(&head_committed.stdout).trim().to_string();
+        assert_ne!(hash_committed, hash_before);
+
+        undo_last_commit(&rp).unwrap();
+
+        let head_after = git_read_only(&rp).args(["rev-parse", "HEAD"]).output().unwrap();
+        let hash_after = String::from_utf8_lossy(&head_after.stdout).trim().to_string();
+        assert_eq!(hash_after, hash_before, "HEAD should move back to the parent");
+
+        // The file should still exist AND be staged (index_status='A')
+        assert!(std::path::Path::new(&format!("{rp}/new.txt")).exists());
+        let status = get_git_status(&rp).unwrap();
+        let f = status.files.iter().find(|f| f.path == "new.txt").expect("new.txt should still be tracked");
+        assert_eq!(f.index_status, 'A');
+        assert_eq!(f.worktree_status, ' ');
+    }
+
+    #[test]
+    fn revert_commit_creates_inverse_commit() {
+        let (_dir, rp) = init_test_repo();
+
+        // Make a commit that adds a file
+        fs::write(format!("{rp}/added.txt"), "added\n").unwrap();
+        git(&rp).args(["add", "added.txt"]).output().unwrap();
+        git(&rp).args(["commit", "-m", "add added.txt"]).output().unwrap();
+
+        let target_hash = String::from_utf8_lossy(
+            &git_read_only(&rp).args(["rev-parse", "HEAD"]).output().unwrap().stdout
+        ).trim().to_string();
+
+        revert_commit(&rp, &target_hash).unwrap();
+
+        // After revert, the file should be gone (the inverse was applied + auto-committed)
+        assert!(!std::path::Path::new(&format!("{rp}/added.txt")).exists());
+
+        // A new commit should be on top
+        let new_head = String::from_utf8_lossy(
+            &git_read_only(&rp).args(["rev-parse", "HEAD"]).output().unwrap().stdout
+        ).trim().to_string();
+        assert_ne!(new_head, target_hash, "HEAD should be a new commit, not the reverted one");
+
+        let log_msg = String::from_utf8_lossy(
+            &git_read_only(&rp).args(["log", "-1", "--format=%s"]).output().unwrap().stdout
+        ).trim().to_string();
+        assert!(log_msg.contains("Revert"), "Commit message should mark this as a revert");
     }
 
     // -------------------------------------------------------------------------

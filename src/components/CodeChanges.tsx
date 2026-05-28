@@ -1,13 +1,14 @@
 import { Component, createSignal, createMemo, createEffect, on, Show } from 'solid-js'
-import { GitCompare, FileText, ClipboardCopy, FolderOpen, ExternalLink, Tag, Plus, Minus, X } from 'lucide-solid'
+import { GitCompare, FileText, ClipboardCopy, FolderOpen, ExternalLink, Tag, Plus, Minus, X, Undo2 } from 'lucide-solid'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { ChangesHeader } from './ChangesHeader'
 import { FileSection, type SectionKind, type BulkAction } from './FileSection'
 import { FileRow } from './FileRow'
 import { CommitComposer } from './CommitComposer'
 import { ConflictStageDialog, type ConflictChoice } from './ConflictStageDialog'
+import { ConfirmDialog } from './ConfirmDialog'
 import { BranchCommits } from './BranchCommits'
-import { fanOut, type FileEntry } from '../lib/gitStatus'
+import { type FileEntry } from '../lib/gitStatus'
 import { taskGit, refreshTaskGit } from '../store/git'
 import { taskById } from '../store/tasks'
 import { selectedTaskId } from '../store/ui'
@@ -18,8 +19,9 @@ import {
   stageOne, unstageOne, discardOne, resolveConflict, stageConflictAsIs,
   stageAll, unstageAll, discardAllUnstaged,
   commitWithFallback, commitAndPush, commitAmend,
+  undoLastCommit, revertCommit,
 } from '../store/changesActions'
-import type { GitStatus } from '../types'
+import type { GitStatus, BranchCommit } from '../types'
 
 interface Props { taskId: string }
 
@@ -29,7 +31,10 @@ export const CodeChanges: Component<Props> = (props) => {
   const [selectedCommit, setSelectedCommit] = createSignal<string | null>(null)
   const [commitStatus, setCommitStatus] = createSignal<GitStatus | null>(null)
   const [conflictDialogPath, setConflictDialogPath] = createSignal<string | null>(null)
-  const [bulkInflight, setBulkInflight] = createSignal<SectionKind | null>(null)
+  // null = no dialog; 'all' = bulk discard; otherwise the path of the single file to discard
+  const [discardTarget, setDiscardTarget] = createSignal<string | 'all' | null>(null)
+  const [undoConfirm, setUndoConfirm] = createSignal(false)
+  const [revertTarget, setRevertTarget] = createSignal<BranchCommit | null>(null)
 
   const liveStatus = (): GitStatus | null =>
     selectedCommit() ? commitStatus() : taskGit(props.taskId).status
@@ -40,9 +45,35 @@ export const CodeChanges: Component<Props> = (props) => {
     return map
   })
 
+  // Cache FileEntry wrappers by `${kind}:${path}` so the same logical row keeps
+  // the same reference across memo recomputes. <For> keys by reference, so this
+  // prevents row remounts on every store update (which would lose :hover state
+  // and flicker the action buttons).
+  const entryCache = new Map<string, FileEntry>()
   const allEntries = createMemo<FileEntry[]>(() => {
     const files = liveStatus()?.files ?? []
-    return files.flatMap(fanOut)
+    const liveKeys = new Set<string>()
+    const out: FileEntry[] = []
+    const reuse = (file: typeof files[number], kind: FileEntry['kind']) => {
+      const k = `${kind}:${file.path}`
+      liveKeys.add(k)
+      let entry = entryCache.get(k)
+      if (!entry || entry.file !== file) {
+        entry = { kind, file } as FileEntry
+        entryCache.set(k, entry)
+      }
+      out.push(entry)
+    }
+    for (const file of files) {
+      if (file.conflict) { reuse(file, 'conflict'); continue }
+      if (file.indexStatus === '?' && file.worktreeStatus === '?') { reuse(file, 'unstaged'); continue }
+      if (file.indexStatus !== ' ' && file.indexStatus !== '?') reuse(file, 'staged')
+      if (file.worktreeStatus !== ' ' && file.worktreeStatus !== '?') reuse(file, 'unstaged')
+    }
+    for (const key of entryCache.keys()) {
+      if (!liveKeys.has(key)) entryCache.delete(key)
+    }
+    return out
   })
 
   const conflicts = () => allEntries().filter(e => e.kind === 'conflict')
@@ -100,8 +131,25 @@ export const CodeChanges: Component<Props> = (props) => {
     else await stageOne(props.taskId, entry.file.path)
   }
 
-  const onDiscard = async (entry: FileEntry) => {
-    await discardOne(props.taskId, entry.file.path)
+  const onDiscard = (entry: FileEntry) => {
+    setDiscardTarget(entry.file.path)
+  }
+
+  const confirmDiscard = async () => {
+    const target = discardTarget()
+    setDiscardTarget(null)
+    if (target === null) return
+    if (target === 'all') await discardAllUnstaged(props.taskId)
+    else await discardOne(props.taskId, target)
+  }
+
+  const discardDialogMessage = () => {
+    const target = discardTarget()
+    if (target === 'all') {
+      return `Discard all ${unstagedEntries().length} unstaged change${unstagedEntries().length === 1 ? '' : 's'}? This cannot be undone.`
+    }
+    if (target) return `Discard changes in ${target}? This cannot be undone.`
+    return ''
   }
 
   const onConflictChoice = async (choice: ConflictChoice) => {
@@ -115,31 +163,31 @@ export const CodeChanges: Component<Props> = (props) => {
     }
   }
 
-  const runBulk = async (kind: SectionKind, fn: () => Promise<void>) => {
-    setBulkInflight(kind)
-    try { await fn() } finally { setBulkInflight(null) }
-  }
-
   const conflictBulk: BulkAction[] = []
   const stagedBulk = (): BulkAction[] => [
-    { icon: Minus, title: 'Unstage all', onClick: () => runBulk('staged', () => unstageAll(props.taskId)) },
+    { icon: Minus, title: 'Unstage all', onClick: () => unstageAll(props.taskId) },
   ]
   const changesBulk = (): BulkAction[] => [
-    { icon: Plus, title: 'Stage all', onClick: () => runBulk('changes', () => stageAll(props.taskId)) },
+    { icon: Plus, title: 'Stage all', onClick: () => stageAll(props.taskId) },
     {
-      icon: X,
+      icon: Undo2,
       title: 'Discard all',
-      onClick: () => runBulk('changes', async () => {
-        if (window.confirm('Discard all unstaged changes? This cannot be undone.')) {
-          await discardAllUnstaged(props.taskId)
-        }
-      }),
+      onClick: () => { setDiscardTarget('all') },
     },
   ]
 
-  const onJumpToSection = (kind: SectionKind) => {
-    localStorage.setItem(`verun:changes:section:${kind}:open`, 'true')
+  const sectionOpenKey = (kind: SectionKind) => `verun:changes:section:${kind}:open`
+  const [sectionsOpen, setSectionsOpen] = createSignal<Record<SectionKind, boolean>>({
+    conflicts: localStorage.getItem(sectionOpenKey('conflicts')) !== 'false',
+    staged:    localStorage.getItem(sectionOpenKey('staged'))    !== 'false',
+    changes:   localStorage.getItem(sectionOpenKey('changes'))   !== 'false',
+  })
+  const writeSectionOpen = (kind: SectionKind, value: boolean) => {
+    setSectionsOpen(s => ({ ...s, [kind]: value }))
+    localStorage.setItem(sectionOpenKey(kind), String(value))
   }
+  const toggleSection = (kind: SectionKind) => writeSectionOpen(kind, !sectionsOpen()[kind])
+  const onJumpToSection = (kind: SectionKind) => writeSectionOpen(kind, true)
 
   const canCommit = () => conflicts().length === 0 && allEntries().length > 0
   const canAmend = () => taskGit(props.taskId).commits.length > 0 && conflicts().length === 0
@@ -147,6 +195,26 @@ export const CodeChanges: Component<Props> = (props) => {
   const onCommit = (msg: string) => commitWithFallback(props.taskId, msg, stagedEntries().length > 0)
   const onCommitAndPush = async (msg: string) => commitAndPush(props.taskId, msg)
   const onAmend = (msg: string) => commitAmend(props.taskId, msg)
+
+  const onUndoLast = () => {
+    // Confirm only if there are local files that would be merged with the undone commit's
+    // staged content (otherwise it's trivially reversible).
+    if (allEntries().length > 0) {
+      setUndoConfirm(true)
+    } else {
+      undoLastCommit(props.taskId)
+    }
+  }
+  const onRevertRequest = (commit: BranchCommit) => setRevertTarget(commit)
+  const confirmUndo = () => {
+    setUndoConfirm(false)
+    undoLastCommit(props.taskId)
+  }
+  const confirmRevert = () => {
+    const c = revertTarget()
+    setRevertTarget(null)
+    if (c) revertCommit(props.taskId, c.hash)
+  }
 
   const [fileMenu, setFileMenu] = createSignal<{ x: number; y: number; entry: FileEntry } | null>(null)
   const closeFileMenu = () => setFileMenu(null)
@@ -174,7 +242,7 @@ export const CodeChanges: Component<Props> = (props) => {
       items.push({ label: 'Stage',   icon: Plus,  action: () => { stageOne(props.taskId, path); closeFileMenu() } })
     }
     if (e.kind !== 'conflict') {
-      items.push({ label: 'Discard', icon: X, action: () => { discardOne(props.taskId, path); closeFileMenu() } })
+      items.push({ label: 'Discard', icon: X, action: () => { setDiscardTarget(path); closeFileMenu() } })
     }
     items.push(
       { separator: true },
@@ -237,7 +305,8 @@ export const CodeChanges: Component<Props> = (props) => {
           entries={conflicts()}
           renderRow={renderRow}
           bulkActions={conflictBulk}
-          bulkInflight={bulkInflight() === 'conflicts'}
+          open={sectionsOpen().conflicts}
+          onToggle={() => toggleSection('conflicts')}
         />
         <FileSection
           kind="staged"
@@ -245,7 +314,8 @@ export const CodeChanges: Component<Props> = (props) => {
           entries={stagedEntries()}
           renderRow={renderRow}
           bulkActions={stagedBulk()}
-          bulkInflight={bulkInflight() === 'staged'}
+          open={sectionsOpen().staged}
+          onToggle={() => toggleSection('staged')}
         />
         <FileSection
           kind="changes"
@@ -253,7 +323,8 @@ export const CodeChanges: Component<Props> = (props) => {
           entries={unstagedEntries()}
           renderRow={renderRow}
           bulkActions={changesBulk()}
-          bulkInflight={bulkInflight() === 'changes'}
+          open={sectionsOpen().changes}
+          onToggle={() => toggleSection('changes')}
         />
 
         <Show when={allEntries().length === 0 && !loading() && !selectedCommit()}>
@@ -281,12 +352,44 @@ export const CodeChanges: Component<Props> = (props) => {
         selectedCommit={selectedCommit()}
         uncommittedCount={liveStatus()?.files.length ?? 0}
         onSelectCommit={selectCommit}
+        onUndoLastCommit={onUndoLast}
+        onRevertCommit={onRevertRequest}
       />
 
       <ConflictStageDialog
         path={conflictDialogPath()}
         onChoose={onConflictChoice}
         onClose={() => setConflictDialogPath(null)}
+      />
+
+      <ConfirmDialog
+        open={discardTarget() !== null}
+        title={discardTarget() === 'all' ? 'Discard all changes?' : 'Discard changes?'}
+        message={discardDialogMessage()}
+        confirmLabel="Discard"
+        danger
+        onConfirm={confirmDiscard}
+        onCancel={() => setDiscardTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={undoConfirm()}
+        title="Undo last commit?"
+        message={`Local changes are present. Undoing will move ${allEntries().length} local change${allEntries().length === 1 ? '' : 's'} into the same staging area as the undone commit's content. You won't lose any work, but the two sets of changes will be mixed together.`}
+        confirmLabel="Undo"
+        onConfirm={confirmUndo}
+        onCancel={() => setUndoConfirm(false)}
+      />
+
+      <ConfirmDialog
+        open={revertTarget() !== null}
+        title="Revert this commit?"
+        message={revertTarget()
+          ? `This creates a new commit that undoes "${revertTarget()!.message}" (${revertTarget()!.shortHash}). The original commit stays in history. Conflicts may appear if newer commits depend on the reverted changes.`
+          : ''}
+        confirmLabel="Revert"
+        onConfirm={confirmRevert}
+        onCancel={() => setRevertTarget(null)}
       />
 
       <ContextMenu
