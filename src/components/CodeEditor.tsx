@@ -30,7 +30,7 @@ import { sass } from '@codemirror/lang-sass'
 import * as ipc from '../lib/ipc'
 import { getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal } from '../store/files'
 import { setTabDirty, pendingGoToLine, consumeGoToLine, setPendingGoToLine, openFilePinned, onBeforeActiveEditorChange, onTabClose, onTaskCleanup } from '../store/editorView'
-import { reloadNonce, checkBeforeSave } from '../store/fileSync'
+import { reloadNonce, checkBeforeSave, checkOpenFilesForExternalChanges, isFileDeleted, requestRecreate } from '../store/fileSync'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 
 // Selection-aware active line: suppresses highlight when text is selected
@@ -1270,6 +1270,11 @@ export const CodeEditor: Component<Props> = (props) => {
 
   const save = async () => {
     try {
+      // File was deleted externally — confirm before recreating.
+      if (isFileDeleted(props.taskId, props.relativePath)) {
+        requestRecreate(props.taskId, props.relativePath, currentContent)
+        return
+      }
       const task = await ipc.getTask(props.taskId)
       if (task) {
         const ok = await checkBeforeSave(props.taskId, props.relativePath, task.worktreePath, currentContent)
@@ -1408,6 +1413,10 @@ export const CodeEditor: Component<Props> = (props) => {
       try {
         const task = await ipc.getTask(props.taskId)
         await createEditor(cached, path, task?.worktreePath ?? '')
+        // Cache may be stale if disk changed while the tab was closed.
+        // Re-verify in the background; fileSync will bump the reload nonce
+        // and re-trigger this effect with fresh content if disk diverged.
+        void checkOpenFilesForExternalChanges(props.taskId, path)
       } catch {
         await createEditor(cached, path, '')
       }

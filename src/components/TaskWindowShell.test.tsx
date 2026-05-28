@@ -134,6 +134,10 @@ vi.mock('../store/fileSync', () => ({
   dismissConflict: vi.fn(),
   resolveConflictDiscard: vi.fn(),
   resolveConflictOverwrite: vi.fn(),
+  activeRecreate: () => null,
+  dismissRecreate: vi.fn(),
+  resolveRecreate: vi.fn(),
+  isFileDeleted: () => false,
 }))
 
 // Stub the heavy children so we don't drag in editor/xterm modules.

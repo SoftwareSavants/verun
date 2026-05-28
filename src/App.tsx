@@ -6,6 +6,7 @@ import { TaskWindowShell } from './components/TaskWindowShell'
 import { SelectionMenu } from './components/SelectionMenu'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { FileConflictDialog } from './components/FileConflictDialog'
+import { RecreateFileDialog } from './components/RecreateFileDialog'
 import { ToastContainer } from './components/ToastContainer'
 import { ResourceMonitor } from './components/ResourceMonitor'
 import { initTheme } from './lib/theme'
@@ -91,6 +92,7 @@ const MainApp: Component = () => {
         onCancel={closeQuitDialog}
       />
       <FileConflictDialog />
+      <RecreateFileDialog />
     </>
   )
 }

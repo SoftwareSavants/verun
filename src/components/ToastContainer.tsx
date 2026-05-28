@@ -48,7 +48,12 @@ export const ToastContainer: Component = () => {
             >
               <div class="flex items-start gap-2.5">
                 <Icon size={15} class={clsx(iconColors[toast.type], 'mt-0.5 shrink-0', toast.loading && 'animate-spin')} />
-                <span class="text-sm text-text-primary flex-1">{toast.message}</span>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm text-text-primary">{toast.message}</div>
+                  <Show when={toast.description}>
+                    <div class="text-xs text-text-muted mt-1 leading-snug">{toast.description}</div>
+                  </Show>
+                </div>
                 <button
                   class="p-0.5 rounded text-text-dim hover:text-text-muted transition-colors shrink-0"
                   onClick={() => dismissToast(toast.id)}

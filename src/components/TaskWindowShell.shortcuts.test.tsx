@@ -124,6 +124,10 @@ vi.mock('../store/fileSync', () => ({
   dismissConflict: vi.fn(),
   resolveConflictDiscard: vi.fn(),
   resolveConflictOverwrite: vi.fn(),
+  activeRecreate: () => null,
+  dismissRecreate: vi.fn(),
+  resolveRecreate: vi.fn(),
+  isFileDeleted: () => false,
 }))
 
 vi.mock('./TaskPanel', () => ({ TaskPanel: () => null }))

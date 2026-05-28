@@ -50,11 +50,11 @@ export async function initListeners() {
     initSetupListeners(),
     initAgentListeners(),
     initResourceMonitor(),
+    initOpenFilesRefresh(),
   ])
   initWindowFocusRefresh()
   initSessionWindowFocusRefresh()
   initEnvPathFocusRefresh()
-  initOpenFilesRefresh()
   // LSP diagnostics: each window has its own `problems` signal, so the
   // listener needs to register in detached task windows too — otherwise the
   // Problems panel stays empty there even with the LSP running. Function is

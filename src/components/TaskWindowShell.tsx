@@ -18,6 +18,7 @@ import { ToastContainer } from './ToastContainer'
 import { SelectionMenu } from './SelectionMenu'
 import { TaskModelPickerHost } from './TaskModelPickerHost'
 import { FileConflictDialog } from './FileConflictDialog'
+import { RecreateFileDialog } from './RecreateFileDialog'
 import * as ipc from '../lib/ipc'
 
 export const TaskWindowShell: Component = () => {
@@ -159,6 +160,7 @@ export const TaskWindowShell: Component = () => {
       />
       <TaskModelPickerHost />
       <FileConflictDialog />
+      <RecreateFileDialog />
     </>
   )
 }

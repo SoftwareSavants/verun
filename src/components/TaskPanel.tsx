@@ -30,6 +30,7 @@ import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
 import SvgIcon from './SvgIcon'
 import { problemSeverityForPath } from '../store/problems'
+import { isFileDeleted } from '../store/fileSync'
 import { getLspClient } from '../lib/lsp'
 import * as ipc from '../lib/ipc'
 import type { Session } from '../types'
@@ -615,18 +616,31 @@ export const TaskPanel: Component = () => {
                               if (isDiff()) return <GitCompare size={10} class="shrink-0" />
                               const I = getFileIcon(tab.name); return <I size={10} class="shrink-0" />
                             })()}
-                            <span class={clsx(
-                              'truncate max-w-32',
-                              tab.preview && 'italic',
-                              !isDiff() && problemSeverityForPath(t().id, tab.relativePath, false) === 'error' && 'text-status-error',
-                              !isDiff() && problemSeverityForPath(t().id, tab.relativePath, false) === 'warning' && 'text-yellow-500',
-                            )}>
-                              {tab.dirty ? '\u2022 ' : ''}{tab.name}{diffSuffix()}
-                            </span>
+                            {(() => {
+                              const deleted = !isDiff() && isFileDeleted(t().id, tab.relativePath)
+                              return (
+                                <>
+                                  <Show when={deleted}>
+                                    <span class="text-status-error text-[11px] leading-none shrink-0" title="File deleted on disk. Save to recreate or close to discard.">\u2298</span>
+                                  </Show>
+                                  <span class={clsx(
+                                    'truncate max-w-32',
+                                    tab.preview && 'italic',
+                                    deleted
+                                      ? 'line-through decoration-status-error/55 text-text-secondary'
+                                      : !isDiff() && problemSeverityForPath(t().id, tab.relativePath, false) === 'error' ? 'text-status-error'
+                                      : !isDiff() && problemSeverityForPath(t().id, tab.relativePath, false) === 'warning' ? 'text-yellow-500'
+                                      : '',
+                                  )}>
+                                    {!deleted && tab.dirty ? '\u2022 ' : ''}{tab.name}{diffSuffix()}
+                                  </span>
+                                </>
+                              )
+                            })()}
                             <button
                               class={clsx(
                                 'ml-0.5 shrink-0 text-text-dim hover:text-text-muted transition-opacity',
-                                tab.dirty ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                                (tab.dirty || (!isDiff() && isFileDeleted(t().id, tab.relativePath))) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                               )}
                               onClick={(e) => {
                                 e.stopPropagation()

@@ -222,6 +222,7 @@ export interface ToastAction {
 export interface Toast {
   id: string
   message: string
+  description?: string
   type: 'info' | 'error' | 'success'
   persistent?: boolean
   loading?: boolean
@@ -231,6 +232,7 @@ export interface Toast {
 
 export interface AddToastOptions {
   id?: string
+  description?: string
   persistent?: boolean
   duration?: number
   loading?: boolean
@@ -247,7 +249,7 @@ export function addToast(
   opts: AddToastOptions = {},
 ): string {
   const id = opts.id ?? crypto.randomUUID()
-  const toast: Toast = { id, message, type, persistent: opts.persistent, loading: opts.loading, actions: opts.actions, onDismiss: opts.onDismiss }
+  const toast: Toast = { id, message, description: opts.description, type, persistent: opts.persistent, loading: opts.loading, actions: opts.actions, onDismiss: opts.onDismiss }
   setToasts(prev => {
     const existing = prev.findIndex(t => t.id === id)
     if (existing >= 0) {

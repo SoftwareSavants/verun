@@ -2687,9 +2687,10 @@ pub async fn read_worktree_file(
     }
 
     let limit = max_bytes.unwrap_or(50_000) as usize;
-    let bytes = tokio::fs::read(&full_path)
-        .await
-        .map_err(|e| format!("Failed to read {relative_path}: {e}"))?;
+    let bytes = tokio::fs::read(&full_path).await.map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => format!("NotFound: {relative_path}"),
+        _ => format!("Failed to read {relative_path}: {e}"),
+    })?;
 
     let truncated = bytes.len() > limit;
     let slice = if truncated {
