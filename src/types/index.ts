@@ -274,10 +274,20 @@ export interface PolicyAutoApprovedEvent {
 
 // Git types
 
+export type ConflictKind =
+  | 'bothModified'
+  | 'bothAdded'
+  | 'bothDeleted'
+  | 'addedByUs'
+  | 'addedByThem'
+  | 'deletedByUs'
+  | 'deletedByThem'
+
 export interface FileStatus {
   path: string;
-  status: string;
-  staging: string;
+  indexStatus: string; // single character: ' ', 'M', 'A', 'D', 'R', 'C', 'U', '?'
+  worktreeStatus: string; // single character: ' ', 'M', 'D', 'U', '?'
+  conflict: ConflictKind | null;
   oldPath?: string;
 }
 
