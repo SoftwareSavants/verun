@@ -13,6 +13,12 @@ export const ghStatus = () => invoke<GhStatus>('gh_status')
 export const listUserGithubRepos = () =>
   invoke<RemoteRepo[]>('list_user_github_repos')
 
+export const searchGithubRepos = (query: string) =>
+  invoke<RemoteRepo[]>('search_github_repos', { query })
+
+export const fetchGithubRepo = (nameWithOwner: string) =>
+  invoke<RemoteRepo>('fetch_github_repo', { nameWithOwner })
+
 export const cloneGithubRepoAndAdd = (args: {
   nameWithOwner?: string
   remoteUrl?: string

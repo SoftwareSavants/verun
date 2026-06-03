@@ -366,6 +366,10 @@ export interface PrInfo {
 export interface GhStatus {
   installed: boolean
   authenticated: boolean
+  /** `true` when `gh auth status` couldn't reach GitHub (DNS lookup failed,
+   * connection refused, timed out, etc.). Lets the UI distinguish "no wifi"
+   * from "you need to sign in". */
+  offline: boolean
   account: string | null
 }
 

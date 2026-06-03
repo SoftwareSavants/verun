@@ -29,6 +29,11 @@ pub struct PrInfo {
 pub struct GhStatus {
     pub installed: bool,
     pub authenticated: bool,
+    /// `true` when `gh auth status` failed to reach GitHub (DNS resolution
+    /// failed, connection refused, request timed out, etc.) so the UI can
+    /// distinguish "not signed in" from "no internet" and stop nagging the
+    /// user to run `gh auth login` when their wifi is just down.
+    pub offline: bool,
     pub account: Option<String>,
 }
 
@@ -43,6 +48,10 @@ pub struct RemoteRepo {
     pub is_fork: bool,
     pub is_archived: bool,
     pub updated_at: Option<String>,
+    // `gh repo view --json` emits `stargazerCount`; `gh api /user/repos` and
+    // `gh api search/repositories` emit `starCount` (camelCase of our struct
+    // field). Accept both, and default to 0 when the endpoint omits it.
+    #[serde(default, alias = "stargazerCount")]
     pub star_count: u32,
     /// Avatar of the repo's owner — the organization's logo for org repos, the
     /// user's profile photo for personal repos. `None` when the source payload
@@ -90,6 +99,7 @@ pub fn gh_status() -> GhStatus {
         return GhStatus {
             installed: false,
             authenticated: false,
+            offline: false,
             account: None,
         };
     };
@@ -104,11 +114,34 @@ pub fn gh_status() -> GhStatus {
     parse_auth_status(out.status.success(), &combined)
 }
 
+/// Patterns that `gh auth status` (or any of its Go-net plumbing) emits when
+/// the network isn't reachable. Matched case-insensitively against the full
+/// stdout+stderr blob.
+fn looks_offline(lower: &str) -> bool {
+    [
+        "no such host",
+        "could not resolve host",
+        "dial tcp",
+        "connection refused",
+        "network is unreachable",
+        "i/o timeout",
+        "tls handshake timeout",
+        "temporary failure in name resolution",
+        "context deadline exceeded",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 /// Parse the output of `gh auth status` into a structured status. Pure (no I/O)
 /// so it's easy to unit-test against representative outputs.
 fn parse_auth_status(exit_success: bool, output: &str) -> GhStatus {
     let lower = output.to_lowercase();
-    let authenticated = exit_success && !lower.contains("not logged in");
+    let offline = !exit_success && looks_offline(&lower);
+    // If we're offline we don't know whether the user is signed in — `gh`
+    // couldn't reach GitHub to verify the token. Default to `authenticated:
+    // false` so the UI can short-circuit on the offline branch first.
+    let authenticated = !offline && exit_success && !lower.contains("not logged in");
     let mut account: Option<String> = None;
     if authenticated {
         for line in output.lines() {
@@ -128,6 +161,7 @@ fn parse_auth_status(exit_success: bool, output: &str) -> GhStatus {
     GhStatus {
         installed: true,
         authenticated,
+        offline,
         account,
     }
 }
@@ -212,35 +246,90 @@ fn parse_user_repos_api(json_str: &str) -> Result<Vec<RemoteRepo>, String> {
         .collect())
 }
 
-/// Resolve the canonical clone URLs for a `owner/repo` via `gh repo view`. We
-/// re-fetch (rather than trust the list payload) so the URL we hand to git is
-/// always live — orgs can rename repos, change visibility, etc.
-pub fn resolve_repo_clone_urls(name_with_owner: &str) -> Result<RemoteRepo, String> {
+/// Fetch a single repo via `gh api repos/<owner>/<name>` — same payload shape
+/// as `list_user_repos`, so we get the owner avatar/type that `gh repo view`
+/// omits. Used when the user pastes a URL/slug for a repo outside their list.
+pub fn fetch_repo_by_slug(name_with_owner: &str) -> Result<RemoteRepo, String> {
+    let path = format!("repos/{name_with_owner}");
     let output = Command::new("gh")
         .args([
-            "repo",
-            "view",
-            name_with_owner,
-            "--json",
-            "nameWithOwner,description,url,sshUrl,isPrivate,isFork,isArchived,updatedAt",
+            "api",
+            "-X",
+            "GET",
+            "-H",
+            "Accept: application/vnd.github+json",
+            &path,
         ])
         .output()
         .map_err(|e| format!("gh CLI failed to launch: {e}"))?;
-
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh repo view failed: {}", stderr.trim()));
+        return Err(format!("gh api {path} failed: {}", stderr.trim()));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str::<RemoteRepo>(&stdout)
-        .map_err(|e| format!("Failed to parse gh repo view output: {e}"))
+    parse_one_repo_api(&stdout)
 }
 
-/// Clone a repo into `<parent_dir>/<repo-name>`. Prefers SSH; falls back to
-/// HTTPS if the SSH URL is missing. Returns the absolute path of the cloned
-/// directory.
+/// Search GitHub's public repos via `gh api search/repositories?q=...`. Mirrors
+/// the same `Raw` payload `list_user_repos` parses, so user repos and public
+/// hits share the `RemoteRepo` shape end-to-end.
+pub fn search_repos(query: &str) -> Result<Vec<RemoteRepo>, String> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let encoded: String = query
+        .trim()
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    let path = format!("search/repositories?q={encoded}&per_page=30&sort=stars&order=desc");
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "GET",
+            "-H",
+            "Accept: application/vnd.github+json",
+            &path,
+        ])
+        .output()
+        .map_err(|e| format!("gh CLI failed to launch: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh api search failed: {}", stderr.trim()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_search_repos_api(&stdout)
+}
+
+fn parse_one_repo_api(json_str: &str) -> Result<RemoteRepo, String> {
+    let mut v = parse_user_repos_api(&format!("[{json_str}]"))?;
+    v.pop()
+        .ok_or_else(|| "gh api returned empty repo payload".to_string())
+}
+
+fn parse_search_repos_api(json_str: &str) -> Result<Vec<RemoteRepo>, String> {
+    #[derive(Deserialize)]
+    struct Wrapper {
+        items: serde_json::Value,
+    }
+    let w: Wrapper = serde_json::from_str(json_str)
+        .map_err(|e| format!("Failed to parse gh search output: {e}"))?;
+    parse_user_repos_api(&w.items.to_string())
+}
+
+/// Clone a repo into `<parent_dir>/<repo-name>`. On failure removes any
+/// partial worktree git left behind so the user can retry without hitting
+/// "destination already exists". Returns the absolute path of the cloned
+/// directory on success.
 pub fn clone_repo(remote_url: &str, parent_dir: &str, dir_name: &str) -> Result<String, String> {
     use std::path::Path;
+
     let parent = Path::new(parent_dir);
     if !parent.is_dir() {
         return Err(format!("Destination parent does not exist: {parent_dir}"));
@@ -257,8 +346,15 @@ pub fn clone_repo(remote_url: &str, parent_dir: &str, dir_name: &str) -> Result<
         .map_err(|e| format!("git failed to launch: {e}"))?;
 
     if !output.status.success() {
+        let _ = std::fs::remove_dir_all(&target);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git clone failed: {}", stderr.trim()));
+        let trimmed = stderr.trim();
+        let msg = if trimmed.is_empty() {
+            "git clone failed".to_string()
+        } else {
+            format!("git clone failed: {trimmed}")
+        };
+        return Err(msg);
     }
     Ok(target.to_string_lossy().into_owned())
 }
@@ -1126,6 +1222,79 @@ mod tests {
     #[test]
     fn parse_user_repos_api_invalid_json() {
         assert!(parse_user_repos_api("not json").is_err());
+    }
+
+    #[test]
+    fn clone_failure_cleans_up_partial_target_directory() {
+        // Point `git clone` at a guaranteed-bad remote so it fails quickly.
+        // We then assert that whatever partial worktree git left behind is
+        // removed — otherwise the user hits "Destination already exists" on
+        // retry and has to clean up by hand.
+        let parent = tempfile::tempdir().expect("tempdir");
+        let dir_name = "verun-clone-fail-target";
+        let result = clone_repo(
+            "https://invalid.example.invalid/no/such/repo.git",
+            parent.path().to_str().unwrap(),
+            dir_name,
+        );
+        assert!(
+            result.is_err(),
+            "clone should fail against an unreachable host"
+        );
+        let leftover = parent.path().join(dir_name);
+        assert!(
+            !leftover.exists(),
+            "partial worktree at {leftover:?} should have been removed after failure",
+        );
+    }
+
+    #[test]
+    fn parse_auth_status_offline_dns_failure() {
+        // `gh auth status` when DNS resolution fails. We must distinguish
+        // this from "not logged in" so the UI doesn't prompt the user to
+        // run `gh auth login` (which won't fix it).
+        let stderr = "error connecting to github.com: dial tcp: lookup github.com on 1.1.1.1:53: no such host\n";
+        let status = parse_auth_status(false, stderr);
+        assert!(status.installed);
+        assert!(status.offline);
+        assert!(!status.authenticated);
+    }
+
+    #[test]
+    fn parse_auth_status_offline_timeout() {
+        let stderr = "error: i/o timeout\n";
+        let status = parse_auth_status(false, stderr);
+        assert!(status.offline);
+        assert!(!status.authenticated);
+    }
+
+    #[test]
+    fn parse_auth_status_authed_not_offline() {
+        let stderr = "github.com\n  ✓ Logged in to github.com account alice (oauth_token)\n";
+        let status = parse_auth_status(true, stderr);
+        assert!(status.authenticated);
+        assert!(!status.offline);
+    }
+
+    #[test]
+    fn remote_repo_accepts_stargazer_count_alias() {
+        // `gh repo view --json` historically returned `stargazerCount`, not
+        // `starCount`. The serde alias keeps us forward/backward compatible
+        // and defends against the "missing field `starCount`" regression.
+        let json = r#"{"nameWithOwner":"acme/web","description":null,"url":"https://github.com/acme/web","sshUrl":"git@github.com:acme/web.git","isPrivate":false,"isFork":false,"isArchived":false,"updatedAt":"2026-04-20T10:00:00Z","stargazerCount":42}"#;
+        let repo: RemoteRepo = serde_json::from_str(json).expect("should parse payload");
+        assert_eq!(repo.name_with_owner, "acme/web");
+        assert_eq!(repo.star_count, 42);
+        assert_eq!(repo.ssh_url, "git@github.com:acme/web.git");
+    }
+
+    #[test]
+    fn remote_repo_defaults_star_count_when_missing() {
+        // A future gh version dropping the field entirely should not break
+        // deserialization for callers that don't care about star counts.
+        let json = r#"{"nameWithOwner":"acme/web","description":null,"url":"https://github.com/acme/web","sshUrl":"git@github.com:acme/web.git","isPrivate":false,"isFork":false,"isArchived":false,"updatedAt":null}"#;
+        let repo: RemoteRepo = serde_json::from_str(json).expect("should parse without starCount");
+        assert_eq!(repo.star_count, 0);
     }
 
     #[test]

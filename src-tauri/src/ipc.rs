@@ -154,6 +154,18 @@ pub async fn list_user_github_repos() -> Result<Vec<github::RemoteRepo>, String>
 }
 
 #[tauri::command]
+pub async fn search_github_repos(query: String) -> Result<Vec<github::RemoteRepo>, String> {
+    flatten_join(tokio::task::spawn_blocking(move || github::search_repos(&query)).await)
+}
+
+#[tauri::command]
+pub async fn fetch_github_repo(name_with_owner: String) -> Result<github::RemoteRepo, String> {
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::fetch_repo_by_slug(&name_with_owner)).await,
+    )
+}
+
+#[tauri::command]
 pub async fn clone_github_repo_and_add(
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
@@ -165,21 +177,18 @@ pub async fn clone_github_repo_and_add(
         return Err("Choose a destination folder before cloning.".to_string());
     }
     let (final_url, dir_name) = if let Some(nwo) = name_with_owner.as_ref() {
-        let nwo = nwo.clone();
-        let repo = flatten_join(
-            tokio::task::spawn_blocking(move || github::resolve_repo_clone_urls(&nwo)).await,
-        )?;
-        let dir = repo
-            .name_with_owner
-            .split('/')
-            .next_back()
-            .unwrap_or(repo.name_with_owner.as_str())
-            .to_string();
-        let url = if !repo.ssh_url.is_empty() {
-            repo.ssh_url
-        } else {
-            repo.url
-        };
+        let nwo = nwo.trim();
+        if nwo.is_empty() || !nwo.contains('/') {
+            return Err("Invalid repo identifier; expected `owner/repo`.".to_string());
+        }
+        let dir = nwo.rsplit('/').next().unwrap_or(nwo).to_string();
+        // Always clone over HTTPS for GitHub repos. `gh auth login` configures
+        // `gh` as a git credential helper for github.com HTTPS URLs, so the
+        // user's OAuth token authenticates the clone — no dependency on SSH
+        // keys being set up. (Previously we passed `ssh_url`, which fell over
+        // with `Permission denied (publickey). … the repository exists.` for
+        // users without SSH configured.)
+        let url = format!("https://github.com/{nwo}.git");
         (url, dir)
     } else if let Some(url) = remote_url.as_ref() {
         let url = url.trim();

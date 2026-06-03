@@ -384,6 +384,15 @@ export default defineConfig({
           to { opacity: 1; transform: translateX(0); }
         }
         .animate-slide-in { animation: slideInRight 0.25s ease-out; }
+
+        /* Indeterminate progress bar — a sliding bar that loops left→right.
+           Used by the clone-progress toast since git clone gives us no real
+           completion percentage to track. */
+        @keyframes indeterminateProgress {
+          0%   { transform: translateX(-100%); }
+          100% { transform: translateX(400%); }
+        }
+        .animate-indeterminate-progress { animation: indeterminateProgress 1.4s ease-in-out infinite; }
       `,
     },
   ],
