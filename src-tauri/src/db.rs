@@ -277,6 +277,24 @@ pub fn migrations() -> Vec<Migration> {
               ON github_cache_entries(task_id, scope);
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 24,
+        description: "create scheduled_wakeups table for ScheduleWakeup tool",
+        sql: r#"
+            CREATE TABLE IF NOT EXISTS scheduled_wakeups (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                prompt TEXT NOT NULL,
+                reason TEXT,
+                fire_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                fired_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_scheduled_wakeups_pending
+              ON scheduled_wakeups(fire_at) WHERE fired_at IS NULL;
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -454,6 +472,20 @@ pub struct Step {
     pub created_at: i64,
 }
 
+/// A wakeup the model asked Verun to schedule via the `ScheduleWakeup` tool.
+/// `fired_at` is set when the scheduler resumes the session with `prompt`.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledWakeup {
+    pub id: String,
+    pub session_id: String,
+    pub prompt: String,
+    pub reason: Option<String>,
+    pub fire_at: i64,
+    pub created_at: i64,
+    pub fired_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubCacheEntry {
@@ -611,6 +643,13 @@ pub enum DbWrite {
     },
     DisarmAllSteps {
         session_id: String,
+    },
+
+    // Scheduled wakeups (ScheduleWakeup tool)
+    InsertScheduledWakeup(ScheduledWakeup),
+    MarkWakeupFired {
+        id: String,
+        fired_at: i64,
     },
 
     // Startup recovery
@@ -1274,6 +1313,31 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
                 .await?;
         }
 
+        // -- Scheduled wakeups --
+        DbWrite::InsertScheduledWakeup(w) => {
+            sqlx::query(
+                "INSERT INTO scheduled_wakeups \
+                 (id, session_id, prompt, reason, fire_at, created_at, fired_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&w.id)
+            .bind(&w.session_id)
+            .bind(&w.prompt)
+            .bind(&w.reason)
+            .bind(w.fire_at)
+            .bind(w.created_at)
+            .bind(w.fired_at)
+            .execute(pool)
+            .await?;
+        }
+        DbWrite::MarkWakeupFired { id, fired_at } => {
+            sqlx::query("UPDATE scheduled_wakeups SET fired_at = ? WHERE id = ?")
+                .bind(fired_at)
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+
         // -- Startup recovery --
         DbWrite::ResetRunningSessions => {
             sqlx::query("UPDATE sessions SET status = 'idle' WHERE status = 'running'")
@@ -1663,6 +1727,26 @@ pub async fn list_steps(pool: &SqlitePool, session_id: &str) -> Result<Vec<Step>
         .map_err(|e| e.to_string())
 }
 
+// Scheduled wakeups
+
+/// Wakeups that are due to fire (`fire_at <= now_ms`) and have not yet been
+/// dispatched (`fired_at IS NULL`). Ordered by `fire_at` so the oldest
+/// overdue wakeup fires first when multiple come due in the same tick.
+pub async fn list_due_wakeups(
+    pool: &SqlitePool,
+    now_ms: i64,
+) -> Result<Vec<ScheduledWakeup>, String> {
+    sqlx::query_as::<_, ScheduledWakeup>(
+        "SELECT * FROM scheduled_wakeups \
+         WHERE fired_at IS NULL AND fire_at <= ? \
+         ORDER BY fire_at ASC",
+    )
+    .bind(now_ms)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
 // Policy
 
 pub async fn get_trust_level(pool: &SqlitePool, task_id: &str) -> Result<String, String> {
@@ -1866,7 +1950,7 @@ pub(crate) mod tests {
     #[test]
     fn migration_versions_are_sequential() {
         let m = migrations();
-        assert_eq!(m.len(), 23);
+        assert_eq!(m.len(), 24);
         for (i, mig) in m.iter().enumerate() {
             assert_eq!(
                 mig.version,

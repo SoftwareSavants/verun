@@ -80,11 +80,16 @@ export const isTaskAttention = (id: string) => _attentionTaskIds().has(id)
 
 export function markTaskUnread(taskId: string) {
   if (taskId === selectedTaskId()) return
+  // The task is already visible to the user in its own detached window,
+  // so flagging unread/attention here would just leave a stale badge in
+  // the sidebar once they close it.
+  if (_windowedTaskIds().has(taskId)) return
   _setUnreadTaskIds(prev => { const s = new Set(prev); s.add(taskId); persistSet(UNREAD_KEY, s); return s })
 }
 
 export function markTaskAttention(taskId: string) {
   if (taskId === selectedTaskId()) return
+  if (_windowedTaskIds().has(taskId)) return
   _setAttentionTaskIds(prev => { const s = new Set(prev); s.add(taskId); persistSet(ATTENTION_KEY, s); return s })
 }
 

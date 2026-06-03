@@ -10,8 +10,12 @@ const [dirContents, setDirContents] = createStore<Record<string, FileEntry[]>>({
 
 /** Build the synthetic tab key used to identify a diff tab. */
 export function diffTabKey(source: DiffSource, relativePath: string): string {
-  if (source.type === 'commit') return `__diff__:commit:${source.commitHash}:${relativePath}`
-  return `__diff__:working:${relativePath}`
+  switch (source.type) {
+    case 'working':  return `__diff__:working:${relativePath}`
+    case 'staged':   return `__diff__:staged:${relativePath}`
+    case 'unstaged': return `__diff__:unstaged:${relativePath}`
+    case 'commit':   return `__diff__:commit:${source.commitHash}:${relativePath}`
+  }
 }
 
 /** True when a tab key/main-view value identifies a diff tab. */
@@ -21,7 +25,9 @@ export function isDiffKey(key: string | null | undefined): boolean {
 
 /** Extract the real relative path from a synthetic diff key. */
 export function pathFromDiffKey(key: string): string | null {
-  if (key.startsWith('__diff__:working:')) return key.slice('__diff__:working:'.length)
+  if (key.startsWith('__diff__:working:'))   return key.slice('__diff__:working:'.length)
+  if (key.startsWith('__diff__:staged:'))    return key.slice('__diff__:staged:'.length)
+  if (key.startsWith('__diff__:unstaged:'))  return key.slice('__diff__:unstaged:'.length)
   const m = key.match(/^__diff__:commit:[^:]+:(.+)$/)
   return m ? m[1] : null
 }

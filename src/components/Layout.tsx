@@ -8,23 +8,17 @@ import { NewTaskDialog } from './NewTaskDialog'
 import { AddProjectDialog } from './AddProjectDialog'
 import { CloneRepoDialog } from './CloneRepoDialog'
 import { BtsBuilderDialog } from './BtsBuilderDialog'
-import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, toggleTerminal, showTerminal, setShowTerminal, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, showCloneRepo, setShowCloneRepo, setSelectedProjectId, siblingTaskInList, nextSessionIdInTask } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, showCloneRepo, setShowCloneRepo, setSelectedProjectId, siblingTaskInList } from '../store/ui'
 import * as ipc from '../lib/ipc'
-import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
-import { activeTasksForProject, taskById } from '../store/tasks'
-import { projects, projectById } from '../store/projects'
+import { hydrateTerminalsForTask } from '../store/terminals'
+import { activeTasksForProject } from '../store/tasks'
+import { projects } from '../store/projects'
 import { selectedProjectId, selectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
-import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView } from '../store/editorView'
-import { rightPanelTab, setRightPanelTab, setShowQuickOpen, setFocusSearchRequest } from '../store/ui'
-import { seedSearchQuery } from '../store/workspaceSearch'
+import { setShowQuickOpen } from '../store/ui'
 import { GlobalCommandPalette, setShowGlobalPalette } from './GlobalCommandPalette'
-import { ModelPicker } from './ModelPicker'
-import { modelPickerRequest, openModelPicker, closeModelPicker } from '../store/modelPicker'
-import { createSession, sessionsForTask } from '../store/sessions'
-import { selectedSessionForTask } from '../store/taskContext'
-import { setSelectedSessionIdForTask } from '../store/ui'
-import { setMainView } from '../store/editorView'
+import { TaskModelPickerHost } from './TaskModelPickerHost'
+import { useTaskShortcuts } from '../lib/useTaskShortcuts'
 
 export const Layout: Component = () => {
   const [dragging, setDragging] = createSignal(false)
@@ -75,7 +69,13 @@ export const Layout: Component = () => {
     window.addEventListener('mouseup', onUp)
   }
 
-  // Keyboard shortcuts
+  // Per-task keyboard shortcuts (Cmd+T, Cmd+P, terminal shortcuts, etc.) are
+  // shared with the detached TaskWindowShell via useTaskShortcuts so the two
+  // shells can't drift (issue #243). Main-window-only shortcuts stay below.
+  useTaskShortcuts()
+
+  // Main-window-only keyboard shortcuts: global navigation, settings, command
+  // palette, and Cmd+1..9 for switching between tasks.
   onMount(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (modPressed(e) && e.key === 'o') {
@@ -141,178 +141,12 @@ export const Layout: Component = () => {
         setShowGlobalPalette(true)
         return
       }
-      // Cmd+P — quick file open (only when a task is selected)
-      if (modPressed(e) && e.key === 'p' && selectedTaskId()) {
-        e.preventDefault()
-        setShowQuickOpen(true)
-      }
-      // Cmd+Shift+F — global workspace search. If the user has text selected,
-      // seed the query with it so hitting the shortcut while viewing code runs
-      // the search for the selection immediately.
-      if (modPressed(e) && e.shiftKey && (e.key === 'f' || e.key === 'F') && selectedTaskId()) {
-        e.preventDefault()
-        const tid = selectedTaskId()!
-        const sel = (window.getSelection()?.toString() ?? '').split('\n')[0].trim()
-        if (sel.length >= 2 && sel.length <= 200) seedSearchQuery(tid, sel)
-        setRightPanelTab('search')
-        setFocusSearchRequest(t => t + 1)
-      }
-      // Cmd+E — toggle Files panel
-      if (modPressed(e) && e.key === 'e') {
-        e.preventDefault()
-        setRightPanelTab(rightPanelTab() === 'files' ? 'changes' : 'files')
-      }
-      // Cmd+W — close active editor tab
-      if (modPressed(e) && e.key === 'w' && !e.shiftKey) {
-        const tid = selectedTaskId()
-        if (tid) {
-          const path = activeTabPath(tid)
-          if (path && mainView(tid) !== 'session') {
-            e.preventDefault()
-            requestCloseTab(tid, path)
-          }
-        }
-      }
-      // Cmd+Shift+T — reopen closed tab
-      if (modPressed(e) && e.shiftKey && e.key === 't') {
-        const tid = selectedTaskId()
-        if (tid) {
-          e.preventDefault()
-          reopenClosedTab(tid)
-        }
-      }
-      // Cmd+T — open model picker to start a new session on the current task.
-      // "Current" defaults to the *selected session*'s agent (falling back to the
-      // first session, then the task's original agentType) so switching sessions
-      // re-anchors the picker.
-      if (modPressed(e) && !e.shiftKey && !e.altKey && e.key === 't') {
-        const tid = selectedTaskId()
-        if (tid) {
-          e.preventDefault()
-          const task = taskById(tid)
-          const list = sessionsForTask(tid)
-          const pickedId = selectedSessionForTask(tid)
-          const current = list.find(s => s.id === pickedId) ?? list[0]
-          openModelPicker({
-            title: 'New session',
-            placeholder: 'Select agent and model for new session...',
-            defaultAgent: current?.agentType ?? task?.agentType,
-            defaultModel: current?.model ?? undefined,
-            onPick: async (agentType, model) => {
-              const session = await createSession(tid, agentType, model)
-              setSelectedSessionIdForTask(tid, session.id)
-              setMainView(tid, 'session')
-            },
-          })
-        }
-      }
-      // Cmd+Alt+Right / Cmd+Alt+Left — cycle sessions in session view,
-      // cycle editor tabs in file view (mirrors Ctrl+Tab below).
-      if (modPressed(e) && e.altKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
-        const tid = selectedTaskId()
-        if (tid) {
-          e.preventDefault()
-          const dir = e.key === 'ArrowRight' ? 'next' : 'prev'
-          if (mainView(tid) !== 'session') {
-            if (dir === 'next') nextTab(tid); else prevTab(tid)
-          } else {
-            const list = sessionsForTask(tid)
-            const next = nextSessionIdInTask(tid, dir, list)
-            if (next) setSelectedSessionIdForTask(tid, next)
-          }
-        }
-      }
       // Cmd+Alt+Down / Cmd+Alt+Up — move to next/previous task in the sidebar
       if (modPressed(e) && e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
         e.preventDefault()
         const ordered = projects.flatMap(p => activeTasksForProject(p.id))
         const next = siblingTaskInList(ordered, selectedTaskId(), e.key === 'ArrowDown' ? 'down' : 'up')
         if (next) focusOrSelectTask(next)
-      }
-      // Ctrl+` — toggle terminal panel (focus terminal when opening)
-      if (e.ctrlKey && !e.shiftKey && e.key === '`') {
-        e.preventDefault()
-        toggleTerminal()
-        const tid = selectedTaskId()
-        if (tid && showTerminal()) {
-          // Double-rAF: first lets display:block apply, second lets xterm measure
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => focusActiveTerminal(tid))
-          })
-        }
-      }
-      // Ctrl+Shift+` — new terminal in current task (Shift+` produces ~ on macOS)
-      if (e.ctrlKey && e.shiftKey && (e.key === '`' || e.key === '~')) {
-        e.preventDefault()
-        const tid = selectedTaskId()
-        if (tid) {
-          if (!showTerminal()) setShowTerminal(true)
-          spawnTerminal(tid, 24, 80)
-        }
-      }
-      // Cmd+Shift+B or F5 — toggle start command (start/stop dev server)
-      const isStartStopKey = (modPressed(e) && e.shiftKey && e.key === 'b') || e.key === 'F5'
-      if (isStartStopKey) {
-        e.preventDefault()
-        const tid = selectedTaskId()
-        if (tid) {
-          if (isStartCommandRunning(tid)) {
-            stopStartCommand(tid)
-          } else {
-            const task = taskById(tid)
-            const project = task ? projectById(task.projectId) : undefined
-            if (project?.startCommand) {
-              setShowTerminal(true)
-              spawnStartCommand(tid, project.startCommand)
-            }
-          }
-        }
-      }
-      // Mod+\ — focus terminal (when open)
-      if (modPressed(e) && e.key === '\\') {
-        e.preventDefault()
-        const tid = selectedTaskId()
-        if (tid && showTerminal()) {
-          focusActiveTerminal(tid)
-        }
-      }
-      // Ctrl+Tab / Ctrl+Shift+Tab — switch editor tabs (when viewing a file), else terminal tabs
-      if (e.ctrlKey && e.key === 'Tab') {
-        const tid = selectedTaskId()
-        const inFileView = tid && mainView(tid) !== 'session'
-        if (inFileView) {
-          e.preventDefault()
-          if (e.shiftKey) prevTab(tid)
-          else nextTab(tid)
-        } else {
-          const tid = selectedTaskId()
-          if (tid && showTerminal()) {
-            e.preventDefault()
-            const terms = terminalsForTask(tid)
-            if (terms.length > 1) {
-              const currentId = activeTerminalId(tid)
-              const idx = terms.findIndex(t => t.id === currentId)
-              const next = e.shiftKey
-                ? (idx - 1 + terms.length) % terms.length
-                : (idx + 1) % terms.length
-              setActiveTerminalForTask(tid, terms[next].id)
-              requestAnimationFrame(() => focusActiveTerminal(tid))
-            }
-          }
-        }
-      }
-      // Ctrl+Number — switch to terminal tab by index
-      if (e.ctrlKey && !e.metaKey && !e.shiftKey && e.key >= '1' && e.key <= '9') {
-        const tid = selectedTaskId()
-        if (tid && showTerminal()) {
-          e.preventDefault()
-          const terms = terminalsForTask(tid)
-          const idx = parseInt(e.key) - 1
-          if (idx < terms.length) {
-            setActiveTerminalForTask(tid, terms[idx].id)
-            requestAnimationFrame(() => focusActiveTerminal(tid))
-          }
-        }
       }
     }
     window.addEventListener('keydown', handleKey)
@@ -377,18 +211,7 @@ export const Layout: Component = () => {
         onClose={() => setShowCloneRepo(false)}
       />
       <GlobalCommandPalette />
-      <ModelPicker
-        open={!!modelPickerRequest()}
-        title={modelPickerRequest()?.title}
-        placeholder={modelPickerRequest()?.placeholder}
-        defaultAgent={modelPickerRequest()?.defaultAgent}
-        defaultModel={modelPickerRequest()?.defaultModel}
-        onClose={closeModelPicker}
-        onPick={(agentType, model) => {
-          const req = modelPickerRequest()
-          if (req) return req.onPick(agentType, model)
-        }}
-      />
+      <TaskModelPickerHost />
     </div>
   )
 }

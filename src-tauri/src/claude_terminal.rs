@@ -351,7 +351,7 @@ pub(crate) fn partition_tail_batch(items: &[OutputItem]) -> Vec<TailSegment> {
 
     for item in items {
         match item {
-            OutputItem::TranscriptUserMessage { text } => {
+            OutputItem::TranscriptUserMessage { text, .. } => {
                 if !in_user_segment {
                     flush_other(&mut segments, &mut other);
                     in_user_segment = true;
@@ -1208,6 +1208,7 @@ mod tests {
             },
             OutputItem::TranscriptUserMessage {
                 text: "look".into(),
+                is_meta: false,
             },
             OutputItem::Text { text: "ok".into() },
             OutputItem::ToolStart {
@@ -1241,7 +1242,10 @@ mod tests {
         // A batch with just a UserMessage (no UserAttachment) is still a
         // user-turn segment so persistence routes through verun_user_message.
         // Doing this consistently avoids two parallel persistence shapes.
-        let items = vec![OutputItem::TranscriptUserMessage { text: "hi".into() }];
+        let items = vec![OutputItem::TranscriptUserMessage {
+            text: "hi".into(),
+            is_meta: false,
+        }];
         let segs = partition_tail_batch(&items);
         assert_eq!(segs.len(), 1);
         match &segs[0] {
@@ -1278,12 +1282,14 @@ mod tests {
         let items = vec![
             OutputItem::TranscriptUserMessage {
                 text: "first".into(),
+                is_meta: false,
             },
             OutputItem::Text {
                 text: "reply".into(),
             },
             OutputItem::TranscriptUserMessage {
                 text: "second".into(),
+                is_meta: false,
             },
         ];
         let segs = partition_tail_batch(&items);
@@ -1298,8 +1304,14 @@ mod tests {
         // Claude can emit multiple text blocks in a single user content array;
         // keep them in one verun_user_message line by joining with newlines.
         let items = vec![
-            OutputItem::TranscriptUserMessage { text: "one".into() },
-            OutputItem::TranscriptUserMessage { text: "two".into() },
+            OutputItem::TranscriptUserMessage {
+                text: "one".into(),
+                is_meta: false,
+            },
+            OutputItem::TranscriptUserMessage {
+                text: "two".into(),
+                is_meta: false,
+            },
         ];
         let segs = partition_tail_batch(&items);
         assert_eq!(segs.len(), 1);
@@ -1316,7 +1328,10 @@ mod tests {
                 mime: "image/png".into(),
                 data_b64: "AAAA".into(),
             },
-            OutputItem::TranscriptUserMessage { text: "hi".into() },
+            OutputItem::TranscriptUserMessage {
+                text: "hi".into(),
+                is_meta: false,
+            },
             OutputItem::Text { text: "ok".into() },
         ];
         let live = live_items_for_emit(&items);
@@ -1340,6 +1355,7 @@ mod tests {
             },
             OutputItem::TranscriptUserMessage {
                 text: "look at this".into(),
+                is_meta: false,
             },
         ];
 
@@ -1374,6 +1390,7 @@ mod tests {
             },
             OutputItem::TranscriptUserMessage {
                 text: "still text".into(),
+                is_meta: false,
             },
         ];
         let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;
@@ -1421,6 +1438,7 @@ mod tests {
             },
             OutputItem::TranscriptUserMessage {
                 text: "what's this".into(),
+                is_meta: false,
             },
             OutputItem::Text {
                 text: "an image".into(),

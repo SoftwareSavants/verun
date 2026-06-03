@@ -1,4 +1,4 @@
-import { createStore, produce } from 'solid-js/store'
+import { createStore, produce, reconcile } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
 import type { GitStatus, BranchCommit, PrInfo, CiCheck, GitHubRepo } from '../types'
@@ -84,11 +84,20 @@ async function refreshLocal(taskId: string): Promise<void> {
     ipc.checkGithub(taskId).catch(() => null),
   ])
 
+  if (!gitStates[taskId]) return
+
+  // Use reconcile so individual file / commit object references are preserved
+  // across refreshes when their identifiers (path / hash) match. This stops
+  // <For> from remounting every row on each watcher tick.
+  if (status === null) {
+    setGitStates(taskId, 'status', null)
+  } else {
+    setGitStates(taskId, 'status', reconcile(status, { key: 'path', merge: true }))
+  }
+  setGitStates(taskId, 'commits', reconcile(commits, { key: 'hash', merge: true }))
   setGitStates(produce(s => {
     const state = s[taskId]
     if (!state) return
-    state.status = status
-    state.commits = commits
     state.branchStatus = {
       ahead: branchStatus[0],
       behind: branchStatus[1],

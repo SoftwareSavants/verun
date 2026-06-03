@@ -5,21 +5,19 @@ import { useWindowContext } from '../lib/windowContext'
 import { initListeners, dismissSplash, installContextMenu, initQuitListener, showQuitConfirm, closeQuitDialog } from '../lib/appInit'
 import { initTheme } from '../lib/theme'
 import { refreshTaskGit } from '../store/git'
-import { loadTasks, taskById } from '../store/tasks'
+import { loadTasks } from '../store/tasks'
 import { loadProjects } from '../store/projects'
 import { loadAgents } from '../store/agents'
-import { selectedTaskId, setSelectedTaskId, setSelectedProjectId } from '../store/ui'
-import { modPressed } from '../lib/platform'
-import { toggleTerminal, showTerminal, setShowTerminal } from '../store/ui'
-import { spawnTerminal, focusActiveTerminal, terminalsForTask, activeTerminalId, setActiveTerminalForTask, isStartCommandRunning, spawnStartCommand, stopStartCommand, hydrateTerminalsForTask } from '../store/terminals'
-import { projectById } from '../store/projects'
-import { requestCloseTab, reopenClosedTab, nextTab, prevTab, activeTabPath, mainView } from '../store/editorView'
-import { rightPanelTab, setRightPanelTab, setShowQuickOpen, setFocusSearchRequest } from '../store/ui'
+import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setShowQuickOpen } from '../store/ui'
+import { hydrateTerminalsForTask } from '../store/terminals'
+import { useTaskShortcuts } from '../lib/useTaskShortcuts'
 import { TaskPanel } from './TaskPanel'
 import { NewTaskDialog } from './NewTaskDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ToastContainer } from './ToastContainer'
 import { SelectionMenu } from './SelectionMenu'
+import { TaskModelPickerHost } from './TaskModelPickerHost'
+import { FileConflictDialog } from './FileConflictDialog'
 import * as ipc from '../lib/ipc'
 
 export const TaskWindowShell: Component = () => {
@@ -120,87 +118,14 @@ export const TaskWindowShell: Component = () => {
 
   // --- Keyboard shortcuts ---
 
+  // Shared per-task shortcuts (Cmd+T new session, Cmd+P quick open, etc.)
+  // live in useTaskShortcuts so the main Layout and this detached shell stay
+  // in sync. Cmd+W falls back to closing the window when no editor tab is open.
+  useTaskShortcuts({ onCloseWhenNoTab: () => getCurrentWindow().close() })
+
   onMount(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      const tid = selectedTaskId()
-
-      if (modPressed(e) && e.key === 'p' && tid) {
-        e.preventDefault(); setShowQuickOpen(true)
-      }
-      if (modPressed(e) && e.shiftKey && (e.key === 'f' || e.key === 'F') && tid) {
-        e.preventDefault()
-        setRightPanelTab('search')
-        setFocusSearchRequest(t => t + 1)
-      }
-      if (modPressed(e) && e.key === 'e') {
-        e.preventDefault(); setRightPanelTab(rightPanelTab() === 'files' ? 'changes' : 'files')
-      }
-      // Cmd+W: close editor tab, or close window
-      if (modPressed(e) && e.key === 'w' && !e.shiftKey) {
-        e.preventDefault()
-        if (tid) {
-          const path = activeTabPath(tid)
-          if (path && mainView(tid) !== 'session') { requestCloseTab(tid, path); return }
-        }
-        getCurrentWindow().close()
-      }
-      if (modPressed(e) && e.shiftKey && e.key === 't' && tid) {
-        e.preventDefault(); reopenClosedTab(tid)
-      }
-      if (modPressed(e) && e.altKey && e.key === 'ArrowRight' && tid) { e.preventDefault(); nextTab(tid) }
-      if (modPressed(e) && e.altKey && e.key === 'ArrowLeft' && tid) { e.preventDefault(); prevTab(tid) }
-
-      // Terminal shortcuts
-      if (e.ctrlKey && !e.shiftKey && e.key === '`') {
-        e.preventDefault(); toggleTerminal()
-        if (tid && showTerminal()) requestAnimationFrame(() => requestAnimationFrame(() => focusActiveTerminal(tid)))
-      }
-      if (e.ctrlKey && e.shiftKey && (e.key === '`' || e.key === '~') && tid) {
-        e.preventDefault()
-        if (!showTerminal()) setShowTerminal(true)
-        spawnTerminal(tid, 24, 80)
-      }
-      if ((modPressed(e) && e.shiftKey && e.key === 'b') || e.key === 'F5') {
-        e.preventDefault()
-        if (tid) {
-          if (isStartCommandRunning(tid)) { stopStartCommand(tid) }
-          else {
-            const task = taskById(tid)
-            const project = task ? projectById(task.projectId) : undefined
-            if (project?.startCommand) { setShowTerminal(true); spawnStartCommand(tid, project.startCommand) }
-          }
-        }
-      }
-      if (modPressed(e) && e.key === '\\' && tid && showTerminal()) {
-        e.preventDefault(); focusActiveTerminal(tid)
-      }
-      if (e.ctrlKey && e.key === 'Tab' && tid) {
-        const inFileView = mainView(tid) !== 'session'
-        if (inFileView) { e.preventDefault(); e.shiftKey ? prevTab(tid) : nextTab(tid) }
-        else if (showTerminal()) {
-          e.preventDefault()
-          const terms = terminalsForTask(tid)
-          if (terms.length > 1) {
-            const idx = terms.findIndex(t => t.id === activeTerminalId(tid))
-            const next = e.shiftKey ? (idx - 1 + terms.length) % terms.length : (idx + 1) % terms.length
-            setActiveTerminalForTask(tid, terms[next].id)
-            requestAnimationFrame(() => focusActiveTerminal(tid))
-          }
-        }
-      }
-      if (e.ctrlKey && !e.metaKey && !e.shiftKey && e.key >= '1' && e.key <= '9' && tid && showTerminal()) {
-        e.preventDefault()
-        const terms = terminalsForTask(tid)
-        const idx = parseInt(e.key) - 1
-        if (idx < terms.length) {
-          setActiveTerminalForTask(tid, terms[idx].id)
-          requestAnimationFrame(() => focusActiveTerminal(tid))
-        }
-      }
-    }
-    window.addEventListener('keydown', handleKey)
-    onCleanup(() => window.removeEventListener('keydown', handleKey))
-
+    // CmdOrCtrl+P fired from the native menu (Rust emits "quick-open" since
+    // accelerator-only menus don't always reach JS focus reliably).
     const unlisten = listen('quick-open', () => { if (selectedTaskId()) setShowQuickOpen(true) })
     onCleanup(() => { unlisten.then(fn => fn()) })
   })
@@ -232,6 +157,8 @@ export const TaskWindowShell: Component = () => {
         onConfirm={() => { setShowSetupCloseConfirm(false); ipc.forceCloseTaskWindow() }}
         onCancel={() => setShowSetupCloseConfirm(false)}
       />
+      <TaskModelPickerHost />
+      <FileConflictDialog />
     </>
   )
 }

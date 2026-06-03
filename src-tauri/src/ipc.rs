@@ -824,6 +824,7 @@ pub async fn send_message(
             task_name: t.name,
             agent_type: session.agent_type.clone(),
             external: false,
+            wakeup_reason: None,
         },
     )
     .await
@@ -1536,6 +1537,214 @@ pub async fn git_commit_and_push(
     emit_git_local_changed(&app, &task_id);
     emit_github_remote_invalidated(&app, &task_id, &["overview", "actions"]);
     Ok(hash)
+}
+
+#[tauri::command]
+pub async fn git_discard(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::discard_files(&t.worktree_path, &paths)).await,
+    )?;
+    emit_git_local_changed(&app, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn git_discard_all_unstaged(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::discard_all_unstaged(&t.worktree_path)).await,
+    )?;
+    emit_git_local_changed(&app, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn git_unstage_all(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::unstage_all(&t.worktree_path)).await,
+    )?;
+    emit_git_local_changed(&app, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn git_resolve_conflict(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    file_path: String,
+    choice: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            git_ops::resolve_conflict(&t.worktree_path, &file_path, &choice)
+        })
+        .await,
+    )?;
+    emit_git_local_changed(&app, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn git_commit_amend(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    message: String,
+) -> Result<String, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    let hash = flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::commit_amend(&t.worktree_path, &message)).await,
+    )?;
+    emit_git_local_changed(&app, &task_id);
+    Ok(hash)
+}
+
+#[tauri::command]
+pub async fn git_undo_last_commit(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::undo_last_commit(&t.worktree_path)).await,
+    )?;
+    emit_git_local_changed(&app, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn git_revert_commit(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    hash: String,
+) -> Result<(), String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || git_ops::revert_commit(&t.worktree_path, &hash)).await,
+    )?;
+    emit_git_local_changed(&app, &task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_staged_diff(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    file_path: String,
+    context_lines: Option<u32>,
+    ignore_whitespace: Option<bool>,
+) -> Result<git_ops::FileDiff, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            git_ops::get_staged_diff(&t.worktree_path, &file_path, context_lines, ignore_whitespace)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_unstaged_diff(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    file_path: String,
+    context_lines: Option<u32>,
+    ignore_whitespace: Option<bool>,
+) -> Result<git_ops::FileDiff, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            git_ops::get_unstaged_diff(
+                &t.worktree_path,
+                &file_path,
+                context_lines,
+                ignore_whitespace,
+            )
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_staged_diff_contents(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    file_path: String,
+) -> Result<git_ops::DiffContents, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            git_ops::get_staged_diff_contents(&t.worktree_path, &file_path)
+        })
+        .await,
+    )
+}
+
+#[tauri::command]
+pub async fn get_unstaged_diff_contents(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+    file_path: String,
+) -> Result<git_ops::DiffContents, String> {
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            git_ops::get_unstaged_diff_contents(&t.worktree_path, &file_path)
+        })
+        .await,
+    )
 }
 
 // ---------------------------------------------------------------------------

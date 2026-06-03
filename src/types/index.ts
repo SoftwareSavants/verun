@@ -198,6 +198,23 @@ export type OutputItem =
       text: string;
       images?: AttachmentRef[];
       timestamp?: number;
+      /**
+       * Set when this turn was synthesised by Verun's wakeup scheduler
+       * (issue #230) rather than typed by the human. Carries the model's
+       * own `reason` string from the ScheduleWakeup tool call so the chat
+       * can render a system marker instead of a user bubble.
+       */
+      wakeupReason?: string;
+    }
+  | {
+      /**
+       * User message replayed from a Claude JSONL transcript (terminal mode).
+       * `isMeta` mirrors the CLI's `isMeta` flag — true for CLI-synthesised
+       * turns such as ScheduleWakeup follow-ups, false for real human input.
+       */
+      kind: "transcriptUserMessage";
+      text: string;
+      isMeta?: boolean;
     }
   | { kind: "planUpdate"; items: PlanStep[]; explanation?: string }
   | { kind: "diffUpdate"; diff: string }
@@ -257,10 +274,20 @@ export interface PolicyAutoApprovedEvent {
 
 // Git types
 
+export type ConflictKind =
+  | 'bothModified'
+  | 'bothAdded'
+  | 'bothDeleted'
+  | 'addedByUs'
+  | 'addedByThem'
+  | 'deletedByUs'
+  | 'deletedByThem'
+
 export interface FileStatus {
   path: string;
-  status: string;
-  staging: string;
+  indexStatus: string; // single character: ' ', 'M', 'A', 'D', 'R', 'C', 'U', '?'
+  worktreeStatus: string; // single character: ' ', 'M', 'D', 'U', '?'
+  conflict: ConflictKind | null;
   oldPath?: string;
 }
 

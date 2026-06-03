@@ -239,6 +239,39 @@ export const gitPull = (taskId: string) =>
 export const gitCommitAndPush = (taskId: string, message: string) =>
   invoke<string>('git_commit_and_push', { taskId, message })
 
+export const gitDiscard = (taskId: string, paths: string[]) =>
+  invoke<void>('git_discard', { taskId, paths })
+
+export const gitDiscardAllUnstaged = (taskId: string) =>
+  invoke<void>('git_discard_all_unstaged', { taskId })
+
+export const gitUnstageAll = (taskId: string) =>
+  invoke<void>('git_unstage_all', { taskId })
+
+export const gitResolveConflict = (taskId: string, filePath: string, choice: 'ours' | 'theirs') =>
+  invoke<void>('git_resolve_conflict', { taskId, filePath, choice })
+
+export const gitCommitAmend = (taskId: string, message: string) =>
+  invoke<string>('git_commit_amend', { taskId, message })
+
+export const gitUndoLastCommit = (taskId: string) =>
+  invoke<void>('git_undo_last_commit', { taskId })
+
+export const gitRevertCommit = (taskId: string, hash: string) =>
+  invoke<void>('git_revert_commit', { taskId, hash })
+
+export const getStagedDiff = (taskId: string, filePath: string, contextLines?: number, ignoreWhitespace?: boolean) =>
+  invoke<FileDiff>('get_staged_diff', { taskId, filePath, contextLines, ignoreWhitespace })
+
+export const getUnstagedDiff = (taskId: string, filePath: string, contextLines?: number, ignoreWhitespace?: boolean) =>
+  invoke<FileDiff>('get_unstaged_diff', { taskId, filePath, contextLines, ignoreWhitespace })
+
+export const getStagedDiffContents = (taskId: string, filePath: string) =>
+  invoke<DiffContents>('get_staged_diff_contents', { taskId, filePath })
+
+export const getUnstagedDiffContents = (taskId: string, filePath: string) =>
+  invoke<DiffContents>('get_unstaged_diff_contents', { taskId, filePath })
+
 // GitHub
 export const checkGithub = (taskId: string): Promise<GitHubRepo | null> =>
   DEMO

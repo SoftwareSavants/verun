@@ -296,11 +296,17 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
             size: Number(a.size ?? 0),
           }))
       : undefined
+    // ScheduleWakeup-fired turns persist the model's `reason` so the chat
+    // renders a wakeup marker instead of a user bubble on reload (issue #230).
+    const wakeupReason = typeof v.wakeup_reason === 'string'
+      ? (v.wakeup_reason as string)
+      : undefined
     return [{
       kind: 'userMessage',
       text: v.text as string,
       timestamp: emittedAt,
       ...(images && images.length > 0 ? { images } : {}),
+      ...(wakeupReason !== undefined ? { wakeupReason } : {}),
     }]
   }
 

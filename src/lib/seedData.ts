@@ -315,7 +315,12 @@ const API_REPO: GitHubRepo    = { owner: 'SoftwareSavants', name: 'api-server', 
 
 function gitStatus(files: Array<{ path: string; status: string; ins: number; del: number }>): GitStatus {
   return {
-    files: files.map(f => ({ path: f.path, status: f.status, staging: '' })),
+    files: files.map(f => ({
+      path: f.path,
+      indexStatus: f.status,
+      worktreeStatus: ' ',
+      conflict: null,
+    })),
     stats: files.map(f => ({ path: f.path, insertions: f.ins, deletions: f.del })),
     totalInsertions: files.reduce((s, f) => s + f.ins, 0),
     totalDeletions:  files.reduce((s, f) => s + f.del, 0),

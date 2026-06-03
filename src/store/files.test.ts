@@ -4,8 +4,45 @@ vi.mock('../lib/ipc', () => ({
   listDirectory: vi.fn().mockResolvedValue([]),
 }))
 
-import { loadDirectory, loadDirectoryIfMissing, clearTaskFileCache, getDirContents, reloadAllCachedDirectoriesForTask } from './files'
+import { loadDirectory, loadDirectoryIfMissing, clearTaskFileCache, getDirContents, reloadAllCachedDirectoriesForTask, diffTabKey, pathFromDiffKey } from './files'
 import * as ipc from '../lib/ipc'
+
+describe('diffTabKey', () => {
+  test('working', () => {
+    expect(diffTabKey({ type: 'working' }, 'src/foo.ts')).toBe('__diff__:working:src/foo.ts')
+  })
+  test('staged', () => {
+    expect(diffTabKey({ type: 'staged' }, 'src/foo.ts')).toBe('__diff__:staged:src/foo.ts')
+  })
+  test('unstaged', () => {
+    expect(diffTabKey({ type: 'unstaged' }, 'src/foo.ts')).toBe('__diff__:unstaged:src/foo.ts')
+  })
+  test('commit', () => {
+    expect(diffTabKey({ type: 'commit', commitHash: 'abc1234' }, 'src/foo.ts')).toBe('__diff__:commit:abc1234:src/foo.ts')
+  })
+})
+
+describe('pathFromDiffKey', () => {
+  test('working key round-trips', () => {
+    const key = diffTabKey({ type: 'working' }, 'src/foo.ts')
+    expect(pathFromDiffKey(key)).toBe('src/foo.ts')
+  })
+  test('staged key round-trips', () => {
+    const key = diffTabKey({ type: 'staged' }, 'src/foo.ts')
+    expect(pathFromDiffKey(key)).toBe('src/foo.ts')
+  })
+  test('unstaged key round-trips', () => {
+    const key = diffTabKey({ type: 'unstaged' }, 'src/foo.ts')
+    expect(pathFromDiffKey(key)).toBe('src/foo.ts')
+  })
+  test('commit key round-trips', () => {
+    const key = diffTabKey({ type: 'commit', commitHash: 'abc1234' }, 'src/foo.ts')
+    expect(pathFromDiffKey(key)).toBe('src/foo.ts')
+  })
+  test('unknown key returns null', () => {
+    expect(pathFromDiffKey('unknown:key')).toBeNull()
+  })
+})
 
 describe('loadDirectoryIfMissing', () => {
   beforeEach(() => {

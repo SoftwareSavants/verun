@@ -23,6 +23,7 @@ mod snapshots;
 mod stream;
 mod task;
 mod tsgo_check;
+mod wakeup;
 mod watcher;
 mod worktree;
 
@@ -227,6 +228,15 @@ pub fn run() {
             );
             app.manage(sampler);
 
+            // Issue #230: scheduler that fires ScheduleWakeup follow-ups
+            // back into their original sessions once the delay elapses.
+            let wakeup_pool = app.state::<sqlx::sqlite::SqlitePool>().inner().clone();
+            let wakeup_db_tx = app.state::<db::DbWriteTx>().inner().clone();
+            let wakeup_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                wakeup::run_scheduler(wakeup_pool, wakeup_db_tx, wakeup_app).await;
+            });
+
             // Auto-check for updates after a short delay
             let update_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -369,6 +379,17 @@ pub fn run() {
             ipc::git_push,
             ipc::git_pull,
             ipc::git_commit_and_push,
+            ipc::git_discard,
+            ipc::git_discard_all_unstaged,
+            ipc::git_unstage_all,
+            ipc::git_resolve_conflict,
+            ipc::git_commit_amend,
+            ipc::git_undo_last_commit,
+            ipc::git_revert_commit,
+            ipc::get_staged_diff,
+            ipc::get_unstaged_diff,
+            ipc::get_staged_diff_contents,
+            ipc::get_unstaged_diff_contents,
             // Branch commits
             ipc::get_branch_commits,
             ipc::get_commit_files,

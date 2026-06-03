@@ -93,6 +93,16 @@ interface SystemBlock {
   type: 'system'
   text: string
 }
+/**
+ * Scheduled wakeup marker. Replaces the user bubble for turns Verun (or the
+ * CLI) synthesised in response to a `ScheduleWakeup` tool call - the prompt
+ * is the model's own note-to-self, not a human message. (issue #230)
+ */
+interface WakeupBlock {
+  type: 'wakeup'
+  prompt: string
+  reason?: string
+}
 interface ErrorBlock {
   type: 'error'
   message: string
@@ -109,7 +119,7 @@ interface DiffBlock {
   type: 'diff'
   diff: string
 }
-type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock | ErrorBlock | PlanBlock | DiffBlock
+type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock | WakeupBlock | ErrorBlock | PlanBlock | DiffBlock
 
 export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
   const blocks: DisplayBlock[] = []
@@ -162,7 +172,21 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         turnStartTs = item.timestamp
         turnIndex += 1
         turnHasError = false
-        blocks.push({ type: 'user', text: item.text, images: item.images })
+        if (item.wakeupReason !== undefined) {
+          blocks.push({ type: 'wakeup', prompt: item.text, reason: item.wakeupReason || undefined })
+        } else {
+          blocks.push({ type: 'user', text: item.text, images: item.images })
+        }
+        break
+      case 'transcriptUserMessage':
+        flushText(); flushThinking()
+        turnIndex += 1
+        turnHasError = false
+        if (item.isMeta) {
+          blocks.push({ type: 'wakeup', prompt: item.text })
+        } else {
+          blocks.push({ type: 'user', text: item.text })
+        }
         break
       case 'errorMessage':
         flushText(); flushThinking()
@@ -216,7 +240,7 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
             if (turnTokens) ab.turnTokens = turnTokens
             break
           }
-          if (blocks[i].type === 'user') break
+          if (blocks[i].type === 'user' || blocks[i].type === 'wakeup') break
         }
         // Render rules:
         //   - completed         → no bubble (happy path)
@@ -244,7 +268,7 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
             ;(b as AssistantBlock).messageUuid = item.messageUuid
             break
           }
-          if (b.type === 'user') break
+          if (b.type === 'user' || b.type === 'wakeup') break
         }
         break
       }
@@ -288,7 +312,7 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         ;(blocks[i] as AssistantBlock).isStreaming = true
         break
       }
-      if (blocks[i].type === 'user') break
+      if (blocks[i].type === 'user' || blocks[i].type === 'wakeup') break
     }
   }
   return blocks
@@ -596,6 +620,53 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
               {props.result!.text}
             </pre>
           </Show>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+// Per-render expansion state for wakeup chips. Keyed by the synthesised
+// turn's prompt text; collisions only happen if the model schedules the
+// exact same prompt twice, which is rare and harmless (both expand together).
+const expandedWakeups = new Map<string, boolean>()
+
+/**
+ * Renders a fired `ScheduleWakeup` turn (issue #230). Visually mirrors
+ * `ToolBlockView` so the chat keeps one consistent "secondary action" look
+ * - a small left-aligned chevron row with an optional expanded body - rather
+ * than introducing a third visual idiom for a model-driven event.
+ */
+const WakeupBlockView: Component<{ prompt: string; reason?: string }> = (props) => {
+  const key = () => `${props.reason ?? ''}::${props.prompt}`
+  const [expanded, setExpanded] = createSignal(expandedWakeups.get(key()) ?? false)
+  const toggle = () => {
+    const next = !expanded()
+    setExpanded(next)
+    expandedWakeups.set(key(), next)
+  }
+  const headline = () => props.reason ? `Wakeup fired — ${props.reason}` : 'Wakeup fired'
+  return (
+    <div class="px-5 py-0.5">
+      <button
+        class="flex items-center gap-1.5 text-xs text-text-dim hover:text-text-muted transition-colors"
+        onClick={toggle}
+      >
+        <Show when={expanded()} fallback={<ChevronRight size={11} />}>
+          <ChevronDown size={11} />
+        </Show>
+        <span>{headline()}</span>
+        <Show when={!expanded() && props.prompt}>
+          <span class="text-text-dim/60 truncate max-w-md font-mono text-[11px]">
+            — {props.prompt.split('\n')[0].slice(0, 80)}
+          </span>
+        </Show>
+      </button>
+      <Show when={expanded() && props.prompt}>
+        <div class="pl-4 mt-1 border-l border-border-subtle">
+          <pre class="text-[11px] text-text-muted whitespace-pre-wrap font-mono leading-relaxed">
+            {props.prompt}
+          </pre>
         </div>
       </Show>
     </div>
@@ -1263,6 +1334,12 @@ export const ChatView: Component<Props> = (props) => {
                 <div class="flex justify-center px-5 py-1">
                   <span class="text-[11px] text-text-dim whitespace-pre-wrap">{(block as SystemBlock).text}</span>
                 </div>
+              </Match>
+              <Match when={block.type === 'wakeup'}>
+                {(() => {
+                  const b = block as WakeupBlock
+                  return <WakeupBlockView prompt={b.prompt} reason={b.reason} />
+                })()}
               </Match>
               <Match when={block.type === 'error'}>
                 {(() => {

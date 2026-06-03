@@ -90,6 +90,13 @@ pub enum OutputItem {
     UserMessage {
         text: String,
         timestamp: Option<i64>,
+        /// Set when Verun's wakeup scheduler synthesised this turn (issue #230).
+        /// Carries the `reason` field from the original `ScheduleWakeup` tool
+        /// call so the frontend can render a system marker rather than a green
+        /// user bubble. `Some("")` is treated like `Some("<no reason>")` and
+        /// still triggers the wakeup rendering.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        wakeup_reason: Option<String>,
     },
 
     /// Codex plan-mode update. Carries the current checklist and an optional
@@ -131,7 +138,14 @@ pub enum OutputItem {
     /// tailing the on-disk transcript for a PTY-backed session.
     #[serde(rename_all = "camelCase")]
     #[allow(dead_code)] // constructed by the transcript tailer in the next phase
-    TranscriptUserMessage { text: String },
+    TranscriptUserMessage {
+        text: String,
+        /// Mirrors the CLI's `isMeta` flag on JSONL user turns. True for
+        /// CLI-synthesised follow-ups (e.g. ScheduleWakeup in terminal mode).
+        /// Defaults to false so existing call sites stay correct.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        is_meta: bool,
+    },
 
     /// Pasted-image attachment carried alongside a transcript user message.
     /// Holds the still-base64 data straight from the JSONL so the driver can
@@ -1676,6 +1690,18 @@ pub async fn stream_and_capture(
                                         scopes,
                                     },
                                 );
+                            }
+                            // Issue #230: detect ScheduleWakeup tool calls and
+                            // record a row so the scheduler can resume this
+                            // session with the model's follow-up prompt.
+                            if let Some(w) = crate::wakeup::wakeup_from_tool_start(
+                                &session_id,
+                                item,
+                                epoch_ms(),
+                            ) {
+                                let _ = db_tx
+                                    .send(DbWrite::InsertScheduledWakeup(w))
+                                    .await;
                             }
                             match item {
                                 OutputItem::Text { .. } | OutputItem::Thinking { .. } => {
