@@ -161,6 +161,14 @@ export async function pickAndAddProject() {
 
 export const [showBtsBuilder, setShowBtsBuilder] = createSignal(false)
 
+export const [showCloneRepo, setShowCloneRepo] = createSignal(false)
+
+// After a successful clone we re-use AddProjectDialog (with `existingProject`
+// set) to walk the user through hooks/start-command setup, mirroring the
+// "added a project from disk" flow. Layout.tsx mounts a second dialog
+// instance bound to this signal.
+export const [setupProject, setSetupProject] = createSignal<import('../types').Project | null>(null)
+
 export const [showSettings, setShowSettings] = createSignal(false)
 export const [showArchived, setShowArchived] = createSignal(false)
 export const [showQuickOpen, setShowQuickOpen] = createSignal(false)
@@ -227,6 +235,13 @@ export interface Toast {
   loading?: boolean
   actions?: ToastAction[]
   onDismiss?: () => void
+  /** Primary heading rendered above `message`. When set, `message` renders
+   * as a secondary line below the title (think VS Code's git clone toast). */
+  title?: string
+  /** Small footer label rendered under the message (e.g. "Source: Git"). */
+  meta?: string
+  /** Render an indeterminate progress bar across the bottom of the toast. */
+  progress?: boolean
 }
 
 export interface AddToastOptions {
@@ -236,6 +251,9 @@ export interface AddToastOptions {
   loading?: boolean
   actions?: ToastAction[]
   onDismiss?: () => void
+  title?: string
+  meta?: string
+  progress?: boolean
 }
 
 export const [toasts, setToasts] = createSignal<Toast[]>([])
@@ -247,7 +265,7 @@ export function addToast(
   opts: AddToastOptions = {},
 ): string {
   const id = opts.id ?? crypto.randomUUID()
-  const toast: Toast = { id, message, type, persistent: opts.persistent, loading: opts.loading, actions: opts.actions, onDismiss: opts.onDismiss }
+  const toast: Toast = { id, message, type, persistent: opts.persistent, loading: opts.loading, actions: opts.actions, onDismiss: opts.onDismiss, title: opts.title, meta: opts.meta, progress: opts.progress }
   setToasts(prev => {
     const existing = prev.findIndex(t => t.id === id)
     if (existing >= 0) {

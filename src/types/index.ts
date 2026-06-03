@@ -363,6 +363,32 @@ export interface PrInfo {
   isDraft: boolean;
 }
 
+export interface GhStatus {
+  installed: boolean
+  authenticated: boolean
+  /** `true` when `gh auth status` couldn't reach GitHub (DNS lookup failed,
+   * connection refused, timed out, etc.). Lets the UI distinguish "no wifi"
+   * from "you need to sign in". */
+  offline: boolean
+  account: string | null
+}
+
+export interface RemoteRepo {
+  nameWithOwner: string
+  description: string | null
+  url: string
+  sshUrl: string
+  isPrivate: boolean
+  isFork: boolean
+  isArchived: boolean
+  updatedAt: string | null
+  starCount: number
+  /** Owner avatar — the org's logo for org repos, the user's photo for personal repos. */
+  ownerAvatarUrl: string | null
+  /** "User" or "Organization". */
+  ownerType: string | null
+}
+
 export interface CiCheck {
   name: string;
   status: string;

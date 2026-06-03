@@ -5,6 +5,8 @@ interface Props {
   onClose: () => void
   onConfirm?: () => void
   width?: string
+  /** Appended to the content container. When omitted, default `p-5` is applied; include your own `p-*` when passing a class. */
+  class?: string
   children: JSX.Element
 }
 
@@ -35,7 +37,7 @@ export const Dialog: Component<Props> = (props) => {
         }}
       >
         <div
-          class="bg-surface-2 border border-border rounded-xl shadow-2xl p-5 animate-in overflow-y-auto"
+          class={`bg-surface-2 border border-border rounded-xl shadow-2xl animate-in overflow-y-auto ${props.class ?? 'p-5'}`}
           style={{ width: props.width || '20rem', 'max-height': 'calc(100vh - 6rem)' }}
         >
           {props.children}

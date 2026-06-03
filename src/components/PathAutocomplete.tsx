@@ -198,7 +198,7 @@ export const PathAutocomplete: Component<Props> = (props) => {
       <Show when={open()}>
         <ul
           ref={listRef}
-          class="list-none m-0 p-1 absolute left-0 right-0 top-full mt-1 z-10 bg-surface-2 ring-1 ring-white/8 rounded-lg max-h-56 overflow-y-auto shadow-xl"
+          class="list-none m-0 p-1 absolute left-0 right-0 top-full mt-1 z-10 bg-surface-2 ring-1 ring-white/8 rounded-lg max-h-40 overflow-y-auto shadow-xl"
           role="listbox"
         >
           <For each={matches()}>

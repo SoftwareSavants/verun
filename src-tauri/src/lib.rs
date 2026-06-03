@@ -216,16 +216,14 @@ pub fn run() {
             let pty_for_monitor = std::sync::Arc::clone(&*app.state::<crate::pty::ActivePtyMap>());
             let pool_for_monitor = app.state::<sqlx::sqlite::SqlitePool>().inner().clone();
             let monitor_handle = app.handle().clone();
-            let sampler = std::sync::Arc::new(
-                crate::resource_monitor::ResourceSampler::spawn(
-                    monitor_handle,
-                    active_for_monitor,
-                    lsp_for_monitor,
-                    pty_for_monitor,
-                    crate::resource_monitor::SysinfoSource::new(),
-                    pool_for_monitor,
-                ),
-            );
+            let sampler = std::sync::Arc::new(crate::resource_monitor::ResourceSampler::spawn(
+                monitor_handle,
+                active_for_monitor,
+                lsp_for_monitor,
+                pty_for_monitor,
+                crate::resource_monitor::SysinfoSource::new(),
+                pool_for_monitor,
+            ));
             app.manage(sampler);
 
             // Issue #230: scheduler that fires ScheduleWakeup follow-ups
@@ -317,6 +315,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Projects
             ipc::add_project,
+            ipc::gh_status,
+            ipc::list_user_github_repos,
+            ipc::search_github_repos,
+            ipc::fetch_github_repo,
+            ipc::clone_github_repo_and_add,
             ipc::list_projects,
             ipc::delete_project,
             ipc::update_project_base_branch,

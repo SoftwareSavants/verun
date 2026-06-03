@@ -2177,10 +2177,9 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        let labels =
-            task_labels_for_ids(&pool, &["t-001".into(), "t-002".into()])
-                .await
-                .unwrap();
+        let labels = task_labels_for_ids(&pool, &["t-001".into(), "t-002".into()])
+            .await
+            .unwrap();
 
         assert_eq!(
             labels.get("t-001"),

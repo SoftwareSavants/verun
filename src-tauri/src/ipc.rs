@@ -85,6 +85,14 @@ pub async fn add_project(
     db_tx: State<'_, DbWriteTx>,
     repo_path: String,
 ) -> Result<Project, String> {
+    add_project_inner(pool.inner(), db_tx.inner(), repo_path).await
+}
+
+async fn add_project_inner(
+    pool: &SqlitePool,
+    db_tx: &DbWriteTx,
+    repo_path: String,
+) -> Result<Project, String> {
     let (resolved, base_branch) = flatten_join(
         tokio::task::spawn_blocking({
             let rp = repo_path.clone();
@@ -102,7 +110,7 @@ pub async fn add_project(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| resolved.clone());
 
-    let existing = db::list_projects(pool.inner()).await?;
+    let existing = db::list_projects(pool).await?;
     if existing.iter().any(|p| p.repo_path == resolved) {
         return Err("Project already added".to_string());
     }
@@ -131,6 +139,89 @@ pub async fn add_project(
         .map_err(|e| format!("DB write failed: {e}"))?;
 
     Ok(project)
+}
+
+#[tauri::command]
+pub async fn gh_status() -> Result<github::GhStatus, String> {
+    tokio::task::spawn_blocking(github::gh_status)
+        .await
+        .map_err(|e| format!("Task join error: {e}"))
+}
+
+#[tauri::command]
+pub async fn list_user_github_repos() -> Result<Vec<github::RemoteRepo>, String> {
+    flatten_join(tokio::task::spawn_blocking(|| github::list_user_repos(200)).await)
+}
+
+#[tauri::command]
+pub async fn search_github_repos(query: String) -> Result<Vec<github::RemoteRepo>, String> {
+    flatten_join(tokio::task::spawn_blocking(move || github::search_repos(&query)).await)
+}
+
+#[tauri::command]
+pub async fn fetch_github_repo(name_with_owner: String) -> Result<github::RemoteRepo, String> {
+    flatten_join(
+        tokio::task::spawn_blocking(move || github::fetch_repo_by_slug(&name_with_owner)).await,
+    )
+}
+
+#[tauri::command]
+pub async fn clone_github_repo_and_add(
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    name_with_owner: Option<String>,
+    remote_url: Option<String>,
+    parent_dir: String,
+) -> Result<Project, String> {
+    if parent_dir.trim().is_empty() {
+        return Err("Choose a destination folder before cloning.".to_string());
+    }
+    let (final_url, dir_name) = if let Some(nwo) = name_with_owner.as_ref() {
+        let nwo = nwo.trim();
+        if nwo.is_empty() || !nwo.contains('/') {
+            return Err("Invalid repo identifier; expected `owner/repo`.".to_string());
+        }
+        let dir = nwo.rsplit('/').next().unwrap_or(nwo).to_string();
+        // Always clone over HTTPS for GitHub repos. `gh auth login` configures
+        // `gh` as a git credential helper for github.com HTTPS URLs, so the
+        // user's OAuth token authenticates the clone — no dependency on SSH
+        // keys being set up. (Previously we passed `ssh_url`, which fell over
+        // with `Permission denied (publickey). … the repository exists.` for
+        // users without SSH configured.)
+        let url = format!("https://github.com/{nwo}.git");
+        (url, dir)
+    } else if let Some(url) = remote_url.as_ref() {
+        let url = url.trim();
+        if url.is_empty() {
+            return Err("Enter a Git URL or owner/repo before cloning.".to_string());
+        }
+        let dir = derive_dir_name_from_url(url);
+        (url.to_string(), dir)
+    } else {
+        return Err("Pick a repository or paste a Git URL before cloning.".to_string());
+    };
+
+    let parent = parent_dir.clone();
+    let url_for_clone = final_url.clone();
+    let dir_for_clone = dir_name.clone();
+    let cloned_path = flatten_join(
+        tokio::task::spawn_blocking(move || {
+            github::clone_repo(&url_for_clone, &parent, &dir_for_clone)
+        })
+        .await,
+    )?;
+
+    add_project_inner(pool.inner(), db_tx.inner(), cloned_path).await
+}
+
+fn derive_dir_name_from_url(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/').trim_end_matches(".git");
+    let last = trimmed.rsplit(['/', ':']).next().unwrap_or(trimmed);
+    if last.is_empty() {
+        "repo".to_string()
+    } else {
+        last.to_string()
+    }
 }
 
 #[tauri::command]
@@ -3417,6 +3508,39 @@ pub async fn get_resource_usage_now(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derive_dir_name_handles_https_url() {
+        assert_eq!(
+            derive_dir_name_from_url("https://github.com/alice/cool-app.git"),
+            "cool-app"
+        );
+        assert_eq!(
+            derive_dir_name_from_url("https://github.com/alice/cool-app"),
+            "cool-app"
+        );
+        assert_eq!(
+            derive_dir_name_from_url("https://github.com/alice/cool-app/"),
+            "cool-app"
+        );
+    }
+
+    #[test]
+    fn derive_dir_name_handles_ssh_url() {
+        assert_eq!(
+            derive_dir_name_from_url("git@github.com:alice/cool-app.git"),
+            "cool-app"
+        );
+        assert_eq!(
+            derive_dir_name_from_url("git@github.com:alice/cool-app"),
+            "cool-app"
+        );
+    }
+
+    #[test]
+    fn derive_dir_name_falls_back_when_url_is_bare() {
+        assert_eq!(derive_dir_name_from_url(""), "repo");
+    }
 
     #[test]
     fn repo_info_serializes_as_camel_case() {

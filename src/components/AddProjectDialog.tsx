@@ -10,10 +10,12 @@ import { addToast, setSelectedProjectId, setSelectedTaskId, setSelectedSessionId
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
 import { produce } from 'solid-js/store'
 import * as ipc from '../lib/ipc'
+import type { Project } from '../types'
 
 interface Props {
   open: boolean
   repoPath: string | null
+  existingProject?: Project | null
   onClose: () => void
   onAdded: (projectId: string) => void
 }
@@ -27,8 +29,10 @@ export const AddProjectDialog: Component<Props> = (props) => {
   const [autoDetecting, setAutoDetecting] = createSignal(false)
   const [hasConfig, setHasConfig] = createSignal(false)
 
+  const effectivePath = () => props.existingProject?.repoPath ?? props.repoPath
+
   // Pre-populate hooks from .verun.json if it exists
-  createEffect(on(() => props.repoPath, (path) => {
+  createEffect(on(effectivePath, (path) => {
     if (!path) return
     setHasConfig(false)
     ipc.readTextFile(`${path}/.verun.json`).then((content) => {
@@ -45,17 +49,21 @@ export const AddProjectDialog: Component<Props> = (props) => {
   }))
 
   const projectName = () => {
-    if (!props.repoPath) return ''
-    const parts = props.repoPath.split('/')
+    if (props.existingProject) return props.existingProject.name
+    const p = props.repoPath
+    if (!p) return ''
+    const parts = p.split('/')
     return parts[parts.length - 1] || ''
   }
 
   const handleAutoDetect = async () => {
-    if (!props.repoPath) return
+    const path = effectivePath()
+    if (!path) return
     setAutoDetecting(true)
     try {
-      // Add the project first
-      const project = await addProject(props.repoPath)
+      // Reuse the just-cloned project when one was passed in, otherwise
+      // register a brand-new one from the picked path.
+      const project = props.existingProject ?? await addProject(path)
       setSelectedProjectId(project.id)
 
       // Create a task for auto-detection
@@ -71,7 +79,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
 
       // Send the auto-detect prompt (runs in background after dialog closes)
       const prompt = AUTODETECT_PROMPT
-        .replace('{REPO_PATH}', props.repoPath!)
+        .replace('{REPO_PATH}', path)
         .replace('{PROJECT_NAME}', project.name)
       await sendMessage(session.id, prompt)
 
@@ -83,12 +91,16 @@ export const AddProjectDialog: Component<Props> = (props) => {
   }
 
   const handleAdd = async () => {
-    if (!props.repoPath) return
+    const path = effectivePath()
+    if (!path) return
     setAdding(true)
     try {
-      const project = await addProject(props.repoPath)
+      const project = props.existingProject ?? await addProject(path)
       await updateHooks(project.id, setupHook(), destroyHook(), startCommand(), autoStart())
-      addToast(`Added ${project.name}`, 'success')
+      addToast(
+        props.existingProject ? `Saved hooks for ${project.name}` : `Added ${project.name}`,
+        'success',
+      )
       props.onAdded(project.id)
       handleClose()
     } catch (e) {
@@ -109,8 +121,10 @@ export const AddProjectDialog: Component<Props> = (props) => {
 
   return (
     <Dialog open={props.open} onClose={handleClose} width="28rem">
-      <h2 class="text-base font-semibold text-text-primary mb-1">Add Project</h2>
-      <p class="text-xs text-text-dim mb-4 truncate" title={props.repoPath ?? ''}>{projectName()}</p>
+      <h2 class="text-base font-semibold text-text-primary mb-1">
+        {props.existingProject ? 'Set up project' : 'Add Project'}
+      </h2>
+      <p class="text-xs text-text-dim mb-4 truncate" title={effectivePath() ?? ''}>{projectName()}</p>
 
       {/* Auto-detect option - hidden when .verun.json already provides config */}
       <Show when={!hasConfig()}>
@@ -192,9 +206,9 @@ export const AddProjectDialog: Component<Props> = (props) => {
           onClick={handleAdd}
           disabled={adding()}
         >
-          <Show when={adding()} fallback="Add Project">
+          <Show when={adding()} fallback={props.existingProject ? 'Save' : 'Add Project'}>
             <Loader2 size={12} class="animate-spin mr-1" />
-            Adding...
+            {props.existingProject ? 'Saving...' : 'Adding...'}
           </Show>
         </button>
       </div>

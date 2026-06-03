@@ -36,6 +36,7 @@ import {
   clearTaskIndicators,
   setAddProjectPath,
   setShowBtsBuilder,
+  setShowCloneRepo,
   isTaskWindowed,
   markTaskWindowed,
   requestNewTaskForProject,
@@ -369,6 +370,7 @@ export const Sidebar: Component = () => {
                     if (selected) setAddProjectPath(selected as string);
                   },
                   onCreateNew: () => setShowBtsBuilder(true),
+                  onCloneRepo: () => setShowCloneRepo(true),
                 }),
               });
             }}

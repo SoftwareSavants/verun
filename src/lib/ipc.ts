@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 const seed = () => import('./seedData')
@@ -7,6 +7,28 @@ const seed = () => import('./seedData')
 // Projects
 export const addProject = (repoPath: string) =>
   invoke<Project>('add_project', { repoPath })
+
+export const ghStatus = () => invoke<GhStatus>('gh_status')
+
+export const listUserGithubRepos = () =>
+  invoke<RemoteRepo[]>('list_user_github_repos')
+
+export const searchGithubRepos = (query: string) =>
+  invoke<RemoteRepo[]>('search_github_repos', { query })
+
+export const fetchGithubRepo = (nameWithOwner: string) =>
+  invoke<RemoteRepo>('fetch_github_repo', { nameWithOwner })
+
+export const cloneGithubRepoAndAdd = (args: {
+  nameWithOwner?: string
+  remoteUrl?: string
+  parentDir: string
+}) =>
+  invoke<Project>('clone_github_repo_and_add', {
+    nameWithOwner: args.nameWithOwner ?? null,
+    remoteUrl: args.remoteUrl ?? null,
+    parentDir: args.parentDir,
+  })
 
 export const listProjects = (): Promise<Project[]> =>
   DEMO ? seed().then(d => d.DEMO_PROJECTS) : invoke<Project[]>('list_projects')

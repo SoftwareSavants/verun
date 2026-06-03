@@ -6,8 +6,9 @@ import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from '.
 import { ArchivedPage } from './ArchivedPage'
 import { NewTaskDialog } from './NewTaskDialog'
 import { AddProjectDialog } from './AddProjectDialog'
+import { CloneRepoDialog } from './CloneRepoDialog'
 import { BtsBuilderDialog } from './BtsBuilderDialog'
-import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, setSelectedProjectId, siblingTaskInList } from '../store/ui'
+import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, showCloneRepo, setShowCloneRepo, setSelectedProjectId, siblingTaskInList, setupProject, setSetupProject } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { hydrateTerminalsForTask } from '../store/terminals'
 import { activeTasksForProject } from '../store/tasks'
@@ -197,6 +198,13 @@ export const Layout: Component = () => {
         onClose={() => setAddProjectPath(null)}
         onAdded={(id) => { setSelectedProjectId(id); requestNewTaskForProject(id) }}
       />
+      <AddProjectDialog
+        open={!!setupProject()}
+        repoPath={setupProject()?.repoPath ?? null}
+        existingProject={setupProject()}
+        onClose={() => setSetupProject(null)}
+        onAdded={(id) => { setSelectedProjectId(id); requestNewTaskForProject(id) }}
+      />
       <BtsBuilderDialog
         open={showBtsBuilder()}
         onClose={() => setShowBtsBuilder(false)}
@@ -204,6 +212,10 @@ export const Layout: Component = () => {
           setShowBtsBuilder(false)
           setAddProjectPath(path)
         }}
+      />
+      <CloneRepoDialog
+        open={showCloneRepo()}
+        onClose={() => setShowCloneRepo(false)}
       />
       <GlobalCommandPalette />
       <TaskModelPickerHost />
