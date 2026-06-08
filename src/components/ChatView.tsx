@@ -1096,12 +1096,21 @@ export const ChatView: Component<Props> = (props) => {
           if (!restore.autoScroll) {
             requestAnimationFrame(() => {
               if (containerRef) containerRef.scrollTop = restore.scrollTop
+              maybeBackfillViewport()
             })
           } else {
             scheduleAutoScroll()
+            requestAnimationFrame(() => {
+              if (!mounted) return
+              maybeBackfillViewport()
+            })
           }
         } else {
           scheduleAutoScroll()
+          requestAnimationFrame(() => {
+            if (!mounted) return
+            maybeBackfillViewport()
+          })
         }
       }
     }
@@ -1138,6 +1147,16 @@ export const ChatView: Component<Props> = (props) => {
   // switches sessions doesn't end up writing scrollTop to the detached div.
   let mounted = true
   onCleanup(() => { mounted = false })
+  function viewportNeedsOlderPage() {
+    const sid = props.sessionId
+    return !!sid
+      && !!containerRef
+      && hasMoreOutputLines(sid)
+      && containerRef.scrollHeight <= containerRef.clientHeight + 1
+  }
+  function maybeBackfillViewport() {
+    if (viewportNeedsOlderPage()) void maybeLoadOlder()
+  }
   const maybeLoadOlder = async () => {
     if (olderLoadInFlight) return
     const sid = props.sessionId
@@ -1156,7 +1175,13 @@ export const ChatView: Component<Props> = (props) => {
             if (!mounted || !containerRef) return
             const delta = containerRef.scrollHeight - oldScrollHeight
             if (delta > 0) containerRef.scrollTop = oldScrollTop + delta
+            maybeBackfillViewport()
           })
+        })
+      } else {
+        requestAnimationFrame(() => {
+          if (!mounted) return
+          maybeBackfillViewport()
         })
       }
     } finally {
