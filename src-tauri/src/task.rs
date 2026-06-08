@@ -1958,7 +1958,7 @@ async fn spawn_codex_app_server_session(
     } = params;
 
     let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
-    let mcp_config_path = mcp::verun_mcp_config_path(&app_data, &task_id);
+    let mcp_config_path = verun_mcp_config_path_for_task(&app_data, &task_id);
     let args_list = agent.build_session_args(&crate::agent::SessionArgs {
         resume_session_id: None,
         model: model.as_deref(),
@@ -1969,7 +1969,7 @@ async fn spawn_codex_app_server_session(
         worktree_path: &worktree_path,
         repo_path: &repo_path,
         message: &message,
-        verun_mcp_config_path: Some(&mcp_config_path),
+        verun_mcp_config_path: mcp_config_path.as_deref(),
     });
 
     eprintln!(
@@ -2472,7 +2472,7 @@ pub async fn spawn_session_process(
     } = params;
     let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
-    let mcp_config_path = mcp::verun_mcp_config_path(&app_data, &task_id);
+    let mcp_config_path = verun_mcp_config_path_for_task(&app_data, &task_id);
     let session_args = crate::agent::SessionArgs {
         resume_session_id: resume_id,
         model: model.as_deref(),
@@ -2483,7 +2483,7 @@ pub async fn spawn_session_process(
         worktree_path: &worktree_path,
         repo_path: &repo_path,
         message: &message,
-        verun_mcp_config_path: Some(&mcp_config_path),
+        verun_mcp_config_path: mcp_config_path.as_deref(),
     };
 
     let args_list = agent.build_session_args(&session_args);
@@ -3053,6 +3053,21 @@ fn build_side_question_request(question: &str) -> serde_json::Value {
         "subtype": "side_question",
         "question": question,
     })
+}
+
+fn verun_mcp_config_path_for_task(
+    app_data_dir: &std::path::Path,
+    task_id: &str,
+) -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    {
+        Some(crate::mcp::verun_mcp_config_path(app_data_dir, task_id))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app_data_dir, task_id);
+        None
+    }
 }
 
 /// Parse the CLI's `control_response` payload for a `side_question` request.
@@ -3823,6 +3838,22 @@ mod tests {
         assert!(args.iter().any(|a| a == "test prompt"));
         assert!(args.iter().any(|a| a == "--no-session-persistence"));
         assert!(args.iter().any(|a| a == "haiku"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn verun_mcp_config_path_helper_matches_unix_mcp_path() {
+        let app_data = std::path::Path::new("/tmp/verun-app-data");
+        let path = verun_mcp_config_path_for_task(app_data, "task-42");
+        assert_eq!(path, Some(crate::mcp::verun_mcp_config_path(app_data, "task-42")));
+    }
+
+    #[test]
+    #[cfg(not(unix))]
+    fn verun_mcp_config_path_helper_is_none_off_unix() {
+        let app_data = std::path::Path::new(r"C:\verun-app-data");
+        let path = verun_mcp_config_path_for_task(app_data, "task-42");
+        assert_eq!(path, None);
     }
 
     #[test]

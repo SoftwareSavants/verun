@@ -8,6 +8,7 @@
 //! out when a task is added) reliably hits EMFILE. Bumping the soft limit to
 //! something well above normal usage costs nothing and removes the ceiling.
 
+#[cfg(unix)]
 use std::io;
 
 /// Raise the `RLIMIT_NOFILE` soft limit to `min(desired, hard_limit)` when it

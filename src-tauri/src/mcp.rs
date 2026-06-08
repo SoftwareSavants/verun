@@ -2742,7 +2742,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = std::path::Path::new("/tmp/v.sock");
         let relay = std::path::Path::new("/usr/local/bin/verun-mcp-relay");
-        write_mcp_config(dir.path(), "task-42", socket, relay).unwrap();
+        write_verun_mcp_config(dir.path(), "task-42", socket, relay).unwrap();
 
         let path = dir.path().join(".mcp.json");
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -2769,7 +2769,7 @@ mod tests {
         )
         .unwrap();
 
-        write_mcp_config(
+        write_verun_mcp_config(
             dir.path(),
             "t-1",
             std::path::Path::new("/sock"),
@@ -2797,7 +2797,7 @@ mod tests {
         )
         .unwrap();
 
-        write_mcp_config(
+        write_verun_mcp_config(
             dir.path(),
             "new-task",
             std::path::Path::new("/new-sock"),
@@ -2820,7 +2820,7 @@ mod tests {
         let path = dir.path().join(".mcp.json");
         std::fs::write(&path, "not json at all{{").unwrap();
 
-        write_mcp_config(
+        write_verun_mcp_config(
             dir.path(),
             "t-1",
             std::path::Path::new("/sock"),
@@ -2838,7 +2838,7 @@ mod tests {
         let path = dir.path().join(".mcp.json");
         std::fs::write(&path, r#"["not", "an", "object"]"#).unwrap();
 
-        write_mcp_config(
+        write_verun_mcp_config(
             dir.path(),
             "t-1",
             std::path::Path::new("/sock"),
@@ -2856,7 +2856,7 @@ mod tests {
         let path = dir.path().join(".mcp.json");
         std::fs::write(&path, r#"{"mcpServers": "broken"}"#).unwrap();
 
-        write_mcp_config(
+        write_verun_mcp_config(
             dir.path(),
             "t-1",
             std::path::Path::new("/sock"),
@@ -2874,7 +2874,7 @@ mod tests {
         let info = dir.path().join(".git").join("info");
         std::fs::create_dir_all(&info).unwrap();
 
-        write_mcp_config(
+        write_verun_mcp_config(
             dir.path(),
             "t-1",
             std::path::Path::new("/sock"),
@@ -2901,7 +2901,7 @@ mod tests {
         )
         .unwrap();
 
-        write_mcp_config(
+        write_verun_mcp_config(
             &worktree,
             "t-2",
             std::path::Path::new("/sock"),
