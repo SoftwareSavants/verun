@@ -772,6 +772,14 @@ mod tests {
         assert!(agent.uses_claude_jsonl());
     }
 
+    #[test]
+    fn claude_available_models_include_opus_4_8_first() {
+        let models = Claude.available_models();
+        assert_eq!(models[0].id, "claude-opus-4-8");
+        assert_eq!(models[0].label, "Claude Opus 4.8");
+        assert_eq!(models[1].id, "claude-opus-4-7");
+    }
+
     // ── Persistence + abort strategy + stream encoders ──────────────────
 
     #[test]
@@ -1057,6 +1065,27 @@ mod tests {
     }
 
     #[test]
+    fn codex_available_models_match_current_openai_coding_models() {
+        let ids: Vec<String> = Codex
+            .available_models()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "gpt-5.5",
+                "gpt-5.5-pro",
+                "gpt-5.4",
+                "gpt-5.4-pro",
+                "gpt-5.4-mini",
+                "gpt-5.4-nano",
+                "gpt-5.3-codex",
+            ]
+        );
+    }
+
+    #[test]
     fn other_agents_do_not_defer_resume_id() {
         assert!(!Claude.defers_resume_id_until_turn_end());
         assert!(!Codex.defers_resume_id_until_turn_end());
@@ -1310,6 +1339,26 @@ mod tests {
         let v = parse_rpc_frame(&bytes);
         assert_eq!(v["params"]["approvalPolicy"], "untrusted");
         assert_eq!(v["params"]["sandboxPolicy"]["type"], "readOnly");
+    }
+
+    #[test]
+    fn codex_encode_turn_start_defaults_collaboration_model_to_gpt_5_5() {
+        let bytes = Codex
+            .encode_rpc_turn_start(
+                13,
+                &CodexRpcTurnStartParams {
+                    thread_id: "t-xyz",
+                    prompt: "ls",
+                    image_urls: &[],
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: None,
+                    effort: None,
+                    plan_mode: false,
+                },
+            )
+            .expect("encode");
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["params"]["collaborationMode"]["settings"]["model"], "gpt-5.5");
     }
 
     #[test]

@@ -1065,7 +1065,7 @@ const AppearancePreview: Component = () => {
                 {/* Model chip — mirrors MessageInput's layout/hierarchy */}
                 <span class="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] text-text-secondary hover:bg-surface-2 transition-colors">
                   <Sparkles class="w-3 h-3 text-accent" />
-                  <span>Claude Opus 4.7</span>
+                  <span>Claude Opus 4.8</span>
                 </span>
                 {/* Plan toggle, shown active so the accent color is visible */}
                 <span class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-accent">

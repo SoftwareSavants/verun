@@ -47,20 +47,28 @@
 - Auto-allow Read/Glob/Grep/LSP under `~/.claude` (skill caches, plugin assets, settings) so Claude can load its own skills without prompting
 - Task right-click menu now has Start App / Stop App, mirroring the toolbar's start-command toggle so you can run/kill a task's dev server without opening it. Disabled while the setup hook is running; if no start command is configured the entry becomes "Set Up Start Command..." and jumps straight to project settings
 - Fix the git toolbar dropdown ("Commit & Push", "Merge PR", etc.) becoming unclickable while a session was generating a response. Each file/git event during streaming triggered `refreshTaskGit`, which wrote fresh `status`/`commits`/`branchStatus` objects via `produce`. The dropdown's action factories returned new `GitAction` objects on every reactive read, so `<For each={secondaryActions()}>` saw new references and tore down + recreated every menu row, racing the user's mid-flight click. Action factories are now `createMemo` with stable references (label-based equals where the label can switch), and dynamic message bodies are computed inside the click handler so cached objects don't go stale
-- Per-task keyboard shortcuts (Cmd+T new session, Cmd+P quick open, Cmd+Shift+F search, Cmd+E, Cmd+W, Cmd+Shift+T, Cmd+Alt+Arrow, Ctrl+`, Ctrl+Shift+`, Cmd+Shift+B, F5, Cmd+\, Ctrl+Tab, Ctrl+1-9) now share a single `useTaskShortcuts` hook used by both the main window and detached task windows, so shortcuts can't drift between shells. Fixes Cmd+T in detached task windows (#243), unifies behaviors that had silently diverged (e.g. Cmd+Shift+F now also seeds the search query from the text selection inside detached windows), and the new-session model picker now mounts in detached windows so ActionsPanel's "Fix in new session" button also surfaces there
-- File-conflict dialog now mounts in detached task windows. Previously, saving an edit in a detached window where the file had changed on disk would silently abort without prompting the user to discard or overwrite, since the dialog was only rendered in the main window
-- LSP diagnostics now populate in detached task windows. The Problems panel was empty there because `initProblemsListener` only ran in the main window; it now registers from the shared `initListeners()` path so both shells pick it up
-- Sidebar no longer shows a stale unread badge for a task you watched in a detached window: `markTaskUnread` / `markTaskAttention` now skip when the task is already open in another window, since the user is seeing the output there in real time
-- Projects that commit `.mcp.json` are no longer modified on task creation. Verun now writes its per-task `verun` MCP server entry to `<app_data>/mcp-configs/<task-id>.json` and passes it to Claude Code via `--mcp-config`, so the project's MCP config is never read or written. Migration: if a previous version added a `verun` entry to your `.mcp.json`, run `git checkout .mcp.json` once to clean it up
-- ScheduleWakeup tool calls now actually wake up the session: when Claude schedules a follow-up with `delaySeconds` + `prompt`, Verun records the wakeup and a background scheduler resumes the session with the prompt once the delay elapses (#230)
-- Wakeup-fired turns render as a "Wakeup fired - <reason>" chip styled like the existing tool blocks (collapsible chevron row with the prompt as the expanded body) instead of a green user bubble. Applies both to Verun-fired wakeups (UI mode) and TUI-fired wakeups picked up on terminal-to-chat toggle via the JSONL `isMeta` flag (#230)
-- Fix: skipping an AskUserQuestion (Esc or the X button) now tells the agent "User dismissed this question without answering." instead of the generic "User denied this action." - the previous wording made the chat read like the user rejected the agent's request
-- Fix: typing a number (1, 2, 3, ...) in the AskUserQuestion custom-answer field no longer selects that option instead of inserting the digit - the global option-shortcut handler now skips when an input/textarea is focused
-- Fix: AskUserQuestion no longer gets silently auto-allowed under FullAuto trust, which was sending an empty answers map back to the agent and either freezing it or making it continue as if the user gave no answer. Now mirrors ExitPlanMode and always requires approval regardless of trust level
-- Plan viewer's approve/request-changes dispatch extracted into a pure `decidePlanAction` helper with full unit coverage so the request-changes path can't silently fire approve (#216)
-- "Ask sideways" pill no longer overlaps the last user bubble when the agent is idle and the user's message is the most recent one (e.g. after an interrupt) - the chat reserves extra bottom space in that case so the pill sits below the message
-- Side question requests now keep running in the background if the panel is closed mid-flight. The "Ask sideways" pill shows a spinner ("Asking sideways...") while a request is in progress, then switches to an "Answer ready" state (accent ring + sparkle icon) when the answer arrives while the panel is closed. Click the pill to reopen and view the answer, or the inline X to dismiss the notification without opening
-- Desktop notifications (task completed/failed, approval needed, question from task) now use the session name when set, falling back to the task name - gives precise context when a task has multiple named sessions (#247)
+
+## 0.12.0 — 2026-06-08
+
+### Better Multi-Window Workflow
+
+- Keyboard shortcuts now behave consistently in both the main window and detached task windows, including starting a new session, quick open, search, tab navigation, and fix-in-new-session flows
+- Detached task windows now feel complete: save-conflict prompts appear correctly, Problems/LSP diagnostics show up there, and unread indicators stay in sync when you are already watching a task in another window
+
+### Smarter Follow-Ups And Notifications
+
+- Scheduled wakeups now reliably resume a session with the follow-up prompt when the timer expires, and those wakeups render clearly in chat instead of looking like a normal user message
+- Side questions can keep running in the background if you close the panel, with clearer in-app states for "asking" and "answer ready"
+- Desktop notifications now use the session name when available, so it is easier to tell which conversation needs attention
+
+### Updated Model Support
+
+- Claude session creation now surfaces Claude Opus 4.8 at the top of the model list
+- Codex model selection has been refreshed to the current GPT-5.5-era coding models, and new Codex sessions now default to GPT-5.5
+
+### Safer Project Setup
+
+- Creating a task no longer edits a committed `.mcp.json` in your repo; Verun keeps its per-task MCP wiring in app data instead
 
 ## 0.11.0 — 2026-05-12
 

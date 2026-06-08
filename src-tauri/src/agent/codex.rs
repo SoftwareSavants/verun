@@ -76,31 +76,32 @@ impl Agent for Codex {
     fn available_models(&self) -> Vec<crate::agent::ModelOption> {
         use crate::agent::ModelOption;
         vec![
-            ModelOption::new("gpt-5.4", "GPT-5.4", "Latest frontier agentic coding model"),
+            ModelOption::new("gpt-5.5", "GPT-5.5", "Latest frontier coding model"),
+            ModelOption::new(
+                "gpt-5.5-pro",
+                "GPT-5.5 Pro",
+                "Higher-compute GPT-5.5 for complex coding work",
+            ),
+            ModelOption::new("gpt-5.4", "GPT-5.4", "Frontier coding model"),
+            ModelOption::new(
+                "gpt-5.4-pro",
+                "GPT-5.4 Pro",
+                "Higher-compute GPT-5.4 for complex coding work",
+            ),
             ModelOption::new(
                 "gpt-5.4-mini",
                 "GPT-5.4 Mini",
-                "Smaller frontier agentic coding model",
+                "Smaller lower-latency frontier coding model",
+            ),
+            ModelOption::new(
+                "gpt-5.4-nano",
+                "GPT-5.4 Nano",
+                "Lowest-cost GPT-5.4-class model",
             ),
             ModelOption::new(
                 "gpt-5.3-codex",
                 "GPT-5.3 Codex",
                 "Codex-optimized agentic coding model",
-            ),
-            ModelOption::new(
-                "gpt-5.3-codex-spark",
-                "GPT-5.3 Codex Spark",
-                "Lightweight Codex model",
-            ),
-            ModelOption::new(
-                "gpt-5.2-codex",
-                "GPT-5.2 Codex",
-                "Codex-optimized agentic coding model",
-            ),
-            ModelOption::new(
-                "gpt-5.2",
-                "GPT-5.2",
-                "Optimized for professional work and long-running tasks",
             ),
         ]
     }
@@ -273,7 +274,7 @@ impl Agent for Codex {
             CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS
         };
         let settings = json!({
-            "model": params.model.unwrap_or("gpt-5.4"),
+            "model": params.model.unwrap_or("gpt-5.5"),
             "reasoning_effort": params.effort.unwrap_or("medium"),
             "developer_instructions": developer_instructions,
         });
