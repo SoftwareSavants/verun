@@ -41,9 +41,14 @@ impl Agent for Claude {
         use crate::agent::ModelOption;
         vec![
             ModelOption::new(
+                "claude-opus-4-8",
+                "Claude Opus 4.8",
+                "Latest and most capable",
+            ),
+            ModelOption::new(
                 "claude-opus-4-7",
                 "Claude Opus 4.7",
-                "Latest and most capable",
+                "Previous flagship model",
             )
             .with_min_version("2.1.111"),
             ModelOption::new(
