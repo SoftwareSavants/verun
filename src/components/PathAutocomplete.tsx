@@ -8,6 +8,7 @@ interface Props {
   onChange: (next: string) => void
   placeholder?: string
   autoFocus?: boolean
+  allowCreate?: boolean
 }
 
 function splitPath(raw: string): { parent: string; prefix: string } {
@@ -72,6 +73,7 @@ export const PathAutocomplete: Component<Props> = (props) => {
   })
 
   const createName = createMemo<string | null>(() => {
+    if (props.allowCreate === false) return null
     const { prefix } = splitPath(props.value)
     if (!prefix || prefix === '.' || prefix === '..' || !VALID_NAME.test(prefix)) return null
     const exact = entries().some((n) => n.toLowerCase() === prefix.toLowerCase())

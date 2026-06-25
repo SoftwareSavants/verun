@@ -111,6 +111,16 @@ describe('PathAutocomplete', () => {
     expect(await findByText(/Create.*myproj/)).toBeTruthy()
   })
 
+  it('does not show the Create row when allowCreate is false', async () => {
+    listSubdirsMock.mockResolvedValue(['Desktop', 'Documents'])
+    const { findByText, queryByText, getByRole } = render(() => (
+      <PathAutocomplete value="~/Des" onChange={() => {}} allowCreate={false} />
+    ))
+    fireEvent.focus(getByRole('textbox'))
+    await findByText('Desktop')
+    expect(queryByText(/Create.*Des/)).toBeNull()
+  })
+
   it('does not show Create row when prefix exactly matches existing dir', async () => {
     listSubdirsMock.mockResolvedValue(['Desktop'])
     const { findByText, queryByText, getByRole } = render(() => (

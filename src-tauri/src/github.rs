@@ -332,7 +332,8 @@ pub fn clone_repo(remote_url: &str, parent_dir: &str, dir_name: &str) -> Result<
 
     let parent = Path::new(parent_dir);
     if !parent.is_dir() {
-        return Err(format!("Destination parent does not exist: {parent_dir}"));
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create destination folder {parent_dir}: {e}"))?;
     }
     let target = parent.join(dir_name);
     if target.exists() {
@@ -1246,6 +1247,23 @@ mod tests {
             !leftover.exists(),
             "partial worktree at {leftover:?} should have been removed after failure",
         );
+    }
+
+    #[test]
+    fn clone_creates_missing_destination_parent() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let parent = base.path().join("does/not/exist/yet");
+        assert!(!parent.exists(), "precondition: parent must be missing");
+        let result = clone_repo(
+            "https://invalid.example.invalid/no/such/repo.git",
+            parent.to_str().unwrap(),
+            "verun-clone-mkparent-target",
+        );
+        assert!(
+            parent.is_dir(),
+            "missing destination parent {parent:?} should have been created",
+        );
+        assert!(result.is_err());
     }
 
     #[test]
