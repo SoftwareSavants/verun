@@ -781,6 +781,7 @@ export const CloneRepoDialog: Component<Props> = (props) => {
                 value={parentDir()}
                 onChange={setParentDir}
                 placeholder="~"
+                allowCreate={false}
               />
             </div>
 

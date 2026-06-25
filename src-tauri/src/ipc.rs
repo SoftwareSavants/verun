@@ -176,6 +176,9 @@ pub async fn clone_github_repo_and_add(
     if parent_dir.trim().is_empty() {
         return Err("Choose a destination folder before cloning.".to_string());
     }
+    let parent_dir = crate::bts_scaffold::expand_tilde(parent_dir.trim())?
+        .to_string_lossy()
+        .into_owned();
     let (final_url, dir_name) = if let Some(nwo) = name_with_owner.as_ref() {
         let nwo = nwo.trim();
         if nwo.is_empty() || !nwo.contains('/') {
@@ -1634,7 +1637,8 @@ pub async fn git_commit_amend(
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
     let hash = flatten_join(
-        tokio::task::spawn_blocking(move || git_ops::commit_amend(&t.worktree_path, &message)).await,
+        tokio::task::spawn_blocking(move || git_ops::commit_amend(&t.worktree_path, &message))
+            .await,
     )?;
     emit_git_local_changed(&app, &task_id);
     Ok(hash)
@@ -1689,7 +1693,12 @@ pub async fn get_staged_diff(
 
     flatten_join(
         tokio::task::spawn_blocking(move || {
-            git_ops::get_staged_diff(&t.worktree_path, &file_path, context_lines, ignore_whitespace)
+            git_ops::get_staged_diff(
+                &t.worktree_path,
+                &file_path,
+                context_lines,
+                ignore_whitespace,
+            )
         })
         .await,
     )
