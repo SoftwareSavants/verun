@@ -62,8 +62,15 @@ interactive TUI plus non-interactive modes. Two non-interactive surfaces exist:
 - Grok is **persistent across turns** (`persists_across_turns = true`), one
   process per Verun session — architecturally a twin of the Codex app-server
   path, not the stateless Cursor/Gemini path.
-- Resume id = `sessionId`, only stable after a turn completes →
-  `defers_resume_id_until_turn_end = true`.
+- Resume id = `sessionId` from the `session/new` result. **Persisted
+  immediately** (matching Codex's `thread/start` handling, not deferred); the
+  recoverable-resume fallback (`session/load` fails → `session/new`) safely
+  covers the case where the session isn't yet on disk. Resume verified live:
+  a `session/load` in a fresh process correctly recalled prior context.
+- **Effort deferred to follow-up.** `initialize` advertises reasoning efforts
+  (high/medium/low) but no confirmed ACP wire method to set them per turn was
+  found; shipping the effort selector would be a dead control. v1:
+  `supports_effort = false`.
 
 ## How Verun integrates agents today (the seam)
 
@@ -166,11 +173,11 @@ New `src-tauri/src/agent/grok.rs`, unit struct `Grok`:
 - `input_mode()` = the RPC variant; `build_session_args()` = `["agent","stdio"]`.
 - `uses_rpc() = true`, `persists_across_turns() = true`,
   `abort_strategy() = Interrupt`.
-- `supports_resume() = true`, `defers_resume_id_until_turn_end() = true`,
-  `supports_effort() = true` (high/medium/low), `supports_attachments()` =
-  false for v1 (ACP `promptCapabilities.image = false`),
-  `supports_plan_mode() = false` (deferred, §7), `supports_skills() = false`,
-  `supports_fork() = false`.
+- `supports_resume() = true`, `defers_resume_id_until_turn_end() = false`
+  (persist immediately, recover via fallback), `supports_effort() = false`
+  (deferred, §7), `supports_attachments() = false` (ACP
+  `promptCapabilities.image = false`), `supports_plan_mode() = false`
+  (deferred, §7), `supports_skills() = false`, `supports_fork() = false`.
 - `available_models()` = `[grok-4.5]` (only model on this login; internal id
   `grok-4.5-build`). No dynamic `model_list_args` for v1.
 - ACP connect / turn / interrupt / notification-decode / approval methods per §2.
@@ -201,6 +208,9 @@ Deferred (not in v1):
 - **Plan mode** over ACP — no native plan/read-only permission mode observed in
   the ACP surface. Marked `supports_plan_mode = false`; investigate an ACP
   session-level setting or `_meta` toggle later.
+- **Reasoning effort** — advertised in `initialize` (high/medium/low) but no
+  confirmed per-turn ACP wire method. `supports_effort = false` until the wire
+  format is found.
 - **Attachments/images** — ACP advertises `image:false`.
 - **MCP passthrough** — Grok loads its own user MCP servers; Verun's per-task
   `.mcp.json` injection is not wired for Grok in v1.
