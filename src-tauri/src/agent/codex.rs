@@ -355,4 +355,101 @@ impl Agent for Codex {
         });
         encode_rpc_frame(&frame)
     }
+
+    // ── Generic RPC seam ────────────────────────────────────────────────
+    //
+    // These delegate to the `encode_rpc_*` family above / `CodexRpc*Params`.
+    // Temporary: a later task inlines the bodies here and deletes the old
+    // dedicated methods once nothing else calls them.
+
+    fn uses_rpc(&self) -> bool {
+        true
+    }
+
+    fn rpc_encode_initialize(
+        &self,
+        req_id: i64,
+        ci: &super::RpcClientInfo<'_>,
+    ) -> Result<Vec<u8>, String> {
+        self.encode_rpc_initialize(
+            req_id,
+            &CodexRpcClientInfo {
+                name: ci.name,
+                version: ci.version,
+            },
+        )
+    }
+
+    fn rpc_encode_initialized(&self) -> Option<Result<Vec<u8>, String>> {
+        Some(self.encode_rpc_initialized_notification())
+    }
+
+    fn rpc_encode_start(
+        &self,
+        req_id: i64,
+        p: &super::RpcStartParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        self.encode_rpc_thread_start(
+            req_id,
+            &CodexRpcThreadStartParams {
+                cwd: p.cwd,
+                trust_level: p.trust_level,
+                model: p.model,
+            },
+        )
+    }
+
+    fn rpc_encode_resume(
+        &self,
+        req_id: i64,
+        p: &super::RpcResumeParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        self.encode_rpc_thread_resume(
+            req_id,
+            &CodexRpcThreadResumeParams {
+                thread_id: p.session_id,
+                cwd: p.cwd,
+                trust_level: p.trust_level,
+            },
+        )
+    }
+
+    fn rpc_parse_session_id(&self, r: &Value) -> Option<String> {
+        r.pointer("/thread/id").and_then(|s| s.as_str()).map(|s| s.to_string())
+    }
+
+    fn rpc_encode_turn(&self, req_id: i64, p: &super::RpcTurnParams<'_>) -> Result<Vec<u8>, String> {
+        self.encode_rpc_turn_start(
+            req_id,
+            &CodexRpcTurnStartParams {
+                thread_id: p.session_id,
+                prompt: p.prompt,
+                image_urls: p.image_urls,
+                trust_level: p.trust_level,
+                model: p.model,
+                effort: p.effort,
+                plan_mode: p.plan_mode,
+            },
+        )
+    }
+
+    fn rpc_parse_turn_id(&self, r: &Value) -> Option<String> {
+        r.pointer("/turn/id").and_then(|s| s.as_str()).map(|s| s.to_string())
+    }
+
+    fn rpc_encode_interrupt(
+        &self,
+        req_id: i64,
+        session_id: &str,
+        turn_id: Option<&str>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        match turn_id {
+            Some(tid) => self.encode_rpc_turn_interrupt(req_id, session_id, tid).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn rpc_is_recoverable_resume_error(&self, message: &str) -> bool {
+        super::rpc::is_recoverable_thread_resume_error(message)
+    }
 }

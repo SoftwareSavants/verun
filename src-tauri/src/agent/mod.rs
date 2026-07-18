@@ -1278,6 +1278,94 @@ mod tests {
     }
 
     #[test]
+    fn codex_generic_rpc_encoders_match_wire() {
+        let a = Codex;
+        assert!(a.uses_rpc());
+        // initialize
+        let v = parse_rpc_frame(
+            &a.rpc_encode_initialize(
+                1,
+                &RpcClientInfo {
+                    name: "verun",
+                    version: "0.9.0",
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(v["method"], "initialize");
+        assert_eq!(v["params"]["capabilities"]["experimentalApi"], true);
+        // initialized notification present
+        let init = a.rpc_encode_initialized().expect("codex sends initialized");
+        assert_eq!(parse_rpc_frame(&init.unwrap())["method"], "initialized");
+        // start (thread/start)
+        let s = parse_rpc_frame(
+            &a.rpc_encode_start(
+                2,
+                &RpcStartParams {
+                    cwd: "/repo",
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: Some("gpt-5.4"),
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(s["method"], "thread/start");
+        assert_eq!(s["params"]["sandbox"], "workspace-write");
+        // resume (thread/resume)
+        let r = parse_rpc_frame(
+            &a.rpc_encode_resume(
+                3,
+                &RpcResumeParams {
+                    session_id: "t-abc",
+                    cwd: "/repo",
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: None,
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(r["method"], "thread/resume");
+        assert_eq!(r["params"]["threadId"], "t-abc");
+        // parse session id
+        assert_eq!(
+            a.rpc_parse_session_id(&json!({"thread": {"id": "t-9"}})),
+            Some("t-9".into())
+        );
+        // turn (turn/start)
+        let t = parse_rpc_frame(
+            &a.rpc_encode_turn(
+                4,
+                &RpcTurnParams {
+                    session_id: "t-x",
+                    prompt: "hi",
+                    image_urls: &[],
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: Some("gpt-5.4"),
+                    effort: Some("medium"),
+                    plan_mode: false,
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(t["method"], "turn/start");
+        assert_eq!(t["params"]["threadId"], "t-x");
+        // parse turn id
+        assert_eq!(
+            a.rpc_parse_turn_id(&json!({"turn": {"id": "turn-7"}})),
+            Some("turn-7".into())
+        );
+        // interrupt: Some(turn) -> Some(frame); None -> None
+        let i = a
+            .rpc_encode_interrupt(5, "t-x", Some("turn-7"))
+            .unwrap()
+            .expect("frame");
+        assert_eq!(parse_rpc_frame(&i)["method"], "turn/interrupt");
+        assert!(a.rpc_encode_interrupt(6, "t-x", None).unwrap().is_none());
+        // recoverable resume error
+        assert!(a.rpc_is_recoverable_resume_error("thread t-1 not found"));
+    }
+
+    #[test]
     fn codex_encode_initialize_has_client_info() {
         let bytes = Codex
             .encode_rpc_initialize(
