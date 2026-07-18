@@ -93,7 +93,7 @@
 mod claude;
 mod codex;
 pub mod codex_developer_instructions;
-pub mod codex_rpc;
+pub mod rpc;
 mod cursor;
 mod gemini;
 mod opencode;
@@ -536,7 +536,7 @@ pub trait Agent: Send + Sync {
     //
     // These return a single newline-delimited JSON-RPC frame. The caller
     // (`task.rs`) supplies the integer request id; correlation with the
-    // response happens in `agent::codex_rpc::CodexRpcClient`.
+    // response happens in `agent::rpc::CodexRpcClient`.
 
     fn encode_rpc_initialize(
         &self,

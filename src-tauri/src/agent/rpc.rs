@@ -1,4 +1,4 @@
-//! # Codex app-server JSON-RPC transport
+//! # JSON-RPC transport (Codex app-server, Grok ACP)
 //!
 //! Newline-delimited JSON-RPC 2.0 over a child process's stdio. Matches the
 //! wire shape t3code ships in `packages/effect-codex-app-server/src/protocol.ts`
@@ -10,8 +10,8 @@
 //!  1. Message classification — request / response / notification.
 //!  2. A reader task that pulls lines off stdout and routes them:
 //!     - Responses → resolve the `oneshot` registered under the request id.
-//!     - Notifications → emit a [`CodexRpcEvent::Notification`].
-//!     - Server-originated requests → emit a [`CodexRpcEvent::ServerRequest`]
+//!     - Notifications → emit a [`RpcEvent::Notification`].
+//!     - Server-originated requests → emit a [`RpcEvent::ServerRequest`]
 //!       so the orchestrator can route approvals through `PendingApprovals`.
 //!  3. The `PendingRpcResponses` correlation map.
 //!
@@ -58,7 +58,7 @@ impl std::error::Error for JsonRpcError {}
 
 /// Sink for every classified message the reader produces.
 #[derive(Debug, Clone)]
-pub enum CodexRpcEvent {
+pub enum RpcEvent {
     /// Server → client notification (`{method, params}` with no id).
     Notification { method: String, params: Value },
     /// Server-originated request the client must answer. `id` is passed
@@ -185,14 +185,14 @@ pub enum ClassifyError {
 pub fn route_message(
     msg: ClassifiedMessage,
     pending: &PendingRpcResponses,
-    events: &mpsc::UnboundedSender<CodexRpcEvent>,
+    events: &mpsc::UnboundedSender<RpcEvent>,
 ) {
     match msg {
         ClassifiedMessage::Notification { method, params } => {
-            let _ = events.send(CodexRpcEvent::Notification { method, params });
+            let _ = events.send(RpcEvent::Notification { method, params });
         }
         ClassifiedMessage::ServerRequest { id, method, params } => {
-            let _ = events.send(CodexRpcEvent::ServerRequest { id, method, params });
+            let _ = events.send(RpcEvent::ServerRequest { id, method, params });
         }
         ClassifiedMessage::Response {
             id: Some(numeric_id),
@@ -216,7 +216,7 @@ pub fn route_message(
 pub fn spawn_reader<R>(
     stdout: R,
     pending: PendingRpcResponses,
-    events: mpsc::UnboundedSender<CodexRpcEvent>,
+    events: mpsc::UnboundedSender<RpcEvent>,
 ) -> tokio::task::JoinHandle<()>
 where
     R: AsyncRead + Send + Unpin + 'static,
@@ -228,7 +228,7 @@ where
                 Ok(Some(line)) => match classify_line(&line) {
                     Some(Ok(msg)) => route_message(msg, &pending, &events),
                     Some(Err(err)) => {
-                        let _ = events.send(CodexRpcEvent::ParseError {
+                        let _ = events.send(RpcEvent::ParseError {
                             line: line.clone(),
                             detail: format!("{err:?}"),
                         });
@@ -236,14 +236,14 @@ where
                     None => {}
                 },
                 Ok(None) => {
-                    fail_all_pending(&pending, "Codex app-server stdout closed");
-                    let _ = events.send(CodexRpcEvent::ReaderClosed { reason: None });
+                    fail_all_pending(&pending, "rpc transport stdout closed");
+                    let _ = events.send(RpcEvent::ReaderClosed { reason: None });
                     break;
                 }
                 Err(e) => {
-                    let reason = format!("Codex app-server stdout error: {e}");
+                    let reason = format!("rpc transport stdout error: {e}");
                     fail_all_pending(&pending, &reason);
-                    let _ = events.send(CodexRpcEvent::ReaderClosed {
+                    let _ = events.send(RpcEvent::ReaderClosed {
                         reason: Some(reason),
                     });
                     break;
@@ -271,7 +271,7 @@ pub async fn write_frame(
     let mut guard = stdin.lock().await;
     let writer = guard
         .as_mut()
-        .ok_or_else(|| "Codex app-server stdin is closed".to_string())?;
+        .ok_or_else(|| "rpc transport stdin is closed".to_string())?;
     writer
         .write_all(bytes)
         .await
@@ -438,7 +438,7 @@ mod tests {
         );
         let ev = rx.try_recv().expect("event");
         match ev {
-            CodexRpcEvent::Notification { method, .. } => assert_eq!(method, "turn/completed"),
+            RpcEvent::Notification { method, .. } => assert_eq!(method, "turn/completed"),
             other => panic!("expected notification, got {other:?}"),
         }
     }
@@ -458,7 +458,7 @@ mod tests {
         );
         let ev = rx.try_recv().expect("event");
         match ev {
-            CodexRpcEvent::ServerRequest { id, method, .. } => {
+            RpcEvent::ServerRequest { id, method, .. } => {
                 assert_eq!(id, json!(42));
                 assert_eq!(method, "applyPatchApproval");
             }
@@ -501,7 +501,7 @@ mod tests {
 
         let ev = events_rx.recv().await.expect("event");
         match ev {
-            CodexRpcEvent::ServerRequest { id, method, .. } => {
+            RpcEvent::ServerRequest { id, method, .. } => {
                 assert_eq!(id, json!(7));
                 assert_eq!(method, "applyPatchApproval");
             }
@@ -522,7 +522,7 @@ mod tests {
         let err = rx.await.unwrap().unwrap_err();
         assert!(err.message.contains("closed"), "got {err:?}");
         let ev = events_rx.recv().await.unwrap();
-        assert!(matches!(ev, CodexRpcEvent::ReaderClosed { .. }));
+        assert!(matches!(ev, RpcEvent::ReaderClosed { .. }));
     }
 
     #[test]

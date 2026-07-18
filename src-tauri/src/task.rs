@@ -563,7 +563,7 @@ pub struct ActiveProcess {
     /// Request-id → response-oneshot map for the Codex app-server session.
     /// `None` for non-RPC agents. The reader task writes to this; the main
     /// thread reads via `register_pending`.
-    pub codex_pending: Option<crate::agent::codex_rpc::PendingRpcResponses>,
+    pub codex_pending: Option<crate::agent::rpc::PendingRpcResponses>,
     /// Monotonic request-id source for RPC calls. `None` for non-RPC agents.
     pub codex_next_id: Option<Arc<AtomicI64>>,
     /// Codex app-server turn id for the currently-in-flight turn. `None` when
@@ -1413,7 +1413,7 @@ pub async fn send_message(
                 stdin: Arc<TokioMutex<Option<ChildStdin>>>,
                 busy: Arc<AtomicBool>,
                 thread_id: String,
-                pending: crate::agent::codex_rpc::PendingRpcResponses,
+                pending: crate::agent::rpc::PendingRpcResponses,
                 next_id: Arc<AtomicI64>,
                 current_turn_id: Arc<TokioMutex<Option<String>>>,
             },
@@ -1569,7 +1569,7 @@ pub async fn send_message(
                 next_id,
                 current_turn_id,
             } => {
-                use crate::agent::codex_rpc;
+                use crate::agent::rpc;
                 persist_verun_user_message(
                     &app,
                     db_tx,
@@ -1610,7 +1610,7 @@ pub async fn send_message(
                         }
                     })
                     .collect();
-                let turn_id = codex_rpc::next_request_id(&next_id);
+                let turn_id = rpc::next_request_id(&next_id);
                 let turn_bytes = agent.encode_rpc_turn_start(
                     turn_id,
                     &crate::agent::CodexRpcTurnStartParams {
@@ -1629,8 +1629,8 @@ pub async fn send_message(
                 // targeting the *previous* turn, leaving the real in-flight
                 // turn running while the UI flipped to idle.
                 *current_turn_id.lock().await = None;
-                let turn_rx = codex_rpc::register_pending(&pending, turn_id);
-                codex_rpc::write_frame(&stdin, &turn_bytes).await?;
+                let turn_rx = rpc::register_pending(&pending, turn_id);
+                rpc::write_frame(&stdin, &turn_bytes).await?;
                 busy.store(true, Ordering::SeqCst);
                 spawn_turn_start_response_watcher(
                     app.clone(),
@@ -1936,7 +1936,7 @@ async fn spawn_codex_app_server_session(
     agent: Box<dyn crate::agent::Agent>,
     params: SpawnSessionParams,
 ) -> Result<(), String> {
-    use crate::agent::codex_rpc;
+    use crate::agent::rpc;
 
     let SpawnSessionParams {
         session_id,
@@ -2029,13 +2029,13 @@ async fn spawn_codex_app_server_session(
         });
     }
 
-    let pending = codex_rpc::new_pending_rpc_responses();
+    let pending = rpc::new_pending_rpc_responses();
     let next_id = Arc::new(AtomicI64::new(1));
-    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<codex_rpc::CodexRpcEvent>();
-    codex_rpc::spawn_reader(stdout, pending.clone(), events_tx);
+    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<rpc::RpcEvent>();
+    rpc::spawn_reader(stdout, pending.clone(), events_tx);
 
     // -- 1. initialize + initialized --
-    let init_id = codex_rpc::next_request_id(&next_id);
+    let init_id = rpc::next_request_id(&next_id);
     let init_bytes = agent.encode_rpc_initialize(
         init_id,
         &crate::agent::CodexRpcClientInfo {
@@ -2043,17 +2043,17 @@ async fn spawn_codex_app_server_session(
             version: env!("CARGO_PKG_VERSION"),
         },
     )?;
-    codex_rpc::call(&stdin, &pending, init_id, &init_bytes)
+    rpc::call(&stdin, &pending, init_id, &init_bytes)
         .await
         .map_err(|e| format!("codex initialize failed: {e}"))?;
     let initialized = agent.encode_rpc_initialized_notification()?;
-    codex_rpc::write_frame(&stdin, &initialized).await?;
+    rpc::write_frame(&stdin, &initialized).await?;
 
     // -- 2. thread/start (with thread/resume fallback on recoverable err) --
     let resume = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let thread_id: String = if let Some(rid) = resume {
         let rid_owned = rid.to_string();
-        let resume_id = codex_rpc::next_request_id(&next_id);
+        let resume_id = rpc::next_request_id(&next_id);
         let resume_bytes = agent.encode_rpc_thread_resume(
             resume_id,
             &crate::agent::CodexRpcThreadResumeParams {
@@ -2062,9 +2062,9 @@ async fn spawn_codex_app_server_session(
                 trust_level,
             },
         )?;
-        match codex_rpc::call(&stdin, &pending, resume_id, &resume_bytes).await {
+        match rpc::call(&stdin, &pending, resume_id, &resume_bytes).await {
             Ok(_) => rid_owned,
-            Err(err) if codex_rpc::is_recoverable_thread_resume_error(&err.message) => {
+            Err(err) if rpc::is_recoverable_thread_resume_error(&err.message) => {
                 eprintln!(
                     "[verun][codex-rpc][{session_id}] thread/resume recoverable, falling back to thread/start: {err}"
                 );
@@ -2130,7 +2130,7 @@ async fn spawn_codex_app_server_session(
                 }
             })
             .collect();
-        let turn_id = codex_rpc::next_request_id(&next_id);
+        let turn_id = rpc::next_request_id(&next_id);
         let turn_bytes = agent.encode_rpc_turn_start(
             turn_id,
             &crate::agent::CodexRpcTurnStartParams {
@@ -2149,8 +2149,8 @@ async fn spawn_codex_app_server_session(
         // `codex_current_turn_id` (needed for `turn/interrupt`) on success
         // and surfaces any JSON-RPC error (e.g. missing `experimentalApi`
         // capability) on failure.
-        let turn_rx = codex_rpc::register_pending(&pending, turn_id);
-        codex_rpc::write_frame(&stdin, &turn_bytes).await?;
+        let turn_rx = rpc::register_pending(&pending, turn_id);
+        rpc::write_frame(&stdin, &turn_bytes).await?;
         spawn_turn_start_response_watcher(
             app.clone(),
             db_tx.clone(),
@@ -2320,14 +2320,14 @@ async fn spawn_codex_app_server_session(
 async fn start_new_thread(
     agent: &dyn crate::agent::Agent,
     stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
-    pending: &crate::agent::codex_rpc::PendingRpcResponses,
+    pending: &crate::agent::rpc::PendingRpcResponses,
     next_id: &AtomicI64,
     worktree_path: &str,
     trust_level: TrustLevel,
     model: Option<&str>,
 ) -> Result<String, String> {
-    use crate::agent::codex_rpc;
-    let req_id = codex_rpc::next_request_id(next_id);
+    use crate::agent::rpc;
+    let req_id = rpc::next_request_id(next_id);
     let bytes = agent.encode_rpc_thread_start(
         req_id,
         &crate::agent::CodexRpcThreadStartParams {
@@ -2336,7 +2336,7 @@ async fn start_new_thread(
             model,
         },
     )?;
-    let result = codex_rpc::call(stdin, pending, req_id, &bytes)
+    let result = rpc::call(stdin, pending, req_id, &bytes)
         .await
         .map_err(|e| format!("codex thread/start failed: {e}"))?;
     result
@@ -2372,7 +2372,7 @@ fn spawn_turn_start_response_watcher(
     busy: Arc<AtomicBool>,
     current_turn_id: Arc<TokioMutex<Option<String>>>,
     rx: tokio::sync::oneshot::Receiver<
-        Result<serde_json::Value, crate::agent::codex_rpc::JsonRpcError>,
+        Result<serde_json::Value, crate::agent::rpc::JsonRpcError>,
     >,
 ) {
     tokio::spawn(async move {
@@ -2828,7 +2828,7 @@ pub async fn abort_message(
                 let turn_id_opt = current_turn_id.lock().await.clone();
                 match turn_id_opt {
                     Some(turn_id) => {
-                        let req_id = crate::agent::codex_rpc::next_request_id(next_id);
+                        let req_id = crate::agent::rpc::next_request_id(next_id);
                         (
                             Some(agent.encode_rpc_turn_interrupt(req_id, thread_id, &turn_id)?),
                             true,

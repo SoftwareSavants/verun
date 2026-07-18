@@ -1829,7 +1829,7 @@ pub async fn stream_and_capture(
 }
 
 /// JSON-RPC streaming loop for Codex `app-server`. Mirrors the legacy
-/// `stream_and_capture` but consumes `CodexRpcEvent`s instead of parsing
+/// `stream_and_capture` but consumes `RpcEvent`s instead of parsing
 /// NDJSON from stdout. Server-originated approval requests are routed
 /// through `pending_approvals` the same way Claude's `control_request`
 /// tool approvals are.
@@ -1838,7 +1838,7 @@ pub async fn stream_and_capture_rpc(
     app: AppHandle,
     session_id: String,
     task_id: String,
-    mut events_rx: tokio::sync::mpsc::UnboundedReceiver<crate::agent::codex_rpc::CodexRpcEvent>,
+    mut events_rx: tokio::sync::mpsc::UnboundedReceiver<crate::agent::rpc::RpcEvent>,
     stdin: Arc<TokioMutex<Option<ChildStdin>>>,
     busy: Arc<AtomicBool>,
     _pending_approvals: PendingApprovals,
@@ -1873,7 +1873,7 @@ pub async fn stream_and_capture_rpc(
             ev = events_rx.recv() => {
                 let Some(ev) = ev else { break };
                 match ev {
-                    crate::agent::codex_rpc::CodexRpcEvent::Notification { method, params } => {
+                    crate::agent::rpc::RpcEvent::Notification { method, params } => {
                         eprintln!("[verun][codex-rpc][{session_id}] <- {method}");
 
                         // Cache the most recent per-turn token breakdown so
@@ -1965,7 +1965,7 @@ pub async fn stream_and_capture_rpc(
                             last_flush = Instant::now();
                         }
                     }
-                    crate::agent::codex_rpc::CodexRpcEvent::ServerRequest {
+                    crate::agent::rpc::RpcEvent::ServerRequest {
                         id,
                         method,
                         params,
@@ -2054,13 +2054,13 @@ pub async fn stream_and_capture_rpc(
                             }
                         });
                     }
-                    crate::agent::codex_rpc::CodexRpcEvent::ReaderClosed { reason } => {
+                    crate::agent::rpc::RpcEvent::ReaderClosed { reason } => {
                         if let Some(r) = reason {
                             last_error = Some(r);
                         }
                         break;
                     }
-                    crate::agent::codex_rpc::CodexRpcEvent::ParseError { line, detail } => {
+                    crate::agent::rpc::RpcEvent::ParseError { line, detail } => {
                         eprintln!(
                             "[verun][codex-rpc][{session_id}] parse error {detail}: {line}"
                         );
