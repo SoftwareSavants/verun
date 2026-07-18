@@ -358,6 +358,59 @@ pub enum CodexRpcPermissionsDecision {
 }
 
 // ---------------------------------------------------------------------------
+// Generic JSON-RPC payload types (protocol-agnostic RPC seam)
+// ---------------------------------------------------------------------------
+//
+// These generalize the `CodexRpc*` shapes above so a second RPC-based agent
+// (e.g. an ACP/Grok client) can share the same trait seam without depending
+// on Codex-specific naming (`thread_id` vs. `session_id`, etc.). Only agents
+// that override `uses_rpc()` need to implement the encoders/decoders below;
+// everyone else keeps the safe defaults.
+
+pub struct RpcClientInfo<'a> {
+    pub name: &'a str,
+    pub version: &'a str,
+}
+
+pub struct RpcStartParams<'a> {
+    pub cwd: &'a str,
+    pub trust_level: crate::policy::TrustLevel,
+    pub model: Option<&'a str>,
+}
+
+pub struct RpcResumeParams<'a> {
+    pub session_id: &'a str,
+    pub cwd: &'a str,
+    pub trust_level: crate::policy::TrustLevel,
+    pub model: Option<&'a str>,
+}
+
+pub struct RpcTurnParams<'a> {
+    pub session_id: &'a str,
+    pub prompt: &'a str,
+    pub image_urls: &'a [String],
+    pub trust_level: crate::policy::TrustLevel,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    pub plan_mode: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RpcApprovalDecision {
+    Approve,
+    ApproveForSession,
+    Deny,
+    Abort,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RpcTokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
+}
+
+// ---------------------------------------------------------------------------
 // The trait
 // ---------------------------------------------------------------------------
 
@@ -448,6 +501,111 @@ pub trait Agent: Send + Sync {
     /// When true, `task.rs` uses the `encode_rpc_*` family instead of the
     /// stream-json / positional flows.
     fn uses_app_server(&self) -> bool {
+        false
+    }
+
+    // ── Generic RPC seam (protocol-agnostic) ──────────────────────────
+    //
+    // Whether the agent speaks JSON-RPC 2.0 over stdio via the generic RPC
+    // seam (as opposed to Codex's dedicated `encode_rpc_*` family above).
+    // When true, `task.rs` uses these methods instead of the stream-json /
+    // positional flows. Defaults return errors/empty so non-RPC agents keep
+    // compiling untouched.
+
+    fn uses_rpc(&self) -> bool {
+        false
+    }
+
+    fn rpc_encode_initialize(
+        &self,
+        _req_id: i64,
+        _ci: &RpcClientInfo<'_>,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent is not RPC-based".into())
+    }
+
+    fn rpc_encode_initialized(&self) -> Option<Result<Vec<u8>, String>> {
+        None
+    }
+
+    fn rpc_encode_start(
+        &self,
+        _req_id: i64,
+        _p: &RpcStartParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent is not RPC-based".into())
+    }
+
+    fn rpc_encode_resume(
+        &self,
+        _req_id: i64,
+        _p: &RpcResumeParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent is not RPC-based".into())
+    }
+
+    fn rpc_parse_session_id(&self, _start_response: &serde_json::Value) -> Option<String> {
+        None
+    }
+
+    fn rpc_encode_turn(&self, _req_id: i64, _p: &RpcTurnParams<'_>) -> Result<Vec<u8>, String> {
+        Err("agent is not RPC-based".into())
+    }
+
+    fn rpc_parse_turn_id(&self, _turn_response: &serde_json::Value) -> Option<String> {
+        None
+    }
+
+    fn rpc_encode_interrupt(
+        &self,
+        _req_id: i64,
+        _session_id: &str,
+        _turn_id: Option<&str>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        Err("agent is not RPC-based".into())
+    }
+
+    fn rpc_decode_notification(
+        &self,
+        _method: &str,
+        _params: &serde_json::Value,
+    ) -> Vec<crate::stream::OutputItem> {
+        vec![]
+    }
+
+    fn rpc_extract_usage(
+        &self,
+        _method: &str,
+        _params: &serde_json::Value,
+    ) -> Option<RpcTokenUsage> {
+        None
+    }
+
+    fn rpc_is_approval(&self, _method: &str) -> bool {
+        false
+    }
+
+    fn rpc_build_approval_entry(
+        &self,
+        _session_id: &str,
+        _request_id: &str,
+        _method: &str,
+        _params: &serde_json::Value,
+    ) -> crate::task::PendingApprovalEntry {
+        unreachable!("rpc_build_approval_entry called on non-RPC agent")
+    }
+
+    fn rpc_encode_approval_response(
+        &self,
+        _method: &str,
+        _server_req_id: &serde_json::Value,
+        _response: &crate::task::ApprovalResponse,
+        _entry_input: &serde_json::Value,
+    ) -> Option<Result<Vec<u8>, String>> {
+        None
+    }
+
+    fn rpc_is_recoverable_resume_error(&self, _message: &str) -> bool {
         false
     }
 
@@ -994,6 +1152,21 @@ mod tests {
         assert!(!Cursor.uses_app_server());
         assert!(!Gemini.uses_app_server());
         assert!(!OpenCode.uses_app_server());
+    }
+
+    #[test]
+    fn non_rpc_agents_default_rpc_seam_to_empty() {
+        for agent in [Box::new(Cursor) as Box<dyn Agent>, Box::new(Gemini), Box::new(OpenCode)] {
+            assert!(!agent.uses_rpc());
+            assert!(agent
+                .rpc_encode_initialize(1, &RpcClientInfo { name: "v", version: "0" })
+                .is_err());
+            assert!(agent.rpc_encode_initialized().is_none());
+            assert!(agent.rpc_parse_turn_id(&json!({})).is_none());
+            assert!(agent.rpc_decode_notification("x", &json!({})).is_empty());
+            assert!(agent.rpc_extract_usage("x", &json!({})).is_none());
+            assert!(!agent.rpc_is_approval("x"));
+        }
     }
 
     // ── Codex ───────────────────────────────────────────────────────────
