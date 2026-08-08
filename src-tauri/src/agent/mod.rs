@@ -96,6 +96,7 @@ pub mod codex_developer_instructions;
 pub mod rpc;
 mod cursor;
 mod gemini;
+mod grok;
 mod opencode;
 
 use serde::{Deserialize, Serialize};
@@ -106,6 +107,7 @@ pub use claude::Claude;
 pub use codex::Codex;
 pub use cursor::Cursor;
 pub use gemini::Gemini;
+pub use grok::Grok;
 pub use opencode::OpenCode;
 
 // ---------------------------------------------------------------------------
@@ -119,6 +121,7 @@ pub enum AgentKind {
     Codex,
     Cursor,
     Gemini,
+    Grok,
     OpenCode,
 }
 
@@ -128,6 +131,7 @@ impl AgentKind {
             "codex" => Self::Codex,
             "cursor" => Self::Cursor,
             "gemini" => Self::Gemini,
+            "grok" => Self::Grok,
             "opencode" => Self::OpenCode,
             _ => Self::Claude,
         }
@@ -139,6 +143,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::Cursor => "cursor",
             Self::Gemini => "gemini",
+            Self::Grok => "grok",
             Self::OpenCode => "opencode",
         }
     }
@@ -148,6 +153,7 @@ impl AgentKind {
             Self::Claude,
             Self::Codex,
             Self::Gemini,
+            Self::Grok,
             Self::OpenCode,
             Self::Cursor,
         ]
@@ -160,6 +166,7 @@ impl AgentKind {
             Self::Codex => Box::new(Codex),
             Self::Cursor => Box::new(Cursor),
             Self::Gemini => Box::new(Gemini),
+            Self::Grok => Box::new(Grok),
             Self::OpenCode => Box::new(OpenCode),
         }
     }
@@ -1409,6 +1416,29 @@ mod tests {
             .unwrap();
         let v = parse_rpc_frame(&bytes);
         assert_eq!(v["result"]["decision"], "approved");
+    }
+
+    // ── Grok ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn grok_registration_and_caps() {
+        assert_eq!(AgentKind::parse("grok"), AgentKind::Grok);
+        assert_eq!(AgentKind::Grok.as_str(), "grok");
+        assert!(AgentKind::all().contains(&AgentKind::Grok));
+        let a = AgentKind::Grok.implementation();
+        assert_eq!(a.cli_binary(), "grok");
+        assert_eq!(
+            a.build_session_args(&default_args()),
+            vec!["agent".to_string(), "stdio".to_string()]
+        );
+        assert!(a.uses_rpc());
+        assert!(a.persists_across_turns());
+        assert_eq!(a.abort_strategy(), AbortStrategy::Interrupt);
+        assert!(a.supports_resume());
+        assert!(!a.defers_resume_id_until_turn_end());
+        assert!(!a.supports_effort());
+        assert!(!a.supports_plan_mode());
+        assert_eq!(a.available_models()[0].id, "grok-4.5");
     }
 
     #[test]
