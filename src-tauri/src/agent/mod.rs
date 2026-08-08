@@ -1392,6 +1392,26 @@ mod tests {
     }
 
     #[test]
+    fn codex_rpc_approval_seam() {
+        let a = Codex;
+        assert!(a.rpc_is_approval("applyPatchApproval"));
+        assert!(!a.rpc_is_approval("turn/completed"));
+        let entry = a.rpc_build_approval_entry("s1", "r1", "execCommandApproval", &json!({"command": "ls"}));
+        assert_eq!(entry.tool_name, "Bash");
+        let resp = crate::task::ApprovalResponse {
+            behavior: "allow".into(),
+            updated_input: None,
+            message: None,
+        };
+        let bytes = a
+            .rpc_encode_approval_response("applyPatchApproval", &json!(42), &resp, &json!({}))
+            .unwrap()
+            .unwrap();
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["result"]["decision"], "approved");
+    }
+
+    #[test]
     fn codex_encode_initialize_has_client_info() {
         let bytes = Codex
             .encode_rpc_initialize(

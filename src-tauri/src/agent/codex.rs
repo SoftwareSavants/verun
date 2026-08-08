@@ -467,4 +467,30 @@ impl Agent for Codex {
             cached_input_tokens: u.cached_input_tokens,
         })
     }
+
+    fn rpc_is_approval(&self, method: &str) -> bool {
+        crate::stream::is_codex_approval_method(method)
+    }
+
+    fn rpc_build_approval_entry(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        method: &str,
+        params: &Value,
+    ) -> crate::task::PendingApprovalEntry {
+        crate::stream::build_codex_approval_entry(session_id, request_id, method, params)
+    }
+
+    fn rpc_encode_approval_response(
+        &self,
+        method: &str,
+        server_req_id: &Value,
+        response: &crate::task::ApprovalResponse,
+        _entry_input: &Value,
+    ) -> Option<Result<Vec<u8>, String>> {
+        // Codex derives everything from method + response; entry_input is a
+        // Grok-only concern.
+        crate::stream::encode_codex_approval_response(self, method, server_req_id, response)
+    }
 }
