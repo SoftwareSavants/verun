@@ -1497,6 +1497,86 @@ mod tests {
     }
 
     #[test]
+    fn grok_decode_thought_and_message() {
+        let a = Grok;
+        let th = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "hmm"}}}),
+        );
+        assert!(matches!(th.as_slice(), [crate::stream::OutputItem::Thinking { text }] if text == "hmm"));
+        let msg = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hi"}}}),
+        );
+        assert!(matches!(msg.as_slice(), [crate::stream::OutputItem::Text { text }] if text == "hi"));
+    }
+
+    #[test]
+    fn grok_decode_tool_call_and_diff_and_result() {
+        let a = Grok;
+        let tc = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "read_file", "rawInput": {"target_file": "x.rs"}}}),
+        );
+        assert!(matches!(tc.as_slice(), [crate::stream::OutputItem::ToolStart { tool, .. }] if tool == "read_file"));
+
+        // A completed edit's diff lands as a ToolResult on the tool card,
+        // carrying the rendered unified diff (per-card, no clobber).
+        let diff = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "tool_call_update", "toolCallId": "c2", "status": "completed",
+                "content": [{"type": "diff", "path": "out.txt", "oldText": "", "newText": "DONE\n"}]}}),
+        );
+        assert!(diff.iter().any(|i| matches!(i, crate::stream::OutputItem::ToolResult { text, is_error } if text.contains("+DONE") && !is_error)));
+
+        // In-progress updates surface nothing.
+        let pending = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "tool_call_update", "toolCallId": "c2", "status": "in_progress", "content": []}}),
+        );
+        assert!(pending.is_empty());
+
+        // Command output at completion -> ToolResult.
+        let res = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "tool_call_update", "toolCallId": "c3", "status": "completed",
+                "content": [{"type": "content", "content": {"type": "text", "text": "ok"}}]}}),
+        );
+        assert!(res.iter().any(|i| matches!(i, crate::stream::OutputItem::ToolResult { text, is_error } if text == "ok" && !is_error)));
+
+        // Failed tool -> is_error true.
+        let failed = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "tool_call_update", "toolCallId": "c4", "status": "failed",
+                "content": [{"type": "content", "content": {"type": "text", "text": "boom"}}]}}),
+        );
+        assert!(failed.iter().any(|i| matches!(i, crate::stream::OutputItem::ToolResult { is_error, .. } if *is_error)));
+    }
+
+    #[test]
+    fn grok_decode_turn_completed_folds_usage_into_turn_end() {
+        let a = Grok;
+        // Grok does NOT override rpc_extract_usage (defaults to None) so the
+        // stream loop does not short-circuit; usage is folded into TurnEnd.
+        assert!(a
+            .rpc_extract_usage("session/update", &json!({"update": {"sessionUpdate": "turn_completed"}}))
+            .is_none());
+        let params = json!({"update": {"sessionUpdate": "turn_completed", "stop_reason": "end_turn",
+            "usage": {"inputTokens": 100, "outputTokens": 20, "cachedReadTokens": 60, "costUsdTicks": 471460000i64}}});
+        let end = a.rpc_decode_notification("session/update", &params);
+        match end.as_slice() {
+            [crate::stream::OutputItem::TurnEnd { status, input_tokens, output_tokens, cache_read_tokens, cost, .. }] => {
+                assert_eq!(status, "completed");
+                assert_eq!(*input_tokens, Some(100));
+                assert_eq!(*output_tokens, Some(20));
+                assert_eq!(*cache_read_tokens, Some(60));
+                assert!((cost.unwrap() - 0.047146).abs() < 1e-9, "cost was {cost:?}");
+            }
+            other => panic!("expected TurnEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn codex_encode_initialize_has_client_info() {
         let bytes = Codex
             .encode_rpc_initialize(

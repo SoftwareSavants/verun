@@ -8,6 +8,52 @@ fn frame(v: &Value) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
+/// Map an ACP `stop_reason` to Verun's turn-end status vocabulary.
+fn stop_reason_to_status(sr: &str) -> &'static str {
+    match sr {
+        "cancelled" | "canceled" | "interrupted" => "interrupted",
+        "refusal" | "error" | "max_tokens" | "max_turn_requests" => "error",
+        _ => "completed",
+    }
+}
+
+/// ACP reports cost as integer "usd ticks" where ticks = usd * 1e10.
+fn ticks_to_usd(ticks: i64) -> f64 {
+    ticks as f64 / 1e10
+}
+
+/// Render an ACP `{oldText,newText}` file change as a git-style unified diff
+/// string for display. Trims common leading/trailing lines so edits show only
+/// the changed region; a brand-new file (empty `old`) yields `+` lines only.
+fn render_unified_diff(path: &str, old: &str, new: &str) -> String {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let mut start = 0;
+    while start < old_lines.len()
+        && start < new_lines.len()
+        && old_lines[start] == new_lines[start]
+    {
+        start += 1;
+    }
+    let (mut eo, mut en) = (old_lines.len(), new_lines.len());
+    while eo > start && en > start && old_lines[eo - 1] == new_lines[en - 1] {
+        eo -= 1;
+        en -= 1;
+    }
+    let mut s = format!("--- a/{path}\n+++ b/{path}\n");
+    for line in &old_lines[start..eo] {
+        s.push('-');
+        s.push_str(line);
+        s.push('\n');
+    }
+    for line in &new_lines[start..en] {
+        s.push('+');
+        s.push_str(line);
+        s.push('\n');
+    }
+    s
+}
+
 /// xAI Grok CLI - agentic coding CLI.
 ///
 /// Transport: `grok agent stdio` speaks ACP (Agent Client Protocol),
@@ -162,5 +208,102 @@ impl Agent for Grok {
                 || m.contains("does not exist")
                 || m.contains("unknown")
                 || m.contains("no such"))
+    }
+
+    fn rpc_decode_notification(&self, method: &str, params: &Value) -> Vec<crate::stream::OutputItem> {
+        use crate::stream::OutputItem;
+        if method != "session/update" {
+            return vec![];
+        }
+        let Some(u) = params.get("update") else {
+            return vec![];
+        };
+        match u.get("sessionUpdate").and_then(|s| s.as_str()).unwrap_or("") {
+            "agent_thought_chunk" => u
+                .pointer("/content/text")
+                .and_then(|t| t.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|t| vec![OutputItem::Thinking { text: t.to_string() }])
+                .unwrap_or_default(),
+            "agent_message_chunk" => u
+                .pointer("/content/text")
+                .and_then(|t| t.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|t| vec![OutputItem::Text { text: t.to_string() }])
+                .unwrap_or_default(),
+            "tool_call" => {
+                let tool = u
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("tool")
+                    .to_string();
+                let input = u
+                    .get("rawInput")
+                    .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
+                    .unwrap_or_default();
+                vec![OutputItem::ToolStart { tool, input }]
+            }
+            "tool_call_update" => {
+                let status = u.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                // Only surface a result once the call resolves. Diffs and
+                // command output both land on the same tool card started by
+                // the earlier `tool_call` event.
+                if status != "completed" && status != "failed" {
+                    return vec![];
+                }
+                let is_error = status == "failed";
+                let mut out = Vec::new();
+                if let Some(items) = u.get("content").and_then(|c| c.as_array()) {
+                    for it in items {
+                        match it.get("type").and_then(|t| t.as_str()) {
+                            Some("diff") => {
+                                let path = it.get("path").and_then(|p| p.as_str()).unwrap_or("");
+                                let old = it.get("oldText").and_then(|t| t.as_str()).unwrap_or("");
+                                let new = it.get("newText").and_then(|t| t.as_str()).unwrap_or("");
+                                out.push(OutputItem::ToolResult {
+                                    text: render_unified_diff(path, old, new),
+                                    is_error,
+                                });
+                            }
+                            Some("content") => {
+                                let text = it
+                                    .pointer("/content/text")
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                out.push(OutputItem::ToolResult { text, is_error });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                out
+            }
+            "turn_completed" => {
+                let status =
+                    stop_reason_to_status(u.get("stop_reason").and_then(|s| s.as_str()).unwrap_or("end_turn"));
+                let usage = u.get("usage");
+                let read = |key: &str| {
+                    usage
+                        .and_then(|g| g.get(key))
+                        .and_then(|v| v.as_u64())
+                };
+                let cost = usage
+                    .and_then(|g| g.get("costUsdTicks"))
+                    .and_then(|v| v.as_i64())
+                    .map(ticks_to_usd)
+                    .filter(|c| *c > 0.0);
+                vec![OutputItem::TurnEnd {
+                    status: status.to_string(),
+                    cost,
+                    input_tokens: read("inputTokens"),
+                    output_tokens: read("outputTokens"),
+                    cache_read_tokens: read("cachedReadTokens"),
+                    cache_write_tokens: None,
+                    error: None,
+                }]
+            }
+            _ => vec![],
+        }
     }
 }
