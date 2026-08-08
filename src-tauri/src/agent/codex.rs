@@ -452,4 +452,19 @@ impl Agent for Codex {
     fn rpc_is_recoverable_resume_error(&self, message: &str) -> bool {
         super::rpc::is_recoverable_thread_resume_error(message)
     }
+
+    fn rpc_decode_notification(&self, method: &str, params: &Value) -> Vec<crate::stream::OutputItem> {
+        crate::stream::process_codex_rpc_notification(method, params)
+    }
+
+    fn rpc_extract_usage(&self, method: &str, params: &Value) -> Option<super::RpcTokenUsage> {
+        if method != "thread/tokenUsage/updated" {
+            return None;
+        }
+        crate::stream::extract_codex_token_usage(params).map(|u| super::RpcTokenUsage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+            cached_input_tokens: u.cached_input_tokens,
+        })
+    }
 }

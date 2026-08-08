@@ -1366,6 +1366,32 @@ mod tests {
     }
 
     #[test]
+    fn codex_rpc_decode_notification_maps_text_and_turn_end() {
+        let a = Codex;
+        let out = a.rpc_decode_notification("item/agentMessage/delta", &json!({"delta": "hello"}));
+        assert!(matches!(out.as_slice(), [crate::stream::OutputItem::Text { text }] if text == "hello"));
+        let end = a.rpc_decode_notification("turn/completed", &json!({"turn": {"status": "completed"}}));
+        assert!(matches!(end.as_slice(), [crate::stream::OutputItem::TurnEnd { .. }]));
+    }
+
+    #[test]
+    fn codex_rpc_extract_usage_reads_token_usage_updated() {
+        let a = Codex;
+        let u = a
+            .rpc_extract_usage(
+                "thread/tokenUsage/updated",
+                &json!({"tokenUsage": {"last": {"inputTokens": 10, "outputTokens": 5, "cachedInputTokens": 3}}}),
+            )
+            .unwrap();
+        assert_eq!(u.input_tokens, 10);
+        assert_eq!(u.output_tokens, 5);
+        assert_eq!(u.cached_input_tokens, 3);
+        assert!(a
+            .rpc_extract_usage("item/agentMessage/delta", &json!({}))
+            .is_none());
+    }
+
+    #[test]
     fn codex_encode_initialize_has_client_info() {
         let bytes = Codex
             .encode_rpc_initialize(
