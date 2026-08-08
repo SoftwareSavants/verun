@@ -306,4 +306,69 @@ impl Agent for Grok {
             _ => vec![],
         }
     }
+
+    fn rpc_is_approval(&self, method: &str) -> bool {
+        method == "session/request_permission"
+    }
+
+    fn rpc_build_approval_entry(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        _method: &str,
+        params: &Value,
+    ) -> crate::task::PendingApprovalEntry {
+        let tc = params.get("toolCall").cloned().unwrap_or(Value::Null);
+        let kind = tc.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        let tool_name = match kind {
+            "edit" => "Edit",
+            "execute" => "Bash",
+            "read" => "Read",
+            _ => tc.get("title").and_then(|t| t.as_str()).unwrap_or("Tool"),
+        }
+        .to_string();
+        // Stash the ACP option list so the responder can map an allow/deny
+        // decision back to a concrete `optionId`.
+        let tool_input = json!({
+            "toolCall": tc,
+            "_grokOptions": params.get("options").cloned().unwrap_or(json!([])),
+        });
+        crate::task::PendingApprovalEntry {
+            request_id: request_id.to_string(),
+            session_id: session_id.to_string(),
+            tool_name,
+            tool_input,
+        }
+    }
+
+    fn rpc_encode_approval_response(
+        &self,
+        _method: &str,
+        server_req_id: &Value,
+        response: &crate::task::ApprovalResponse,
+        entry_input: &Value,
+    ) -> Option<Result<Vec<u8>, String>> {
+        let allow = response.behavior == "allow";
+        let options = entry_input.get("_grokOptions").and_then(|o| o.as_array())?;
+        let want_prefix = if allow { "allow" } else { "reject" };
+        // Prefer the *_once option matching the behavior; else any option whose
+        // kind starts with the desired prefix.
+        let once = format!("{want_prefix}_once");
+        let pick = options
+            .iter()
+            .find(|o| o.get("kind").and_then(|k| k.as_str()) == Some(once.as_str()))
+            .or_else(|| {
+                options.iter().find(|o| {
+                    o.get("kind")
+                        .and_then(|k| k.as_str())
+                        .map(|k| k.starts_with(want_prefix))
+                        .unwrap_or(false)
+                })
+            });
+        let option_id = pick.and_then(|o| o.get("optionId")).cloned().unwrap_or(Value::Null);
+        Some(frame(&json!({
+            "id": server_req_id,
+            "result": { "outcome": { "outcome": "selected", "optionId": option_id } }
+        })))
+    }
 }

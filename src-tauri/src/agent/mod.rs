@@ -1577,6 +1577,39 @@ mod tests {
     }
 
     #[test]
+    fn grok_approval_classify_and_encode() {
+        let a = Grok;
+        assert!(a.rpc_is_approval("session/request_permission"));
+        assert!(!a.rpc_is_approval("session/update"));
+        let params = json!({
+            "toolCall": {"toolCallId": "c1", "kind": "edit", "title": "Write out.txt", "rawInput": {"file_path": "out.txt"}},
+            "options": [
+                {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+                {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}
+            ]
+        });
+        let entry = a.rpc_build_approval_entry("s1", "r1", "session/request_permission", &params);
+        assert_eq!(entry.tool_name, "Edit");
+        // allow -> selects an allow_* optionId
+        let allow = crate::task::ApprovalResponse { behavior: "allow".into(), updated_input: None, message: None };
+        let bytes = a
+            .rpc_encode_approval_response("session/request_permission", &json!(7), &allow, &entry.tool_input)
+            .unwrap()
+            .unwrap();
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["result"]["outcome"]["outcome"], "selected");
+        assert_eq!(v["result"]["outcome"]["optionId"], "allow-once");
+        // deny -> selects a reject_* optionId
+        let deny = crate::task::ApprovalResponse { behavior: "deny".into(), updated_input: None, message: None };
+        let db = a
+            .rpc_encode_approval_response("session/request_permission", &json!(7), &deny, &entry.tool_input)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parse_rpc_frame(&db)["result"]["outcome"]["optionId"], "reject-once");
+    }
+
+    #[test]
     fn codex_encode_initialize_has_client_info() {
         let bytes = Codex
             .encode_rpc_initialize(
