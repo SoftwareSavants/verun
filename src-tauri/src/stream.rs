@@ -1862,7 +1862,7 @@ pub async fn stream_and_capture_rpc(
     // usage arrives via the separate `thread/tokenUsage/updated` notification
     // that fires throughout the turn. Cache the most recent breakdown so we
     // can populate the next `TurnEnd` before emitting it to the UI / db.
-    let mut last_token_usage: Option<CodexTokenUsage> = None;
+    let mut last_token_usage: Option<crate::agent::RpcTokenUsage> = None;
     let mut pending_github_invalidations: Vec<Vec<String>> = Vec::new();
 
     loop {
@@ -1874,24 +1874,25 @@ pub async fn stream_and_capture_rpc(
                 let Some(ev) = ev else { break };
                 match ev {
                     crate::agent::rpc::RpcEvent::Notification { method, params } => {
-                        eprintln!("[verun][codex-rpc][{session_id}] <- {method}");
+                        eprintln!("[verun][rpc][{session_id}] <- {method}");
 
-                        // Cache the most recent per-turn token breakdown so
-                        // the next `turn/completed` can stamp the values onto
-                        // the emitted `TurnEnd`. `last` is the current turn's
-                        // usage — `total` is the whole thread.
-                        if method == "thread/tokenUsage/updated" {
-                            if let Some(usage) = extract_codex_token_usage(&params) {
-                                last_token_usage = Some(usage);
-                            }
+                        // Cache the most recent per-turn token breakdown so a
+                        // later `TurnEnd` can be stamped with the values. Some
+                        // agents (Codex) report usage on a dedicated
+                        // notification that yields no UI items — for those the
+                        // agent returns `Some` here and we swallow the frame.
+                        // Agents that fold usage into their turn-end item
+                        // return `None` and let the decoder emit it.
+                        if let Some(usage) = agent.rpc_extract_usage(&method, &params) {
+                            last_token_usage = Some(usage);
                             continue;
                         }
 
-                        let raw_items = process_codex_rpc_notification(&method, &params);
+                        let raw_items = agent.rpc_decode_notification(&method, &params);
                         let items: Vec<OutputItem> = raw_items
                             .into_iter()
                             .map(|it| patch_turn_end_with_usage(it, &last_token_usage))
-                            .map(|it| persist_codex_plan_if_ready(it, &worktree_path))
+                            .map(|it| persist_plan_if_ready(it, &worktree_path))
                             .collect();
                         let mut has_immediate = false;
                         let mut is_turn_end = false;
@@ -1971,14 +1972,14 @@ pub async fn stream_and_capture_rpc(
                         params,
                     } => {
                         eprintln!(
-                            "[verun][codex-rpc][{session_id}] <- req {method} id={id}"
+                            "[verun][rpc][{session_id}] <- req {method} id={id}"
                         );
-                        if !is_codex_approval_method(&method) {
+                        if !agent.rpc_is_approval(&method) {
                             // Truly unknown server-originated request: reply
                             // JSON-RPC method-not-found so the CLI doesn't
                             // sit blocked on a response that never arrives.
                             eprintln!(
-                                "[verun][codex-rpc][{session_id}] unhandled server request method: {method} — replying method-not-found"
+                                "[verun][rpc][{session_id}] unhandled server request method: {method} — replying method-not-found"
                             );
                             let frame = serde_json::json!({
                                 "id": id,
@@ -1999,12 +2000,18 @@ pub async fn stream_and_capture_rpc(
                         }
 
                         let request_id = uuid::Uuid::new_v4().to_string();
-                        let entry = build_codex_approval_entry(
+                        let entry = agent.rpc_build_approval_entry(
                             &session_id,
                             &request_id,
                             &method,
                             &params,
                         );
+                        // The responder task encodes the decision after the
+                        // entry has been removed from the meta map, so capture
+                        // the tool_input up front. Some agents (Grok) stash
+                        // per-request data (e.g. permission option ids) here
+                        // that the response encoder needs.
+                        let responder_entry_input = entry.tool_input.clone();
                         let _ = app.emit("tool-approval-request", ToolApprovalEvent {
                             request_id: request_id.clone(),
                             session_id: session_id.clone(),
@@ -2036,11 +2043,11 @@ pub async fn stream_and_capture_rpc(
                             responder_pending.remove(&responder_request_id);
                             responder_meta.remove(&responder_request_id);
                             let responder_agent = responder_agent_kind.implementation();
-                            if let Some(Ok(bytes)) = encode_codex_approval_response(
-                                &*responder_agent,
+                            if let Some(Ok(bytes)) = responder_agent.rpc_encode_approval_response(
                                 &responder_method,
                                 &responder_id,
                                 &response,
+                                &responder_entry_input,
                             ) {
                                 let mut guard = responder_stdin.lock().await;
                                 if let Some(writer) = guard.as_mut() {
@@ -2049,7 +2056,7 @@ pub async fn stream_and_capture_rpc(
                                 }
                             } else {
                                 eprintln!(
-                                    "[verun][codex-rpc][{responder_sid}] failed to encode approval response for {responder_method}"
+                                    "[verun][rpc][{responder_sid}] failed to encode approval response for {responder_method}"
                                 );
                             }
                         });
@@ -2062,7 +2069,7 @@ pub async fn stream_and_capture_rpc(
                     }
                     crate::agent::rpc::RpcEvent::ParseError { line, detail } => {
                         eprintln!(
-                            "[verun][codex-rpc][{session_id}] parse error {detail}: {line}"
+                            "[verun][rpc][{session_id}] parse error {detail}: {line}"
                         );
                     }
                 }
@@ -2408,7 +2415,10 @@ pub fn extract_codex_token_usage(params: &serde_json::Value) -> Option<CodexToke
 
 /// Stamp the most recent `thread/tokenUsage/updated` breakdown onto a
 /// `TurnEnd` item. Leaves non-`TurnEnd` items untouched.
-pub fn patch_turn_end_with_usage(item: OutputItem, usage: &Option<CodexTokenUsage>) -> OutputItem {
+pub fn patch_turn_end_with_usage(
+    item: OutputItem,
+    usage: &Option<crate::agent::RpcTokenUsage>,
+) -> OutputItem {
     match (item, usage) {
         (
             OutputItem::TurnEnd {
@@ -2473,7 +2483,7 @@ pub fn persist_codex_plan_markdown(
 
 /// Fill in `file_path` on a `CodexPlanReady` item by writing the plan
 /// markdown under the worktree. Leaves non-`CodexPlanReady` items untouched.
-pub fn persist_codex_plan_if_ready(item: OutputItem, worktree_path: &Path) -> OutputItem {
+pub fn persist_plan_if_ready(item: OutputItem, worktree_path: &Path) -> OutputItem {
     match item {
         OutputItem::CodexPlanReady {
             item_id,
@@ -3399,14 +3409,14 @@ mod tests {
     }
 
     #[test]
-    fn persist_codex_plan_if_ready_fills_file_path() {
+    fn persist_plan_if_ready_fills_file_path() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let item = OutputItem::CodexPlanReady {
             item_id: "item_xyz".into(),
             text: "body".into(),
             file_path: None,
         };
-        match persist_codex_plan_if_ready(item, tmp.path()) {
+        match persist_plan_if_ready(item, tmp.path()) {
             OutputItem::CodexPlanReady { file_path, .. } => {
                 let path = file_path.expect("filePath populated");
                 assert!(path.contains(".verun/plans/plan-"));
@@ -3417,10 +3427,10 @@ mod tests {
     }
 
     #[test]
-    fn persist_codex_plan_if_ready_leaves_other_items_untouched() {
+    fn persist_plan_if_ready_leaves_other_items_untouched() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let item = OutputItem::Text { text: "hi".into() };
-        match persist_codex_plan_if_ready(item, tmp.path()) {
+        match persist_plan_if_ready(item, tmp.path()) {
             OutputItem::Text { text } => assert_eq!(text, "hi"),
             other => panic!("expected Text, got {other:?}"),
         }
@@ -3456,7 +3466,7 @@ mod tests {
 
     #[test]
     fn patch_turn_end_with_usage_fills_in_missing_fields() {
-        let usage = Some(CodexTokenUsage {
+        let usage = Some(crate::agent::RpcTokenUsage {
             input_tokens: 120,
             output_tokens: 45,
             cached_input_tokens: 10,
