@@ -270,42 +270,15 @@ pub struct SessionArgs<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// JSON-RPC payload types (Codex app-server)
+// Codex approval-decision enums
 // ---------------------------------------------------------------------------
 //
-// These are small, agent-agnostic shapes the trait exposes so `task.rs` can
-// drive an app-server session without knowing the wire format. Only `Codex`
-// overrides the encoders today; every other agent returns `Err` by default.
+// The generic RPC handshake/turn framing lives on the `RpcClientInfo` /
+// `Rpc*Params` shapes above and the `rpc_*` trait methods. These decision
+// enums are Codex-specific and back the three approval-response encoders that
+// `stream::encode_codex_approval_response` still routes through.
 //
 // Upstream protocol reference (t3code): dbfe855f4fd0f5dcdf079882652a8efe622b0595
-
-pub struct CodexRpcClientInfo<'a> {
-    pub name: &'a str,
-    pub version: &'a str,
-}
-
-pub struct CodexRpcThreadStartParams<'a> {
-    pub cwd: &'a str,
-    pub trust_level: crate::policy::TrustLevel,
-    pub model: Option<&'a str>,
-}
-
-pub struct CodexRpcThreadResumeParams<'a> {
-    pub thread_id: &'a str,
-    pub cwd: &'a str,
-    pub trust_level: crate::policy::TrustLevel,
-}
-
-pub struct CodexRpcTurnStartParams<'a> {
-    pub thread_id: &'a str,
-    pub prompt: &'a str,
-    /// Optional image URLs (data: URLs or remote URLs).
-    pub image_urls: &'a [String],
-    pub trust_level: crate::policy::TrustLevel,
-    pub model: Option<&'a str>,
-    pub effort: Option<&'a str>,
-    pub plan_mode: bool,
-}
 
 /// Subset of Codex's `ApplyPatchApprovalResponse__ReviewDecision` /
 /// `ExecCommandApprovalResponse__ReviewDecision` that Verun surfaces today.
@@ -504,19 +477,12 @@ pub trait Agent: Send + Sync {
         false
     }
 
-    /// Whether the agent speaks JSON-RPC 2.0 over stdio (Codex `app-server`).
-    /// When true, `task.rs` uses the `encode_rpc_*` family instead of the
-    /// stream-json / positional flows.
-    fn uses_app_server(&self) -> bool {
-        false
-    }
-
     // ── Generic RPC seam (protocol-agnostic) ──────────────────────────
     //
-    // Whether the agent speaks JSON-RPC 2.0 over stdio via the generic RPC
-    // seam (as opposed to Codex's dedicated `encode_rpc_*` family above).
-    // When true, `task.rs` uses these methods instead of the stream-json /
-    // positional flows. Defaults return errors/empty so non-RPC agents keep
+    // Whether the agent speaks JSON-RPC 2.0 over stdio (Codex app-server,
+    // Grok ACP). When true, `task.rs`/`stream.rs` drive the session entirely
+    // through these methods instead of the stream-json / positional flows.
+    // Defaults return errors/empty so non-RPC agents keep
     // compiling untouched.
 
     fn uses_rpc(&self) -> bool {
@@ -697,56 +663,12 @@ pub trait Agent: Send + Sync {
         Vec::new()
     }
 
-    // ── JSON-RPC (Codex app-server) encoders ──────────────────────────
+    // ── JSON-RPC approval-response encoders (Codex app-server) ─────────
     //
-    // These return a single newline-delimited JSON-RPC frame. The caller
-    // (`task.rs`) supplies the integer request id; correlation with the
-    // response happens in `agent::rpc::CodexRpcClient`.
-
-    fn encode_rpc_initialize(
-        &self,
-        _request_id: i64,
-        _client_info: &CodexRpcClientInfo<'_>,
-    ) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
-
-    fn encode_rpc_initialized_notification(&self) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
-
-    fn encode_rpc_thread_start(
-        &self,
-        _request_id: i64,
-        _params: &CodexRpcThreadStartParams<'_>,
-    ) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
-
-    fn encode_rpc_thread_resume(
-        &self,
-        _request_id: i64,
-        _params: &CodexRpcThreadResumeParams<'_>,
-    ) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
-
-    fn encode_rpc_turn_start(
-        &self,
-        _request_id: i64,
-        _params: &CodexRpcTurnStartParams<'_>,
-    ) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
-
-    fn encode_rpc_turn_interrupt(
-        &self,
-        _request_id: i64,
-        _thread_id: &str,
-        _turn_id: &str,
-    ) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
+    // Handshake/turn framing lives on the generic `rpc_encode_*` seam above.
+    // These three response encoders return a single newline-delimited
+    // JSON-RPC frame and are still routed through
+    // `stream::encode_codex_approval_response`. Non-Codex agents return `Err`.
 
     /// Reply to an `applyPatchApproval` / `execCommandApproval` server
     /// request with `{decision}`.
@@ -1105,42 +1027,13 @@ mod tests {
     }
 
     #[test]
-    fn non_codex_agents_reject_rpc_encoders_by_default() {
+    fn non_codex_agents_reject_rpc_approval_response_encoders_by_default() {
         for agent in [
             Box::new(Claude) as Box<dyn Agent>,
             Box::new(Cursor),
             Box::new(Gemini),
             Box::new(OpenCode),
         ] {
-            let client_info = CodexRpcClientInfo {
-                name: "verun",
-                version: "0.0.0",
-            };
-            assert!(agent.encode_rpc_initialize(1, &client_info).is_err());
-            assert!(agent.encode_rpc_initialized_notification().is_err());
-            let ts = CodexRpcThreadStartParams {
-                cwd: "/tmp",
-                trust_level: crate::policy::TrustLevel::Normal,
-                model: None,
-            };
-            assert!(agent.encode_rpc_thread_start(1, &ts).is_err());
-            let tr = CodexRpcThreadResumeParams {
-                thread_id: "t",
-                cwd: "/tmp",
-                trust_level: crate::policy::TrustLevel::Normal,
-            };
-            assert!(agent.encode_rpc_thread_resume(1, &tr).is_err());
-            let turn = CodexRpcTurnStartParams {
-                thread_id: "t",
-                prompt: "hi",
-                image_urls: &[],
-                trust_level: crate::policy::TrustLevel::Normal,
-                model: None,
-                effort: None,
-                plan_mode: false,
-            };
-            assert!(agent.encode_rpc_turn_start(1, &turn).is_err());
-            assert!(agent.encode_rpc_turn_interrupt(1, "t", "turn-1").is_err());
             assert!(agent
                 .encode_rpc_review_decision_response(&json!(1), CodexRpcDecision::Approved)
                 .is_err());
@@ -1151,14 +1044,6 @@ mod tests {
                 .encode_rpc_permissions_response(&json!(1), CodexRpcPermissionsDecision::Deny)
                 .is_err());
         }
-    }
-
-    #[test]
-    fn non_codex_agents_do_not_use_app_server() {
-        assert!(!Claude.uses_app_server());
-        assert!(!Cursor.uses_app_server());
-        assert!(!Gemini.uses_app_server());
-        assert!(!OpenCode.uses_app_server());
     }
 
     #[test]
@@ -1199,8 +1084,8 @@ mod tests {
     }
 
     #[test]
-    fn codex_uses_app_server() {
-        assert!(Codex.uses_app_server());
+    fn codex_uses_rpc() {
+        assert!(Codex.uses_rpc());
     }
 
     #[test]
@@ -1610,15 +1495,9 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_initialize_has_client_info() {
+    fn codex_rpc_encode_initialize_has_client_info() {
         let bytes = Codex
-            .encode_rpc_initialize(
-                1,
-                &CodexRpcClientInfo {
-                    name: "verun",
-                    version: "0.9.0",
-                },
-            )
+            .rpc_encode_initialize(1, &RpcClientInfo { name: "verun", version: "0.9.0" })
             .expect("encode initialize");
         let v = parse_rpc_frame(&bytes);
         assert_eq!(v["id"], 1);
@@ -1628,27 +1507,22 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_initialize_requests_experimental_api_capability() {
+    fn codex_rpc_encode_initialize_requests_experimental_api_capability() {
         // codex app-server >= 0.120 rejects `turn/start.collaborationMode`
         // unless the client negotiated `capabilities.experimentalApi = true`
         // during `initialize`.
         let bytes = Codex
-            .encode_rpc_initialize(
-                1,
-                &CodexRpcClientInfo {
-                    name: "verun",
-                    version: "0.9.0",
-                },
-            )
+            .rpc_encode_initialize(1, &RpcClientInfo { name: "verun", version: "0.9.0" })
             .expect("encode initialize");
         let v = parse_rpc_frame(&bytes);
         assert_eq!(v["params"]["capabilities"]["experimentalApi"], true);
     }
 
     #[test]
-    fn codex_encode_initialized_notification_has_no_id() {
+    fn codex_rpc_encode_initialized_notification_has_no_id() {
         let bytes = Codex
-            .encode_rpc_initialized_notification()
+            .rpc_encode_initialized()
+            .expect("codex sends initialized")
             .expect("encode initialized");
         let v = parse_rpc_frame(&bytes);
         assert!(v.get("id").is_none(), "notifications must not carry an id");
@@ -1656,11 +1530,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_thread_start_maps_normal_trust_to_workspace_write() {
+    fn codex_rpc_encode_start_maps_normal_trust_to_workspace_write() {
         let bytes = Codex
-            .encode_rpc_thread_start(
+            .rpc_encode_start(
                 7,
-                &CodexRpcThreadStartParams {
+                &RpcStartParams {
                     cwd: "/repo",
                     trust_level: crate::policy::TrustLevel::Normal,
                     model: Some("gpt-5.4"),
@@ -1677,11 +1551,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_thread_start_maps_full_auto_to_danger() {
+    fn codex_rpc_encode_start_maps_full_auto_to_danger() {
         let bytes = Codex
-            .encode_rpc_thread_start(
+            .rpc_encode_start(
                 2,
-                &CodexRpcThreadStartParams {
+                &RpcStartParams {
                     cwd: "/repo",
                     trust_level: crate::policy::TrustLevel::FullAuto,
                     model: None,
@@ -1695,11 +1569,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_thread_start_maps_supervised_to_read_only() {
+    fn codex_rpc_encode_start_maps_supervised_to_read_only() {
         let bytes = Codex
-            .encode_rpc_thread_start(
+            .rpc_encode_start(
                 3,
-                &CodexRpcThreadStartParams {
+                &RpcStartParams {
                     cwd: "/repo",
                     trust_level: crate::policy::TrustLevel::Supervised,
                     model: None,
@@ -1712,14 +1586,15 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_thread_resume_carries_thread_id() {
+    fn codex_rpc_encode_resume_carries_thread_id() {
         let bytes = Codex
-            .encode_rpc_thread_resume(
+            .rpc_encode_resume(
                 4,
-                &CodexRpcThreadResumeParams {
-                    thread_id: "t-abc",
+                &RpcResumeParams {
+                    session_id: "t-abc",
                     cwd: "/repo",
                     trust_level: crate::policy::TrustLevel::Normal,
+                    model: None,
                 },
             )
             .expect("encode thread/resume");
@@ -1731,12 +1606,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_default_has_text_input_and_default_collab_mode() {
+    fn codex_rpc_encode_turn_default_has_text_input_and_default_collab_mode() {
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 10,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "list files",
                     image_urls: &[],
                     trust_level: crate::policy::TrustLevel::Normal,
@@ -1773,12 +1648,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_plan_mode_sets_collaboration_mode_plan() {
+    fn codex_rpc_encode_turn_plan_mode_sets_collaboration_mode_plan() {
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 11,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "design a rate limiter",
                     image_urls: &[],
                     trust_level: crate::policy::TrustLevel::Normal,
@@ -1805,12 +1680,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_full_auto_sets_danger_sandbox_policy() {
+    fn codex_rpc_encode_turn_full_auto_sets_danger_sandbox_policy() {
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 12,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "rm -rf",
                     image_urls: &[],
                     trust_level: crate::policy::TrustLevel::FullAuto,
@@ -1826,12 +1701,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_supervised_sets_read_only_sandbox_policy() {
+    fn codex_rpc_encode_turn_supervised_sets_read_only_sandbox_policy() {
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 13,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "ls",
                     image_urls: &[],
                     trust_level: crate::policy::TrustLevel::Supervised,
@@ -1847,12 +1722,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_defaults_collaboration_model_to_gpt_5_5() {
+    fn codex_rpc_encode_turn_defaults_collaboration_model_to_gpt_5_5() {
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 13,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "ls",
                     image_urls: &[],
                     trust_level: crate::policy::TrustLevel::Normal,
@@ -1867,13 +1742,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_appends_image_attachments() {
+    fn codex_rpc_encode_turn_appends_image_attachments() {
         let urls = vec!["data:image/png;base64,abc".to_string()];
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 14,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "look",
                     image_urls: &urls,
                     trust_level: crate::policy::TrustLevel::Normal,
@@ -1892,18 +1767,23 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_interrupt_has_thread_and_turn_id() {
+    fn codex_rpc_encode_interrupt_has_thread_and_turn_id() {
         // Live `codex app-server` rejects `turn/interrupt` without `turnId`
         // with "Invalid request: missing field turnId". Both ids must be
-        // emitted.
+        // emitted; a missing turn id yields no frame.
         let bytes = Codex
-            .encode_rpc_turn_interrupt(15, "t-xyz", "turn-7")
-            .expect("encode interrupt");
+            .rpc_encode_interrupt(15, "t-xyz", Some("turn-7"))
+            .expect("encode interrupt")
+            .expect("frame present when turn id known");
         let v = parse_rpc_frame(&bytes);
         assert_eq!(v["id"], 15);
         assert_eq!(v["method"], "turn/interrupt");
         assert_eq!(v["params"]["threadId"], "t-xyz");
         assert_eq!(v["params"]["turnId"], "turn-7");
+        assert!(
+            Codex.rpc_encode_interrupt(16, "t-xyz", None).unwrap().is_none(),
+            "no turn id -> no interrupt frame"
+        );
     }
 
     #[test]
