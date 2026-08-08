@@ -1,3 +1,8 @@
 [build]
 # Incremental compilation for faster dev builds
 incremental = true
+# Cap parallel codegen jobs so cargo doesn't saturate every core (keeps the
+# machine responsive during builds, esp. when Verun runs several task
+# worktrees at once). Override locally with `CARGO_BUILD_JOBS=<n> cargo ...`
+# or a higher value in your global ~/.cargo/config.toml if you want more.
+jobs = 4
