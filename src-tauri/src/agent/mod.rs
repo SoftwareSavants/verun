@@ -1442,6 +1442,61 @@ mod tests {
     }
 
     #[test]
+    fn grok_acp_encoders() {
+        let a = Grok;
+        // initialize: protocolVersion 1, NO fs capability advertised
+        let init = parse_rpc_frame(
+            &a.rpc_encode_initialize(1, &RpcClientInfo { name: "verun", version: "0.9.0" })
+                .unwrap(),
+        );
+        assert_eq!(init["method"], "initialize");
+        assert_eq!(init["params"]["protocolVersion"], 1);
+        assert!(
+            init["params"]["clientCapabilities"].get("fs").is_none(),
+            "must NOT advertise fs"
+        );
+        // no initialized notification in ACP
+        assert!(a.rpc_encode_initialized().is_none());
+        // session/new
+        let s = parse_rpc_frame(
+            &a.rpc_encode_start(2, &RpcStartParams { cwd: "/repo", trust_level: crate::policy::TrustLevel::Normal, model: None })
+                .unwrap(),
+        );
+        assert_eq!(s["method"], "session/new");
+        assert_eq!(s["params"]["cwd"], "/repo");
+        assert!(s["params"]["mcpServers"].is_array());
+        // parse session id from session/new result
+        assert_eq!(a.rpc_parse_session_id(&json!({"sessionId": "sess-9"})), Some("sess-9".into()));
+        // session/load
+        let l = parse_rpc_frame(
+            &a.rpc_encode_resume(3, &RpcResumeParams { session_id: "sess-9", cwd: "/repo", trust_level: crate::policy::TrustLevel::Normal, model: None })
+                .unwrap(),
+        );
+        assert_eq!(l["method"], "session/load");
+        assert_eq!(l["params"]["sessionId"], "sess-9");
+        assert_eq!(l["params"]["cwd"], "/repo");
+        // session/prompt
+        let t = parse_rpc_frame(
+            &a.rpc_encode_turn(4, &RpcTurnParams { session_id: "sess-9", prompt: "fix the bug", image_urls: &[], trust_level: crate::policy::TrustLevel::Normal, model: None, effort: None, plan_mode: false })
+                .unwrap(),
+        );
+        assert_eq!(t["method"], "session/prompt");
+        assert_eq!(t["params"]["sessionId"], "sess-9");
+        assert_eq!(t["params"]["prompt"][0]["type"], "text");
+        assert_eq!(t["params"]["prompt"][0]["text"], "fix the bug");
+        // no turn id in ACP
+        assert!(a.rpc_parse_turn_id(&json!({"stopReason":"end_turn"})).is_none());
+        // interrupt = session/cancel, always Some (even with no turn id)
+        let i = a.rpc_encode_interrupt(5, "sess-9", None).unwrap().expect("cancel frame");
+        let iv = parse_rpc_frame(&i);
+        assert_eq!(iv["method"], "session/cancel");
+        assert_eq!(iv["params"]["sessionId"], "sess-9");
+        // recoverable resume error
+        assert!(a.rpc_is_recoverable_resume_error("session sess-9 not found"));
+        assert!(!a.rpc_is_recoverable_resume_error("network refused"));
+    }
+
+    #[test]
     fn codex_encode_initialize_has_client_info() {
         let bytes = Codex
             .encode_rpc_initialize(

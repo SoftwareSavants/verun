@@ -1,5 +1,12 @@
 use super::{Agent, AgentKind, InputMode, ModelOption, SessionArgs};
-use serde_json::Value;
+use serde_json::{json, Value};
+
+/// Serialize a JSON value into a single newline-delimited JSON-RPC frame.
+fn frame(v: &Value) -> Result<Vec<u8>, String> {
+    let mut buf = serde_json::to_vec(v).map_err(|e| format!("serialize acp frame: {e}"))?;
+    buf.push(b'\n');
+    Ok(buf)
+}
 
 /// xAI Grok CLI - agentic coding CLI.
 ///
@@ -82,9 +89,78 @@ impl Agent for Grok {
         false
     }
 
-    // ── ACP RPC seam (encoders in Task 10, decode in Task 11, approvals in
-    // Task 12) ──────────────────────────────────────────────────────────
+    // ── ACP RPC seam ────────────────────────────────────────────────────
+
+    fn rpc_encode_initialize(
+        &self,
+        req_id: i64,
+        ci: &super::RpcClientInfo<'_>,
+    ) -> Result<Vec<u8>, String> {
+        // Advertise NO `fs` client capability: Grok then does its own file
+        // I/O rather than routing reads/writes back through us.
+        frame(&json!({
+            "id": req_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": { "name": ci.name, "version": ci.version },
+                "clientCapabilities": {}
+            }
+        }))
+    }
+
+    fn rpc_encode_start(&self, req_id: i64, p: &super::RpcStartParams<'_>) -> Result<Vec<u8>, String> {
+        frame(&json!({
+            "id": req_id,
+            "method": "session/new",
+            "params": { "cwd": p.cwd, "mcpServers": [] }
+        }))
+    }
+
+    fn rpc_encode_resume(&self, req_id: i64, p: &super::RpcResumeParams<'_>) -> Result<Vec<u8>, String> {
+        frame(&json!({
+            "id": req_id,
+            "method": "session/load",
+            "params": { "sessionId": p.session_id, "cwd": p.cwd, "mcpServers": [] }
+        }))
+    }
+
     fn rpc_parse_session_id(&self, r: &Value) -> Option<String> {
         r.get("sessionId").and_then(|s| s.as_str()).map(|s| s.to_string())
+    }
+
+    fn rpc_encode_turn(&self, req_id: i64, p: &super::RpcTurnParams<'_>) -> Result<Vec<u8>, String> {
+        frame(&json!({
+            "id": req_id,
+            "method": "session/prompt",
+            "params": {
+                "sessionId": p.session_id,
+                "prompt": [{ "type": "text", "text": p.prompt }]
+            }
+        }))
+    }
+
+    fn rpc_encode_interrupt(
+        &self,
+        req_id: i64,
+        session_id: &str,
+        _turn_id: Option<&str>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        // ACP cancels by session id; no per-turn id needed.
+        frame(&json!({
+            "id": req_id,
+            "method": "session/cancel",
+            "params": { "sessionId": session_id }
+        }))
+        .map(Some)
+    }
+
+    fn rpc_is_recoverable_resume_error(&self, message: &str) -> bool {
+        let m = message.to_lowercase();
+        m.contains("session")
+            && (m.contains("not found")
+                || m.contains("does not exist")
+                || m.contains("unknown")
+                || m.contains("no such"))
     }
 }
