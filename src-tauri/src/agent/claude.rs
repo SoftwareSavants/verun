@@ -40,26 +40,21 @@ impl Agent for Claude {
     fn available_models(&self) -> Vec<crate::agent::ModelOption> {
         use crate::agent::ModelOption;
         vec![
+            ModelOption::new("claude-opus-5", "Claude Opus 5", "Latest and most capable"),
+            ModelOption::new(
+                "claude-fable-5",
+                "Claude Fable 5",
+                "Most capable for demanding reasoning",
+            ),
+            ModelOption::new(
+                "claude-sonnet-5",
+                "Claude Sonnet 5",
+                "Balanced speed and intelligence",
+            ),
             ModelOption::new(
                 "claude-opus-4-8",
                 "Claude Opus 4.8",
-                "Latest and most capable",
-            ),
-            ModelOption::new(
-                "claude-opus-4-7",
-                "Claude Opus 4.7",
-                "Previous flagship model",
-            )
-            .with_min_version("2.1.111"),
-            ModelOption::new(
-                "claude-opus-4-6",
-                "Claude Opus 4.6",
-                "Most capable for complex tasks",
-            ),
-            ModelOption::new(
-                "claude-sonnet-4-6",
-                "Claude Sonnet 4.6",
-                "Best for everyday tasks",
+                "Previous-generation Opus",
             ),
             ModelOption::new(
                 "claude-haiku-4-5",

@@ -75,27 +75,27 @@ impl Agent for Codex {
     fn available_models(&self) -> Vec<crate::agent::ModelOption> {
         use crate::agent::ModelOption;
         vec![
-            ModelOption::new("gpt-5.5", "GPT-5.5", "Latest frontier coding model"),
             ModelOption::new(
-                "gpt-5.5-pro",
-                "GPT-5.5 Pro",
-                "Higher-compute GPT-5.5 for complex coding work",
+                "gpt-5.6-sol",
+                "GPT-5.6 Sol",
+                "Latest frontier coding model — detail and polish",
             ),
+            ModelOption::new(
+                "gpt-5.6-terra",
+                "GPT-5.6 Terra",
+                "Everyday coding workhorse",
+            ),
+            ModelOption::new(
+                "gpt-5.6-luna",
+                "GPT-5.6 Luna",
+                "Fast, clear, repeatable work",
+            ),
+            ModelOption::new("gpt-5.5", "GPT-5.5", "Previous frontier coding model"),
             ModelOption::new("gpt-5.4", "GPT-5.4", "Frontier coding model"),
-            ModelOption::new(
-                "gpt-5.4-pro",
-                "GPT-5.4 Pro",
-                "Higher-compute GPT-5.4 for complex coding work",
-            ),
             ModelOption::new(
                 "gpt-5.4-mini",
                 "GPT-5.4 Mini",
-                "Smaller lower-latency frontier coding model",
-            ),
-            ModelOption::new(
-                "gpt-5.4-nano",
-                "GPT-5.4 Nano",
-                "Lowest-cost GPT-5.4-class model",
+                "Smaller lower-latency coding model",
             ),
             ModelOption::new(
                 "gpt-5.3-codex",
@@ -313,7 +313,7 @@ impl Agent for Codex {
             CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS
         };
         let settings = json!({
-            "model": p.model.unwrap_or("gpt-5.5"),
+            "model": p.model.unwrap_or("gpt-5.6-sol"),
             "reasoning_effort": p.effort.unwrap_or("medium"),
             "developer_instructions": developer_instructions,
         });

@@ -860,11 +860,11 @@ mod tests {
     }
 
     #[test]
-    fn claude_available_models_include_opus_4_8_first() {
+    fn claude_available_models_include_opus_5_first() {
         let models = Claude.available_models();
-        assert_eq!(models[0].id, "claude-opus-4-8");
-        assert_eq!(models[0].label, "Claude Opus 4.8");
-        assert_eq!(models[1].id, "claude-opus-4-7");
+        assert_eq!(models[0].id, "claude-opus-5");
+        assert_eq!(models[0].label, "Claude Opus 5");
+        assert_eq!(models[1].id, "claude-fable-5");
     }
 
     // ── Persistence + abort strategy + stream encoders ──────────────────
@@ -1139,12 +1139,12 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
                 "gpt-5.5",
-                "gpt-5.5-pro",
                 "gpt-5.4",
-                "gpt-5.4-pro",
                 "gpt-5.4-mini",
-                "gpt-5.4-nano",
                 "gpt-5.3-codex",
             ]
         );
@@ -1722,7 +1722,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_rpc_encode_turn_defaults_collaboration_model_to_gpt_5_5() {
+    fn codex_rpc_encode_turn_defaults_collaboration_model_to_gpt_5_6_sol() {
         let bytes = Codex
             .rpc_encode_turn(
                 13,
@@ -1738,7 +1738,10 @@ mod tests {
             )
             .expect("encode");
         let v = parse_rpc_frame(&bytes);
-        assert_eq!(v["params"]["collaborationMode"]["settings"]["model"], "gpt-5.5");
+        assert_eq!(
+            v["params"]["collaborationMode"]["settings"]["model"],
+            "gpt-5.6-sol"
+        );
     }
 
     #[test]
