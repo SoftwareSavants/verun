@@ -12,8 +12,19 @@ import { isMac, modPressed } from '../lib/platform'
 import { getXtermTheme, getXtermFontConfig, subscribeXtermToAppearance } from '../lib/terminalTheme'
 import '@xterm/xterm/css/xterm.css'
 
+/**
+ * Shift+Enter → ESC+CR. This is the sequence Claude Code's `/terminal-setup`
+ * configures in VS Code / iTerm2, and what agent TUIs read as "insert a
+ * newline" rather than "submit". Inert in a plain shell (readline leaves
+ * M-RET unbound), so it is safe to apply to every terminal.
+ */
+export const SHIFT_ENTER_SEQUENCE = '\x1b\r'
+
+const isShiftEnter = (e: KeyboardEvent) =>
+  e.key === 'Enter' && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
+
 /** Capture-phase keydown on the container — fires before xterm's textarea gets it */
-function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>, onToggleSearch?: () => void, disableCmdVIntercept?: boolean) {
+export function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>, onToggleSearch?: () => void, disableCmdVIntercept?: boolean) {
   container.addEventListener('keydown', (e: KeyboardEvent) => {
     const mod = modPressed(e)
     const inInput = (e.target as HTMLElement).tagName === 'INPUT'
@@ -46,6 +57,7 @@ function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId:
       ipc.readClipboard().then(text => { if (text) term.paste(text) })
       return
     }
+    if (isShiftEnter(e)) { e.preventDefault(); ipc.ptyWrite(terminalId, SHIFT_ENTER_SEQUENCE); return }
     if (mod && e.key === 'ArrowLeft') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x01'); return }
     if (mod && e.key === 'ArrowRight') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x05'); return }
     if (mod && e.key === 'Backspace') { e.preventDefault(); ipc.ptyWrite(terminalId, '\x15'); return }
@@ -55,9 +67,11 @@ function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId:
   }, true)
 }
 
-function setupXtermPassthrough(term: XTerm) {
+export function setupXtermPassthrough(term: XTerm) {
   term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
     if (e.type !== 'keydown') return true
+    // Handled by the capture handler (ESC+CR); stop xterm from also sending CR.
+    if (isShiftEnter(e)) return false
     if (e.ctrlKey && (e.key === '`' || e.key === '~' || e.key === 'Tab')) return false
     if (e.ctrlKey && e.key >= '1' && e.key <= '9') return false
     if (modPressed(e)) return false
