@@ -2389,7 +2389,7 @@ fn spawn_turn_start_response_watcher(
                 }
                 return;
             }
-            Ok(Err(err)) => err.message,
+            Ok(Err(err)) => err.detail(),
             Err(_) => return,
         };
         if !busy.load(Ordering::SeqCst) {

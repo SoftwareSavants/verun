@@ -91,12 +91,48 @@ impl Agent for Grok {
         "https://x.ai/cli"
     }
 
+    /// Static fallback, used when `grok models` is unavailable (e.g. not
+    /// logged in). First entry is the default.
     fn available_models(&self) -> Vec<ModelOption> {
-        vec![ModelOption::new(
-            "grok-4.5",
-            "Grok 4.5",
-            "xAI frontier coding model",
-        )]
+        vec![
+            ModelOption::new("grok-4.6", "Grok 4.6", "xAI frontier coding model"),
+            ModelOption::new("grok-4.5", "Grok 4.5", "Previous Grok model"),
+        ]
+    }
+
+    fn model_list_args(&self) -> Option<Vec<String>> {
+        Some(vec!["models".into()])
+    }
+
+    /// Parse `grok models`. Lines look like `  * grok-4.6 (default)` for the
+    /// default and `  - grok-4.5` for the rest; the default is moved first
+    /// since Verun treats index 0 as the default.
+    fn parse_model_list(&self, output: &str) -> Vec<ModelOption> {
+        let mut default: Option<ModelOption> = None;
+        let mut rest = Vec::new();
+        for line in output.lines() {
+            let t = line.trim();
+            let (is_default, body) = match t.strip_prefix('*') {
+                Some(b) => (true, b),
+                None => match t.strip_prefix('-') {
+                    Some(b) => (false, b),
+                    None => continue,
+                },
+            };
+            let Some(id) = body.split_whitespace().next() else {
+                continue;
+            };
+            let opt = ModelOption::new(id, id, "");
+            if is_default {
+                default = Some(opt);
+            } else {
+                rest.push(opt);
+            }
+        }
+        let mut out = Vec::new();
+        out.extend(default);
+        out.extend(rest);
+        out
     }
 
     fn build_session_args(&self, _args: &SessionArgs<'_>) -> Vec<String> {

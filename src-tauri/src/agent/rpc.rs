@@ -46,6 +46,22 @@ impl JsonRpcError {
             data: None,
         }
     }
+
+    /// User-facing description: the message plus the `data` payload when
+    /// present. Agents often put the real cause there (Grok reports an
+    /// upstream 402 as `{message: "API error (status 402 ...)"}` under a
+    /// generic "Internal error"), so surfacing only `message` hides it.
+    pub fn detail(&self) -> String {
+        match &self.data {
+            None => self.message.clone(),
+            Some(Value::String(s)) if !s.is_empty() => format!("{}: {s}", self.message),
+            Some(Value::Object(o)) => match o.get("message").and_then(|m| m.as_str()) {
+                Some(m) => format!("{}: {m}", self.message),
+                None => format!("{}: {}", self.message, Value::Object(o.clone())),
+            },
+            Some(other) => format!("{}: {other}", self.message),
+        }
+    }
 }
 
 impl std::fmt::Display for JsonRpcError {
@@ -523,6 +539,37 @@ mod tests {
         assert!(err.message.contains("closed"), "got {err:?}");
         let ev = events_rx.recv().await.unwrap();
         assert!(matches!(ev, RpcEvent::ReaderClosed { .. }));
+    }
+
+    #[test]
+    fn json_rpc_error_detail_includes_data_payload() {
+        // No data -> just the message.
+        let e = JsonRpcError { code: -32000, message: "Internal error".into(), data: None };
+        assert_eq!(e.detail(), "Internal error");
+        // String data is appended verbatim.
+        let e = JsonRpcError {
+            code: -32000,
+            message: "Authentication required".into(),
+            data: Some(json!("no auth method id provided")),
+        };
+        assert_eq!(e.detail(), "Authentication required: no auth method id provided");
+        // Object data with a `message` field surfaces that field (Grok puts
+        // the upstream cause there, e.g. a 402 from the responses API).
+        let e = JsonRpcError {
+            code: -32603,
+            message: "Internal error".into(),
+            data: Some(json!({
+                "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",
+                "http_status": 402
+            })),
+        };
+        assert_eq!(
+            e.detail(),
+            "Internal error: API error (status 402 Payment Required): Grok Build usage balance exhausted"
+        );
+        // Object data without `message` falls back to its JSON.
+        let e = JsonRpcError { code: 1, message: "x".into(), data: Some(json!({"k": 1})) };
+        assert_eq!(e.detail(), r#"x: {"k":1}"#);
     }
 
     #[test]

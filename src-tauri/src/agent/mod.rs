@@ -1321,7 +1321,22 @@ mod tests {
         assert!(!a.defers_resume_id_until_turn_end());
         assert!(!a.supports_effort());
         assert!(!a.supports_plan_mode());
-        assert_eq!(a.available_models()[0].id, "grok-4.5");
+        assert_eq!(a.available_models()[0].id, "grok-4.6");
+        assert_eq!(a.model_list_args(), Some(vec!["models".to_string()]));
+    }
+
+    #[test]
+    fn grok_parse_model_list() {
+        // Exact shape of `grok models` (1.0.x): the default is starred, others
+        // dashed; the default must come first regardless of print order.
+        let output = "You are logged in with grok.com.\n\nDefault model: grok-4.6\n\nAvailable models:\n  - grok-4.5\n  * grok-4.6 (default)\n";
+        let models = Grok.parse_model_list(output);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["grok-4.6", "grok-4.5"]);
+        assert_eq!(models[0].label, "grok-4.6");
+        // Unauthenticated output has no model lines -> empty -> caller falls
+        // back to the static list.
+        assert!(Grok.parse_model_list("You are not authenticated.\n\nDefault model: grok-4.6\n").is_empty());
     }
 
     #[test]
