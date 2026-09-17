@@ -76,31 +76,29 @@ impl Agent for Codex {
         use crate::agent::ModelOption;
         vec![
             ModelOption::new(
+                "gpt-6-astra",
+                "GPT-6 Astra",
+                "Most capable for complex code, apps, and research",
+            ),
+            ModelOption::new(
                 "gpt-5.6-sol",
                 "GPT-5.6 Sol",
-                "Latest frontier coding model — detail and polish",
+                "Most capable GPT-5.6 for complex coding and research",
             ),
             ModelOption::new(
                 "gpt-5.6-terra",
                 "GPT-5.6 Terra",
-                "Everyday coding workhorse",
+                "Balanced everyday model at lower cost",
             ),
             ModelOption::new(
                 "gpt-5.6-luna",
                 "GPT-5.6 Luna",
-                "Fast, clear, repeatable work",
-            ),
-            ModelOption::new("gpt-5.5", "GPT-5.5", "Previous frontier coding model"),
-            ModelOption::new("gpt-5.4", "GPT-5.4", "Frontier coding model"),
-            ModelOption::new(
-                "gpt-5.4-mini",
-                "GPT-5.4 Mini",
-                "Smaller lower-latency coding model",
+                "Fast and affordable",
             ),
             ModelOption::new(
-                "gpt-5.3-codex",
-                "GPT-5.3 Codex",
-                "Codex-optimized agentic coding model",
+                "gpt-5.5",
+                "GPT-5.5",
+                "Previous-generation flagship (retires Oct 2026)",
             ),
         ]
     }
@@ -313,7 +311,7 @@ impl Agent for Codex {
             CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS
         };
         let settings = json!({
-            "model": p.model.unwrap_or("gpt-5.6-sol"),
+            "model": p.model.unwrap_or("gpt-6-astra"),
             "reasoning_effort": p.effort.unwrap_or("medium"),
             "developer_instructions": developer_instructions,
         });
