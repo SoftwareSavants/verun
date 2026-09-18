@@ -2,6 +2,7 @@ import claudeIcon from '../assets/icons/claude.svg?raw'
 import codexIcon from '../assets/icons/codex.svg?raw'
 import cursorIcon from '../assets/icons/cursor.svg?raw'
 import geminiIcon from '../assets/icons/gemini.svg?raw'
+import grokIcon from '../assets/icons/grok.svg?raw'
 import opencodeIcon from '../assets/icons/opencode.svg?raw'
 
 const AGENT_ICONS: Record<string, string> = {
@@ -9,6 +10,7 @@ const AGENT_ICONS: Record<string, string> = {
   codex: codexIcon,
   cursor: cursorIcon,
   gemini: geminiIcon,
+  grok: grokIcon,
   opencode: opencodeIcon,
 }
 
@@ -45,4 +47,4 @@ export function meetsVersionReq(cliVersion: string | undefined, minVersion: stri
   return compareVersions(cliVersion, minVersion) >= 0
 }
 
-export { claudeIcon, codexIcon, cursorIcon, geminiIcon, opencodeIcon }
+export { claudeIcon, codexIcon, cursorIcon, geminiIcon, grokIcon, opencodeIcon }

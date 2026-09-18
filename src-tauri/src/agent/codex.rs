@@ -2,9 +2,8 @@ use super::codex_developer_instructions::{
     CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 };
 use super::{
-    Agent, AgentKind, CodexRpcClientInfo, CodexRpcDecision, CodexRpcItemDecision,
-    CodexRpcPermissionsDecision, CodexRpcThreadResumeParams, CodexRpcThreadStartParams,
-    CodexRpcTurnStartParams, InputMode, SessionArgs,
+    Agent, AgentKind, CodexRpcDecision, CodexRpcItemDecision, CodexRpcPermissionsDecision,
+    InputMode, SessionArgs,
 };
 use crate::policy::TrustLevel;
 use serde_json::{json, Value};
@@ -76,32 +75,30 @@ impl Agent for Codex {
     fn available_models(&self) -> Vec<crate::agent::ModelOption> {
         use crate::agent::ModelOption;
         vec![
-            ModelOption::new("gpt-5.5", "GPT-5.5", "Latest frontier coding model"),
             ModelOption::new(
-                "gpt-5.5-pro",
-                "GPT-5.5 Pro",
-                "Higher-compute GPT-5.5 for complex coding work",
-            ),
-            ModelOption::new("gpt-5.4", "GPT-5.4", "Frontier coding model"),
-            ModelOption::new(
-                "gpt-5.4-pro",
-                "GPT-5.4 Pro",
-                "Higher-compute GPT-5.4 for complex coding work",
+                "gpt-6-astra",
+                "GPT-6 Astra",
+                "Most capable for complex code, apps, and research",
             ),
             ModelOption::new(
-                "gpt-5.4-mini",
-                "GPT-5.4 Mini",
-                "Smaller lower-latency frontier coding model",
+                "gpt-5.6-sol",
+                "GPT-5.6 Sol",
+                "Most capable GPT-5.6 for complex coding and research",
             ),
             ModelOption::new(
-                "gpt-5.4-nano",
-                "GPT-5.4 Nano",
-                "Lowest-cost GPT-5.4-class model",
+                "gpt-5.6-terra",
+                "GPT-5.6 Terra",
+                "Balanced everyday model at lower cost",
             ),
             ModelOption::new(
-                "gpt-5.3-codex",
-                "GPT-5.3 Codex",
-                "Codex-optimized agentic coding model",
+                "gpt-5.6-luna",
+                "GPT-5.6 Luna",
+                "Fast and affordable",
+            ),
+            ModelOption::new(
+                "gpt-5.5",
+                "GPT-5.5",
+                "Previous-generation flagship (retires Oct 2026)",
             ),
         ]
     }
@@ -110,9 +107,6 @@ impl Agent for Codex {
         vec!["app-server".into()]
     }
 
-    fn uses_app_server(&self) -> bool {
-        true
-    }
     fn persists_across_turns(&self) -> bool {
         true
     }
@@ -160,156 +154,10 @@ impl Agent for Codex {
         false
     }
 
-    // ── JSON-RPC encoders ─────────────────────────────────────────────
-
-    fn encode_rpc_initialize(
-        &self,
-        request_id: i64,
-        client_info: &CodexRpcClientInfo<'_>,
-    ) -> Result<Vec<u8>, String> {
-        // `experimentalApi` is required by codex app-server >= 0.120 to
-        // accept `collaborationMode` on `turn/start`. Without it the server
-        // rejects turn/start with:
-        //   "turn/start.collaborationMode requires experimentalApi capability"
-        let frame = json!({
-            "id": request_id,
-            "method": "initialize",
-            "params": {
-                "clientInfo": {
-                    "name": client_info.name,
-                    "version": client_info.version,
-                },
-                "capabilities": {
-                    "experimentalApi": true,
-                },
-            },
-        });
-        encode_rpc_frame(&frame)
-    }
-
-    fn encode_rpc_initialized_notification(&self) -> Result<Vec<u8>, String> {
-        let frame = json!({ "method": "initialized" });
-        encode_rpc_frame(&frame)
-    }
-
-    fn encode_rpc_thread_start(
-        &self,
-        request_id: i64,
-        params: &CodexRpcThreadStartParams<'_>,
-    ) -> Result<Vec<u8>, String> {
-        let mut p = serde_json::Map::new();
-        p.insert("cwd".into(), json!(params.cwd));
-        p.insert(
-            "approvalPolicy".into(),
-            json!(trust_level_to_approval_policy(params.trust_level)),
-        );
-        p.insert(
-            "sandbox".into(),
-            json!(trust_level_to_thread_sandbox(params.trust_level)),
-        );
-        if let Some(model) = params.model {
-            p.insert("model".into(), json!(model));
-        }
-        let frame = json!({
-            "id": request_id,
-            "method": "thread/start",
-            "params": Value::Object(p),
-        });
-        encode_rpc_frame(&frame)
-    }
-
-    fn encode_rpc_thread_resume(
-        &self,
-        request_id: i64,
-        params: &CodexRpcThreadResumeParams<'_>,
-    ) -> Result<Vec<u8>, String> {
-        let frame = json!({
-            "id": request_id,
-            "method": "thread/resume",
-            "params": {
-                "threadId": params.thread_id,
-                "cwd": params.cwd,
-                "approvalPolicy": trust_level_to_approval_policy(params.trust_level),
-                "sandbox": trust_level_to_thread_sandbox(params.trust_level),
-            },
-        });
-        encode_rpc_frame(&frame)
-    }
-
-    fn encode_rpc_turn_start(
-        &self,
-        request_id: i64,
-        params: &CodexRpcTurnStartParams<'_>,
-    ) -> Result<Vec<u8>, String> {
-        let mut input: Vec<Value> = Vec::new();
-        if !params.prompt.is_empty() {
-            input.push(json!({ "type": "text", "text": params.prompt }));
-        }
-        for url in params.image_urls {
-            input.push(json!({ "type": "image", "url": url }));
-        }
-
-        let mut p = serde_json::Map::new();
-        p.insert("threadId".into(), json!(params.thread_id));
-        p.insert("input".into(), Value::Array(input));
-        p.insert(
-            "approvalPolicy".into(),
-            json!(trust_level_to_approval_policy(params.trust_level)),
-        );
-        p.insert(
-            "sandboxPolicy".into(),
-            trust_level_to_turn_sandbox_policy(params.trust_level),
-        );
-        if let Some(model) = params.model {
-            p.insert("model".into(), json!(model));
-        }
-        if let Some(effort) = params.effort {
-            p.insert("effort".into(), json!(effort));
-        }
-
-        let collab_mode = if params.plan_mode { "plan" } else { "default" };
-        let developer_instructions = if params.plan_mode {
-            CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
-        } else {
-            CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS
-        };
-        let settings = json!({
-            "model": params.model.unwrap_or("gpt-5.5"),
-            "reasoning_effort": params.effort.unwrap_or("medium"),
-            "developer_instructions": developer_instructions,
-        });
-        p.insert(
-            "collaborationMode".into(),
-            json!({ "mode": collab_mode, "settings": settings }),
-        );
-
-        let frame = json!({
-            "id": request_id,
-            "method": "turn/start",
-            "params": Value::Object(p),
-        });
-        encode_rpc_frame(&frame)
-    }
-
-    fn encode_rpc_turn_interrupt(
-        &self,
-        request_id: i64,
-        thread_id: &str,
-        turn_id: &str,
-    ) -> Result<Vec<u8>, String> {
-        // codex app-server rejects `turn/interrupt` unless BOTH `threadId` and
-        // `turnId` are present — sending just the thread id returns
-        // `Invalid request: missing field turnId`.
-        let frame = json!({
-            "id": request_id,
-            "method": "turn/interrupt",
-            "params": {
-                "threadId": thread_id,
-                "turnId": turn_id,
-            },
-        });
-        encode_rpc_frame(&frame)
-    }
+    // ── JSON-RPC approval-response encoders ───────────────────────────
+    // (Handshake/turn encoders live on the generic `rpc_*` methods below.
+    // These three response encoders are still shared via
+    // `stream::encode_codex_approval_response`.)
 
     fn encode_rpc_review_decision_response(
         &self,
@@ -354,5 +202,196 @@ impl Agent for Codex {
             "result": result,
         });
         encode_rpc_frame(&frame)
+    }
+
+    // ── Generic RPC seam ────────────────────────────────────────────────
+    fn uses_rpc(&self) -> bool {
+        true
+    }
+
+    fn rpc_encode_initialize(
+        &self,
+        req_id: i64,
+        ci: &super::RpcClientInfo<'_>,
+    ) -> Result<Vec<u8>, String> {
+        // `experimentalApi` is required by codex app-server >= 0.120 to accept
+        // `collaborationMode` on `turn/start`; without it turn/start is
+        // rejected with "requires experimentalApi capability".
+        encode_rpc_frame(&json!({
+            "id": req_id,
+            "method": "initialize",
+            "params": {
+                "clientInfo": { "name": ci.name, "version": ci.version },
+                "capabilities": { "experimentalApi": true },
+            },
+        }))
+    }
+
+    fn rpc_encode_initialized(&self) -> Option<Result<Vec<u8>, String>> {
+        Some(encode_rpc_frame(&json!({ "method": "initialized" })))
+    }
+
+    fn rpc_encode_start(
+        &self,
+        req_id: i64,
+        p: &super::RpcStartParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        let mut params = serde_json::Map::new();
+        params.insert("cwd".into(), json!(p.cwd));
+        params.insert(
+            "approvalPolicy".into(),
+            json!(trust_level_to_approval_policy(p.trust_level)),
+        );
+        params.insert(
+            "sandbox".into(),
+            json!(trust_level_to_thread_sandbox(p.trust_level)),
+        );
+        if let Some(model) = p.model {
+            params.insert("model".into(), json!(model));
+        }
+        encode_rpc_frame(&json!({
+            "id": req_id,
+            "method": "thread/start",
+            "params": Value::Object(params),
+        }))
+    }
+
+    fn rpc_encode_resume(
+        &self,
+        req_id: i64,
+        p: &super::RpcResumeParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        encode_rpc_frame(&json!({
+            "id": req_id,
+            "method": "thread/resume",
+            "params": {
+                "threadId": p.session_id,
+                "cwd": p.cwd,
+                "approvalPolicy": trust_level_to_approval_policy(p.trust_level),
+                "sandbox": trust_level_to_thread_sandbox(p.trust_level),
+            },
+        }))
+    }
+
+    fn rpc_parse_session_id(&self, r: &Value) -> Option<String> {
+        r.pointer("/thread/id").and_then(|s| s.as_str()).map(|s| s.to_string())
+    }
+
+    fn rpc_encode_turn(&self, req_id: i64, p: &super::RpcTurnParams<'_>) -> Result<Vec<u8>, String> {
+        let mut input: Vec<Value> = Vec::new();
+        if !p.prompt.is_empty() {
+            input.push(json!({ "type": "text", "text": p.prompt }));
+        }
+        for url in p.image_urls {
+            input.push(json!({ "type": "image", "url": url }));
+        }
+
+        let mut params = serde_json::Map::new();
+        params.insert("threadId".into(), json!(p.session_id));
+        params.insert("input".into(), Value::Array(input));
+        params.insert(
+            "approvalPolicy".into(),
+            json!(trust_level_to_approval_policy(p.trust_level)),
+        );
+        params.insert(
+            "sandboxPolicy".into(),
+            trust_level_to_turn_sandbox_policy(p.trust_level),
+        );
+        if let Some(model) = p.model {
+            params.insert("model".into(), json!(model));
+        }
+        if let Some(effort) = p.effort {
+            params.insert("effort".into(), json!(effort));
+        }
+
+        let collab_mode = if p.plan_mode { "plan" } else { "default" };
+        let developer_instructions = if p.plan_mode {
+            CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
+        } else {
+            CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS
+        };
+        let settings = json!({
+            "model": p.model.unwrap_or("gpt-6-astra"),
+            "reasoning_effort": p.effort.unwrap_or("medium"),
+            "developer_instructions": developer_instructions,
+        });
+        params.insert(
+            "collaborationMode".into(),
+            json!({ "mode": collab_mode, "settings": settings }),
+        );
+
+        encode_rpc_frame(&json!({
+            "id": req_id,
+            "method": "turn/start",
+            "params": Value::Object(params),
+        }))
+    }
+
+    fn rpc_parse_turn_id(&self, r: &Value) -> Option<String> {
+        r.pointer("/turn/id").and_then(|s| s.as_str()).map(|s| s.to_string())
+    }
+
+    fn rpc_encode_interrupt(
+        &self,
+        req_id: i64,
+        session_id: &str,
+        turn_id: Option<&str>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        // codex app-server rejects `turn/interrupt` without BOTH ids; if we
+        // don't yet know the turn id there is nothing to cancel.
+        let Some(turn_id) = turn_id else {
+            return Ok(None);
+        };
+        encode_rpc_frame(&json!({
+            "id": req_id,
+            "method": "turn/interrupt",
+            "params": { "threadId": session_id, "turnId": turn_id },
+        }))
+        .map(Some)
+    }
+
+    fn rpc_is_recoverable_resume_error(&self, message: &str) -> bool {
+        super::rpc::is_recoverable_thread_resume_error(message)
+    }
+
+    fn rpc_decode_notification(&self, method: &str, params: &Value) -> Vec<crate::stream::OutputItem> {
+        crate::stream::process_codex_rpc_notification(method, params)
+    }
+
+    fn rpc_extract_usage(&self, method: &str, params: &Value) -> Option<super::RpcTokenUsage> {
+        if method != "thread/tokenUsage/updated" {
+            return None;
+        }
+        crate::stream::extract_codex_token_usage(params).map(|u| super::RpcTokenUsage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+            cached_input_tokens: u.cached_input_tokens,
+        })
+    }
+
+    fn rpc_is_approval(&self, method: &str) -> bool {
+        crate::stream::is_codex_approval_method(method)
+    }
+
+    fn rpc_build_approval_entry(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        method: &str,
+        params: &Value,
+    ) -> crate::task::PendingApprovalEntry {
+        crate::stream::build_codex_approval_entry(session_id, request_id, method, params)
+    }
+
+    fn rpc_encode_approval_response(
+        &self,
+        method: &str,
+        server_req_id: &Value,
+        response: &crate::task::ApprovalResponse,
+        _entry_input: &Value,
+    ) -> Option<Result<Vec<u8>, String>> {
+        // Codex derives everything from method + response; entry_input is a
+        // Grok-only concern.
+        crate::stream::encode_codex_approval_response(self, method, server_req_id, response)
     }
 }

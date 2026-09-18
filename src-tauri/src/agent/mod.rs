@@ -93,9 +93,10 @@
 mod claude;
 mod codex;
 pub mod codex_developer_instructions;
-pub mod codex_rpc;
+pub mod rpc;
 mod cursor;
 mod gemini;
+mod grok;
 mod opencode;
 
 use serde::{Deserialize, Serialize};
@@ -106,6 +107,7 @@ pub use claude::Claude;
 pub use codex::Codex;
 pub use cursor::Cursor;
 pub use gemini::Gemini;
+pub use grok::Grok;
 pub use opencode::OpenCode;
 
 // ---------------------------------------------------------------------------
@@ -119,6 +121,7 @@ pub enum AgentKind {
     Codex,
     Cursor,
     Gemini,
+    Grok,
     OpenCode,
 }
 
@@ -128,6 +131,7 @@ impl AgentKind {
             "codex" => Self::Codex,
             "cursor" => Self::Cursor,
             "gemini" => Self::Gemini,
+            "grok" => Self::Grok,
             "opencode" => Self::OpenCode,
             _ => Self::Claude,
         }
@@ -139,6 +143,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::Cursor => "cursor",
             Self::Gemini => "gemini",
+            Self::Grok => "grok",
             Self::OpenCode => "opencode",
         }
     }
@@ -148,6 +153,7 @@ impl AgentKind {
             Self::Claude,
             Self::Codex,
             Self::Gemini,
+            Self::Grok,
             Self::OpenCode,
             Self::Cursor,
         ]
@@ -160,6 +166,7 @@ impl AgentKind {
             Self::Codex => Box::new(Codex),
             Self::Cursor => Box::new(Cursor),
             Self::Gemini => Box::new(Gemini),
+            Self::Grok => Box::new(Grok),
             Self::OpenCode => Box::new(OpenCode),
         }
     }
@@ -263,42 +270,15 @@ pub struct SessionArgs<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// JSON-RPC payload types (Codex app-server)
+// Codex approval-decision enums
 // ---------------------------------------------------------------------------
 //
-// These are small, agent-agnostic shapes the trait exposes so `task.rs` can
-// drive an app-server session without knowing the wire format. Only `Codex`
-// overrides the encoders today; every other agent returns `Err` by default.
+// The generic RPC handshake/turn framing lives on the `RpcClientInfo` /
+// `Rpc*Params` shapes above and the `rpc_*` trait methods. These decision
+// enums are Codex-specific and back the three approval-response encoders that
+// `stream::encode_codex_approval_response` still routes through.
 //
 // Upstream protocol reference (t3code): dbfe855f4fd0f5dcdf079882652a8efe622b0595
-
-pub struct CodexRpcClientInfo<'a> {
-    pub name: &'a str,
-    pub version: &'a str,
-}
-
-pub struct CodexRpcThreadStartParams<'a> {
-    pub cwd: &'a str,
-    pub trust_level: crate::policy::TrustLevel,
-    pub model: Option<&'a str>,
-}
-
-pub struct CodexRpcThreadResumeParams<'a> {
-    pub thread_id: &'a str,
-    pub cwd: &'a str,
-    pub trust_level: crate::policy::TrustLevel,
-}
-
-pub struct CodexRpcTurnStartParams<'a> {
-    pub thread_id: &'a str,
-    pub prompt: &'a str,
-    /// Optional image URLs (data: URLs or remote URLs).
-    pub image_urls: &'a [String],
-    pub trust_level: crate::policy::TrustLevel,
-    pub model: Option<&'a str>,
-    pub effort: Option<&'a str>,
-    pub plan_mode: bool,
-}
 
 /// Subset of Codex's `ApplyPatchApprovalResponse__ReviewDecision` /
 /// `ExecCommandApprovalResponse__ReviewDecision` that Verun surfaces today.
@@ -355,6 +335,59 @@ impl CodexRpcItemDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexRpcPermissionsDecision {
     Deny,
+}
+
+// ---------------------------------------------------------------------------
+// Generic JSON-RPC payload types (protocol-agnostic RPC seam)
+// ---------------------------------------------------------------------------
+//
+// These generalize the `CodexRpc*` shapes above so a second RPC-based agent
+// (e.g. an ACP/Grok client) can share the same trait seam without depending
+// on Codex-specific naming (`thread_id` vs. `session_id`, etc.). Only agents
+// that override `uses_rpc()` need to implement the encoders/decoders below;
+// everyone else keeps the safe defaults.
+
+pub struct RpcClientInfo<'a> {
+    pub name: &'a str,
+    pub version: &'a str,
+}
+
+pub struct RpcStartParams<'a> {
+    pub cwd: &'a str,
+    pub trust_level: crate::policy::TrustLevel,
+    pub model: Option<&'a str>,
+}
+
+pub struct RpcResumeParams<'a> {
+    pub session_id: &'a str,
+    pub cwd: &'a str,
+    pub trust_level: crate::policy::TrustLevel,
+    pub model: Option<&'a str>,
+}
+
+pub struct RpcTurnParams<'a> {
+    pub session_id: &'a str,
+    pub prompt: &'a str,
+    pub image_urls: &'a [String],
+    pub trust_level: crate::policy::TrustLevel,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    pub plan_mode: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RpcApprovalDecision {
+    Approve,
+    ApproveForSession,
+    Deny,
+    Abort,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RpcTokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -444,10 +477,108 @@ pub trait Agent: Send + Sync {
         false
     }
 
-    /// Whether the agent speaks JSON-RPC 2.0 over stdio (Codex `app-server`).
-    /// When true, `task.rs` uses the `encode_rpc_*` family instead of the
-    /// stream-json / positional flows.
-    fn uses_app_server(&self) -> bool {
+    // ── Generic RPC seam (protocol-agnostic) ──────────────────────────
+    //
+    // Whether the agent speaks JSON-RPC 2.0 over stdio (Codex app-server,
+    // Grok ACP). When true, `task.rs`/`stream.rs` drive the session entirely
+    // through these methods instead of the stream-json / positional flows.
+    // Defaults return errors/empty so non-RPC agents keep
+    // compiling untouched.
+
+    fn uses_rpc(&self) -> bool {
+        false
+    }
+
+    fn rpc_encode_initialize(
+        &self,
+        _req_id: i64,
+        _ci: &RpcClientInfo<'_>,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent is not RPC-based".into())
+    }
+
+    fn rpc_encode_initialized(&self) -> Option<Result<Vec<u8>, String>> {
+        None
+    }
+
+    fn rpc_encode_start(
+        &self,
+        _req_id: i64,
+        _p: &RpcStartParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent is not RPC-based".into())
+    }
+
+    fn rpc_encode_resume(
+        &self,
+        _req_id: i64,
+        _p: &RpcResumeParams<'_>,
+    ) -> Result<Vec<u8>, String> {
+        Err("agent is not RPC-based".into())
+    }
+
+    fn rpc_parse_session_id(&self, _start_response: &serde_json::Value) -> Option<String> {
+        None
+    }
+
+    fn rpc_encode_turn(&self, _req_id: i64, _p: &RpcTurnParams<'_>) -> Result<Vec<u8>, String> {
+        Err("agent is not RPC-based".into())
+    }
+
+    fn rpc_parse_turn_id(&self, _turn_response: &serde_json::Value) -> Option<String> {
+        None
+    }
+
+    fn rpc_encode_interrupt(
+        &self,
+        _req_id: i64,
+        _session_id: &str,
+        _turn_id: Option<&str>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        Err("agent is not RPC-based".into())
+    }
+
+    fn rpc_decode_notification(
+        &self,
+        _method: &str,
+        _params: &serde_json::Value,
+    ) -> Vec<crate::stream::OutputItem> {
+        vec![]
+    }
+
+    fn rpc_extract_usage(
+        &self,
+        _method: &str,
+        _params: &serde_json::Value,
+    ) -> Option<RpcTokenUsage> {
+        None
+    }
+
+    fn rpc_is_approval(&self, _method: &str) -> bool {
+        false
+    }
+
+    fn rpc_build_approval_entry(
+        &self,
+        _session_id: &str,
+        _request_id: &str,
+        _method: &str,
+        _params: &serde_json::Value,
+    ) -> crate::task::PendingApprovalEntry {
+        unreachable!("rpc_build_approval_entry called on non-RPC agent")
+    }
+
+    fn rpc_encode_approval_response(
+        &self,
+        _method: &str,
+        _server_req_id: &serde_json::Value,
+        _response: &crate::task::ApprovalResponse,
+        _entry_input: &serde_json::Value,
+    ) -> Option<Result<Vec<u8>, String>> {
+        None
+    }
+
+    fn rpc_is_recoverable_resume_error(&self, _message: &str) -> bool {
         false
     }
 
@@ -532,56 +663,12 @@ pub trait Agent: Send + Sync {
         Vec::new()
     }
 
-    // ── JSON-RPC (Codex app-server) encoders ──────────────────────────
+    // ── JSON-RPC approval-response encoders (Codex app-server) ─────────
     //
-    // These return a single newline-delimited JSON-RPC frame. The caller
-    // (`task.rs`) supplies the integer request id; correlation with the
-    // response happens in `agent::codex_rpc::CodexRpcClient`.
-
-    fn encode_rpc_initialize(
-        &self,
-        _request_id: i64,
-        _client_info: &CodexRpcClientInfo<'_>,
-    ) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
-
-    fn encode_rpc_initialized_notification(&self) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
-
-    fn encode_rpc_thread_start(
-        &self,
-        _request_id: i64,
-        _params: &CodexRpcThreadStartParams<'_>,
-    ) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
-
-    fn encode_rpc_thread_resume(
-        &self,
-        _request_id: i64,
-        _params: &CodexRpcThreadResumeParams<'_>,
-    ) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
-
-    fn encode_rpc_turn_start(
-        &self,
-        _request_id: i64,
-        _params: &CodexRpcTurnStartParams<'_>,
-    ) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
-
-    fn encode_rpc_turn_interrupt(
-        &self,
-        _request_id: i64,
-        _thread_id: &str,
-        _turn_id: &str,
-    ) -> Result<Vec<u8>, String> {
-        Err("agent does not speak Codex app-server JSON-RPC".into())
-    }
+    // Handshake/turn framing lives on the generic `rpc_encode_*` seam above.
+    // These three response encoders return a single newline-delimited
+    // JSON-RPC frame and are still routed through
+    // `stream::encode_codex_approval_response`. Non-Codex agents return `Err`.
 
     /// Reply to an `applyPatchApproval` / `execCommandApproval` server
     /// request with `{decision}`.
@@ -773,11 +860,11 @@ mod tests {
     }
 
     #[test]
-    fn claude_available_models_include_opus_4_8_first() {
+    fn claude_available_models_include_opus_5_first() {
         let models = Claude.available_models();
-        assert_eq!(models[0].id, "claude-opus-4-8");
-        assert_eq!(models[0].label, "Claude Opus 4.8");
-        assert_eq!(models[1].id, "claude-opus-4-7");
+        assert_eq!(models[0].id, "claude-opus-5");
+        assert_eq!(models[0].label, "Claude Opus 5");
+        assert_eq!(models[1].id, "claude-fable-5-1");
     }
 
     // ── Persistence + abort strategy + stream encoders ──────────────────
@@ -940,42 +1027,13 @@ mod tests {
     }
 
     #[test]
-    fn non_codex_agents_reject_rpc_encoders_by_default() {
+    fn non_codex_agents_reject_rpc_approval_response_encoders_by_default() {
         for agent in [
             Box::new(Claude) as Box<dyn Agent>,
             Box::new(Cursor),
             Box::new(Gemini),
             Box::new(OpenCode),
         ] {
-            let client_info = CodexRpcClientInfo {
-                name: "verun",
-                version: "0.0.0",
-            };
-            assert!(agent.encode_rpc_initialize(1, &client_info).is_err());
-            assert!(agent.encode_rpc_initialized_notification().is_err());
-            let ts = CodexRpcThreadStartParams {
-                cwd: "/tmp",
-                trust_level: crate::policy::TrustLevel::Normal,
-                model: None,
-            };
-            assert!(agent.encode_rpc_thread_start(1, &ts).is_err());
-            let tr = CodexRpcThreadResumeParams {
-                thread_id: "t",
-                cwd: "/tmp",
-                trust_level: crate::policy::TrustLevel::Normal,
-            };
-            assert!(agent.encode_rpc_thread_resume(1, &tr).is_err());
-            let turn = CodexRpcTurnStartParams {
-                thread_id: "t",
-                prompt: "hi",
-                image_urls: &[],
-                trust_level: crate::policy::TrustLevel::Normal,
-                model: None,
-                effort: None,
-                plan_mode: false,
-            };
-            assert!(agent.encode_rpc_turn_start(1, &turn).is_err());
-            assert!(agent.encode_rpc_turn_interrupt(1, "t", "turn-1").is_err());
             assert!(agent
                 .encode_rpc_review_decision_response(&json!(1), CodexRpcDecision::Approved)
                 .is_err());
@@ -989,11 +1047,18 @@ mod tests {
     }
 
     #[test]
-    fn non_codex_agents_do_not_use_app_server() {
-        assert!(!Claude.uses_app_server());
-        assert!(!Cursor.uses_app_server());
-        assert!(!Gemini.uses_app_server());
-        assert!(!OpenCode.uses_app_server());
+    fn non_rpc_agents_default_rpc_seam_to_empty() {
+        for agent in [Box::new(Cursor) as Box<dyn Agent>, Box::new(Gemini), Box::new(OpenCode)] {
+            assert!(!agent.uses_rpc());
+            assert!(agent
+                .rpc_encode_initialize(1, &RpcClientInfo { name: "v", version: "0" })
+                .is_err());
+            assert!(agent.rpc_encode_initialized().is_none());
+            assert!(agent.rpc_parse_turn_id(&json!({})).is_none());
+            assert!(agent.rpc_decode_notification("x", &json!({})).is_empty());
+            assert!(agent.rpc_extract_usage("x", &json!({})).is_none());
+            assert!(!agent.rpc_is_approval("x"));
+        }
     }
 
     // ── Codex ───────────────────────────────────────────────────────────
@@ -1019,8 +1084,8 @@ mod tests {
     }
 
     #[test]
-    fn codex_uses_app_server() {
-        assert!(Codex.uses_app_server());
+    fn codex_uses_rpc() {
+        assert!(Codex.uses_rpc());
     }
 
     #[test]
@@ -1074,13 +1139,11 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                "gpt-6-astra",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
                 "gpt-5.5",
-                "gpt-5.5-pro",
-                "gpt-5.4",
-                "gpt-5.4-pro",
-                "gpt-5.4-mini",
-                "gpt-5.4-nano",
-                "gpt-5.3-codex",
             ]
         );
     }
@@ -1105,15 +1168,349 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_initialize_has_client_info() {
-        let bytes = Codex
-            .encode_rpc_initialize(
+    fn codex_generic_rpc_encoders_match_wire() {
+        let a = Codex;
+        assert!(a.uses_rpc());
+        // initialize
+        let v = parse_rpc_frame(
+            &a.rpc_encode_initialize(
                 1,
-                &CodexRpcClientInfo {
+                &RpcClientInfo {
                     name: "verun",
                     version: "0.9.0",
                 },
             )
+            .unwrap(),
+        );
+        assert_eq!(v["method"], "initialize");
+        assert_eq!(v["params"]["capabilities"]["experimentalApi"], true);
+        // initialized notification present
+        let init = a.rpc_encode_initialized().expect("codex sends initialized");
+        assert_eq!(parse_rpc_frame(&init.unwrap())["method"], "initialized");
+        // start (thread/start)
+        let s = parse_rpc_frame(
+            &a.rpc_encode_start(
+                2,
+                &RpcStartParams {
+                    cwd: "/repo",
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: Some("gpt-5.4"),
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(s["method"], "thread/start");
+        assert_eq!(s["params"]["sandbox"], "workspace-write");
+        // resume (thread/resume)
+        let r = parse_rpc_frame(
+            &a.rpc_encode_resume(
+                3,
+                &RpcResumeParams {
+                    session_id: "t-abc",
+                    cwd: "/repo",
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: None,
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(r["method"], "thread/resume");
+        assert_eq!(r["params"]["threadId"], "t-abc");
+        // parse session id
+        assert_eq!(
+            a.rpc_parse_session_id(&json!({"thread": {"id": "t-9"}})),
+            Some("t-9".into())
+        );
+        // turn (turn/start)
+        let t = parse_rpc_frame(
+            &a.rpc_encode_turn(
+                4,
+                &RpcTurnParams {
+                    session_id: "t-x",
+                    prompt: "hi",
+                    image_urls: &[],
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: Some("gpt-5.4"),
+                    effort: Some("medium"),
+                    plan_mode: false,
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(t["method"], "turn/start");
+        assert_eq!(t["params"]["threadId"], "t-x");
+        // parse turn id
+        assert_eq!(
+            a.rpc_parse_turn_id(&json!({"turn": {"id": "turn-7"}})),
+            Some("turn-7".into())
+        );
+        // interrupt: Some(turn) -> Some(frame); None -> None
+        let i = a
+            .rpc_encode_interrupt(5, "t-x", Some("turn-7"))
+            .unwrap()
+            .expect("frame");
+        assert_eq!(parse_rpc_frame(&i)["method"], "turn/interrupt");
+        assert!(a.rpc_encode_interrupt(6, "t-x", None).unwrap().is_none());
+        // recoverable resume error
+        assert!(a.rpc_is_recoverable_resume_error("thread t-1 not found"));
+    }
+
+    #[test]
+    fn codex_rpc_decode_notification_maps_text_and_turn_end() {
+        let a = Codex;
+        let out = a.rpc_decode_notification("item/agentMessage/delta", &json!({"delta": "hello"}));
+        assert!(matches!(out.as_slice(), [crate::stream::OutputItem::Text { text }] if text == "hello"));
+        let end = a.rpc_decode_notification("turn/completed", &json!({"turn": {"status": "completed"}}));
+        assert!(matches!(end.as_slice(), [crate::stream::OutputItem::TurnEnd { .. }]));
+    }
+
+    #[test]
+    fn codex_rpc_extract_usage_reads_token_usage_updated() {
+        let a = Codex;
+        let u = a
+            .rpc_extract_usage(
+                "thread/tokenUsage/updated",
+                &json!({"tokenUsage": {"last": {"inputTokens": 10, "outputTokens": 5, "cachedInputTokens": 3}}}),
+            )
+            .unwrap();
+        assert_eq!(u.input_tokens, 10);
+        assert_eq!(u.output_tokens, 5);
+        assert_eq!(u.cached_input_tokens, 3);
+        assert!(a
+            .rpc_extract_usage("item/agentMessage/delta", &json!({}))
+            .is_none());
+    }
+
+    #[test]
+    fn codex_rpc_approval_seam() {
+        let a = Codex;
+        assert!(a.rpc_is_approval("applyPatchApproval"));
+        assert!(!a.rpc_is_approval("turn/completed"));
+        let entry = a.rpc_build_approval_entry("s1", "r1", "execCommandApproval", &json!({"command": "ls"}));
+        assert_eq!(entry.tool_name, "Bash");
+        let resp = crate::task::ApprovalResponse {
+            behavior: "allow".into(),
+            updated_input: None,
+            message: None,
+        };
+        let bytes = a
+            .rpc_encode_approval_response("applyPatchApproval", &json!(42), &resp, &json!({}))
+            .unwrap()
+            .unwrap();
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["result"]["decision"], "approved");
+    }
+
+    // ── Grok ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn grok_registration_and_caps() {
+        assert_eq!(AgentKind::parse("grok"), AgentKind::Grok);
+        assert_eq!(AgentKind::Grok.as_str(), "grok");
+        assert!(AgentKind::all().contains(&AgentKind::Grok));
+        let a = AgentKind::Grok.implementation();
+        assert_eq!(a.cli_binary(), "grok");
+        assert_eq!(
+            a.build_session_args(&default_args()),
+            vec!["agent".to_string(), "stdio".to_string()]
+        );
+        assert!(a.uses_rpc());
+        assert!(a.persists_across_turns());
+        assert_eq!(a.abort_strategy(), AbortStrategy::Interrupt);
+        assert!(a.supports_resume());
+        assert!(!a.defers_resume_id_until_turn_end());
+        assert!(!a.supports_effort());
+        assert!(!a.supports_plan_mode());
+        assert_eq!(a.available_models()[0].id, "grok-4.6");
+        assert_eq!(a.model_list_args(), Some(vec!["models".to_string()]));
+    }
+
+    #[test]
+    fn grok_parse_model_list() {
+        // Exact shape of `grok models` (1.0.x): the default is starred, others
+        // dashed; the default must come first regardless of print order.
+        let output = "You are logged in with grok.com.\n\nDefault model: grok-4.6\n\nAvailable models:\n  - grok-4.5\n  * grok-4.6 (default)\n";
+        let models = Grok.parse_model_list(output);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["grok-4.6", "grok-4.5"]);
+        assert_eq!(models[0].label, "grok-4.6");
+        // Unauthenticated output has no model lines -> empty -> caller falls
+        // back to the static list.
+        assert!(Grok.parse_model_list("You are not authenticated.\n\nDefault model: grok-4.6\n").is_empty());
+    }
+
+    #[test]
+    fn grok_acp_encoders() {
+        let a = Grok;
+        // initialize: protocolVersion 1, NO fs capability advertised
+        let init = parse_rpc_frame(
+            &a.rpc_encode_initialize(1, &RpcClientInfo { name: "verun", version: "0.9.0" })
+                .unwrap(),
+        );
+        assert_eq!(init["method"], "initialize");
+        assert_eq!(init["params"]["protocolVersion"], 1);
+        assert!(
+            init["params"]["clientCapabilities"].get("fs").is_none(),
+            "must NOT advertise fs"
+        );
+        // no initialized notification in ACP
+        assert!(a.rpc_encode_initialized().is_none());
+        // session/new
+        let s = parse_rpc_frame(
+            &a.rpc_encode_start(2, &RpcStartParams { cwd: "/repo", trust_level: crate::policy::TrustLevel::Normal, model: None })
+                .unwrap(),
+        );
+        assert_eq!(s["method"], "session/new");
+        assert_eq!(s["params"]["cwd"], "/repo");
+        assert!(s["params"]["mcpServers"].is_array());
+        // parse session id from session/new result
+        assert_eq!(a.rpc_parse_session_id(&json!({"sessionId": "sess-9"})), Some("sess-9".into()));
+        // session/load
+        let l = parse_rpc_frame(
+            &a.rpc_encode_resume(3, &RpcResumeParams { session_id: "sess-9", cwd: "/repo", trust_level: crate::policy::TrustLevel::Normal, model: None })
+                .unwrap(),
+        );
+        assert_eq!(l["method"], "session/load");
+        assert_eq!(l["params"]["sessionId"], "sess-9");
+        assert_eq!(l["params"]["cwd"], "/repo");
+        // session/prompt
+        let t = parse_rpc_frame(
+            &a.rpc_encode_turn(4, &RpcTurnParams { session_id: "sess-9", prompt: "fix the bug", image_urls: &[], trust_level: crate::policy::TrustLevel::Normal, model: None, effort: None, plan_mode: false })
+                .unwrap(),
+        );
+        assert_eq!(t["method"], "session/prompt");
+        assert_eq!(t["params"]["sessionId"], "sess-9");
+        assert_eq!(t["params"]["prompt"][0]["type"], "text");
+        assert_eq!(t["params"]["prompt"][0]["text"], "fix the bug");
+        // no turn id in ACP
+        assert!(a.rpc_parse_turn_id(&json!({"stopReason":"end_turn"})).is_none());
+        // interrupt = session/cancel, always Some (even with no turn id)
+        let i = a.rpc_encode_interrupt(5, "sess-9", None).unwrap().expect("cancel frame");
+        let iv = parse_rpc_frame(&i);
+        assert_eq!(iv["method"], "session/cancel");
+        assert_eq!(iv["params"]["sessionId"], "sess-9");
+        // recoverable resume error
+        assert!(a.rpc_is_recoverable_resume_error("session sess-9 not found"));
+        assert!(!a.rpc_is_recoverable_resume_error("network refused"));
+    }
+
+    #[test]
+    fn grok_decode_thought_and_message() {
+        let a = Grok;
+        let th = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "hmm"}}}),
+        );
+        assert!(matches!(th.as_slice(), [crate::stream::OutputItem::Thinking { text }] if text == "hmm"));
+        let msg = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hi"}}}),
+        );
+        assert!(matches!(msg.as_slice(), [crate::stream::OutputItem::Text { text }] if text == "hi"));
+    }
+
+    #[test]
+    fn grok_decode_tool_call_and_diff_and_result() {
+        let a = Grok;
+        let tc = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "read_file", "rawInput": {"target_file": "x.rs"}}}),
+        );
+        assert!(matches!(tc.as_slice(), [crate::stream::OutputItem::ToolStart { tool, .. }] if tool == "read_file"));
+
+        // A completed edit's diff lands as a ToolResult on the tool card,
+        // carrying the rendered unified diff (per-card, no clobber).
+        let diff = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "tool_call_update", "toolCallId": "c2", "status": "completed",
+                "content": [{"type": "diff", "path": "out.txt", "oldText": "", "newText": "DONE\n"}]}}),
+        );
+        assert!(diff.iter().any(|i| matches!(i, crate::stream::OutputItem::ToolResult { text, is_error } if text.contains("+DONE") && !is_error)));
+
+        // In-progress updates surface nothing.
+        let pending = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "tool_call_update", "toolCallId": "c2", "status": "in_progress", "content": []}}),
+        );
+        assert!(pending.is_empty());
+
+        // Command output at completion -> ToolResult.
+        let res = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "tool_call_update", "toolCallId": "c3", "status": "completed",
+                "content": [{"type": "content", "content": {"type": "text", "text": "ok"}}]}}),
+        );
+        assert!(res.iter().any(|i| matches!(i, crate::stream::OutputItem::ToolResult { text, is_error } if text == "ok" && !is_error)));
+
+        // Failed tool -> is_error true.
+        let failed = a.rpc_decode_notification(
+            "session/update",
+            &json!({"update": {"sessionUpdate": "tool_call_update", "toolCallId": "c4", "status": "failed",
+                "content": [{"type": "content", "content": {"type": "text", "text": "boom"}}]}}),
+        );
+        assert!(failed.iter().any(|i| matches!(i, crate::stream::OutputItem::ToolResult { is_error, .. } if *is_error)));
+    }
+
+    #[test]
+    fn grok_decode_turn_completed_folds_usage_into_turn_end() {
+        let a = Grok;
+        // Grok does NOT override rpc_extract_usage (defaults to None) so the
+        // stream loop does not short-circuit; usage is folded into TurnEnd.
+        assert!(a
+            .rpc_extract_usage("session/update", &json!({"update": {"sessionUpdate": "turn_completed"}}))
+            .is_none());
+        let params = json!({"update": {"sessionUpdate": "turn_completed", "stop_reason": "end_turn",
+            "usage": {"inputTokens": 100, "outputTokens": 20, "cachedReadTokens": 60, "costUsdTicks": 471460000i64}}});
+        let end = a.rpc_decode_notification("session/update", &params);
+        match end.as_slice() {
+            [crate::stream::OutputItem::TurnEnd { status, input_tokens, output_tokens, cache_read_tokens, cost, .. }] => {
+                assert_eq!(status, "completed");
+                assert_eq!(*input_tokens, Some(100));
+                assert_eq!(*output_tokens, Some(20));
+                assert_eq!(*cache_read_tokens, Some(60));
+                assert!((cost.unwrap() - 0.047146).abs() < 1e-9, "cost was {cost:?}");
+            }
+            other => panic!("expected TurnEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grok_approval_classify_and_encode() {
+        let a = Grok;
+        assert!(a.rpc_is_approval("session/request_permission"));
+        assert!(!a.rpc_is_approval("session/update"));
+        let params = json!({
+            "toolCall": {"toolCallId": "c1", "kind": "edit", "title": "Write out.txt", "rawInput": {"file_path": "out.txt"}},
+            "options": [
+                {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+                {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}
+            ]
+        });
+        let entry = a.rpc_build_approval_entry("s1", "r1", "session/request_permission", &params);
+        assert_eq!(entry.tool_name, "Edit");
+        // allow -> selects an allow_* optionId
+        let allow = crate::task::ApprovalResponse { behavior: "allow".into(), updated_input: None, message: None };
+        let bytes = a
+            .rpc_encode_approval_response("session/request_permission", &json!(7), &allow, &entry.tool_input)
+            .unwrap()
+            .unwrap();
+        let v = parse_rpc_frame(&bytes);
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["result"]["outcome"]["outcome"], "selected");
+        assert_eq!(v["result"]["outcome"]["optionId"], "allow-once");
+        // deny -> selects a reject_* optionId
+        let deny = crate::task::ApprovalResponse { behavior: "deny".into(), updated_input: None, message: None };
+        let db = a
+            .rpc_encode_approval_response("session/request_permission", &json!(7), &deny, &entry.tool_input)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parse_rpc_frame(&db)["result"]["outcome"]["optionId"], "reject-once");
+    }
+
+    #[test]
+    fn codex_rpc_encode_initialize_has_client_info() {
+        let bytes = Codex
+            .rpc_encode_initialize(1, &RpcClientInfo { name: "verun", version: "0.9.0" })
             .expect("encode initialize");
         let v = parse_rpc_frame(&bytes);
         assert_eq!(v["id"], 1);
@@ -1123,27 +1520,22 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_initialize_requests_experimental_api_capability() {
+    fn codex_rpc_encode_initialize_requests_experimental_api_capability() {
         // codex app-server >= 0.120 rejects `turn/start.collaborationMode`
         // unless the client negotiated `capabilities.experimentalApi = true`
         // during `initialize`.
         let bytes = Codex
-            .encode_rpc_initialize(
-                1,
-                &CodexRpcClientInfo {
-                    name: "verun",
-                    version: "0.9.0",
-                },
-            )
+            .rpc_encode_initialize(1, &RpcClientInfo { name: "verun", version: "0.9.0" })
             .expect("encode initialize");
         let v = parse_rpc_frame(&bytes);
         assert_eq!(v["params"]["capabilities"]["experimentalApi"], true);
     }
 
     #[test]
-    fn codex_encode_initialized_notification_has_no_id() {
+    fn codex_rpc_encode_initialized_notification_has_no_id() {
         let bytes = Codex
-            .encode_rpc_initialized_notification()
+            .rpc_encode_initialized()
+            .expect("codex sends initialized")
             .expect("encode initialized");
         let v = parse_rpc_frame(&bytes);
         assert!(v.get("id").is_none(), "notifications must not carry an id");
@@ -1151,11 +1543,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_thread_start_maps_normal_trust_to_workspace_write() {
+    fn codex_rpc_encode_start_maps_normal_trust_to_workspace_write() {
         let bytes = Codex
-            .encode_rpc_thread_start(
+            .rpc_encode_start(
                 7,
-                &CodexRpcThreadStartParams {
+                &RpcStartParams {
                     cwd: "/repo",
                     trust_level: crate::policy::TrustLevel::Normal,
                     model: Some("gpt-5.4"),
@@ -1172,11 +1564,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_thread_start_maps_full_auto_to_danger() {
+    fn codex_rpc_encode_start_maps_full_auto_to_danger() {
         let bytes = Codex
-            .encode_rpc_thread_start(
+            .rpc_encode_start(
                 2,
-                &CodexRpcThreadStartParams {
+                &RpcStartParams {
                     cwd: "/repo",
                     trust_level: crate::policy::TrustLevel::FullAuto,
                     model: None,
@@ -1190,11 +1582,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_thread_start_maps_supervised_to_read_only() {
+    fn codex_rpc_encode_start_maps_supervised_to_read_only() {
         let bytes = Codex
-            .encode_rpc_thread_start(
+            .rpc_encode_start(
                 3,
-                &CodexRpcThreadStartParams {
+                &RpcStartParams {
                     cwd: "/repo",
                     trust_level: crate::policy::TrustLevel::Supervised,
                     model: None,
@@ -1207,14 +1599,15 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_thread_resume_carries_thread_id() {
+    fn codex_rpc_encode_resume_carries_thread_id() {
         let bytes = Codex
-            .encode_rpc_thread_resume(
+            .rpc_encode_resume(
                 4,
-                &CodexRpcThreadResumeParams {
-                    thread_id: "t-abc",
+                &RpcResumeParams {
+                    session_id: "t-abc",
                     cwd: "/repo",
                     trust_level: crate::policy::TrustLevel::Normal,
+                    model: None,
                 },
             )
             .expect("encode thread/resume");
@@ -1226,12 +1619,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_default_has_text_input_and_default_collab_mode() {
+    fn codex_rpc_encode_turn_default_has_text_input_and_default_collab_mode() {
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 10,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "list files",
                     image_urls: &[],
                     trust_level: crate::policy::TrustLevel::Normal,
@@ -1268,12 +1661,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_plan_mode_sets_collaboration_mode_plan() {
+    fn codex_rpc_encode_turn_plan_mode_sets_collaboration_mode_plan() {
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 11,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "design a rate limiter",
                     image_urls: &[],
                     trust_level: crate::policy::TrustLevel::Normal,
@@ -1300,12 +1693,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_full_auto_sets_danger_sandbox_policy() {
+    fn codex_rpc_encode_turn_full_auto_sets_danger_sandbox_policy() {
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 12,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "rm -rf",
                     image_urls: &[],
                     trust_level: crate::policy::TrustLevel::FullAuto,
@@ -1321,12 +1714,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_supervised_sets_read_only_sandbox_policy() {
+    fn codex_rpc_encode_turn_supervised_sets_read_only_sandbox_policy() {
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 13,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "ls",
                     image_urls: &[],
                     trust_level: crate::policy::TrustLevel::Supervised,
@@ -1342,12 +1735,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_start_defaults_collaboration_model_to_gpt_5_5() {
+    fn codex_rpc_encode_turn_defaults_collaboration_model_to_gpt_6_astra() {
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 13,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "ls",
                     image_urls: &[],
                     trust_level: crate::policy::TrustLevel::Normal,
@@ -1358,17 +1751,20 @@ mod tests {
             )
             .expect("encode");
         let v = parse_rpc_frame(&bytes);
-        assert_eq!(v["params"]["collaborationMode"]["settings"]["model"], "gpt-5.5");
+        assert_eq!(
+            v["params"]["collaborationMode"]["settings"]["model"],
+            "gpt-6-astra"
+        );
     }
 
     #[test]
-    fn codex_encode_turn_start_appends_image_attachments() {
+    fn codex_rpc_encode_turn_appends_image_attachments() {
         let urls = vec!["data:image/png;base64,abc".to_string()];
         let bytes = Codex
-            .encode_rpc_turn_start(
+            .rpc_encode_turn(
                 14,
-                &CodexRpcTurnStartParams {
-                    thread_id: "t-xyz",
+                &RpcTurnParams {
+                    session_id: "t-xyz",
                     prompt: "look",
                     image_urls: &urls,
                     trust_level: crate::policy::TrustLevel::Normal,
@@ -1387,18 +1783,23 @@ mod tests {
     }
 
     #[test]
-    fn codex_encode_turn_interrupt_has_thread_and_turn_id() {
+    fn codex_rpc_encode_interrupt_has_thread_and_turn_id() {
         // Live `codex app-server` rejects `turn/interrupt` without `turnId`
         // with "Invalid request: missing field turnId". Both ids must be
-        // emitted.
+        // emitted; a missing turn id yields no frame.
         let bytes = Codex
-            .encode_rpc_turn_interrupt(15, "t-xyz", "turn-7")
-            .expect("encode interrupt");
+            .rpc_encode_interrupt(15, "t-xyz", Some("turn-7"))
+            .expect("encode interrupt")
+            .expect("frame present when turn id known");
         let v = parse_rpc_frame(&bytes);
         assert_eq!(v["id"], 15);
         assert_eq!(v["method"], "turn/interrupt");
         assert_eq!(v["params"]["threadId"], "t-xyz");
         assert_eq!(v["params"]["turnId"], "turn-7");
+        assert!(
+            Codex.rpc_encode_interrupt(16, "t-xyz", None).unwrap().is_none(),
+            "no turn id -> no interrupt frame"
+        );
     }
 
     #[test]

@@ -557,21 +557,20 @@ pub struct ActiveProcess {
     /// request — so any change forces a respawn.
     pub current_thinking_mode: bool,
     pub current_fast_mode: bool,
-    /// Codex app-server thread id. `None` for non-RPC agents. Populated from
-    /// the `thread/started` notification during spawn.
-    pub codex_thread_id: Option<String>,
-    /// Request-id → response-oneshot map for the Codex app-server session.
-    /// `None` for non-RPC agents. The reader task writes to this; the main
-    /// thread reads via `register_pending`.
-    pub codex_pending: Option<crate::agent::codex_rpc::PendingRpcResponses>,
+    /// RPC session/thread id (Codex app-server thread, Grok ACP session).
+    /// `None` for non-RPC agents. Captured from the start-session response.
+    pub rpc_session_id: Option<String>,
+    /// Request-id → response-oneshot map for the RPC session. `None` for
+    /// non-RPC agents. The reader task writes to this; the main thread reads
+    /// via `register_pending`.
+    pub rpc_pending: Option<crate::agent::rpc::PendingRpcResponses>,
     /// Monotonic request-id source for RPC calls. `None` for non-RPC agents.
-    pub codex_next_id: Option<Arc<AtomicI64>>,
-    /// Codex app-server turn id for the currently-in-flight turn. `None` when
-    /// no turn is running (idle, pre-warm, or after `turn/completed`). Set
-    /// from the `turn/start` response (`result.turn.id`) and cleared on
-    /// `turn/completed`. `turn/interrupt` requires this — sending just the
-    /// thread id fails with `Invalid request: missing field turnId`.
-    pub codex_current_turn_id: Option<Arc<TokioMutex<Option<String>>>>,
+    pub rpc_next_id: Option<Arc<AtomicI64>>,
+    /// RPC turn id for the currently-in-flight turn, when the protocol exposes
+    /// one (Codex sets it from the `turn/start` response for `turn/interrupt`;
+    /// Grok leaves it `None` and cancels by session id). `None` when no turn is
+    /// running (idle, pre-warm, or after turn end).
+    pub rpc_current_turn_id: Option<Arc<TokioMutex<Option<String>>>>,
 }
 
 /// session_id → currently running claude process (only while processing a message)
@@ -1413,7 +1412,7 @@ pub async fn send_message(
                 stdin: Arc<TokioMutex<Option<ChildStdin>>>,
                 busy: Arc<AtomicBool>,
                 thread_id: String,
-                pending: crate::agent::codex_rpc::PendingRpcResponses,
+                pending: crate::agent::rpc::PendingRpcResponses,
                 next_id: Arc<AtomicI64>,
                 current_turn_id: Arc<TokioMutex<Option<String>>>,
             },
@@ -1436,18 +1435,18 @@ pub async fn send_message(
                 {
                     drop(entry);
                     FastPath::Respawn
-                } else if agent.uses_app_server() {
-                    let thread_id = entry.codex_thread_id.clone().ok_or_else(|| {
+                } else if agent.uses_rpc() {
+                    let thread_id = entry.rpc_session_id.clone().ok_or_else(|| {
                         "Codex RPC session missing thread id — cannot reuse process".to_string()
                     })?;
-                    let pending = entry.codex_pending.clone().ok_or_else(|| {
+                    let pending = entry.rpc_pending.clone().ok_or_else(|| {
                         "Codex RPC session missing pending map — cannot reuse process".to_string()
                     })?;
-                    let next_id = entry.codex_next_id.clone().ok_or_else(|| {
+                    let next_id = entry.rpc_next_id.clone().ok_or_else(|| {
                         "Codex RPC session missing request id counter — cannot reuse process"
                             .to_string()
                     })?;
-                    let current_turn_id = entry.codex_current_turn_id.clone().ok_or_else(|| {
+                    let current_turn_id = entry.rpc_current_turn_id.clone().ok_or_else(|| {
                         "Codex RPC session missing current-turn slot — cannot reuse process"
                             .to_string()
                     })?;
@@ -1569,7 +1568,7 @@ pub async fn send_message(
                 next_id,
                 current_turn_id,
             } => {
-                use crate::agent::codex_rpc;
+                use crate::agent::rpc;
                 persist_verun_user_message(
                     &app,
                     db_tx,
@@ -1610,11 +1609,11 @@ pub async fn send_message(
                         }
                     })
                     .collect();
-                let turn_id = codex_rpc::next_request_id(&next_id);
-                let turn_bytes = agent.encode_rpc_turn_start(
+                let turn_id = rpc::next_request_id(&next_id);
+                let turn_bytes = agent.rpc_encode_turn(
                     turn_id,
-                    &crate::agent::CodexRpcTurnStartParams {
-                        thread_id: &thread_id,
+                    &crate::agent::RpcTurnParams {
+                        session_id: &thread_id,
                         prompt: &message,
                         image_urls: &image_urls,
                         trust_level,
@@ -1629,13 +1628,14 @@ pub async fn send_message(
                 // targeting the *previous* turn, leaving the real in-flight
                 // turn running while the UI flipped to idle.
                 *current_turn_id.lock().await = None;
-                let turn_rx = codex_rpc::register_pending(&pending, turn_id);
-                codex_rpc::write_frame(&stdin, &turn_bytes).await?;
+                let turn_rx = rpc::register_pending(&pending, turn_id);
+                rpc::write_frame(&stdin, &turn_bytes).await?;
                 busy.store(true, Ordering::SeqCst);
                 spawn_turn_start_response_watcher(
                     app.clone(),
                     db_tx.clone(),
                     session_id.clone(),
+                    agent.kind(),
                     busy.clone(),
                     current_turn_id.clone(),
                     turn_rx,
@@ -1918,16 +1918,17 @@ pub struct SpawnSessionParams {
     pub prewarm: bool,
 }
 
-/// Spawn a `codex app-server` subprocess and bootstrap the JSON-RPC
-/// session. Handles `initialize` → `initialized` → `thread/{start,resume}` →
-/// (optional `turn/start`) before registering the process in `active` and
-/// kicking off the RPC stream monitor.
+/// Spawn an RPC agent subprocess (Codex app-server, Grok ACP) and bootstrap
+/// the JSON-RPC session. Handles initialize → (optional initialized) →
+/// start/resume session → (optional first turn) before registering the process
+/// in `active` and kicking off the RPC stream monitor. The per-protocol wire
+/// details all come from the `Agent::rpc_*` methods.
 ///
-/// Called from `spawn_session_process` when `agent.uses_app_server()` is
+/// Called from `spawn_session_process` when `agent.uses_rpc()` is
 /// true. Short-circuits the Claude-style path entirely — no stream-json
 /// user message, no control_request plumbing.
 #[allow(clippy::too_many_arguments)]
-async fn spawn_codex_app_server_session(
+async fn spawn_rpc_session(
     app: AppHandle,
     db_tx: DbWriteTx,
     active: ActiveMap,
@@ -1936,7 +1937,7 @@ async fn spawn_codex_app_server_session(
     agent: Box<dyn crate::agent::Agent>,
     params: SpawnSessionParams,
 ) -> Result<(), String> {
-    use crate::agent::codex_rpc;
+    use crate::agent::rpc;
 
     let SpawnSessionParams {
         session_id,
@@ -2029,46 +2030,50 @@ async fn spawn_codex_app_server_session(
         });
     }
 
-    let pending = codex_rpc::new_pending_rpc_responses();
+    let pending = rpc::new_pending_rpc_responses();
     let next_id = Arc::new(AtomicI64::new(1));
-    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<codex_rpc::CodexRpcEvent>();
-    codex_rpc::spawn_reader(stdout, pending.clone(), events_tx);
+    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<rpc::RpcEvent>();
+    rpc::spawn_reader(stdout, pending.clone(), events_tx);
 
     // -- 1. initialize + initialized --
-    let init_id = codex_rpc::next_request_id(&next_id);
-    let init_bytes = agent.encode_rpc_initialize(
+    let init_id = rpc::next_request_id(&next_id);
+    let init_bytes = agent.rpc_encode_initialize(
         init_id,
-        &crate::agent::CodexRpcClientInfo {
+        &crate::agent::RpcClientInfo {
             name: "verun",
             version: env!("CARGO_PKG_VERSION"),
         },
     )?;
-    codex_rpc::call(&stdin, &pending, init_id, &init_bytes)
+    rpc::call(&stdin, &pending, init_id, &init_bytes)
         .await
-        .map_err(|e| format!("codex initialize failed: {e}"))?;
-    let initialized = agent.encode_rpc_initialized_notification()?;
-    codex_rpc::write_frame(&stdin, &initialized).await?;
+        .map_err(|e| format!("rpc initialize failed: {e}"))?;
+    // Some protocols (Codex app-server) require an `initialized` notification
+    // after `initialize`; others (Grok ACP) do not.
+    if let Some(initialized) = agent.rpc_encode_initialized() {
+        rpc::write_frame(&stdin, &initialized?).await?;
+    }
 
     // -- 2. thread/start (with thread/resume fallback on recoverable err) --
     let resume = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let thread_id: String = if let Some(rid) = resume {
         let rid_owned = rid.to_string();
-        let resume_id = codex_rpc::next_request_id(&next_id);
-        let resume_bytes = agent.encode_rpc_thread_resume(
+        let resume_id = rpc::next_request_id(&next_id);
+        let resume_bytes = agent.rpc_encode_resume(
             resume_id,
-            &crate::agent::CodexRpcThreadResumeParams {
-                thread_id: &rid_owned,
+            &crate::agent::RpcResumeParams {
+                session_id: &rid_owned,
                 cwd: &worktree_path,
                 trust_level,
+                model: model.as_deref(),
             },
         )?;
-        match codex_rpc::call(&stdin, &pending, resume_id, &resume_bytes).await {
+        match rpc::call(&stdin, &pending, resume_id, &resume_bytes).await {
             Ok(_) => rid_owned,
-            Err(err) if codex_rpc::is_recoverable_thread_resume_error(&err.message) => {
+            Err(err) if agent.rpc_is_recoverable_resume_error(&err.message) => {
                 eprintln!(
-                    "[verun][codex-rpc][{session_id}] thread/resume recoverable, falling back to thread/start: {err}"
+                    "[verun][rpc][{session_id}] resume recoverable, falling back to new session: {err}"
                 );
-                start_new_thread(
+                start_new_rpc_session(
                     &*agent,
                     &stdin,
                     &pending,
@@ -2082,7 +2087,7 @@ async fn spawn_codex_app_server_session(
             Err(err) => return Err(format!("codex thread/resume failed: {err}")),
         }
     } else {
-        start_new_thread(
+        start_new_rpc_session(
             &*agent,
             &stdin,
             &pending,
@@ -2130,11 +2135,11 @@ async fn spawn_codex_app_server_session(
                 }
             })
             .collect();
-        let turn_id = codex_rpc::next_request_id(&next_id);
-        let turn_bytes = agent.encode_rpc_turn_start(
+        let turn_id = rpc::next_request_id(&next_id);
+        let turn_bytes = agent.rpc_encode_turn(
             turn_id,
-            &crate::agent::CodexRpcTurnStartParams {
-                thread_id: &thread_id,
+            &crate::agent::RpcTurnParams {
+                session_id: &thread_id,
                 prompt: &message,
                 image_urls: &image_urls,
                 trust_level,
@@ -2146,15 +2151,16 @@ async fn spawn_codex_app_server_session(
         // Register a pending slot and keep the receiver — codex app-server
         // resolves `turn/start` synchronously with the Codex turn id
         // (`result.turn.id`), so the watcher populates
-        // `codex_current_turn_id` (needed for `turn/interrupt`) on success
+        // `rpc_current_turn_id` (needed for `turn/interrupt`) on success
         // and surfaces any JSON-RPC error (e.g. missing `experimentalApi`
         // capability) on failure.
-        let turn_rx = codex_rpc::register_pending(&pending, turn_id);
-        codex_rpc::write_frame(&stdin, &turn_bytes).await?;
+        let turn_rx = rpc::register_pending(&pending, turn_id);
+        rpc::write_frame(&stdin, &turn_bytes).await?;
         spawn_turn_start_response_watcher(
             app.clone(),
             db_tx.clone(),
             session_id.clone(),
+            agent.kind(),
             busy.clone(),
             current_turn_id.clone(),
             turn_rx,
@@ -2193,10 +2199,10 @@ async fn spawn_codex_app_server_session(
             current_model: model.clone(),
             current_thinking_mode: thinking_mode,
             current_fast_mode: fast_mode,
-            codex_thread_id: Some(thread_id),
-            codex_pending: Some(pending),
-            codex_next_id: Some(next_id),
-            codex_current_turn_id: Some(current_turn_id.clone()),
+            rpc_session_id: Some(thread_id),
+            rpc_pending: Some(pending),
+            rpc_next_id: Some(next_id),
+            rpc_current_turn_id: Some(current_turn_id.clone()),
         },
     );
 
@@ -2235,7 +2241,7 @@ async fn spawn_codex_app_server_session(
         let status = if let Some((_, mut proc)) = monitor_active.remove(&monitor_sid) {
             let exit_status = proc.child.wait().await.ok();
             let exit_code = exit_status.as_ref().and_then(|s| s.code());
-            eprintln!("[verun][codex-rpc][{monitor_sid}] exited code={exit_code:?}");
+            eprintln!("[verun][rpc][{monitor_sid}] exited code={exit_code:?}");
             stream::map_exit_status(exit_code)
         } else {
             return;
@@ -2317,33 +2323,31 @@ async fn spawn_codex_app_server_session(
     Ok(())
 }
 
-async fn start_new_thread(
+async fn start_new_rpc_session(
     agent: &dyn crate::agent::Agent,
     stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
-    pending: &crate::agent::codex_rpc::PendingRpcResponses,
+    pending: &crate::agent::rpc::PendingRpcResponses,
     next_id: &AtomicI64,
     worktree_path: &str,
     trust_level: TrustLevel,
     model: Option<&str>,
 ) -> Result<String, String> {
-    use crate::agent::codex_rpc;
-    let req_id = codex_rpc::next_request_id(next_id);
-    let bytes = agent.encode_rpc_thread_start(
+    use crate::agent::rpc;
+    let req_id = rpc::next_request_id(next_id);
+    let bytes = agent.rpc_encode_start(
         req_id,
-        &crate::agent::CodexRpcThreadStartParams {
+        &crate::agent::RpcStartParams {
             cwd: worktree_path,
             trust_level,
             model,
         },
     )?;
-    let result = codex_rpc::call(stdin, pending, req_id, &bytes)
+    let result = rpc::call(stdin, pending, req_id, &bytes)
         .await
-        .map_err(|e| format!("codex thread/start failed: {e}"))?;
-    result
-        .pointer("/thread/id")
-        .and_then(|s| s.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "codex thread/start response missing thread.id".to_string())
+        .map_err(|e| format!("rpc start session failed: {e}"))?;
+    agent
+        .rpc_parse_session_id(&result)
+        .ok_or_else(|| "rpc start response missing session id".to_string())
 }
 
 fn effort_from_flags(thinking_mode: bool, fast_mode: bool) -> Option<String> {
@@ -2356,44 +2360,42 @@ fn effort_from_flags(thinking_mode: bool, fast_mode: bool) -> Option<String> {
     }
 }
 
-/// Watch the JSON-RPC response for a `turn/start`.
+/// Watch the JSON-RPC response for a turn request.
 ///
-/// codex app-server resolves `turn/start` synchronously (not at
-/// `turn/completed`): the response body is `{turn: {id, status:"inProgress", …}}`.
-/// We extract `turn.id` into `current_turn_id` so a subsequent
-/// `turn/interrupt` can carry the required `turnId`. On a JSON-RPC error
-/// (e.g. a protocol-level rejection like missing `experimentalApi`
-/// capability), we flip busy + session-status here so the UI is not stuck in
-/// `running` — the monitor would otherwise never see a `turn/completed`.
+/// Codex app-server resolves `turn/start` synchronously (not at
+/// `turn/completed`): the response body is `{turn: {id, status:"inProgress", …}}`,
+/// and we extract `turn.id` into `current_turn_id` so a subsequent
+/// `turn/interrupt` can carry the required `turnId`. Protocols without a
+/// per-turn id (Grok ACP) return `None` from `rpc_parse_turn_id` and cancel by
+/// session id instead. On a JSON-RPC error (e.g. a protocol-level rejection),
+/// we flip busy + session-status here so the UI is not stuck in `running` —
+/// the monitor would otherwise never see a turn-end frame.
 fn spawn_turn_start_response_watcher(
     app: AppHandle,
     db_tx: DbWriteTx,
     session_id: String,
+    agent_kind: crate::agent::AgentKind,
     busy: Arc<AtomicBool>,
     current_turn_id: Arc<TokioMutex<Option<String>>>,
     rx: tokio::sync::oneshot::Receiver<
-        Result<serde_json::Value, crate::agent::codex_rpc::JsonRpcError>,
+        Result<serde_json::Value, crate::agent::rpc::JsonRpcError>,
     >,
 ) {
     tokio::spawn(async move {
         let err_msg = match rx.await {
             Ok(Ok(val)) => {
-                if let Some(tid) = val
-                    .pointer("/turn/id")
-                    .and_then(|s| s.as_str())
-                    .map(|s| s.to_string())
-                {
+                if let Some(tid) = agent_kind.implementation().rpc_parse_turn_id(&val) {
                     *current_turn_id.lock().await = Some(tid);
                 }
                 return;
             }
-            Ok(Err(err)) => err.message,
+            Ok(Err(err)) => err.detail(),
             Err(_) => return,
         };
         if !busy.load(Ordering::SeqCst) {
             return;
         }
-        eprintln!("[verun][codex-rpc][{session_id}] turn/start failed: {err_msg}");
+        eprintln!("[verun][rpc][{session_id}] turn/start failed: {err_msg}");
         busy.store(false, Ordering::SeqCst);
         let _ = app.emit(
             "session-output",
@@ -2439,8 +2441,8 @@ pub async fn spawn_session_process(
 ) -> Result<(), String> {
     let agent = AgentKind::parse(&params.agent_type).implementation();
 
-    if agent.uses_app_server() {
-        return spawn_codex_app_server_session(
+    if agent.uses_rpc() {
+        return spawn_rpc_session(
             app,
             db_tx,
             active,
@@ -2629,10 +2631,10 @@ pub async fn spawn_session_process(
             current_model: model.clone(),
             current_thinking_mode: thinking_mode,
             current_fast_mode: fast_mode,
-            codex_thread_id: None,
-            codex_pending: None,
-            codex_next_id: None,
-            codex_current_turn_id: None,
+            rpc_session_id: None,
+            rpc_pending: None,
+            rpc_next_id: None,
+            rpc_current_turn_id: None,
         },
     );
 
@@ -2789,12 +2791,12 @@ pub async fn abort_message(
         crate::agent::AbortStrategy::Interrupt => {
             let (stdin, rpc_state, busy) = match active.get(session_id) {
                 Some(entry) => {
-                    let rpc = if agent.uses_app_server() {
+                    let rpc = if agent.uses_rpc() {
                         match (
-                            entry.codex_thread_id.clone(),
-                            entry.codex_pending.clone(),
-                            entry.codex_next_id.clone(),
-                            entry.codex_current_turn_id.clone(),
+                            entry.rpc_session_id.clone(),
+                            entry.rpc_pending.clone(),
+                            entry.rpc_next_id.clone(),
+                            entry.rpc_current_turn_id.clone(),
                         ) {
                             (Some(tid), Some(pending), Some(next_id), Some(current_turn)) => {
                                 Some((tid, pending, next_id, current_turn))
@@ -2825,18 +2827,16 @@ pub async fn abort_message(
                 // Instead, treat a missing turn id as "abort is in-flight,
                 // bail out and let the stream loop clear state on the real
                 // `turn/completed { status: "interrupted" }` frame".
+                // Each protocol decides whether it can interrupt without a
+                // turn id: Codex needs one (returns None -> skip), Grok's
+                // `session/cancel` needs only the session id (always Some).
                 let turn_id_opt = current_turn_id.lock().await.clone();
-                match turn_id_opt {
-                    Some(turn_id) => {
-                        let req_id = crate::agent::codex_rpc::next_request_id(next_id);
-                        (
-                            Some(agent.encode_rpc_turn_interrupt(req_id, thread_id, &turn_id)?),
-                            true,
-                        )
-                    }
+                let req_id = crate::agent::rpc::next_request_id(next_id);
+                match agent.rpc_encode_interrupt(req_id, thread_id, turn_id_opt.as_deref())? {
+                    Some(bytes) => (Some(bytes), true),
                     None => {
                         eprintln!(
-                            "[verun][codex-rpc][{session_id}] abort requested before turn/start resolved — skipping interrupt and leaving busy flag set so the stream loop can clear it on turn/completed"
+                            "[verun][rpc][{session_id}] abort requested before turn resolved — skipping interrupt and leaving busy flag set so the stream loop can clear it on turn/completed"
                         );
                         (None, false)
                     }
