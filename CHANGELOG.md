@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 - 2026-09-18
 
 - Refresh Claude and Codex model options: Claude picker leads with the Claude 5 family (`claude-opus-5` default, plus `claude-fable-5-1`, `claude-sonnet-5`, previous-gen `claude-opus-4-8`, `claude-haiku-4-5`); Codex leads with GPT-6 Astra (`gpt-6-astra` default, plus `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna` and `gpt-5.5`). Dropped `gpt-5.4`, `gpt-5.4-mini` (retired 2026-08-31) and `gpt-5.3-codex`. Codex turn default also bumped to `gpt-6-astra`
 - Shift+Enter in terminals (including the agent terminal view) sends ESC+CR instead of submitting, so agent TUIs like Claude Code insert a newline. Matches the sequence `/terminal-setup` configures for VS Code / iTerm2; inert in a plain shell
