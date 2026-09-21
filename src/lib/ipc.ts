@@ -436,6 +436,12 @@ export const openInApp = (path: string, app: string) =>
   invoke<void>('open_in_app', { path, app })
 
 // PTY / Terminal
+export const ptyListen = (terminalId: string, afterSeq: number) =>
+  invoke<void>('pty_listen', { terminalId, afterSeq })
+
+export const ptyAck = (terminalId: string, sequence: number) =>
+  invoke<void>('pty_ack', { terminalId, sequence })
+
 export const ptySpawn = (taskId: string, rows: number, cols: number, initialCommand?: string, directCommand?: boolean, isStartCommand?: boolean) =>
   invoke<PtySpawnResult>('pty_spawn', { taskId, rows, cols, initialCommand, directCommand, isStartCommand })
 

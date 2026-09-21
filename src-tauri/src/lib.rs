@@ -18,6 +18,7 @@ mod markdown_skills;
 pub mod mcp;
 mod policy;
 mod pty;
+mod pty_output;
 mod resource_monitor;
 mod snapshots;
 mod stream;
@@ -275,6 +276,11 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            if let WindowEvent::Destroyed = event {
+                if let Some(map) = window.try_state::<pty::ActivePtyMap>() {
+                    pty::detach_window(&map, window.label());
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     #[cfg(target_os = "macos")]
@@ -419,6 +425,8 @@ pub fn run() {
             ipc::cancel_workflow_run,
             // PTY / Terminal
             ipc::pty_spawn,
+            ipc::pty_listen,
+            ipc::pty_ack,
             ipc::pty_write,
             ipc::pty_resize,
             ipc::pty_close,

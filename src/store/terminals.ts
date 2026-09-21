@@ -40,34 +40,12 @@ export interface XtermEntry {
 }
 const xtermInstances = new Map<string, XtermEntry>()
 
-const ptyWriteBuffers = new Map<string, string[]>()
-const ptyRafIds = new Map<string, number>()
-
-// Highest seq already written to an xterm (either via replay or live). Events
-// with seq <= this are duplicates and dropped.
+// Highest replay/live byte offset already queued into each xterm.
 const lastSeqWritten = new Map<string, number>()
 
-// Live events received before ShellTerminal has registered an xterm for the
-// terminal. Flushed on register. Seq-tagged so stale entries (covered by a
-// later snapshot replay) can be filtered out.
-interface PendingChunk { data: string; seq: number }
-const pendingChunks = new Map<string, PendingChunk[]>()
-
-function flushPtyBuffer(terminalId: string) {
-  const buf = ptyWriteBuffers.get(terminalId)
-  const entry = xtermInstances.get(terminalId)
-  if (buf && buf.length > 0 && entry) {
-    entry.term.write(buf.join(''))
-    buf.length = 0
-  }
-  ptyRafIds.delete(terminalId)
-}
-
-function cleanupPtyBuffer(terminalId: string) {
-  const rafId = ptyRafIds.get(terminalId)
-  if (rafId != null) cancelAnimationFrame(rafId)
-  ptyRafIds.delete(terminalId)
-  ptyWriteBuffers.delete(terminalId)
+export function resumeTerminalOutput(terminalId: string) {
+  ipc.ptyListen(terminalId, lastSeqWritten.get(terminalId) ?? 0)
+    .catch(err => console.error('Failed to subscribe to terminal output:', err))
 }
 
 // ---------------------------------------------------------------------------
@@ -120,18 +98,7 @@ export function registerXterm(
   webglFactory?: () => WebglAddon | undefined,
 ) {
   xtermInstances.set(terminalId, { term, fitAddon, searchAddon, webglAddon, webglFactory })
-  // Drain any live chunks that arrived after the snapshot was taken but before
-  // this xterm was mounted. Stale chunks (seq <= last written) are skipped.
-  const pending = pendingChunks.get(terminalId)
-  if (pending && pending.length > 0) {
-    const last = lastSeqWritten.get(terminalId) ?? 0
-    const fresh = pending.filter(c => c.seq > last)
-    if (fresh.length > 0) {
-      term.write(fresh.map(c => c.data).join(''))
-      lastSeqWritten.set(terminalId, fresh[fresh.length - 1].seq)
-    }
-  }
-  pendingChunks.delete(terminalId)
+  resumeTerminalOutput(terminalId)
 }
 
 export function getXtermEntry(terminalId: string): XtermEntry | undefined {
@@ -153,6 +120,7 @@ export function focusActiveTerminal(taskId: string) {
   if (!tid) return
   const entry = xtermInstances.get(tid)
   if (!entry) return
+  resumeTerminalOutput(tid)
   refitEntry(entry)
   entry.term.focus()
 }
@@ -161,7 +129,10 @@ export function refitActiveTerminal(taskId: string) {
   const tid = activeTerminalId(taskId)
   if (!tid) return
   const entry = xtermInstances.get(tid)
-  if (entry) refitEntry(entry)
+  if (entry) {
+    resumeTerminalOutput(tid)
+    refitEntry(entry)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +199,7 @@ export async function hydrateTerminalsForTask(taskId: string): Promise<void> {
   // just because every PTY we were tracking turned out to be gone — the live
   // entries below (or TerminalPanel's own gate) will handle that.
   const stale = terminals.filter(t => t.taskId === taskId && !backendIds.has(t.id))
-  for (const t of stale) removeTerminal(t.id, { suppressAutoSpawn: true })
+  for (const t of stale) removeTerminal(t.id, { suppressAutoSpawn: true, closeNative: false })
 
   for (const e of entries) {
     if (terminals.find(t => t.id === e.terminalId)) continue
@@ -240,14 +211,6 @@ export async function hydrateTerminalsForTask(taskId: string): Promise<void> {
       isStartCommand: e.isStartCommand || undefined,
       hookType,
       initialReplay: e.bufferedOutput ? { data: e.bufferedOutput, seq: e.seq } : undefined,
-    }
-    // Drop any pending chunks already covered by this snapshot so ShellTerminal
-    // doesn't double-write them after replay.
-    const pending = pendingChunks.get(e.terminalId)
-    if (pending) {
-      const fresh = pending.filter(c => c.seq > e.seq)
-      if (fresh.length > 0) pendingChunks.set(e.terminalId, fresh)
-      else pendingChunks.delete(e.terminalId)
     }
     if (e.isStartCommand || hookType) {
       setTerminals(produce(t => t.unshift(instance)))
@@ -313,7 +276,10 @@ export async function stopStartCommand(taskId: string) {
 /** Register a hook terminal (PTY already spawned by backend via run_hook). Inserts at position 0. */
 export function registerHookTerminal(taskId: string, terminalId: string, hookType: 'setup' | 'destroy') {
   // Remove any existing hook terminal of the same type for this task
-  setTerminals(prev => prev.filter(t => !(t.taskId === taskId && t.hookType === hookType)))
+  for (const old of terminals.filter(t => t.taskId === taskId && t.hookType === hookType && t.id !== terminalId)) {
+    removeTerminal(old.id)
+  }
+  if (terminals.some(t => t.id === terminalId)) return
   const name = hookType === 'setup' ? 'Setup' : 'Destroy'
   const instance: TerminalInstance = { id: terminalId, taskId, name, hookType }
   setTerminals(produce(t => t.unshift(instance)))
@@ -322,14 +288,15 @@ export function registerHookTerminal(taskId: string, terminalId: string, hookTyp
 
 export async function closeTerminal(terminalId: string) {
   await ipc.ptyClose(terminalId)
-  removeTerminal(terminalId)
+  removeTerminal(terminalId, { closeNative: false })
 }
 
-function removeTerminal(terminalId: string, opts: { suppressAutoSpawn?: boolean } = {}) {
-  cleanupPtyBuffer(terminalId)
-  pendingChunks.delete(terminalId)
+function removeTerminal(terminalId: string, opts: { suppressAutoSpawn?: boolean; closeNative?: boolean } = {}) {
   lastSeqWritten.delete(terminalId)
   const term = terminals.find(t => t.id === terminalId)
+  if (term && opts.closeNative !== false) {
+    ipc.ptyClose(terminalId).catch(err => console.error('Failed to release terminal:', err))
+  }
   const taskId = term?.taskId
   const isSpecial = !!term?.hookType || !!term?.isStartCommand
 
@@ -355,8 +322,6 @@ export function closeTerminalsForTask(taskId: string) {
   deletingTasks.add(taskId)
   const ids = terminals.filter(t => t.taskId === taskId).map(t => t.id)
   for (const id of ids) {
-    cleanupPtyBuffer(id)
-    pendingChunks.delete(id)
     lastSeqWritten.delete(id)
     xtermInstances.get(id)?.term.dispose()
     xtermInstances.delete(id)
@@ -378,33 +343,18 @@ export function closeTerminalsForTask(taskId: string) {
 
 export async function initTerminalListeners() {
   await listen<PtyOutputEvent>('pty-output', (event) => {
-    const { terminalId, data, seq } = event.payload
-    // Dedupe: a snapshot replay has already covered anything with seq <= last.
-    const last = lastSeqWritten.get(terminalId) ?? 0
-    if (seq <= last) return
-
+    const { terminalId, data, seq, sequence } = event.payload
     const entry = xtermInstances.get(terminalId)
-    if (!entry) {
-      // xterm not mounted yet — stash until registerXterm flushes.
-      let pending = pendingChunks.get(terminalId)
-      if (!pending) {
-        pending = []
-        pendingChunks.set(terminalId, pending)
-      }
-      pending.push({ data, seq })
+    if (!entry) return // Rust retains bounded replay until a viewer subscribes.
+    const acknowledge = () => ipc.ptyAck(terminalId, sequence)
+      .catch(err => console.error('Failed to acknowledge terminal output:', err))
+    if (seq <= (lastSeqWritten.get(terminalId) ?? 0)) {
+      void acknowledge()
       return
     }
-
     lastSeqWritten.set(terminalId, seq)
-    let buf = ptyWriteBuffers.get(terminalId)
-    if (!buf) {
-      buf = []
-      ptyWriteBuffers.set(terminalId, buf)
-    }
-    buf.push(data)
-    if (!ptyRafIds.has(terminalId)) {
-      ptyRafIds.set(terminalId, requestAnimationFrame(() => flushPtyBuffer(terminalId)))
-    }
+    // write() enqueues data; only its callback means the parser consumed it.
+    entry.term.write(data, () => { void acknowledge() })
   })
 
   await listen<PtyExitedEvent>('pty-exited', (event) => {

@@ -503,6 +503,8 @@ export interface PtySpawnResult {
 
 export interface PtyOutputEvent {
   terminalId: string;
+  /** Batch acknowledgement token, independent of the replay byte offset. */
+  sequence: number;
   data: string;
   /** Total bytes written to the PTY including this chunk. Used to dedupe live
    *  events against the snapshot returned by pty_list_for_task. */

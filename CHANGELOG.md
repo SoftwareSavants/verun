@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Terminal output uses bounded parser backpressure while preserving window-to-window replay; generated-file events are filtered and background typechecks share an app-wide four-process limit
+
 ## 0.13.0 - 2026-09-18
 
 - Refresh Claude and Codex model options: Claude picker leads with the Claude 5 family (`claude-opus-5` default, plus `claude-fable-5-1`, `claude-sonnet-5`, previous-gen `claude-opus-4-8`, `claude-haiku-4-5`); Codex leads with GPT-6 Astra (`gpt-6-astra` default, plus `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna` and `gpt-5.5`). Dropped `gpt-5.4`, `gpt-5.4-mini` (retired 2026-08-31) and `gpt-5.3-codex`. Codex turn default also bumped to `gpt-6-astra`

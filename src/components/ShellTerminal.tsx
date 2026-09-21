@@ -5,7 +5,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebglAddon } from '@xterm/addon-webgl'
-import { registerXterm, getXtermEntry, consumeInitialReplay, markSeqWritten } from '../store/terminals'
+import { registerXterm, getXtermEntry, consumeInitialReplay, markSeqWritten, resumeTerminalOutput } from '../store/terminals'
 import type { XtermEntry } from '../store/terminals'
 import * as ipc from '../lib/ipc'
 import { isMac, modPressed } from '../lib/platform'
@@ -257,6 +257,7 @@ export const ShellTerminal: Component<Props> = (props) => {
     const existing = getXtermEntry(props.terminalId)
 
     if (existing) {
+      resumeTerminalOutput(props.terminalId)
       const el = existing.term.element
       if (el) terminalRef.appendChild(el)
       searchAddonRef = existing.searchAddon
@@ -328,8 +329,8 @@ export const ShellTerminal: Component<Props> = (props) => {
     term.open(terminalRef)
 
     // Replay any buffered scrollback BEFORE registering xterm. registerXterm
-    // flushes pending live chunks; by replaying first and marking seq, those
-    // flushed chunks are correctly deduped against the snapshot.
+    // subscribes from this replay checkpoint, catching up output produced
+    // since the snapshot without replaying it twice.
     const replay = consumeInitialReplay(props.terminalId)
     if (replay) {
       term.write(replay.data)

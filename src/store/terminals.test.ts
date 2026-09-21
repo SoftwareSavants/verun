@@ -11,6 +11,8 @@ vi.mock('@tauri-apps/api/event', () => ({
 }))
 
 vi.mock('../lib/ipc', () => ({
+  ptyListen: vi.fn().mockResolvedValue(undefined),
+  ptyAck: vi.fn().mockResolvedValue(undefined),
   ptyListForTask: vi.fn().mockResolvedValue([]),
   ptySpawn: vi.fn(),
   ptyClose: vi.fn().mockResolvedValue(undefined),
@@ -31,6 +33,9 @@ import {
   closeTerminalsForTask,
   spawnTerminal,
   activeTerminalId,
+  spawnStartCommand,
+  registerHookTerminal,
+  refitActiveTerminal,
 } from './terminals'
 import type { PtyListEntry, PtyOutputEvent } from '../types'
 
@@ -178,28 +183,25 @@ describe('pty-output seq dedupe', () => {
 
     const cb = listenCallbacks.get('pty-output')!
     // seq 5 is below the snapshot boundary — must be dropped
-    cb({ payload: { terminalId: 'p-1', data: 'stale', seq: 5 } satisfies PtyOutputEvent })
+    cb({ payload: { terminalId: 'p-1', data: 'stale', seq: 5, sequence: 5 } satisfies PtyOutputEvent })
     // Let the rAF-batched buffer flush
     await new Promise(r => requestAnimationFrame(() => r(null)))
     expect(term.write).not.toHaveBeenCalled()
 
     // seq 11 is fresh — must be written
-    cb({ payload: { terminalId: 'p-1', data: 'fresh', seq: 11 } satisfies PtyOutputEvent })
+    cb({ payload: { terminalId: 'p-1', data: 'fresh', seq: 11, sequence: 11 } satisfies PtyOutputEvent })
     await new Promise(r => requestAnimationFrame(() => r(null)))
-    expect(term.write).toHaveBeenCalledWith('fresh')
+    expect(term.write).toHaveBeenCalledWith('fresh', expect.any(Function))
   })
 
-  test('buffers events arriving before registerXterm and flushes on register', async () => {
+  test('unmounted terminals rely on bounded backend replay instead of a JS queue', async () => {
     await initTerminalListeners()
     const cb = listenCallbacks.get('pty-output')!
-
-    // Event arrives before xterm mounts — stashed in pendingChunks
-    cb({ payload: { terminalId: 'p-pending', data: 'early', seq: 1 } satisfies PtyOutputEvent })
-
+    cb({ payload: { terminalId: 'p-pending', data: 'early', seq: 5, sequence: 1 } satisfies PtyOutputEvent })
     const term = fakeXterm()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerXterm('p-pending', term as any, { fit: vi.fn() } as any)
-    expect(term.write).toHaveBeenCalledWith('early')
+    expect(term.write).not.toHaveBeenCalled()
+    expect(ipc.ptyListen).toHaveBeenCalledWith('p-pending', 0)
   })
 
   test('spawnTerminal lands the new instance and the active id atomically', async () => {
@@ -236,28 +238,68 @@ describe('pty-output seq dedupe', () => {
     }
   })
 
-  test('filters pending chunks already covered by a snapshot replay', async () => {
+  test('subscribes after the snapshot and parses only catch-up output', async () => {
     await initTerminalListeners()
-    const cb = listenCallbacks.get('pty-output')!
-
-    // Live chunks arrive first
-    cb({ payload: { terminalId: 'p-race', data: 'old', seq: 3 } satisfies PtyOutputEvent })
-    cb({ payload: { terminalId: 'p-race', data: 'new', seq: 7 } satisfies PtyOutputEvent })
-
-    // Hydration snapshot at seq 5 covers 'old' but not 'new'
     vi.mocked(ipc.ptyListForTask).mockResolvedValueOnce([
-      makeEntry({ terminalId: 'p-race', bufferedOutput: 'SNAP', seq: 5 }),
+      makeEntry({ terminalId: 'p-race', bufferedOutput: 'SNAP', seq: 4 }),
     ])
     await hydrateTerminalsForTask('t-1')
-
     const term = fakeXterm()
     const replay = consumeInitialReplay('p-race')!
     markSeqWritten('p-race', replay.seq)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerXterm('p-race', term as any, { fit: vi.fn() } as any)
-
-    // Only seq-7 chunk should flush — seq-3 was covered by the snapshot
-    expect(term.write).toHaveBeenCalledWith('new')
-    expect(term.write).not.toHaveBeenCalledWith('old')
+    expect(ipc.ptyListen).toHaveBeenCalledWith('p-race', 4)
+    listenCallbacks.get('pty-output')!({ payload: {
+      terminalId: 'p-race', data: 'new', seq: 7, sequence: 2,
+    } satisfies PtyOutputEvent })
+    expect(term.write).toHaveBeenCalledWith('new', expect.any(Function))
   })
+})
+
+
+describe('terminal flow control', () => {
+  test('subscribes from the replay checkpoint and acknowledges only after parsing', async () => {
+    await initTerminalListeners()
+    let parsed: (() => void) | undefined
+    const term = fakeXterm()
+    term.write.mockImplementation((_data: string, cb?: () => void) => { parsed = cb })
+    markSeqWritten('flow-test', 10)
+    registerXterm('flow-test', term as any, { fit: vi.fn() } as any)
+    expect(ipc.ptyListen).toHaveBeenCalledWith('flow-test', 10)
+    listenCallbacks.get('pty-output')!({ payload: { terminalId: 'flow-test', data: 'new', seq: 13, sequence: 1 } })
+    expect(term.write).toHaveBeenCalledWith('new', expect.any(Function))
+    expect(ipc.ptyAck).not.toHaveBeenCalled()
+    parsed!()
+    expect(ipc.ptyAck).toHaveBeenCalledWith('flow-test', 1)
+  })
+})
+
+
+test('restarting an exited server releases its native replay buffer', async () => {
+  vi.mocked(ipc.ptySpawn).mockResolvedValueOnce({ terminalId: 'server', shellName: 'zsh' })
+  await initTerminalListeners()
+  await spawnStartCommand('t-1', 'serve')
+  listenCallbacks.get('pty-exited')!({ payload: { terminalId: 'server', exitCode: 0 } })
+  vi.mocked(ipc.ptySpawn).mockResolvedValueOnce({ terminalId: 'server-next', shellName: 'zsh' })
+  await spawnStartCommand('t-1', 'serve')
+  expect(ipc.ptyClose).toHaveBeenCalledWith('server')
+})
+
+test('replacing a hook disposes its previous terminal and native buffer', () => {
+  registerHookTerminal('t-1', 'old-hook', 'setup')
+  const term = fakeXterm()
+  registerXterm('old-hook', term as any, { fit: vi.fn() } as any)
+  registerHookTerminal('t-1', 'new-hook', 'setup')
+  expect(term.dispose).toHaveBeenCalledOnce()
+  expect(ipc.ptyClose).toHaveBeenCalledWith('old-hook')
+})
+
+test('reactivating a retained terminal resumes output from its last checkpoint', async () => {
+  vi.mocked(ipc.ptySpawn).mockResolvedValueOnce({ terminalId: 'returning', shellName: 'zsh' })
+  await spawnTerminal('t-1', 24, 80)
+  registerXterm('returning', fakeXterm() as any, { fit: vi.fn() } as any)
+  markSeqWritten('returning', 42)
+  vi.mocked(ipc.ptyListen).mockClear()
+  refitActiveTerminal('t-1')
+  expect(ipc.ptyListen).toHaveBeenCalledWith('returning', 42)
 })

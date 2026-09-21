@@ -15,6 +15,7 @@ export default defineConfig(async () => ({
   plugins: [UnoCSS(), solid()],
 
   test: {
+    include: ["src/**/*.test.{ts,tsx}"],
     environment: "jsdom",
     globals: true,
     transformMode: { web: [/\.[jt]sx?$/] },

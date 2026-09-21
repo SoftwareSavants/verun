@@ -27,10 +27,10 @@ Pluggable agent backend with first-class support for Claude Code, Codex, and Gro
 
 - **Code editor** - CodeMirror 6 with syntax highlighting, code folding, and 15+ languages
 - **TypeScript intellisense** - bundled tsgo with autocomplete, diagnostics, hover, go-to-definition, find references, and rename
-- **Problems panel** - project-wide type checking with click-to-navigate and one-click "ask agent to fix"
+- **Problems panel** - project-wide type checking with click-to-navigate, one-click "ask agent to fix", and at most four background checker processes across all tasks
 - **Side-by-side diffs** - syntax-highlighted diffs for working-tree changes and individual commits
 - **Git workflow** - commit, push, create PR, merge, and inspect branch-scoped GitHub Actions/PR state without leaving the app; remote refresh is cached and only invalidated when relevant GitHub state changes
-- **Integrated terminal** - drop into any task's worktree with a built-in shell
+- **Integrated terminal** - drop into any task's worktree with a built-in shell; bounded output buffers and parser backpressure keep noisy commands responsive while preserving recent scrollback across windows
 - **File tree & Quick Open** - browse files (gitignored entries shown dimmed like VS Code), fuzzy-find with CMD+P, preview media and markdown inline
 - **Workspace search** - Cmd+Shift+F content search across the task's worktree with case/whole-word/regex toggles and include/exclude globs, powered by embedded ripgrep
 - **Multi-window** - pop any task into its own window for side-by-side work across monitors

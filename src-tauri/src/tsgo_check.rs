@@ -3,14 +3,14 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::task::{JoinHandle, JoinSet};
 
-// Bound concurrent tsgo subprocesses per task. On a 14-tsconfig monorepo
+// Bound concurrent tsgo subprocesses across the entire app. On a 14-tsconfig monorepo
 // each subprocess can briefly hold ~300 MB during its type-check pass, so
 // running them all in parallel would spike memory for a few seconds. Four is
 // enough to keep wall-clock reasonable without the stampede.
@@ -206,7 +206,10 @@ pub async fn run_check(
 
     let join = tokio::spawn(async move {
         let worktree = PathBuf::from(&worktree_path);
-        let tsconfigs = discover_tsconfigs(&worktree);
+        let scan_path = worktree.clone();
+        let tsconfigs = tokio::task::spawn_blocking(move || discover_tsconfigs(&scan_path))
+            .await
+            .unwrap_or_default();
 
         // No tsconfigs in the worktree → nothing to typecheck. Emit an
         // empty successful result so the Problems panel clears its loading
@@ -227,7 +230,7 @@ pub async fn run_check(
             return;
         }
 
-        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CHECKS));
+        let semaphore = check_budget();
         let mut set: JoinSet<Vec<TsgoProblem>> = JoinSet::new();
 
         for tsconfig in tsconfigs {
@@ -404,5 +407,31 @@ src/c.ts(3,3): error TS3: still bad
         assert_eq!(found[1], PathBuf::from("tsconfig.json"));
 
         fs::remove_dir_all(&tmp).unwrap();
+    }
+}
+
+fn check_budget() -> Arc<Semaphore> {
+    static BUDGET: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    Arc::clone(BUDGET.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_CHECKS))))
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn tasks_share_a_single_process_budget_and_cancellation_releases_capacity() {
+        let task_a = check_budget();
+        let task_b = check_budget();
+        let permits = task_a
+            .acquire_many(MAX_CONCURRENT_CHECKS as u32)
+            .await
+            .unwrap();
+        assert!(
+            task_b.try_acquire().is_err(),
+            "another task bypassed the global budget"
+        );
+        drop(permits);
+        assert!(task_b.try_acquire().is_ok());
     }
 }

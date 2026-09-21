@@ -2357,6 +2357,32 @@ pub async fn pty_spawn(
 }
 
 #[tauri::command]
+pub fn pty_listen(
+    window: tauri::WebviewWindow,
+    pty_map: State<'_, ActivePtyMap>,
+    terminal_id: String,
+    after_seq: u64,
+) -> Result<(), String> {
+    let handle = pty_map
+        .get(&terminal_id)
+        .ok_or_else(|| format!("Terminal {terminal_id} not found"))?;
+    handle.output.attach(window.label(), after_seq);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pty_ack(
+    window: tauri::WebviewWindow,
+    pty_map: State<'_, ActivePtyMap>,
+    terminal_id: String,
+    sequence: u64,
+) {
+    if let Some(handle) = pty_map.get(&terminal_id) {
+        handle.output.acknowledge(window.label(), sequence);
+    }
+}
+
+#[tauri::command]
 pub async fn pty_write(
     pty_map: State<'_, ActivePtyMap>,
     terminal_id: String,

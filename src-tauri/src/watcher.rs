@@ -90,6 +90,9 @@ pub fn start_watching(
                 for event in &events {
                     if event.kind == DebouncedEventKind::Any {
                         if let Ok(rel_file) = event.path.strip_prefix(&wt_path) {
+                            if ignore_file_event(rel_file) {
+                                continue;
+                            }
                             let rf = rel_file.to_string_lossy();
                             if is_git_ignore_rules_path(&rf) {
                                 ignore_rules_changed = true;
@@ -238,4 +241,63 @@ mod tests {
         let result = resolve_extra_git_dirs(dir.path().to_str().unwrap());
         assert!(result.is_empty());
     }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    #[test]
+    fn generated_and_dependency_paths_are_filtered_before_emitting() {
+        for path in [
+            "node_modules/pkg/index.js",
+            "packages/app/node_modules/pkg/a",
+            "target/debug/a",
+            "dist/app.js",
+            ".next/cache/a",
+            ".turbo/log",
+            "coverage/a",
+            "build/a",
+        ] {
+            assert!(ignore_file_event(std::path::Path::new(path)), "{path}");
+        }
+        for path in [
+            "src/main.ts",
+            "src/build.ts",
+            "package.json",
+            "pnpm-lock.yaml",
+            ".git/index",
+            ".git/refs/heads/build/feature",
+            ".github/workflows/ci.yml",
+        ] {
+            assert!(!ignore_file_event(std::path::Path::new(path)), "{path}");
+        }
+    }
+}
+
+// Filter before fan-out to file-tree consumers and the language server.
+// Keep git metadata and source/config changes; generated/vendor churn must
+// not restart the language server or refresh thousands of directories.
+fn ignore_file_event(path: &std::path::Path) -> bool {
+    if path.starts_with(".git") {
+        return false;
+    }
+    path.components().any(|part| {
+        matches!(
+            part.as_os_str().to_str(),
+            Some(
+                "node_modules"
+                    | "target"
+                    | "dist"
+                    | "build"
+                    | "out"
+                    | "coverage"
+                    | ".next"
+                    | ".nuxt"
+                    | ".turbo"
+                    | ".cache"
+                    | ".verun"
+            )
+        )
+    })
 }

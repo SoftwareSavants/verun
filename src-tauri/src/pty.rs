@@ -1,4 +1,4 @@
-use crate::env_path;
+use crate::{env_path, pty_output::OutputBuffer};
 use dashmap::DashMap;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
@@ -78,7 +78,7 @@ pub struct PtyHandle {
     pub master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     pub writer: Mutex<Box<dyn Write + Send>>,
     pub child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
-    pub buffer: Arc<Mutex<PtyBuffer>>,
+    pub output: Arc<OutputBuffer>,
 }
 
 /// terminal_id → active PTY handle
@@ -97,6 +97,7 @@ pub fn new_active_pty_map() -> ActivePtyMap {
 pub struct PtyOutputEvent {
     pub terminal_id: String,
     pub data: String,
+    pub sequence: u64,
     /// Total bytes ever written to this PTY (including this chunk). Clients use
     /// this to dedupe against an initial snapshot returned from `pty_list_for_task`.
     pub seq: u64,
@@ -243,7 +244,7 @@ pub fn spawn_pty(
         .map_err(|e| format!("Failed to take PTY writer: {e}"))?;
 
     let display_name = name_override.unwrap_or_else(|| shell_name.clone());
-    let buffer = Arc::new(Mutex::new(PtyBuffer::new(REPLAY_BUFFER_CAP)));
+    let output = Arc::new(OutputBuffer::default());
 
     // Store the handle (master kept for resize)
     map.insert(
@@ -256,7 +257,7 @@ pub fn spawn_pty(
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
             child: Mutex::new(child),
-            buffer: buffer.clone(),
+            output: Arc::clone(&output),
         },
     );
 
@@ -274,10 +275,52 @@ pub fn spawn_pty(
         }
     }
 
+    // Coalesce bursts before IPC, and allow only one batch in xterm's parser
+    // queue. No timer runs while the terminal is idle. Output is routed only
+    // to the window that registered the xterm instance.
+    let pump_output = Arc::clone(&output);
+    let pump_app = app.clone();
+    let pump_tid = terminal_id.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            pump_output.changed.notified().await;
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            if let Some(batch) = pump_output.next_batch() {
+                let window = batch.window;
+                if pump_app
+                    .emit_to(
+                        window.as_str(),
+                        "pty-output",
+                        PtyOutputEvent {
+                            terminal_id: pump_tid.clone(),
+                            sequence: batch.sequence,
+                            seq: batch.seq,
+                            data: batch.data,
+                        },
+                    )
+                    .is_err()
+                {
+                    pump_output.detach(&window);
+                }
+            }
+            if let Some(exit_code) = pump_output.take_exit() {
+                let _ = pump_app.emit(
+                    "pty-exited",
+                    PtyExitedEvent {
+                        terminal_id: pump_tid.clone(),
+                        exit_code,
+                    },
+                );
+            }
+            if pump_output.is_closed() {
+                break;
+            }
+        }
+    });
+
     // Spawn a dedicated OS thread for blocking read
     let tid = terminal_id.clone();
     let exit_map = map.clone();
-    let reader_buffer = buffer;
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         // Trailing partial UTF-8 bytes from the previous read get prepended
@@ -294,21 +337,9 @@ pub fn spawn_pty(
                     if data.is_empty() {
                         continue;
                     }
-                    let seq = match reader_buffer.lock() {
-                        Ok(mut b) => {
-                            b.append(&data);
-                            b.total_written()
-                        }
-                        Err(_) => 0,
-                    };
-                    let _ = app.emit(
-                        "pty-output",
-                        PtyOutputEvent {
-                            terminal_id: tid.clone(),
-                            data,
-                            seq,
-                        },
-                    );
+                    if !output.push(&data) {
+                        break;
+                    }
                 }
                 Err(_) => break,
             }
@@ -324,13 +355,7 @@ pub fn spawn_pty(
         } else {
             None
         };
-        let _ = app.emit(
-            "pty-exited",
-            PtyExitedEvent {
-                terminal_id: tid,
-                exit_code,
-            },
-        );
+        output.finish(exit_code);
     });
 
     Ok(SpawnResult {
@@ -389,6 +414,7 @@ pub fn resize_pty(
 }
 
 fn kill_handle(handle: PtyHandle) {
+    handle.output.close();
     if let Ok(mut child) = handle.child.lock() {
         let _ = child.kill();
     }
@@ -438,11 +464,7 @@ pub fn list_for_task(map: &ActivePtyMap, task_id: &str) -> Vec<PtyListEntry> {
         .filter(|e| e.value().task_id == task_id)
         .map(|e| {
             let handle = e.value();
-            let (buffered_output, seq) = handle
-                .buffer
-                .lock()
-                .map(|b| b.snapshot())
-                .unwrap_or_else(|_| (String::new(), 0));
+            let (buffered_output, seq) = handle.output.snapshot();
             PtyListEntry {
                 terminal_id: e.key().clone(),
                 task_id: handle.task_id.clone(),
@@ -624,5 +646,12 @@ mod tests {
         assert_eq!(s1, "Razzle");
         let s2 = decode_pty_chunk(&mut pending, &bytes[7..]);
         assert_eq!(s2, "…dazzling");
+    }
+}
+
+/// Release a destroyed window's flow-control ownership without stopping its PTYs.
+pub fn detach_window(map: &ActivePtyMap, window: &str) {
+    for handle in map.iter() {
+        handle.output.detach(window);
     }
 }
