@@ -210,6 +210,60 @@ describe('cross-window session listeners', () => {
   })
 })
 
+// `sendMessage` pushes the user bubble optimistically, and Rust also emits a
+// UserMessage on `session-output` for external sends (MCP, wakeups). If both
+// land for the same turn the bubble renders twice — and because
+// `loadedSessionOutputs` short-circuits re-reads, closing and reopening the
+// chat does not heal it. The listener drops an echo of the bubble we just
+// appended ourselves.
+describe('session-output user message echo dedupe', () => {
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setOutputItems({})
+  })
+
+  test('drops a userMessage echo matching the optimistic bubble', () => {
+    const fire = listenCallbacks.get('session-output')!
+    setOutputItems('s-echo', [{ kind: 'userMessage', text: 'hello', timestamp: Date.now() }])
+    fire({ payload: { sessionId: 's-echo', items: [{ kind: 'userMessage', text: 'hello' }] } })
+    expect(outputItems['s-echo'].length).toBe(1)
+  })
+
+  test('keeps a genuine repeat sent after the echo window', () => {
+    const fire = listenCallbacks.get('session-output')!
+    setOutputItems('s-repeat', [{ kind: 'userMessage', text: 'continue', timestamp: Date.now() - 60_000 }])
+    fire({ payload: { sessionId: 's-repeat', items: [{ kind: 'userMessage', text: 'continue' }] } })
+    expect(outputItems['s-repeat'].length).toBe(2)
+  })
+
+  test('keeps a userMessage with different text', () => {
+    const fire = listenCallbacks.get('session-output')!
+    setOutputItems('s-diff', [{ kind: 'userMessage', text: 'hello', timestamp: Date.now() }])
+    fire({ payload: { sessionId: 's-diff', items: [{ kind: 'userMessage', text: 'goodbye' }] } })
+    expect(outputItems['s-diff'].length).toBe(2)
+  })
+
+  test('only dedupes against the trailing bubble, not older history', () => {
+    const fire = listenCallbacks.get('session-output')!
+    setOutputItems('s-tail', [
+      { kind: 'userMessage', text: 'hello', timestamp: Date.now() },
+      { kind: 'text', text: 'hi there' },
+    ])
+    fire({ payload: { sessionId: 's-tail', items: [{ kind: 'userMessage', text: 'hello' }] } })
+    expect(outputItems['s-tail'].length).toBe(3)
+  })
+
+  test('leaves non-userMessage items untouched', () => {
+    const fire = listenCallbacks.get('session-output')!
+    setOutputItems('s-text', [{ kind: 'text', text: 'chunk' }])
+    fire({ payload: { sessionId: 's-text', items: [{ kind: 'text', text: 'chunk' }] } })
+    expect(outputItems['s-text'].length).toBe(2)
+  })
+})
+
 // Backstop for #143 — when the window becomes visible, refresh sessions for
 // every task currently in the store so any missed cross-window event heals.
 describe('initSessionWindowFocusRefresh', () => {

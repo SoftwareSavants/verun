@@ -378,6 +378,25 @@ export const sessionsForTask = (taskId: string) =>
 export const sessionById = (id: string) =>
   sessions.find(s => s.id === id)
 
+// How long after the optimistic bubble a matching UserMessage from Rust is
+// treated as an echo of it rather than a genuine re-send. Generous enough to
+// cover a cold CLI spawn on the first turn, far below a realistic human retype.
+const USER_MESSAGE_ECHO_WINDOW_MS = 10_000
+
+/** Drop a leading UserMessage that merely echoes the bubble `sendMessage`
+ *  already appended. Rust deliberately stays silent for UI sends, but external
+ *  sends (MCP, wakeups) and races on the first turn of a session can still
+ *  deliver one, and a duplicate here survives until the app restarts. */
+function withoutUserMessageEcho(existing: OutputItem[], items: OutputItem[]): OutputItem[] {
+  const tail = existing[existing.length - 1]
+  if (!tail || tail.kind !== 'userMessage') return items
+  const head = items[0]
+  if (!head || head.kind !== 'userMessage' || head.text !== tail.text) return items
+  const age = (head.timestamp ?? 0) - (tail.timestamp ?? 0)
+  if (age > USER_MESSAGE_ECHO_WINDOW_MS) return items
+  return items.slice(1)
+}
+
 // Event listeners — call once at app mount
 
 let listenersInitialized = false
@@ -397,7 +416,9 @@ export async function initSessionListeners() {
     setOutputItems(produce(store => {
       const existing = store[sessionId]
       if (existing) {
-        existing.push(...items)
+        const incoming = withoutUserMessageEcho(existing, items)
+        if (incoming.length === 0) return
+        existing.push(...incoming)
         if (existing.length > MAX_ITEMS_IN_MEMORY) {
           store[sessionId] = existing.slice(-MAX_ITEMS_IN_MEMORY)
         }
