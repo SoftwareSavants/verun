@@ -668,6 +668,13 @@ mod tests {
             .args(["init", "--bare"])
             .output()
             .unwrap();
+        // The remote's HEAD decides which branch clones check out. `init.defaultBranch`
+        // is unset on many machines, which would leave it on `master` and send later
+        // clones down a branch that never receives the pushes below.
+        git(bare_path.to_str().unwrap())
+            .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+            .output()
+            .unwrap();
 
         // Clone it
         let clone_path = dir.path().join("clone");
@@ -690,6 +697,11 @@ mod tests {
             .args(["config", "user.name", "Test"])
             .output()
             .unwrap();
+
+        // Pin the branch name: `init.defaultBranch` is unset on many machines, so
+        // the clone would otherwise land on `master` and the `main` push below
+        // would silently no-op.
+        git(cp).args(["checkout", "-B", "main"]).output().unwrap();
 
         // Initial commit + push
         fs::write(clone_path.join("README.md"), "# test").unwrap();

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Chat no longer renders a user message twice when a `session-output` event echoes the bubble `sendMessage` already appended optimistically. Because `loadedSessionOutputs` short-circuits DB re-reads, the duplicate survived closing and reopening the chat and only cleared on app restart
+
 ## 0.13.1 - 2026-09-21
 
 - Terminal output uses bounded parser backpressure while preserving window-to-window replay; generated-file events are filtered and background typechecks share an app-wide four-process limit
