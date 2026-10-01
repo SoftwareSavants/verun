@@ -62,6 +62,7 @@ tauri-plugin-notifications = { version = "0.4", default-features = false }
 tauri-plugin-notifications = { version = "0.4", default-features = false, features = ["notify-rust"] }
 
 [dev-dependencies]
+plist = "1"
 rstest = "0.18"
 insta = { version = "1", features = ["json", "toml"] }
 tempfile = "3"

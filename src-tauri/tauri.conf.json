@@ -46,6 +46,7 @@
     ],
     "createUpdaterArtifacts": true,
     "macOS": {
+      "entitlements": "Entitlements.plist",
       "dmg": {
         "windowSize": {
           "width": 594,

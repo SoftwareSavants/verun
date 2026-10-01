@@ -6410,6 +6410,7 @@ dependencies = [
  "libc",
  "notify",
  "notify-debouncer-mini",
+ "plist",
  "portable-pty",
  "rstest",
  "serde",

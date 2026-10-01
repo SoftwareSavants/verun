@@ -20,7 +20,7 @@ Pluggable agent backend with first-class support for Claude Code, Codex, and Gro
 - **Side question (`/btw`)** - type `/btw <question>` mid-stream (or click the "Ask sideways" button that appears in the corner of the chat while Claude is working) to ask an ephemeral question - the answer shows in a floating panel and never enters conversation history
 - **Fork from any message** - hover any past reply to rewind the conversation in place, or branch into a new task with the worktree restored to the code as it was at that exact turn. Verun takes a git snapshot at every turn, so you can undo an entire direction - not just a line of code
 - **Tool approval** - configurable trust levels per task: supervised, normal, or full auto
-- **UI / Terminal toggle for Claude** - flip any Claude session into a real PTY running `claude --resume` to use the unmodified TUI, while history, fork, and search keep working because Verun tails the on-disk transcript. The mode is sticky per session with an app-wide default in Settings
+- **UI / Terminal toggle for Claude** - flip any Claude session into a real PTY running `claude --resume` to use the unmodified TUI, while history, fork, and search keep working because Verun tails the on-disk transcript. The mode is sticky per session with an app-wide default in Settings. On macOS, allow microphone access when prompted to use Claude Code's `/voice` dictation
 - **Notifications** - desktop alerts when an agent finishes, fails, or needs approval so you can context-switch away
 
 ## Full workspace, not just a launcher

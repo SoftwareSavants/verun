@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- macOS app declares microphone access for voice input in terminal applications such as Claude Code
+
 ## 0.13.1 - 2026-09-21
 
 - Terminal output uses bounded parser backpressure while preserving window-to-window replay; generated-file events are filtered and background typechecks share an app-wide four-process limit
