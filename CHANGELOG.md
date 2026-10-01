@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.2 - 2026-10-01
 
 - macOS app declares microphone access for voice input in terminal applications such as Claude Code
 
