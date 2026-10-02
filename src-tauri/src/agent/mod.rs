@@ -867,6 +867,23 @@ mod tests {
         assert_eq!(models[1].id, "claude-fable-5-1");
     }
 
+    #[test]
+    fn claude_available_models_include_opus_5_5() {
+        let models = Claude.available_models();
+        let opus = models
+            .iter()
+            .find(|m| m.id == "claude-opus-5-5")
+            .expect("Opus 5.5 must be selectable");
+        assert_eq!(opus.label, "Claude Opus 5.5");
+        let args = Claude.build_session_args(&SessionArgs {
+            model: Some(&opus.id),
+            ..default_args()
+        });
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--model", "claude-opus-5-5"]));
+    }
+
     // ── Persistence + abort strategy + stream encoders ──────────────────
 
     #[test]
@@ -1140,6 +1157,7 @@ mod tests {
             ids,
             vec![
                 "gpt-6-astra",
+                "gpt-6.1-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",

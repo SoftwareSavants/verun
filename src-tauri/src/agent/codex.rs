@@ -81,6 +81,11 @@ impl Agent for Codex {
                 "Most capable for complex code, apps, and research",
             ),
             ModelOption::new(
+                "gpt-6.1-sol",
+                "GPT-6.1 Sol",
+                "Latest workhorse model for coding and everyday work",
+            ),
+            ModelOption::new(
                 "gpt-5.6-sol",
                 "GPT-5.6 Sol",
                 "Most capable GPT-5.6 for complex coding and research",

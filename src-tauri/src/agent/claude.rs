@@ -50,6 +50,7 @@ impl Agent for Claude {
                 "Claude Fable 5.1",
                 "Most capable for demanding reasoning and long-horizon work",
             ),
+            ModelOption::new("claude-opus-5-5", "Claude Opus 5.5", "Opus 5.5"),
             ModelOption::new(
                 "claude-sonnet-5",
                 "Claude Sonnet 5",

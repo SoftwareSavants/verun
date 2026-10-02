@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Model selector includes Claude Opus 5.5 and GPT-6.1 Sol alongside GPT-6 Astra
+
 ## 0.14.0 - 2026-10-02
 
 - Claude cloud sessions can continue locally in a new task with imported history and an independently verified worktree branch
