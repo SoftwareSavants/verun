@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 - 2026-10-02
 
 - Claude cloud sessions can continue locally in a new task with imported history and an independently verified worktree branch
 
