@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Claude cloud sessions can continue locally in a new task with imported history and an independently verified worktree branch
+
 ## 0.13.2 - 2026-10-01
 
 - macOS app declares microphone access for voice input in terminal applications such as Claude Code

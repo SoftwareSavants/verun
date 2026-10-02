@@ -1,14 +1,16 @@
 import { Component, Show, For, createSignal, createEffect } from 'solid-js'
-import { startTaskCreation } from '../store/tasks'
+import { startTaskCreation, setTasks } from '../store/tasks'
+import { setSessions } from '../store/sessions'
 import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionIdForTask, setShowArchived } from '../store/ui'
 import { projectById, updateProjectDefaultAgentInStore } from '../store/projects'
 import * as ipc from '../lib/ipc'
 import { agents } from '../store/agents'
-import type { AgentType } from '../types'
+import type { AgentType, TaskWithSession } from '../types'
 import { GitBranch, ExternalLink, Copy, Check } from 'lucide-solid'
 import { Dialog } from './Dialog'
 import { DialogFooter } from './DialogFooter'
 import { AgentPicker } from './AgentPicker'
+import { CloudImportDialog } from './CloudImportDialog'
 
 interface Props {
   open: boolean
@@ -21,6 +23,20 @@ export const NewTaskDialog: Component<Props> = (props) => {
   const [branches, setBranches] = createSignal<string[]>([])
   const [agentType, setAgentType] = createSignal<AgentType>('claude')
   const [copied, setCopied] = createSignal(false)
+  const [source, setSource] = createSignal<'local' | 'cloud'>('local')
+  const [importing, setImporting] = createSignal(false)
+  const [cloudAvailability, setCloudAvailability] = createSignal<{ available: boolean; reason: string | null } | null>(null)
+
+  const imported = (result: TaskWithSession) => {
+    setTasks(prev => [result.task, ...prev.filter(t => t.id !== result.task.id)])
+    setSessions(prev => [result.session, ...prev.filter(s => s.id !== result.session.id)])
+    setSelectedTaskId(result.task.id)
+    setSelectedProjectId(result.task.projectId)
+    setSelectedSessionIdForTask(result.task.id, result.session.id)
+    setShowArchived(false)
+    setImporting(false)
+    props.onClose()
+  }
 
   const project = () => props.projectId ? projectById(props.projectId) : null
 
@@ -32,6 +48,12 @@ export const NewTaskDialog: Component<Props> = (props) => {
 
   createEffect(() => {
     if (props.open && props.projectId) {
+      setSource('local')
+      setImporting(false)
+      setCloudAvailability(null)
+      ipc.claudeCloudAvailability().then(setCloudAvailability).catch(() => {
+        setCloudAvailability({ available: false, reason: 'Unable to check Claude cloud access.' })
+      })
       ipc.refreshAgents().catch(() => {})
       const p = project()
       if (p) {
@@ -67,6 +89,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
 
   const handleCreate = () => {
     if (!props.projectId || agentNotInstalled()) return
+    if (source() === 'cloud') { setImporting(true); return }
     const p = project()
     if (p) {
       updateProjectDefaultAgentInStore(p.id, agentType())
@@ -81,12 +104,31 @@ export const NewTaskDialog: Component<Props> = (props) => {
   }
 
   return (
-    <Dialog open={props.open} onClose={props.onClose} onConfirm={handleCreate} width="26rem">
+    <>
+    <Show when={props.open && importing() && props.projectId}>{id => (
+      <CloudImportDialog projectId={id() as string} onClose={() => setImporting(false)} onReady={imported} />
+    )}</Show>
+    <Dialog open={props.open && !importing()} onClose={props.onClose} onConfirm={handleCreate} width="26rem">
       <h2 class="text-base font-semibold text-text-primary mb-2">New Task</h2>
       <p class="text-sm text-text-muted mb-4">
-        Creates a new worktree branched from the selected base. An agent session starts automatically.
+        {source() === 'cloud' ? 'Continue a Claude cloud conversation with its code in a new local task.' : 'Creates a new worktree branched from the selected base. An agent session starts automatically.'}
       </p>
 
+      <div class="mb-4">
+        <label for="task-source" class="text-xs text-text-dim mb-1.5 block">Start from</label>
+        <select id="task-source" class="input-base" value={source()} onChange={e => {
+          const value = e.currentTarget.value as 'local' | 'cloud'
+          setSource(value)
+          if (value === 'cloud') setAgentType('claude')
+        }}>
+          <option value="local">Local</option>
+          <option value="cloud" disabled={!cloudAvailability()?.available}>Claude cloud session</option>
+        </select>
+        <Show when={!cloudAvailability()?.available}>
+          <p class="text-xs text-text-dim mt-1.5">{cloudAvailability()?.reason ?? 'Checking Claude cloud access…'}</p>
+        </Show>
+      </div>
+      <Show when={source() === 'local'}>
       <div class="mb-4">
         <label class="text-xs text-text-dim mb-1.5 block">Base branch</label>
         <div class="relative">
@@ -107,7 +149,9 @@ export const NewTaskDialog: Component<Props> = (props) => {
           </select>
         </div>
       </div>
+      </Show>
 
+      <Show when={source() === 'local'}>
       <div class="mb-4">
         <label class="text-xs text-text-dim mb-1.5 block">Agent</label>
         <AgentPicker
@@ -148,13 +192,15 @@ export const NewTaskDialog: Component<Props> = (props) => {
           </div>
         </Show>
       </div>
+      </Show>
 
       <DialogFooter
         onCancel={props.onClose}
         onConfirm={handleCreate}
-        confirmLabel="Create Task"
+        confirmLabel={source() === 'cloud' ? 'Choose cloud session' : 'Create Task'}
         disabled={!props.projectId || agentNotInstalled()}
       />
     </Dialog>
+    </>
   )
 }

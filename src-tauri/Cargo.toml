@@ -48,6 +48,7 @@ notify-debouncer-mini = "0.5"
 yash-syntax = "0.19"
 sha2 = "0.10"
 base64 = "0.22"
+tempfile = "3"
 
 # macOS: native UNUserNotificationCenter (click routing + Notification Center clearing).
 # The plugin's build.rs invokes `swift build` with no --arch flag, so Swift compiles for the
@@ -65,7 +66,6 @@ tauri-plugin-notifications = { version = "0.4", default-features = false, featur
 plist = "1"
 rstest = "0.18"
 insta = { version = "1", features = ["json", "toml"] }
-tempfile = "3"
 
 # Dev builds run unbundled, so the native macOS notifications backend can't
 # initialize (UNUserNotificationCenter requires a .app). Enable this feature

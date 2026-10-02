@@ -18,6 +18,8 @@ export const Dialog: Component<Props> = (props) => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') props.onClose()
       if (e.key === 'Enter' && props.onConfirm) {
+        // Native selects use Enter to commit their choice, not the dialog.
+        if (e.target instanceof HTMLSelectElement) return
         e.preventDefault()
         props.onConfirm()
       }

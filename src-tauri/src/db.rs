@@ -505,6 +505,12 @@ pub struct GitHubCacheEntry {
 
 #[allow(dead_code)]
 pub enum DbWrite {
+    ImportCloudTask {
+        task: Box<Task>,
+        session: Box<Session>,
+        lines: Vec<(String, i64)>,
+        done: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     // Projects
     InsertProject(Project),
     UpdateProjectBaseBranch {
@@ -763,6 +769,40 @@ async fn drain_refs_for_sessions(
 
 pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Error> {
     match write {
+        DbWrite::ImportCloudTask {
+            task: t,
+            session: s,
+            lines,
+            done,
+        } => {
+            let result = async {
+                let mut tx = pool.begin().await?;
+                sqlx::query("INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, agent_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                    .bind(&t.id).bind(&t.project_id).bind(&t.name).bind(&t.worktree_path)
+                    .bind(&t.branch).bind(t.created_at).bind(t.port_offset).bind(&t.agent_type)
+                    .execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, agent_type, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                    .bind(&s.id).bind(&s.task_id).bind(&s.name).bind(&s.resume_session_id)
+                    .bind(&s.status).bind(s.started_at).bind(&s.agent_type).bind(&s.model)
+                    .execute(&mut *tx).await?;
+                for (line, at) in &lines {
+                    sqlx::query("INSERT INTO output_lines (session_id, line, emitted_at) VALUES (?, ?, ?)")
+                        .bind(&s.id).bind(line).bind(at).execute(&mut *tx).await?;
+                }
+                tx.commit().await
+            }.await;
+            if result.is_ok() {
+                let hashes: Vec<String> = lines
+                    .iter()
+                    .flat_map(|(line, _)| crate::blob::extract_hashes_from_output_line(line))
+                    .collect();
+                log_refcount_err(
+                    "incr ImportCloudTask",
+                    crate::blob::incr_refs(pool, &hashes).await,
+                );
+            }
+            let _ = done.send(result.map_err(|e: sqlx::Error| e.to_string()));
+        }
         // -- Projects --
         DbWrite::InsertProject(p) => {
             sqlx::query(
@@ -2039,6 +2079,54 @@ pub(crate) mod tests {
     }
 
     // -- Project tests --
+
+    #[tokio::test]
+    async fn cloud_import_receipt_confirms_atomic_task_session_and_history() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        let mut session = make_session("t-001");
+        session.task_id = "nonexistent-task".into();
+        let (done, receipt) = tokio::sync::oneshot::channel();
+        process_write(
+            &pool,
+            DbWrite::ImportCloudTask {
+                task: Box::new(make_task("p-001")),
+                session: Box::new(session),
+                lines: vec![("history".into(), 1000)],
+                done,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(receipt.await.unwrap().is_err());
+        assert!(get_task(&pool, "t-001").await.unwrap().is_none());
+        let session = make_session("t-001");
+        let sid = session.id.clone();
+        let (done, receipt) = tokio::sync::oneshot::channel();
+        process_write(
+            &pool,
+            DbWrite::ImportCloudTask {
+                task: Box::new(make_task("p-001")),
+                session: Box::new(session),
+                lines: vec![("history".into(), 1000)],
+                done,
+            },
+        )
+        .await
+        .unwrap();
+        receipt.await.unwrap().unwrap();
+        assert!(get_task(&pool, "t-001").await.unwrap().is_some());
+        assert!(get_session(&pool, &sid).await.unwrap().is_some());
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM output_lines WHERE session_id = ?")
+                .bind(sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count.0, 1);
+    }
 
     #[tokio::test]
     async fn insert_and_get_project() {

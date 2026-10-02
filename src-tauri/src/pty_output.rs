@@ -200,6 +200,11 @@ impl OutputBuffer {
         let state = self.state.lock().unwrap();
         state.closed && state.exit_sent
     }
+
+    /// Process EOF is independent of whether scrollback has been drained or closed.
+    pub fn has_exited(&self) -> bool {
+        self.state.lock().unwrap().finished.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +212,15 @@ mod tests {
     use super::*;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
+
+    #[test]
+    fn exited_process_is_distinct_from_closed_output_buffer() {
+        let output = OutputBuffer::default();
+        assert!(!output.has_exited());
+        output.finish(Some(0));
+        assert!(output.has_exited());
+        assert!(!output.is_closed());
+    }
 
     #[test]
     fn output_waits_for_parser_ack_and_rejects_other_windows_and_old_acks() {

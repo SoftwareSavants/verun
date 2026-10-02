@@ -4,6 +4,7 @@ mod bts_scaffold;
 mod claude_jsonl;
 mod claude_terminal;
 mod claude_transcript_tail;
+mod cloud_import;
 mod db;
 mod env_path;
 mod fd_limit;
@@ -76,6 +77,7 @@ pub fn run() {
         .manage(task::new_hook_pty_map())
         .manage(pty::new_active_pty_map())
         .manage(claude_terminal::new_claude_terminal_map())
+        .manage(cloud_import::CloudImportMap::default())
         .manage(watcher::new_file_watcher_map())
         .manage(lsp::new_lsp_map())
         .manage(tsgo_check::new_tsgo_check_map())
@@ -335,6 +337,10 @@ pub fn run() {
             ipc::import_project_config,
             // Tasks
             ipc::create_task,
+            ipc::begin_cloud_import,
+            ipc::claude_cloud_availability,
+            ipc::finish_cloud_import,
+            ipc::cancel_cloud_import,
             ipc::list_tasks,
             ipc::get_task,
             ipc::delete_task,

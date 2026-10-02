@@ -416,6 +416,84 @@ pub struct ImportedHooks {
 // Tasks
 // ---------------------------------------------------------------------------
 
+#[tauri::command]
+pub async fn claude_cloud_availability() -> crate::cloud_import::Availability {
+    crate::cloud_import::availability().await
+}
+
+#[tauri::command]
+pub async fn begin_cloud_import(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    map: State<'_, crate::cloud_import::CloudImportMap>,
+    pty_map: State<'_, ActivePtyMap>,
+    project_id: String,
+) -> Result<crate::cloud_import::BeginResult, String> {
+    let project = db::get_project(pool.inner(), &project_id)
+        .await?
+        .ok_or("Project not found")?;
+    let port = db::next_port_offset(pool.inner(), &project_id).await?;
+    crate::cloud_import::begin(
+        app,
+        project,
+        port,
+        map.inner().clone(),
+        pty_map.inner().clone(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn finish_cloud_import(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    map: State<'_, crate::cloud_import::CloudImportMap>,
+    pty_map: State<'_, ActivePtyMap>,
+    hook_pty_map: State<'_, HookPtyMap>,
+    setup_in_progress: State<'_, SetupInProgress>,
+    project_id: String,
+    import_id: String,
+) -> Result<TaskWithSession, String> {
+    let project = db::get_project(pool.inner(), &project_id)
+        .await?
+        .ok_or("Project not found")?;
+    let (task, session) = crate::cloud_import::finish(
+        &app,
+        pool.inner(),
+        db_tx.inner(),
+        map.inner(),
+        pty_map.inner(),
+        &import_id,
+        &project,
+    )
+    .await?;
+    let _ = app.emit("task-created", serde_json::json!({"taskId": task.id, "projectId": task.project_id, "sourceWindow": window.label()}));
+    task::spawn_setup_hook(
+        &app,
+        pty_map.inner(),
+        hook_pty_map.inner(),
+        setup_in_progress.inner(),
+        &task.id,
+        &task.worktree_path,
+        &project.setup_hook,
+        task.port_offset,
+        &project.repo_path,
+    );
+    Ok(TaskWithSession { task, session })
+}
+
+#[tauri::command]
+pub async fn cancel_cloud_import(
+    map: State<'_, crate::cloud_import::CloudImportMap>,
+    pty_map: State<'_, ActivePtyMap>,
+    import_id: String,
+) -> Result<(), String> {
+    crate::cloud_import::cancel(map.inner(), pty_map.inner(), &import_id).await
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn create_task(

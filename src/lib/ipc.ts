@@ -2,6 +2,17 @@ import { invoke } from '@tauri-apps/api/core'
 import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
+
+export interface CloudImportStart { importId: string; terminalId: string }
+export interface CloudImportProgress { importId: string; phase: string }
+export const claudeCloudAvailability = () =>
+  invoke<{ available: boolean; reason: string | null }>('claude_cloud_availability')
+export const beginCloudImport = (projectId: string) =>
+  invoke<CloudImportStart>('begin_cloud_import', { projectId })
+export const finishCloudImport = (projectId: string, importId: string) =>
+  invoke<TaskWithSession>('finish_cloud_import', { projectId, importId })
+export const cancelCloudImport = (importId: string) =>
+  invoke<void>('cancel_cloud_import', { importId })
 const seed = () => import('./seedData')
 
 // Projects

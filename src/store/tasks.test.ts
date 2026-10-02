@@ -26,6 +26,10 @@ vi.mock('../lib/ipc', () => ({
   renameTask: vi.fn().mockResolvedValue(undefined),
 }))
 
+// Task cleanup must not load native event listeners in jsdom. Dynamic LSP
+// imports can otherwise finish after this suite, leaking rejected listeners.
+vi.mock('../lib/lsp', () => ({ stopLspClient: vi.fn().mockResolvedValue(undefined) }))
+
 import { tasks, setTasks, startTaskCreation, loadTasks, archiveTask } from './tasks'
 
 const makeTask = (overrides: Partial<Task> = {}): Task => ({

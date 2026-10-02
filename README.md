@@ -25,6 +25,8 @@ Pluggable agent backend with first-class support for Claude Code, Codex, and Gro
 
 ## Full workspace, not just a launcher
 
+- **Continue from Claude cloud** - choose a cloud session from New Task, import its conversation, and continue locally on an independent task branch. Requires Claude Code signed in with a Claude subscription.
+
 - **Code editor** - CodeMirror 6 with syntax highlighting, code folding, and 15+ languages
 - **TypeScript intellisense** - bundled tsgo with autocomplete, diagnostics, hover, go-to-definition, find references, and rename
 - **Problems panel** - project-wide type checking with click-to-navigate, one-click "ask agent to fix", and at most four background checker processes across all tasks

@@ -49,8 +49,8 @@ impl std::error::Error for JsonlError {}
 /// Compute the path of a Claude Code session transcript.
 ///
 /// Claude stores transcripts at `~/.claude/projects/<encoded-cwd>/<id>.jsonl`
-/// where `<encoded-cwd>` is the absolute path of the cwd with all path
-/// separators replaced by `-`.
+/// where `<encoded-cwd>` is the absolute path of the cwd with all
+/// non-alphanumeric characters replaced by `-`.
 pub fn session_path(cwd: &Path, session_id: &str) -> Option<PathBuf> {
     projects_dir(cwd).map(|d| d.join(format!("{session_id}.jsonl")))
 }
@@ -71,10 +71,10 @@ fn encode_cwd(cwd: &Path) -> String {
         out.push('-');
     }
     for ch in s.chars() {
-        if ch == '/' || ch == '.' {
-            out.push('-');
-        } else {
+        if ch.is_ascii_alphanumeric() {
             out.push(ch);
+        } else {
+            out.push('-');
         }
     }
     out
@@ -500,6 +500,14 @@ mod tests {
     fn encode_cwd_replaces_slashes_and_dots() {
         let p = Path::new("/Users/me/Project.X");
         assert_eq!(encode_cwd(p), "-Users-me-Project-X");
+    }
+
+    #[test]
+    fn encode_cwd_matches_claude_for_macos_temp_paths_and_spaces() {
+        assert_eq!(
+            encode_cwd(Path::new("/private/var/folders/hg/task_vmr/T/cloud repo")),
+            "-private-var-folders-hg-task-vmr-T-cloud-repo"
+        );
     }
 
     #[test]
