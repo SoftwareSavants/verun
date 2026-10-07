@@ -1,4 +1,4 @@
-import { Component, Show, createSignal, createEffect } from 'solid-js'
+import { Component, Show, createSignal, createEffect, onCleanup } from 'solid-js'
 import { startTaskCreation, setTasks } from '../store/tasks'
 import { setSessions } from '../store/sessions'
 import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionIdForTask, setShowArchived } from '../store/ui'
@@ -52,8 +52,12 @@ export const NewTaskDialog: Component<Props> = (props) => {
       setSource('local')
       setImporting(false)
       setCloudAvailability(null)
-      ipc.claudeCloudAvailability().then(setCloudAvailability).catch(() => {
-        setCloudAvailability({ available: false, reason: 'Unable to check Claude cloud access.' })
+      let cancelled = false
+      onCleanup(() => { cancelled = true })
+      ipc.claudeCloudAvailability().then(result => {
+        if (!cancelled) setCloudAvailability(result)
+      }).catch(() => {
+        if (!cancelled) setCloudAvailability({ available: false, reason: 'Unable to check Claude cloud access.' })
       })
       ipc.refreshAgents().catch(() => {})
       const p = project()
@@ -175,8 +179,10 @@ export const NewTaskDialog: Component<Props> = (props) => {
       </div>
       </Show>
 
-      <Show when={props.open && source() === 'cloud' && props.projectId}>
-        <CloudSessionPicker projectId={props.projectId!} onReady={imported} onBusyChange={setImporting} />
+      <Show when={props.open && cloudAvailability()?.available && props.projectId} keyed>
+        {projectId => <div style={{ display: source() === 'cloud' ? undefined : 'none' }}>
+          <CloudSessionPicker projectId={projectId} onReady={imported} onBusyChange={setImporting} />
+        </div>}
       </Show>
       <Show when={source() === 'local'} fallback={<div class="flex justify-end"><button class="btn-ghost" disabled={importing()} onClick={props.onClose}>Cancel</button></div>}>
       <DialogFooter

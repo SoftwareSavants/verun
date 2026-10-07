@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prefetch cloud sessions when New Task opens and reuse the picker when switching between Local and Cloud.
+
 - Replace native dropdowns with a styled, keyboard-accessible Select component.
 
 - Cloud sessions are searchable and selectable directly in New Task, with one-click local import through the Claude CLI and no manual terminal steps
