@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.1 - 2026-10-07
+
 - Cloud imports keep the session title as the task name and show loading placeholders plus selected-session import progress.
 
 - Prefetch cloud sessions when New Task opens and reuse the picker when switching between Local and Cloud.
