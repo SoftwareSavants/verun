@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Cloud imports keep the session title as the task name and show loading placeholders plus selected-session import progress.
+
 - Prefetch cloud sessions when New Task opens and reuse the picker when switching between Local and Cloud.
 
 - Replace native dropdowns with a styled, keyboard-accessible Select component.

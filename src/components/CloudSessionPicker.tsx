@@ -1,5 +1,5 @@
 import { For, Show, createSignal, onCleanup, onMount, type Component } from 'solid-js'
-import { ArrowDownToLine, Loader2, RefreshCw, Search } from 'lucide-solid'
+import { ArrowDownToLine, Check, Cloud, Loader2, RefreshCw, Search } from 'lucide-solid'
 import type { TaskWithSession } from '../types'
 import * as ipc from '../lib/ipc'
 
@@ -16,7 +16,7 @@ export const CloudSessionPicker: Component<Props> = (props) => {
   const [error, setError] = createSignal<string | null>(null)
   const [query, setQuery] = createSignal('')
   const [selected, setSelected] = createSignal<ipc.CloudSessionChoice | null>(null)
-  const [phase, setPhase] = createSignal('')
+  const [phase, setPhase] = createSignal<'import' | 'create'>('import')
   let importId: string | null = null
   let teleported = false
   let disposed = false
@@ -43,12 +43,12 @@ export const CloudSessionPicker: Component<Props> = (props) => {
     setBusy(true); props.onBusyChange?.(true); setError(null); setSelected(session)
     try {
       if (!teleported) {
-        setPhase('Importing conversation and code…')
+        setPhase('import')
         await ipc.selectCloudImport(props.projectId, importId, session.index)
         teleported = true
       }
       if (disposed) return
-      setPhase('Preparing local task…')
+      setPhase('create')
       const result = await ipc.finishCloudImport(props.projectId, importId)
       published = true
       if (!disposed) props.onReady(result)
@@ -68,17 +68,51 @@ export const CloudSessionPicker: Component<Props> = (props) => {
 
   return (
     <div class="mb-4">
-      <div class="flex items-center justify-between mb-2">
-        <span class="text-xs text-text-dim">Cloud sessions</span>
-        <button class="btn-ghost text-xs flex items-center gap-1.5" disabled={loading() || busy()} onClick={() => void load()}>
-          <RefreshCw size={12} /> Refresh
-        </button>
-      </div>
+      <Show when={!loading() && !busy()}>
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs text-text-dim">Cloud sessions</span>
+          <button class="btn-ghost text-xs flex items-center gap-1.5" onClick={() => void load()}>
+            <RefreshCw size={12} /> Refresh
+          </button>
+        </div>
+      </Show>
       <Show when={loading()}>
-        <p role="status" class="text-sm text-text-muted py-5 flex items-center gap-2"><Loader2 size={14} class="animate-spin" />Loading sessions from Claude…</p>
+        <div class="py-3" role="status">
+          <div class="flex items-center gap-2 text-sm text-text-primary"><Loader2 size={14} class="animate-spin text-accent" />Finding cloud sessions</div>
+          <p class="text-xs text-text-muted mt-1.5 mb-4">Connecting through Claude Code. This can take a few seconds.</p>
+          <div aria-hidden="true" class="rounded-lg ring-1 ring-outline/8 overflow-hidden">
+            <For each={['72%', '56%', '64%']}>{width => <div class="px-3 py-3">
+              <div class="h-3 rounded bg-surface-3" style={{ width }} />
+              <div class="h-2 rounded bg-surface-3 w-16 mt-2" />
+            </div>}</For>
+          </div>
+        </div>
       </Show>
       <Show when={busy()}>
-        <p role="status" class="text-sm text-text-muted py-5 flex items-center gap-2"><Loader2 size={14} class="animate-spin" />{phase()}</p>
+        <div class="rounded-lg bg-surface-1 ring-1 ring-outline/8 p-4" role="status" aria-live="polite">
+          <div class="flex items-start gap-3 mb-4">
+            <Cloud size={18} class="text-accent shrink-0 mt-0.5" />
+            <div class="min-w-0">
+              <p class="text-sm font-medium text-text-primary break-words">{selected()?.title}</p>
+              <p class="text-xs text-text-muted mt-1">Continuing from Claude cloud</p>
+            </div>
+          </div>
+          <ol class="list-none m-0 p-0 flex flex-col gap-3">
+            <li class="flex items-center gap-2 text-xs text-text-secondary" aria-current={phase() === 'import' ? 'step' : undefined}>
+              <Show when={phase() === 'create'} fallback={<Loader2 size={14} class="animate-spin text-accent" />}>
+                <span aria-label="Import conversation and code complete"><Check size={14} class="text-accent" /></span>
+              </Show>
+              Import conversation and code
+            </li>
+            <li class="flex items-center gap-2 text-xs" classList={{ 'text-text-primary': phase() === 'create', 'text-text-dim': phase() !== 'create' }} aria-current={phase() === 'create' ? 'step' : undefined}>
+              <Show when={phase() === 'create'} fallback={<span class="w-3.5 h-3.5 rounded-full ring-1 ring-outline/15" />}>
+                <Loader2 size={14} class="animate-spin text-accent" />
+              </Show>
+              Create local task
+            </li>
+          </ol>
+          <p class="text-xs text-text-muted mt-4">{phase() === 'import' ? 'Bringing your conversation and code to this Mac.' : 'Saving conversation history and preparing your workspace.'}</p>
+        </div>
       </Show>
       <Show when={error()}>
         <p role="alert" class="text-sm text-status-error mb-3">{error()}</p>

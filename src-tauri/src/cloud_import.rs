@@ -194,9 +194,12 @@ pub async fn select(
         if import.selected {
             return Err("This import has already been selected. Refresh to try again.".into());
         }
-        if !import.sessions.iter().any(|s| s.index == index) {
-            return Err("Cloud session not found".into());
-        }
+        let choice = import
+            .sessions
+            .iter()
+            .find(|s| s.index == index)
+            .ok_or("Cloud session not found")?;
+        import.task.name = Some(choice.title.clone());
         import.selected = true;
         (import.terminal_id.clone(), import.sessions.clone())
     };
@@ -683,6 +686,40 @@ pub async fn cancel(map: &CloudImportMap, pty_map: &ActivePtyMap, id: &str) -> R
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[tokio::test]
+    async fn selected_cloud_title_names_the_task_before_publication() {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "import", "projectId": "project", "worktreePath": "/tmp/task",
+            "branch": "test", "createdAt": 0, "portOffset": 0,
+            "archived": false, "agentType": "claude"
+        }))
+        .unwrap();
+        let map = CloudImportMap::default();
+        map.lock().await.insert(
+            "import".into(),
+            CloudImport {
+                _temp: tempfile::tempdir().unwrap(),
+                staging: String::new(),
+                task,
+                terminal_id: "missing".into(),
+                sessions: vec![CloudSessionChoice {
+                    index: 2,
+                    title: "Rebrand name brainstorming".into(),
+                    updated: "1d ago".into(),
+                }],
+                selected: false,
+                completed: false,
+            },
+        );
+        // No terminal is needed to check that selection preserves the title on
+        // the task that finish() later persists and returns.
+        let _ = select(&map, &ActivePtyMap::default(), "project", "import", 2).await;
+        assert_eq!(
+            map.lock().await["import"].task.name.as_deref(),
+            Some("Rebrand name brainstorming")
+        );
+    }
 
     #[test]
     fn trust_prompt_is_driven_by_observed_focus_not_an_unacknowledged_keypress() {
