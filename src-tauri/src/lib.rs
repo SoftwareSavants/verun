@@ -338,6 +338,7 @@ pub fn run() {
             // Tasks
             ipc::create_task,
             ipc::begin_cloud_import,
+            ipc::select_cloud_import,
             ipc::claude_cloud_availability,
             ipc::finish_cloud_import,
             ipc::cancel_cloud_import,

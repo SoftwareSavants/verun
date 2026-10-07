@@ -21,13 +21,230 @@ pub struct CloudImport {
     staging: String,
     task: Task,
     terminal_id: String,
+    sessions: Vec<CloudSessionChoice>,
+    selected: bool,
+    completed: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BeginResult {
     pub import_id: String,
-    pub terminal_id: String,
+    pub sessions: Vec<CloudSessionChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudSessionChoice {
+    pub index: usize,
+    pub title: String,
+    pub updated: String,
+}
+
+// Parse only the completed CLI picker, never conversation output. Keep the
+// CLI's ordinal as identity: duplicate titles are valid, and IDs aren't exposed.
+fn picker_rows(screen: &str) -> Option<Vec<CloudSessionChoice>> {
+    if screen
+        .lines()
+        .any(|l| l.trim().starts_with("No Claude Code sessions found"))
+    {
+        return Some(vec![]);
+    }
+    if !screen.contains("Select a session to resume") || !screen.contains("Esc to cancel") {
+        return None;
+    }
+    let header = screen
+        .lines()
+        .find(|l| l.contains("Updated") && l.contains("Session Title"))?;
+    let title_col = header[..header.find("Session Title")?].chars().count();
+    let updated_col = header[..header.find("Updated")?].chars().count();
+    let mut rows = Vec::new();
+    for line in screen.lines() {
+        let prefix: String = line.chars().take(updated_col).collect();
+        let prefix = prefix.trim().trim_start_matches('❯').trim();
+        let Some(index) = prefix
+            .strip_suffix('.')
+            .and_then(|s| s.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let updated: String = line
+            .chars()
+            .skip(updated_col)
+            .take(title_col.checked_sub(updated_col)?)
+            .collect();
+        let title: String = line.chars().skip(title_col).collect();
+        if title.trim().is_empty() || updated.trim().is_empty() {
+            return None;
+        }
+        rows.push(CloudSessionChoice {
+            index,
+            title: title.trim().into(),
+            updated: updated.trim().into(),
+        });
+    }
+    if rows.is_empty() || rows.iter().enumerate().any(|(i, row)| row.index != i + 1) {
+        return None;
+    }
+    // The PTY is tall enough for normal lists. Never silently select from a
+    // clipped/scrolling list, whose ordinals may change as it scrolls.
+    if screen.lines().next().is_some_and(|l| l.contains(" of ")) {
+        return None;
+    }
+    Some(rows)
+}
+
+const PICKER_ROWS: u16 = 200;
+const PICKER_COLS: u16 = 200;
+
+struct CliScreen {
+    parser: vt100::Parser,
+    sequence: u64,
+}
+
+impl CliScreen {
+    fn new() -> Self {
+        Self {
+            parser: vt100::Parser::new(PICKER_ROWS, PICKER_COLS, 0),
+            sequence: 0,
+        }
+    }
+
+    fn read(&mut self, map: &ActivePtyMap, terminal: &str) -> Result<(String, bool), String> {
+        let handle = map.get(terminal).ok_or("Cloud import was cancelled")?;
+        let (text, written) = handle.output.snapshot();
+        let start = written.saturating_sub(text.len() as u64);
+        if start > self.sequence {
+            return Err("Claude output exceeded the import buffer. Please retry.".into());
+        }
+        let offset = (self.sequence - start) as usize;
+        self.parser.process(
+            text.get(offset..)
+                .ok_or("Invalid Claude output checkpoint")?
+                .as_bytes(),
+        );
+        self.sequence = written;
+        Ok((self.parser.screen().contents(), handle.output.has_exited()))
+    }
+}
+
+fn trust_prompt_input(text: &str) -> Option<&'static [u8]> {
+    if !text.contains("Quick safety check:") || !text.contains("Enter to confirm") {
+        return None;
+    }
+    let focused = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix('❯'))?
+        .trim();
+    match focused {
+        "No, exit" => Some(b"\x1b[B"),
+        "Yes, I trust this folder" => Some(b"\r"),
+        _ => None,
+    }
+}
+
+fn picker_focus(text: &str) -> Option<usize> {
+    text.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix('❯')?
+            .trim()
+            .split_once('.')?
+            .0
+            .parse()
+            .ok()
+    })
+}
+
+async fn wait_for_picker(
+    map: &ActivePtyMap,
+    terminal: &str,
+) -> Result<Vec<CloudSessionChoice>, String> {
+    let mut screen = CliScreen::new();
+    let mut last_input = tokio::time::Instant::now();
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            let (text, exited) = screen.read(map, terminal)?;
+            if let Some(rows) = picker_rows(&text) { return Ok(rows); }
+            if exited { return Err("Claude exited before listing cloud sessions. Check `claude --teleport` in your terminal.".into()); }
+            // The staging checkout is our disposable clone of the selected project.
+            if last_input.elapsed() >= std::time::Duration::from_secs(1) {
+                if let Some(input) = trust_prompt_input(&text) {
+                    pty::write_pty(map, terminal, input)?;
+                    last_input = tokio::time::Instant::now();
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }).await.map_err(|_| "Claude’s cloud picker did not load. Check `claude --teleport` in your terminal, then retry.".to_string())?
+}
+
+pub async fn select(
+    map: &CloudImportMap,
+    pty_map: &ActivePtyMap,
+    project_id: &str,
+    id: &str,
+    index: usize,
+) -> Result<(), String> {
+    let (terminal, choices) = {
+        let mut imports = map.lock().await;
+        let import = imports.get_mut(id).ok_or("Import no longer exists")?;
+        if import.task.project_id != project_id {
+            return Err("Import project mismatch".into());
+        }
+        if import.selected {
+            return Err("This import has already been selected. Refresh to try again.".into());
+        }
+        if !import.sessions.iter().any(|s| s.index == index) {
+            return Err("Cloud session not found".into());
+        }
+        import.selected = true;
+        (import.terminal_id.clone(), import.sessions.clone())
+    };
+    let mut screen = CliScreen::new();
+    let (text, _) = screen.read(pty_map, &terminal)?;
+    if picker_rows(&text).as_ref() != Some(&choices) {
+        return Err("Claude’s session list changed. Refresh and select again.".into());
+    }
+    // Observe focus after each navigation key before confirming the choice.
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let (text, exited) = screen.read(pty_map, &terminal)?;
+            if exited || picker_rows(&text).as_ref() != Some(&choices) {
+                return Err("Claude’s session list changed. Refresh and select again.".to_string());
+            }
+            let focus = picker_focus(&text).ok_or("Cannot locate Claude’s selected session")?;
+            if focus == index {
+                pty::write_pty(pty_map, &terminal, b"\r")?;
+                return Ok::<(), String>(());
+            }
+            pty::write_pty(
+                pty_map,
+                &terminal,
+                if focus < index { b"\x1b[B" } else { b"\x1b[A" },
+            )?;
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .map_err(|_| "Claude’s session selection timed out. Refresh and try again.".to_string())??;
+    tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        let mut exiting = false;
+        loop {
+            let (text, exited) = screen.read(pty_map, &terminal)?;
+            if exited {
+                return if exiting { Ok::<(), String>(()) } else { Err("Claude exited before the cloud conversation was imported. Refresh to try again.".into()) };
+            }
+            if !exiting && text.lines().any(|l| l.trim() == "⏺ Session resumed") {
+                pty::write_pty(pty_map, &terminal, b"/exit\r")?;
+                exiting = true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }).await.map_err(|_| "Claude could not finish the import. Refresh and try again.".to_string())??;
+    let mut imports = map.lock().await;
+    let import = imports.get_mut(id).ok_or("Cloud import was cancelled")?;
+    import.completed = true;
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -97,7 +314,7 @@ fn git(path: &str, args: &[&str]) -> Result<String, String> {
 }
 
 fn imported_history(text: &str, branch: &str) -> Result<ImportedHistory, String> {
-    if branch.is_empty() || branch == "HEAD" {
+    if branch.is_empty() {
         return Err("Cloud branch was not checked out".into());
     }
     let mut id = None;
@@ -131,12 +348,18 @@ fn imported_history(text: &str, branch: &str) -> Result<ImportedHistory, String>
 
 /// Fetch the verified commit from the isolated clone, never check out its cloud
 /// branch in the user's repository. Retries accept only the exact prepared task.
-fn prepare_worktree(repo: &str, staging: &str, target: &str, branch: &str) -> Result<(), String> {
+fn prepare_worktree(
+    repo: &str,
+    staging: &str,
+    target: &str,
+    branch: &str,
+    allow_detached: bool,
+) -> Result<(), String> {
     worktree::validate_branch_name(branch)?;
     if !git(staging, &["status", "--porcelain"])?.is_empty() {
         return Err("Imported workspace has uncommitted changes".into());
     }
-    if git(staging, &["branch", "--show-current"])?.is_empty() {
+    if !allow_detached && git(staging, &["branch", "--show-current"])?.is_empty() {
         return Err("Cloud branch was not checked out".into());
     }
     let sha = git(staging, &["rev-parse", "HEAD"])?;
@@ -219,15 +442,16 @@ pub async fn begin(
     let spawn = tokio::task::spawn_blocking({
         let staging = staging.clone();
         let id = id.clone();
+        let pty_map = pty_map.clone();
         move || {
             pty::spawn_pty(
                 app,
                 pty_map,
                 id,
                 staging,
-                24,
-                100,
-                Some("exec claude --teleport".into()),
+                PICKER_ROWS,
+                PICKER_COLS,
+                Some("exec claude --safe-mode --teleport".into()),
                 vec![],
                 true,
                 Some("Import from Claude cloud".into()),
@@ -246,11 +470,24 @@ pub async fn begin(
             staging,
             task,
             terminal_id: terminal_id.clone(),
+            sessions: vec![],
+            selected: false,
+            completed: false,
         },
     );
+    let sessions = match wait_for_picker(&pty_map, &terminal_id).await {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            let _ = cancel(&map, &pty_map, &id).await;
+            return Err(error);
+        }
+    };
+    if let Some(import) = map.lock().await.get_mut(&id) {
+        import.sessions = sessions.clone();
+    }
     Ok(BeginResult {
         import_id: id,
-        terminal_id,
+        sessions,
     })
 }
 
@@ -266,6 +503,9 @@ pub async fn finish(
 ) -> Result<(Task, Session), String> {
     let mut imports = map.lock().await;
     let import = imports.get(id).ok_or("Import no longer exists")?;
+    if !import.completed {
+        return Err("Choose a cloud session and wait for its import to finish.".into());
+    }
     if import.task.project_id != project.id {
         return Err("Import project mismatch".into());
     }
@@ -273,7 +513,7 @@ pub async fn finish(
         .get(&import.terminal_id)
         .is_some_and(|pty| !pty.output.has_exited())
     {
-        return Err("After Claude shows Session resumed, enter /exit, then retry.".into());
+        return Err("Claude is still completing the import. Please retry shortly.".into());
     }
     let progress = |phase: &str| {
         let _ = app.emit(
@@ -288,12 +528,7 @@ pub async fn finish(
     let app_clone = app.clone();
     let import_id = id.to_string();
     let history = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let branch = git(&staging, &["branch", "--show-current"])?;
-        if branch.is_empty() {
-            return Err(
-                "Cloud branch was not checked out. Reopen the import and select a session.".into(),
-            );
-        }
+        let branch = git(&staging, &["rev-parse", "--abbrev-ref", "HEAD"])?;
         let dir = claude_jsonl::projects_dir(Path::new(&staging)).ok_or("HOME is not set")?;
         let mut found = Vec::new();
         for entry in std::fs::read_dir(dir).map_err(|_| "No imported conversation found")? {
@@ -314,7 +549,13 @@ pub async fn finish(
             "cloud-import-progress",
             serde_json::json!({ "importId": import_id, "phase": "Preparing worktree" }),
         );
-        prepare_worktree(&repo, &staging, &task.worktree_path, &task.branch)?;
+        prepare_worktree(
+            &repo,
+            &staging,
+            &task.worktree_path,
+            &task.branch,
+            branch == "HEAD",
+        )?;
         let dest = claude_jsonl::session_path(Path::new(&task.worktree_path), &history.resume_id)
             .ok_or("HOME is not set")?;
         std::fs::create_dir_all(dest.parent().ok_or("Invalid transcript path")?)
@@ -373,7 +614,9 @@ pub async fn finish(
                 &task_id,
                 &crate::mcp::socket_path(&app_data),
                 &relay,
-            ).map(|_| ()).map_err(|e| e.to_string())
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -440,6 +683,55 @@ pub async fn cancel(map: &CloudImportMap, pty_map: &ActivePtyMap, id: &str) -> R
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn trust_prompt_is_driven_by_observed_focus_not_an_unacknowledged_keypress() {
+        let prompt = "Accessing workspace:\nQuick safety check:\n❯ No, exit\nYes, I trust this folder\nEnter to confirm · Esc to cancel";
+        assert_eq!(trust_prompt_input(prompt), Some(&b"\x1b[B"[..]));
+        assert_eq!(
+            trust_prompt_input(&prompt.replace("❯ No, exit\nYes", "No, exit\n❯ Yes")),
+            Some(&b"\r"[..])
+        );
+        assert_eq!(trust_prompt_input("Yes, I trust this folder"), None);
+    }
+
+    #[test]
+    fn picker_tracks_focus_before_confirming_a_session() {
+        assert_eq!(picker_focus(" ❯ 2. 1w ago  Some session"), Some(2));
+        assert_eq!(picker_focus(" 2. 1w ago Some session"), None);
+    }
+
+    #[test]
+    fn imported_history_supports_cloud_conversations_without_code_changes() {
+        let text = r#"{"type":"assistant","remoteSourced":true,"sessionId":"8c9e87c5-ce31-4e82-9760-bc10e7cd75a6","gitBranch":"HEAD","message":{"content":[{"type":"text","text":"brainstorm"}]}}"#;
+        assert!(imported_history(text, "HEAD").is_ok());
+    }
+
+    #[test]
+    fn picker_extracts_cli_rows_and_preserves_selection_identity() {
+        let screen = "Select a session to resume (SoftwareSavants/mouyassir):\n\n      Updated  Session Title\n  ❯ 1. 1d ago  Rebrand name brainstorming\n    2. 1w ago  Mouyassir’s Notifications\n\n ↑/↓ to select · Enter to confirm · Esc to cancel";
+        let rows = picker_rows(screen).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].index, 1);
+        assert_eq!(rows[0].title, "Rebrand name brainstorming");
+        assert_eq!(rows[1].updated, "1w ago");
+        assert!(picker_rows("Loading Claude Code sessions…").is_none());
+        assert_eq!(
+            picker_rows("No Claude Code sessions found for owner/repo")
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn picker_rejects_partial_or_changed_cli_layout() {
+        assert!(
+            picker_rows("Select a session to resume:\n Updated Session Title\n 1. title only")
+                .is_none()
+        );
+        assert!(picker_rows("Select a session to resume:\n Updated Session Title\n 1. 1d ago  Title\nEnter to confirm").is_none());
+    }
 
     #[test]
     fn cloud_availability_requires_subscription_auth_and_first_party_provider() {
@@ -516,6 +808,7 @@ mod tests {
             staging.to_str().unwrap(),
             target.to_str().unwrap(),
             "funny-task",
+            false,
         )
         .unwrap();
         assert_eq!(git(&target, &["rev-parse", "HEAD"]), sha);
@@ -526,7 +819,8 @@ mod tests {
                 repo.to_str().unwrap(),
                 staging.to_str().unwrap(),
                 target.to_str().unwrap(),
-                "funny-task"
+                "funny-task",
+                false
             )
             .is_ok(),
             "retry must be idempotent"
@@ -541,10 +835,10 @@ mod tests {
         git(root.path(), &["commit", "--allow-empty", "-m", "base"]);
         let target = root.path().join("target");
         git(root.path(), &["checkout", "--detach"]);
-        assert!(prepare_worktree(repo, repo, target.to_str().unwrap(), "task").is_err());
+        assert!(prepare_worktree(repo, repo, target.to_str().unwrap(), "task", false).is_err());
         git(root.path(), &["switch", "main"]);
         std::fs::write(root.path().join("uncommitted"), "keep me").unwrap();
-        assert!(prepare_worktree(repo, repo, target.to_str().unwrap(), "task").is_err());
+        assert!(prepare_worktree(repo, repo, target.to_str().unwrap(), "task", false).is_err());
         assert_eq!(
             std::fs::read_to_string(root.path().join("uncommitted")).unwrap(),
             "keep me"

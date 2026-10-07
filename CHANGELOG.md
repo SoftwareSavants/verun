@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Replace native dropdowns with a styled, keyboard-accessible Select component.
+
+- Cloud sessions are searchable and selectable directly in New Task, with one-click local import through the Claude CLI and no manual terminal steps
+
 - Model selector includes Claude Opus 5.5 and GPT-6.1 Sol alongside GPT-6 Astra
 
 ## 0.14.0 - 2026-10-02

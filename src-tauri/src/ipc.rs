@@ -443,6 +443,17 @@ pub async fn begin_cloud_import(
     .await
 }
 
+#[tauri::command]
+pub async fn select_cloud_import(
+    map: State<'_, crate::cloud_import::CloudImportMap>,
+    pty_map: State<'_, ActivePtyMap>,
+    project_id: String,
+    import_id: String,
+    index: usize,
+) -> Result<(), String> {
+    crate::cloud_import::select(map.inner(), pty_map.inner(), &project_id, &import_id, index).await
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn finish_cloud_import(

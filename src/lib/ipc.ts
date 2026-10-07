@@ -3,12 +3,15 @@ import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, Att
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 
-export interface CloudImportStart { importId: string; terminalId: string }
+export interface CloudSessionChoice { index: number; title: string; updated: string }
+export interface CloudImportStart { importId: string; sessions: CloudSessionChoice[] }
 export interface CloudImportProgress { importId: string; phase: string }
 export const claudeCloudAvailability = () =>
   invoke<{ available: boolean; reason: string | null }>('claude_cloud_availability')
 export const beginCloudImport = (projectId: string) =>
   invoke<CloudImportStart>('begin_cloud_import', { projectId })
+export const selectCloudImport = (projectId: string, importId: string, index: number) =>
+  invoke<void>('select_cloud_import', { projectId, importId, index })
 export const finishCloudImport = (projectId: string, importId: string) =>
   invoke<TaskWithSession>('finish_cloud_import', { projectId, importId })
 export const cancelCloudImport = (importId: string) =>

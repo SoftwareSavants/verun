@@ -27,7 +27,7 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 
 ## Full workspace, not just a launcher
 
-- **Continue from Claude cloud** - choose a cloud session from New Task, import its conversation, and continue locally on an independent task branch. Requires Claude Code signed in with a Claude subscription.
+- **Continue from Claude cloud** - search cloud sessions directly in New Task and click one to import its conversation and code onto an independent local branch, without terminal steps. Requires Claude Code signed in with a Claude subscription.
 
 - **Code editor** - CodeMirror 6 with syntax highlighting, code folding, and 15+ languages
 - **TypeScript intellisense** - bundled tsgo with autocomplete, diagnostics, hover, go-to-definition, find references, and rename
