@@ -1,11 +1,10 @@
 import { Component, Show, createSignal, createEffect, onCleanup } from 'solid-js'
-import { startTaskCreation, setTasks } from '../store/tasks'
-import { setSessions } from '../store/sessions'
+import { startTaskCreation } from '../store/tasks'
 import { setSelectedTaskId, setSelectedProjectId, setSelectedSessionIdForTask, setShowArchived } from '../store/ui'
 import { projectById, updateProjectDefaultAgentInStore } from '../store/projects'
 import * as ipc from '../lib/ipc'
 import { agents } from '../store/agents'
-import type { AgentType, TaskWithSession } from '../types'
+import type { AgentType } from '../types'
 import { ExternalLink, Copy, Check } from 'lucide-solid'
 import { Dialog } from './Dialog'
 import { DialogFooter } from './DialogFooter'
@@ -25,19 +24,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
   const [agentType, setAgentType] = createSignal<AgentType>('claude')
   const [copied, setCopied] = createSignal(false)
   const [source, setSource] = createSignal<'local' | 'cloud'>('local')
-  const [importing, setImporting] = createSignal(false)
   const [cloudAvailability, setCloudAvailability] = createSignal<{ available: boolean; reason: string | null } | null>(null)
-
-  const imported = (result: TaskWithSession) => {
-    setTasks(prev => [result.task, ...prev.filter(t => t.id !== result.task.id)])
-    setSessions(prev => [result.session, ...prev.filter(s => s.id !== result.session.id)])
-    setSelectedTaskId(result.task.id)
-    setSelectedProjectId(result.task.projectId)
-    setSelectedSessionIdForTask(result.task.id, result.session.id)
-    setShowArchived(false)
-    setImporting(false)
-    props.onClose()
-  }
 
   const project = () => props.projectId ? projectById(props.projectId) : null
 
@@ -50,7 +37,6 @@ export const NewTaskDialog: Component<Props> = (props) => {
   createEffect(() => {
     if (props.open && props.projectId) {
       setSource('local')
-      setImporting(false)
       setCloudAvailability(null)
       let cancelled = false
       onCleanup(() => { cancelled = true })
@@ -110,7 +96,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
 
   return (
     <>
-    <Dialog open={props.open} onClose={() => { if (!importing()) props.onClose() }} onConfirm={source() === 'local' ? handleCreate : undefined} width="30rem">
+    <Dialog open={props.open} onClose={props.onClose} onConfirm={source() === 'local' ? handleCreate : undefined} width="30rem">
       <h2 class="text-base font-semibold text-text-primary mb-2">New Task</h2>
       <p class="text-sm text-text-muted mb-4">
         {source() === 'cloud' ? 'Continue a Claude cloud conversation with its code in a new local task.' : 'Creates a new worktree branched from the selected base. An agent session starts automatically.'}
@@ -118,7 +104,7 @@ export const NewTaskDialog: Component<Props> = (props) => {
 
       <div class="mb-4">
         <label for="task-source" class="text-xs text-text-dim mb-1.5 block">Start from</label>
-        <Select id="task-source" label="Start from" disabled={importing()} value={source()}
+        <Select id="task-source" label="Start from" value={source()}
           options={[{ value: 'local', label: 'Local' }, { value: 'cloud', label: 'Claude cloud session', disabled: !cloudAvailability()?.available }]}
           onChange={value => {
             setSource(value as 'local' | 'cloud')
@@ -181,10 +167,10 @@ export const NewTaskDialog: Component<Props> = (props) => {
 
       <Show when={props.open && cloudAvailability()?.available && props.projectId} keyed>
         {projectId => <div style={{ display: source() === 'cloud' ? undefined : 'none' }}>
-          <CloudSessionPicker projectId={projectId} onReady={imported} onBusyChange={setImporting} />
+          <CloudSessionPicker projectId={projectId} onStarted={props.onClose} />
         </div>}
       </Show>
-      <Show when={source() === 'local'} fallback={<div class="flex justify-end"><button class="btn-ghost" disabled={importing()} onClick={props.onClose}>Cancel</button></div>}>
+      <Show when={source() === 'local'} fallback={<div class="flex justify-end"><button class="btn-ghost" onClick={props.onClose}>Cancel</button></div>}>
       <DialogFooter
         onCancel={props.onClose}
         onConfirm={handleCreate}

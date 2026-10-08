@@ -20,6 +20,8 @@ import {
   loadTasks,
   archiveTask,
   isTaskCreating,
+  getCloudTaskPhase,
+  retryCloudTaskImport,
   isTaskArchiving,
   getTaskError,
   updateTaskName,
@@ -462,7 +464,7 @@ export const Sidebar: Component = () => {
                             onClick={handleClick}
                             onDblClick={() => { if (!disabled() && !hasError()) ipc.openTaskWindow(task.id, task.name || undefined) }}
                             onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
-                            title={windowed() ? 'Open in separate window — click to focus' : archiving() ? 'Archiving…' : creating() ? 'Setting up…' : hasError() ? 'Setup failed' : config().title}
+                            title={windowed() ? 'Open in separate window — click to focus' : archiving() ? 'Archiving…' : creating() ? (getCloudTaskPhase(task.id) ?? 'Setting up…') : hasError() ? 'Setup failed' : config().title}
                           >
                             <span
                               class={clsx("shrink-0", disabled() ? 'text-accent' : hasError() ? 'text-status-error' : config().color)}
@@ -503,7 +505,7 @@ export const Sidebar: Component = () => {
                                 <Show when={task.parentTaskId}>
                                   <GitBranch size={9} class="shrink-0 text-text-dim/70" />
                                 </Show>
-                                {task.branch}
+                                {getCloudTaskPhase(task.id) ?? task.branch}
                                 <Show when={isStartCommandRunning(task.id)}>
                                   <Play size={9} class="shrink-0 text-green-400 fill-green-400 animate-pulse" />
                                 </Show>
@@ -512,7 +514,10 @@ export const Sidebar: Component = () => {
                                 </Show>
                               </div>
                             </div>
-                            <Show when={!archiving()}>
+                            <Show when={hasError() && getCloudTaskPhase(task.id)}>
+                              <button class="btn-ghost text-xs" onClick={e => { e.stopPropagation(); retryCloudTaskImport(task.id) }}>Retry</button>
+                            </Show>
+                            <Show when={!archiving() && !getCloudTaskPhase(task.id)}>
                               <Show when={bindingIdx() !== null}>
                                 <kbd class="absolute right-2 top-1/2 -translate-y-1/2 -mt-px h-5 flex items-center leading-none text-[10px] font-mono text-text-dim pointer-events-none group-hover/task:opacity-0 transition-opacity">
                                   {'\u2318'}{bindingIdx()! + 1}

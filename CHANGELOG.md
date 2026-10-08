@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Cloud imports run in the background with named sidebar tasks, progress, and retry, freeing the New Task dialog immediately.
+
 ## 0.14.1 - 2026-10-07
 
 - Cloud imports keep the session title as the task name and show loading placeholders plus selected-session import progress.

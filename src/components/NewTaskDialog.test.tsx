@@ -8,7 +8,7 @@ const ipc = vi.hoisted(() => ({
 }))
 vi.mock('../lib/ipc', () => ipc)
 vi.mock('../store/projects', () => ({ projectById: () => ({ repoPath: '/repo', baseBranch: 'main' }), updateProjectDefaultAgentInStore: vi.fn() }))
-vi.mock('../store/tasks', () => ({ startTaskCreation: vi.fn(), setTasks: vi.fn() }))
+vi.mock('../store/tasks', () => ({ startTaskCreation: vi.fn(), startCloudTaskImport: vi.fn(), setTasks: vi.fn() }))
 vi.mock('../store/sessions', () => ({ setSessions: vi.fn() }))
 vi.mock('../store/ui', () => ({ setSelectedTaskId: vi.fn(), setSelectedProjectId: vi.fn(), setSelectedSessionIdForTask: vi.fn(), setShowArchived: vi.fn() }))
 vi.mock('../store/agents', () => ({ agents: [] }))
@@ -63,4 +63,13 @@ test('changing projects disposes the old prefetch and loads the new repository',
   setProject('second')
   await waitFor(() => expect(ipc.beginCloudImport).toHaveBeenCalledWith('second'))
   expect(ipc.cancelCloudImport).toHaveBeenCalledWith('prefetch')
+})
+
+test('selecting a cloud session closes the dialog immediately', async () => {
+  const close = vi.fn()
+  render(() => <NewTaskDialog open projectId="project" onClose={close} />)
+  await waitFor(() => expect(ipc.beginCloudImport).toHaveBeenCalledOnce())
+  choose('Claude cloud session')
+  fireEvent.click(await screen.findByRole('button', { name: /Notifications/ }))
+  expect(close).toHaveBeenCalledOnce()
 })

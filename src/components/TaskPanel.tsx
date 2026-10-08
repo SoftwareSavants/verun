@@ -74,6 +74,7 @@ import { initTaskContext } from "../store/taskContext";
 import {
   getTaskError,
   isTaskCreating,
+  getCloudTaskPhase,
   removePlaceholderTask,
   restoreTask,
   retryTaskCreation,
@@ -629,10 +630,10 @@ export const TaskPanel: Component = () => {
                         class="animate-spin text-accent mx-auto mb-3"
                       />
                       <p class="text-sm text-text-secondary mb-1">
-                        Setting up worktree…
+                        {getCloudTaskPhase(t().id) ?? "Setting up worktree…"}
                       </p>
                       <p class="text-xs text-text-dim">
-                        Fetching latest and creating branch
+                        {getCloudTaskPhase(t().id) ? "You can keep working in other tasks while this imports." : "Fetching latest and creating branch"}
                       </p>
                     </div>
                   </div>
@@ -647,7 +648,7 @@ export const TaskPanel: Component = () => {
                         class="text-status-error mx-auto mb-3"
                       />
                       <p class="text-sm text-text-secondary mb-2">
-                        Task setup failed
+                        {getCloudTaskPhase(t().id) ? "Cloud import failed" : "Task setup failed"}
                       </p>
                       <p class="text-xs text-status-error/80 bg-status-error/5 border border-status-error/10 rounded-lg px-3 py-2 mb-4 text-left">
                         {error()}

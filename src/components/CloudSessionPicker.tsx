@@ -1,33 +1,25 @@
 import { For, Show, createSignal, onCleanup, onMount, type Component } from 'solid-js'
-import { ArrowDownToLine, Check, Cloud, Loader2, RefreshCw, Search } from 'lucide-solid'
-import type { TaskWithSession } from '../types'
+import { ArrowDownToLine, Loader2, RefreshCw, Search } from 'lucide-solid'
+import { startCloudTaskImport } from '../store/tasks'
 import * as ipc from '../lib/ipc'
 
 interface Props {
   projectId: string
-  onReady: (result: TaskWithSession) => void
-  onBusyChange?: (busy: boolean) => void
+  onStarted: () => void
 }
 
 export const CloudSessionPicker: Component<Props> = (props) => {
   const [sessions, setSessions] = createSignal<ipc.CloudSessionChoice[]>([])
   const [loading, setLoading] = createSignal(true)
-  const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [query, setQuery] = createSignal('')
-  const [selected, setSelected] = createSignal<ipc.CloudSessionChoice | null>(null)
-  const [phase, setPhase] = createSignal<'import' | 'create'>('import')
   let importId: string | null = null
-  let teleported = false
   let disposed = false
-  let published = false
   let generation = 0
 
   async function load() {
-    if (busy()) return
     const current = ++generation
-    setLoading(true); setError(null); setSelected(null); setQuery('')
-    teleported = false
+    setLoading(true); setError(null); setQuery('')
     try {
       if (importId) { await ipc.cancelCloudImport(importId); importId = null }
       const result = await ipc.beginCloudImport(props.projectId)
@@ -38,37 +30,23 @@ export const CloudSessionPicker: Component<Props> = (props) => {
     finally { if (!disposed && current === generation) setLoading(false) }
   }
 
-  async function select(session: ipc.CloudSessionChoice) {
-    if (busy() || !importId) return
-    setBusy(true); props.onBusyChange?.(true); setError(null); setSelected(session)
-    try {
-      if (!teleported) {
-        setPhase('import')
-        await ipc.selectCloudImport(props.projectId, importId, session.index)
-        teleported = true
-      }
-      if (disposed) return
-      setPhase('create')
-      const result = await ipc.finishCloudImport(props.projectId, importId)
-      published = true
-      if (!disposed) props.onReady(result)
-    } catch (e) {
-      if (!disposed) setError(String(e).replace(/^Error: /, ''))
-    } finally {
-      if (!disposed) { setBusy(false); props.onBusyChange?.(false) }
-    }
+  function select(session: ipc.CloudSessionChoice) {
+    if (!importId) return
+    startCloudTaskImport(props.projectId, importId, session)
+    importId = null // The background job now owns cleanup, including retries.
+    props.onStarted()
   }
 
   const filtered = () => sessions().filter(s => s.title.toLowerCase().includes(query().toLowerCase()))
   onMount(() => void load())
   onCleanup(() => {
     disposed = true; generation++
-    if (importId && !published) void ipc.cancelCloudImport(importId).catch(() => {})
+    if (importId) void ipc.cancelCloudImport(importId).catch(() => {})
   })
 
   return (
     <div class="mb-4">
-      <Show when={!loading() && !busy()}>
+      <Show when={!loading()}>
         <div class="flex items-center justify-between mb-2">
           <span class="text-xs text-text-dim">Cloud sessions</span>
           <button class="btn-ghost text-xs flex items-center gap-1.5" onClick={() => void load()}>
@@ -88,39 +66,10 @@ export const CloudSessionPicker: Component<Props> = (props) => {
           </div>
         </div>
       </Show>
-      <Show when={busy()}>
-        <div class="rounded-lg bg-surface-1 ring-1 ring-outline/8 p-4" role="status" aria-live="polite">
-          <div class="flex items-start gap-3 mb-4">
-            <Cloud size={18} class="text-accent shrink-0 mt-0.5" />
-            <div class="min-w-0">
-              <p class="text-sm font-medium text-text-primary break-words">{selected()?.title}</p>
-              <p class="text-xs text-text-muted mt-1">Continuing from Claude cloud</p>
-            </div>
-          </div>
-          <ol class="list-none m-0 p-0 flex flex-col gap-3">
-            <li class="flex items-center gap-2 text-xs text-text-secondary" aria-current={phase() === 'import' ? 'step' : undefined}>
-              <Show when={phase() === 'create'} fallback={<Loader2 size={14} class="animate-spin text-accent" />}>
-                <span aria-label="Import conversation and code complete"><Check size={14} class="text-accent" /></span>
-              </Show>
-              Import conversation and code
-            </li>
-            <li class="flex items-center gap-2 text-xs" classList={{ 'text-text-primary': phase() === 'create', 'text-text-dim': phase() !== 'create' }} aria-current={phase() === 'create' ? 'step' : undefined}>
-              <Show when={phase() === 'create'} fallback={<span class="w-3.5 h-3.5 rounded-full ring-1 ring-outline/15" />}>
-                <Loader2 size={14} class="animate-spin text-accent" />
-              </Show>
-              Create local task
-            </li>
-          </ol>
-          <p class="text-xs text-text-muted mt-4">{phase() === 'import' ? 'Bringing your conversation and code to this Mac.' : 'Saving conversation history and preparing your workspace.'}</p>
-        </div>
-      </Show>
       <Show when={error()}>
         <p role="alert" class="text-sm text-status-error mb-3">{error()}</p>
-        <Show when={teleported && selected() && !busy()}>
-          <button class="btn-primary" onClick={() => void select(selected()!)}>Retry import</button>
-        </Show>
       </Show>
-      <Show when={!loading() && !busy() && !error()}>
+      <Show when={!loading() && !error()}>
         <Show when={sessions().length > 0} fallback={
           <p class="text-sm text-text-muted py-3">No cloud sessions for this repository. Start one in Claude Code on the web, then refresh.</p>
         }>

@@ -53,7 +53,7 @@ export function clearTaskError(id: string) {
 export async function loadTasks(projectId: string) {
   const list = await ipc.listTasks(projectId)
   // Replace tasks for this project, keep tasks from other projects
-  setTasks(prev => [...prev.filter(t => t.projectId !== projectId), ...list])
+  setTasks(prev => [...prev.filter(t => t.projectId !== projectId || (cloudImports.has(t.id) && !list.some(row => row.id === t.id))), ...list])
 }
 
 export const activeTasks = () =>
@@ -131,8 +131,89 @@ export function startTaskCreation(projectId: string, baseBranch: string, agentTy
   return placeholderId
 }
 
+interface CloudImportJob {
+  projectId: string
+  importId: string | null
+  choice: ipc.CloudSessionChoice
+  teleported: boolean
+  running: boolean
+}
+const cloudImports = new Map<string, CloudImportJob>()
+const [cloudPhases, setCloudPhases] = createSignal<Record<string, string>>({})
+export const getCloudTaskPhase = (id: string) => cloudPhases()[id] ?? null
+export const isCloudTaskImport = (id: string) => getCloudTaskPhase(id) !== null
+function clearCloudImport(id: string) {
+  cloudImports.delete(id)
+  setCloudPhases(prev => { const next = { ...prev }; delete next[id]; return next })
+}
+
+/** Transfer the picker to an app-owned job before the dialog unmounts. */
+export function startCloudTaskImport(projectId: string, importId: string, choice: ipc.CloudSessionChoice): string {
+  if (cloudImports.has(importId)) return importId
+  cloudImports.set(importId, { projectId, importId, choice, teleported: false, running: false })
+  setTasks(prev => [{
+    id: importId, projectId, name: choice.title, worktreePath: '', branch: '',
+    createdAt: Date.now(), mergeBaseSha: null, portOffset: 0, archived: false,
+    archivedAt: null, lastCommitMessage: null, parentTaskId: null, agentType: 'claude',
+  }, ...prev])
+  void runCloudTaskImport(importId)
+  return importId
+}
+
+export function retryCloudTaskImport(id: string) {
+  void runCloudTaskImport(id)
+}
+
+async function runCloudTaskImport(id: string) {
+  const job = cloudImports.get(id)
+  if (!job || job.running) return
+  job.running = true
+  clearTaskError(id)
+  addCreating(id)
+  const phase = (text: string) => setCloudPhases(prev => ({ ...prev, [id]: text }))
+  phase(job.teleported ? 'Preparing local task…' : 'Importing…')
+  try {
+    if (!job.importId) {
+      phase('Reconnecting…')
+      const fresh = await ipc.beginCloudImport(job.projectId)
+      job.importId = fresh.importId
+      // CLI ordinals can change. Never retry against an old position or an
+      // ambiguous title, since the CLI doesn't expose stable session IDs.
+      const matches = fresh.sessions.filter(s => s.title === job.choice.title)
+      if (matches.length !== 1) throw new Error('This session changed or has a duplicate title. Remove this task and choose it again from New Task.')
+      job.choice = matches[0]
+    }
+    if (!job.teleported) {
+      phase('Importing…')
+      await ipc.selectCloudImport(job.projectId, job.importId, job.choice.index)
+      job.teleported = true
+    }
+    phase('Preparing local task…')
+    const result = await ipc.finishCloudImport(job.projectId, job.importId)
+    const [{ setSessions }, ui] = await Promise.all([import('./sessions'), import('./ui')])
+    setSessions(prev => [result.session, ...prev.filter(s => s.id !== result.session.id)])
+    setTasks(prev => [result.task, ...prev.filter(t => t.id !== id && t.id !== result.task.id)])
+    if (ui.selectedTaskId() === id) {
+      ui.setSelectedTaskId(result.task.id)
+      ui.setSelectedSessionIdForTask(result.task.id, result.session.id)
+    }
+    clearCloudImport(id)
+  } catch (error) {
+    if (!job.teleported && job.importId) {
+      await ipc.cancelCloudImport(job.importId).catch(() => {})
+      job.importId = null
+    }
+    phase('Import failed')
+    setTaskError(id, String(error).replace(/^Error: /, ''))
+  } finally {
+    job.running = false
+    removeCreating(id)
+  }
+}
+
 /** Retry a failed task creation. */
 export function retryTaskCreation(placeholderId: string, projectId: string, baseBranch: string) {
+  if (cloudImports.has(placeholderId)) { retryCloudTaskImport(placeholderId); return }
   clearTaskError(placeholderId)
   addCreating(placeholderId)
 
@@ -164,6 +245,10 @@ export function retryTaskCreation(placeholderId: string, projectId: string, base
 
 /** Remove a placeholder task (e.g. after failed creation). */
 export function removePlaceholderTask(id: string) {
+  const cloud = cloudImports.get(id)
+  if (cloud?.running) return
+  if (cloud?.importId) void ipc.cancelCloudImport(cloud.importId).catch(() => {})
+  clearCloudImport(id)
   clearTaskError(id)
   removeCreating(id)
   setTasks(prev => prev.filter(t => t.id !== id))
