@@ -1,0 +1,47 @@
+import { beforeEach, expect, test } from 'vitest'
+import { addGroup, renameGroup, deleteGroup, moveProject, setGroupScope, setProjectQuery, toggleGroup, groupState, resetGroupState, projectSections, visibleProjects, revealProject } from './projectGroups'
+const projects = [{ id: 'v', name: 'Verun' }, { id: 'm', name: 'Mouyassir' }, { id: 'p', name: 'PureRose' }]
+beforeEach(() => { localStorage.clear(); resetGroupState() })
+test('groups are flat sections, focused scope filters projects, and search crosses groups', () => {
+  const products = addGroup('Products')
+  const clients = addGroup('Clients')
+  moveProject('v', products); moveProject('p', clients)
+  expect(projectSections(projects).map(s => s.name)).toEqual(['Products', 'Clients', 'Ungrouped'])
+  setGroupScope(products)
+  expect(visibleProjects(projects).map(p => p.id)).toEqual(['v'])
+  setProjectQuery('pure')
+  expect(visibleProjects(projects).map(p => p.id)).toEqual(['p'])
+  revealProject('p')
+  expect(groupState().scope).toBe(clients)
+  expect(visibleProjects(projects).map(p => p.id)).toEqual(['p'])
+})
+test('collapsed sections hide tasks from navigation but remain searchable', () => {
+  const group = addGroup('Products'); moveProject('v', group); toggleGroup(group)
+  expect(visibleProjects(projects).map(p => p.id)).not.toContain('v')
+  setProjectQuery('verun')
+  expect(visibleProjects(projects).map(p => p.id)).toEqual(['v'])
+})
+test('names are validated and deletion returns projects to Ungrouped without deleting them', () => {
+  const group = addGroup(' Products ')
+  expect(() => addGroup('products')).toThrow()
+  expect(() => renameGroup(group, '  ')).toThrow()
+  moveProject('v', group); setGroupScope(group); deleteGroup(group)
+  expect(groupState().scope).toBe('all')
+  expect(groupState().assignments.v).toBeUndefined()
+  expect(visibleProjects(projects)).toHaveLength(3)
+})
+test('preferences persist across reloads and malformed storage falls back safely', () => {
+  const id = addGroup('Products'); moveProject('v', id); setGroupScope(id)
+  resetGroupState()
+  expect(groupState().scope).toBe(id)
+  expect(groupState().assignments.v).toBe(id)
+  localStorage.setItem('verun:projectGroups', '{bad')
+  resetGroupState()
+  expect(groupState().groups).toEqual([])
+})
+test('deleting the last group restores the flat sidebar even if Ungrouped was collapsed', () => {
+  const id = addGroup('Temporary')
+  toggleGroup('ungrouped')
+  deleteGroup(id)
+  expect(visibleProjects(projects)).toHaveLength(3)
+})

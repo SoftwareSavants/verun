@@ -27,6 +27,8 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 
 ## Full workspace, not just a launcher
 
+- **Project groups** - organize repositories into collapsible sidebar sections, focus on one group, and search across every group without missing tasks that need attention.
+
 - **Continue from Claude cloud** - search cloud sessions directly in New Task and click one to import its conversation and code onto an independent local branch, without terminal steps. Imports run in the background with sidebar progress and retry. Requires Claude Code signed in with a Claude subscription.
 
 - **Code editor** - CodeMirror 6 with syntax highlighting, code folding, and 15+ languages

@@ -1,3 +1,4 @@
+import { visibleProjects } from '../store/projectGroups'
 import { Component, Show, onMount, onCleanup, createSignal, createEffect } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { Sidebar } from './Sidebar'
@@ -110,7 +111,7 @@ export const Layout: Component = () => {
           }
         } else {
           // Match sidebar ordering: iterate projects, then tasks within each project
-          const ordered = projects.flatMap(p => activeTasksForProject(p.id))
+          const ordered = visibleProjects(projects).flatMap(p => activeTasksForProject(p.id))
           if (idx < ordered.length) {
             focusOrSelectTask(ordered[idx])
           }
@@ -144,7 +145,7 @@ export const Layout: Component = () => {
       // Cmd+Alt+Down / Cmd+Alt+Up — move to next/previous task in the sidebar
       if (modPressed(e) && e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
         e.preventDefault()
-        const ordered = projects.flatMap(p => activeTasksForProject(p.id))
+        const ordered = visibleProjects(projects).flatMap(p => activeTasksForProject(p.id))
         const next = siblingTaskInList(ordered, selectedTaskId(), e.key === 'ArrowDown' ? 'down' : 'up')
         if (next) focusOrSelectTask(next)
       }

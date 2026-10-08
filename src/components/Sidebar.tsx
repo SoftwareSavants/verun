@@ -13,6 +13,10 @@ import {
 } from "solid-js";
 import { taskGit, refreshTaskGit } from "../store/git";
 import { newTaskIds } from "../lib/taskDiff";
+import { GroupHeading, GroupToolbar } from './ProjectGroups';
+import { Dialog } from './Dialog';
+import { Select } from './Select';
+import { groupState, projectQuery, projectSections, visibleProjects, projectGroup, groupName, moveProject, revealProject, syncProjectGroups } from '../store/projectGroups';
 import { projects } from "../store/projects";
 import {
   tasks,
@@ -28,6 +32,7 @@ import {
 } from "../store/tasks";
 import {
   selectedTaskId,
+  setSelectedProjectId,
   setSelectedTaskId,
   showSettings,
   setShowSettings,
@@ -189,6 +194,30 @@ export const Sidebar: Component = () => {
   const [archiveTaskTarget, setArchiveTaskTarget] = createSignal<string | null>(null);
   const [renamingTaskId, setRenamingTaskId] = createSignal<string | null>(null);
 
+  const [movingProject, setMovingProject] = createSignal<string | null>(null);
+  const [moveTarget, setMoveTarget] = createSignal('ungrouped');
+  const [groupError, setGroupError] = createSignal('');
+  const sections = createMemo(() => projectSections(projects));
+  const attentionTasks = (groupId: string) => tasks.filter(t => !t.archived && projectGroup(t.projectId) === groupId && isTaskAttention(t.id));
+  const otherAttention = createMemo(() => groupState().scope === 'all' ? [] :
+    [...groupState().groups, { id: 'ungrouped', name: 'Ungrouped' }]
+      .filter(g => g.id !== groupState().scope)
+      .map(g => ({ ...g, count: attentionTasks(g.id).length })).filter(g => g.count > 0));
+  const reveal = (projectId: string) => {
+    revealProject(projectId);
+    setSelectedProjectId(projectId);
+    const task = activeTasksForProject(projectId)[0];
+    if (task) focusOrSelectTask(task);
+  };
+  const jumpToAttention = (groupId: string) => {
+    const task = attentionTasks(groupId)[0];
+    if (task) { revealProject(task.projectId); focusOrSelectTask(task); }
+  };
+  onMount(() => {
+    window.addEventListener('storage', syncProjectGroups);
+    onCleanup(() => window.removeEventListener('storage', syncProjectGroups));
+  });
+
   const activeTasksByProject = createMemo(() => {
     const byProject: Record<string, typeof tasks> = {}
     for (const p of projects) byProject[p.id] = activeTasksForProject(p.id)
@@ -198,7 +227,7 @@ export const Sidebar: Component = () => {
   const taskBindingById = createMemo(() => {
     const map: Record<string, number | null> = {}
     let idx = 0
-    for (const p of projects) {
+    for (const p of visibleProjects(projects)) {
       for (const t of activeTasksByProject()[p.id] || []) {
         map[t.id] = idx < 9 ? idx : null
         idx++
@@ -278,6 +307,8 @@ export const Sidebar: Component = () => {
     setContextMenu({
       pos: { x: e.clientX, y: e.clientY },
       items: [
+        { label: 'Move to group…', action: () => { setMoveTarget(projectGroup(projectId)); setGroupError(''); setMovingProject(projectId); } },
+
         {
           label: "Open in Finder",
           icon: FolderOpen,
@@ -356,6 +387,21 @@ export const Sidebar: Component = () => {
         items={contextMenu()?.items || []}
       />
 
+      <Dialog open={!!movingProject()} onClose={() => setMovingProject(null)}>
+        <h2 class="text-sm font-semibold text-text-primary mb-3">Move {projectById(movingProject() ?? '')?.name} to group</h2>
+        <Select label="Destination group" value={moveTarget()} onChange={setMoveTarget} options={[
+          { value: 'ungrouped', label: 'Ungrouped' }, ...groupState().groups.map(g => ({ value: g.id, label: g.name }))
+        ]} />
+        <Show when={groupError()}><p role="alert" class="text-xs text-status-error mt-2">{groupError()}</p></Show>
+        <div class="flex justify-end gap-2 mt-4">
+          <button class="btn-ghost" onClick={() => setMovingProject(null)}>Cancel</button>
+          <button class="btn-primary" onClick={() => {
+            try { moveProject(movingProject()!, moveTarget()); setMovingProject(null); }
+            catch (e) { setGroupError(String(e).replace(/^Error: /, '')); }
+          }}>Move</button>
+        </div>
+      </Dialog>
+
       <div class="h-full bg-surface-1 flex flex-col overflow-hidden">
         {/* Header — also serves as titlebar drag region */}
         <div class="px-2 pt-10 pb-1.5 flex items-center justify-between drag-region" data-tauri-drag-region>
@@ -382,9 +428,25 @@ export const Sidebar: Component = () => {
           </button>
         </div>
 
+        <GroupToolbar attention={otherAttention()} onAttention={jumpToAttention} />
         {/* Project + task list */}
         <div class="flex-1 overflow-y-auto overflow-x-hidden px-2 no-drag">
-          <For each={projects}>
+          <Show when={projectQuery().trim()}>
+            <p class="text-[10px] text-text-dim px-2 py-1">Results from all groups</p>
+            <For each={visibleProjects(projects)}>{project => <button class="w-full px-2 py-2 text-left rounded-md hover:bg-surface-2" onClick={() => reveal(project.id)}>
+              <span class="block text-xs text-text-primary truncate">{project.name}</span>
+              <span class="block text-[10px] text-text-dim">{groupName(projectGroup(project.id))}</span>
+            </button>}</For>
+            <Show when={visibleProjects(projects).length === 0}><p class="text-xs text-text-muted p-2">No matching projects.</p></Show>
+          </Show>
+          <Show when={!projectQuery().trim()}>
+          <For each={sections()}>{section => <div>
+            <Show when={groupState().scope === 'all' && groupState().groups.length > 0}>
+              <GroupHeading id={section.id} name={section.name} count={section.projects.length} attention={attentionTasks(section.id).length} />
+            </Show>
+            <Show when={!section.collapsed}>
+              <Show when={section.projects.length === 0}><p class="px-2 py-2 text-[11px] text-text-dim">No projects yet. Right-click a project to move it here.</p></Show>
+          <For each={section.projects}>
             {(project) => (
               <div class="mb-3">
                 <div
@@ -544,6 +606,9 @@ export const Sidebar: Component = () => {
               </div>
             )}
           </For>
+            </Show>
+          </div>}</For>
+          </Show>
         </div>
 
         {/* Footer — compact icon strip */}

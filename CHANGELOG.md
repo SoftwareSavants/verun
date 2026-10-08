@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Project groups organize the sidebar with flat sections, a group filter, global project search, and cross-group attention alerts.
+
 - Cloud imports run in the background with named sidebar tasks, progress, and retry, freeing the New Task dialog immediately.
 
 ## 0.14.1 - 2026-10-07
