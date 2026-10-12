@@ -660,3 +660,6 @@ export const setResourceMonitorOverlayOpen = (open: boolean) =>
 
 export const getResourceUsageNow = () =>
   invoke<ResourceSample>('get_resource_usage_now')
+
+export const resolveTerminalFile = (terminalId: string, path: string) =>
+  invoke<{ taskId: string; relativePath: string }>('resolve_terminal_file', { terminalId, path })

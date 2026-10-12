@@ -3861,3 +3861,47 @@ mod tests {
         assert_eq!(cache.read().unwrap()[0].id, "claude");
     }
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalFile {
+    task_id: String,
+    relative_path: String,
+}
+
+#[tauri::command]
+pub async fn resolve_terminal_file(
+    pool: State<'_, SqlitePool>,
+    pty_map: State<'_, ActivePtyMap>,
+    terminal_id: String,
+    path: String,
+) -> Result<TerminalFile, String> {
+    let (task_id, pid, initial_cwd) = {
+        let handle = pty_map
+            .get(&terminal_id)
+            .ok_or("Terminal is no longer available")?;
+        (handle.task_id.clone(), handle.pid, handle.cwd.clone())
+    };
+    let task = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or("Task not found")?;
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            let cwd = if std::path::Path::new(&path).is_absolute() || path.starts_with("~/") {
+                std::path::PathBuf::from(initial_cwd)
+            } else {
+                crate::terminal_links::process_cwd(pid.ok_or("Terminal process unavailable")?)?
+            };
+            let relative_path = crate::terminal_links::resolve_file(
+                std::path::Path::new(&task.worktree_path),
+                &cwd,
+                &path,
+            )?;
+            Ok(TerminalFile {
+                task_id,
+                relative_path,
+            })
+        })
+        .await,
+    )
+}

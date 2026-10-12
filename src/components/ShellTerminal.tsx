@@ -10,6 +10,8 @@ import type { XtermEntry } from '../store/terminals'
 import * as ipc from '../lib/ipc'
 import { isMac, modPressed } from '../lib/platform'
 import { getXtermTheme, getXtermFontConfig, subscribeXtermToAppearance } from '../lib/terminalTheme'
+import { createFileLinkProvider } from '../lib/terminalFileLinks'
+import { openTerminalFile } from '../lib/openTerminalFile'
 import '@xterm/xterm/css/xterm.css'
 
 /**
@@ -316,6 +318,7 @@ export const ShellTerminal: Component<Props> = (props) => {
     term.loadAddon(fitAddon)
     term.loadAddon(searchAddon)
     term.loadAddon(new WebLinksAddon())
+    term.registerLinkProvider(createFileLinkProvider(term, link => { void openTerminalFile(props.terminalId, link) }))
     const unicode11 = new Unicode11Addon()
     term.loadAddon(unicode11)
     term.unicode.activeVersion = '11'

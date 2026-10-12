@@ -24,6 +24,7 @@ mod resource_monitor;
 mod snapshots;
 mod stream;
 mod task;
+mod terminal_links;
 mod tsgo_check;
 mod wakeup;
 mod watcher;
@@ -432,6 +433,7 @@ pub fn run() {
             ipc::cancel_workflow_run,
             // PTY / Terminal
             ipc::pty_spawn,
+            ipc::resolve_terminal_file,
             ipc::pty_listen,
             ipc::pty_ack,
             ipc::pty_write,

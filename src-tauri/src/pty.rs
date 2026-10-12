@@ -68,6 +68,8 @@ impl PtyBuffer {
 }
 
 pub struct PtyHandle {
+    pub cwd: String,
+    pub pid: Option<u32>,
     pub task_id: String,
     /// Display name shown in terminal tab (shell name, "Dev Server", "Setup", etc.)
     pub name: String,
@@ -250,6 +252,8 @@ pub fn spawn_pty(
     map.insert(
         terminal_id.clone(),
         PtyHandle {
+            cwd,
+            pid: child.process_id(),
             task_id,
             name: display_name,
             is_start_command,

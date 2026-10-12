@@ -36,7 +36,7 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 - **Problems panel** - project-wide type checking with click-to-navigate, one-click "ask agent to fix", and at most four background checker processes across all tasks
 - **Side-by-side diffs** - syntax-highlighted diffs for working-tree changes and individual commits
 - **Git workflow** - commit, push, create PR, merge, and inspect branch-scoped GitHub Actions/PR state without leaving the app; remote refresh is cached and only invalidated when relevant GitHub state changes
-- **Integrated terminal** - drop into any task's worktree with a built-in shell; bounded output buffers and parser backpressure keep noisy commands responsive while preserving recent scrollback across windows
+- **Integrated terminal** - drop into any task's worktree with a built-in shell; click file paths to open task files at their line and column in the editor; bounded output buffers and parser backpressure keep noisy commands responsive while preserving recent scrollback across windows
 - **File tree & Quick Open** - browse files (gitignored entries shown dimmed like VS Code), fuzzy-find with CMD+P, preview media and markdown inline
 - **Workspace search** - Cmd+Shift+F content search across the task's worktree with case/whole-word/regex toggles and include/exclude globs, powered by embedded ripgrep
 - **Multi-window** - pop any task into its own window for side-by-side work across monitors
