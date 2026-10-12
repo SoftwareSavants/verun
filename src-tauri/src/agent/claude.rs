@@ -41,8 +41,8 @@ impl Agent for Claude {
         use crate::agent::ModelOption;
         vec![
             ModelOption::new(
-                "claude-opus-5",
-                "Claude Opus 5",
+                "claude-opus-5-5",
+                "Claude Opus 5.5",
                 "Recommended for most workloads",
             ),
             ModelOption::new(
@@ -50,7 +50,7 @@ impl Agent for Claude {
                 "Claude Fable 5.1",
                 "Most capable for demanding reasoning and long-horizon work",
             ),
-            ModelOption::new("claude-opus-5-5", "Claude Opus 5.5", "Opus 5.5"),
+            ModelOption::new("claude-opus-5", "Claude Opus 5", "Previous-generation Opus"),
             ModelOption::new(
                 "claude-sonnet-5",
                 "Claude Sonnet 5",

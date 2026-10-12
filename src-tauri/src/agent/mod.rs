@@ -860,10 +860,10 @@ mod tests {
     }
 
     #[test]
-    fn claude_available_models_include_opus_5_first() {
+    fn claude_available_models_default_to_opus_5_5() {
         let models = Claude.available_models();
-        assert_eq!(models[0].id, "claude-opus-5");
-        assert_eq!(models[0].label, "Claude Opus 5");
+        assert_eq!(models[0].id, "claude-opus-5-5");
+        assert_eq!(models[0].label, "Claude Opus 5.5");
         assert_eq!(models[1].id, "claude-fable-5-1");
     }
 

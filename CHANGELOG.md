@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.14.2 - 2026-10-12
+
+- Claude defaults to Opus 5.5 for new model selections; Opus 5 remains available
+
 - Terminal file paths open in the editor at their line and column, resolving relative paths from the shell directory and reporting missing files
 
 - Project groups organize the sidebar with flat sections, a group filter, global project search, and cross-group attention alerts.
