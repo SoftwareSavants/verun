@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Muse Code (Meta) agent support via `muse serve` (MSP): streaming, tool calls, approvals, interrupt, resume, image attachments, and reasoning effort
+
 ## 0.14.2 - 2026-10-12
 
 - Claude defaults to Opus 5.5 for new model selections; Opus 5 remains available

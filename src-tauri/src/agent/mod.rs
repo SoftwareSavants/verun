@@ -1,9 +1,9 @@
 //! # Agents
 //!
-//! Verun runs several coding CLIs (Claude, Codex, Cursor, Gemini, OpenCode)
-//! with a single orchestration pipeline. This module is the seam: every
-//! agent-specific detail lives behind the [`Agent`] trait so that
-//! `task.rs`, `stream.rs`, and `ipc.rs` stay agent-agnostic.
+//! Verun runs several coding CLIs (Claude, Codex, Cursor, Gemini, Grok,
+//! Muse Code, OpenCode) with a single orchestration pipeline. This module is
+//! the seam: every agent-specific detail lives behind the [`Agent`] trait so
+//! that `task.rs`, `stream.rs`, and `ipc.rs` stay agent-agnostic.
 //!
 //! ## Rule of thumb
 //!
@@ -97,6 +97,7 @@ pub mod rpc;
 mod cursor;
 mod gemini;
 mod grok;
+mod muse;
 mod opencode;
 
 use serde::{Deserialize, Serialize};
@@ -108,6 +109,7 @@ pub use codex::Codex;
 pub use cursor::Cursor;
 pub use gemini::Gemini;
 pub use grok::Grok;
+pub use muse::Muse;
 pub use opencode::OpenCode;
 
 // ---------------------------------------------------------------------------
@@ -122,6 +124,7 @@ pub enum AgentKind {
     Cursor,
     Gemini,
     Grok,
+    Muse,
     OpenCode,
 }
 
@@ -132,6 +135,7 @@ impl AgentKind {
             "cursor" => Self::Cursor,
             "gemini" => Self::Gemini,
             "grok" => Self::Grok,
+            "muse" => Self::Muse,
             "opencode" => Self::OpenCode,
             _ => Self::Claude,
         }
@@ -144,6 +148,7 @@ impl AgentKind {
             Self::Cursor => "cursor",
             Self::Gemini => "gemini",
             Self::Grok => "grok",
+            Self::Muse => "muse",
             Self::OpenCode => "opencode",
         }
     }
@@ -154,6 +159,7 @@ impl AgentKind {
             Self::Codex,
             Self::Gemini,
             Self::Grok,
+            Self::Muse,
             Self::OpenCode,
             Self::Cursor,
         ]
@@ -167,6 +173,7 @@ impl AgentKind {
             Self::Cursor => Box::new(Cursor),
             Self::Gemini => Box::new(Gemini),
             Self::Grok => Box::new(Grok),
+            Self::Muse => Box::new(Muse),
             Self::OpenCode => Box::new(OpenCode),
         }
     }
@@ -1523,6 +1530,358 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(parse_rpc_frame(&db)["result"]["outcome"]["optionId"], "reject-once");
+    }
+
+    // ── Muse Code ───────────────────────────────────────────────────────
+
+    use crate::stream::OutputItem;
+
+    fn is_uuid_v7(s: &str) -> bool {
+        uuid::Uuid::parse_str(s)
+            .map(|u| u.get_version_num() == 7)
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn muse_registration_and_caps() {
+        assert_eq!(AgentKind::parse("muse"), AgentKind::Muse);
+        assert_eq!(AgentKind::Muse.as_str(), "muse");
+        assert!(AgentKind::all().contains(&AgentKind::Muse));
+        let a = AgentKind::Muse.implementation();
+        assert_eq!(a.cli_binary(), "muse");
+        assert_eq!(a.display_name(), "Muse Code");
+        assert_eq!(a.input_mode(), InputMode::JsonRpcStdio);
+        assert_eq!(a.build_session_args(&default_args()), vec!["serve".to_string()]);
+        assert!(a.uses_rpc());
+        assert!(a.persists_across_turns());
+        assert_eq!(a.abort_strategy(), AbortStrategy::Interrupt);
+        assert!(a.supports_resume());
+        assert!(a.supports_effort());
+        assert!(a.supports_attachments());
+        assert!(!a.supports_plan_mode());
+        assert!(!a.install_hint().is_empty());
+        assert!(!a.docs_url().is_empty());
+        assert_eq!(a.available_models()[0].id, "muse-spark-1.3");
+    }
+
+    #[test]
+    fn muse_msp_handshake_and_session_encoders() {
+        let a = Muse;
+        let init = parse_rpc_frame(
+            &a.rpc_encode_initialize(1, &RpcClientInfo { name: "verun", version: "0.9.0" })
+                .unwrap(),
+        );
+        assert_eq!(init["jsonrpc"], "2.0");
+        assert_eq!(init["id"], 1);
+        assert_eq!(init["method"], "initialize");
+        assert_eq!(init["params"]["clientInfo"]["name"], "verun");
+        assert_eq!(init["params"]["clientInfo"]["version"], "0.9.0");
+        // Verun cannot render userInput/request dialogs — ask the host to
+        // withhold them rather than block a turn on an unanswerable request.
+        assert_eq!(init["params"]["capabilities"]["userInputDialogs"], false);
+        assert!(a.rpc_encode_initialized().is_none());
+
+        let s = parse_rpc_frame(
+            &a.rpc_encode_start(
+                2,
+                &RpcStartParams {
+                    cwd: "/repo",
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: Some("muse-spark-1.3"),
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(s["method"], "session/start");
+        assert_eq!(s["params"]["workspaceRoot"], "/repo");
+        assert_eq!(s["params"]["modelId"], "muse-spark-1.3");
+        assert_eq!(s["params"]["approvalMode"], "onRequest");
+        assert!(is_uuid_v7(s["params"]["commandId"].as_str().unwrap()));
+
+        let mode = |t| {
+            parse_rpc_frame(
+                &a.rpc_encode_start(2, &RpcStartParams { cwd: "/r", trust_level: t, model: None })
+                    .unwrap(),
+            )
+        };
+        assert_eq!(mode(crate::policy::TrustLevel::FullAuto)["params"]["approvalMode"], "allowAll");
+        assert_eq!(
+            mode(crate::policy::TrustLevel::Supervised)["params"]["approvalMode"],
+            "promptUnmatched"
+        );
+        assert!(mode(crate::policy::TrustLevel::Normal)["params"].get("modelId").is_none());
+
+        assert_eq!(
+            a.rpc_parse_session_id(&json!({"session": {"sessionId": "s-1"}, "viewCursor": "c"})),
+            Some("s-1".into())
+        );
+        assert_eq!(a.rpc_parse_session_id(&json!({"sessionId": "s-1"})), None);
+
+        let r = parse_rpc_frame(
+            &a.rpc_encode_resume(
+                3,
+                &RpcResumeParams {
+                    session_id: "s-1",
+                    cwd: "/repo",
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: None,
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(r["method"], "session/resume");
+        assert_eq!(r["params"]["sessionId"], "s-1");
+        // History is already in Verun's DB; don't replay it.
+        assert_eq!(r["params"]["excludeItems"], true);
+        assert!(is_uuid_v7(r["params"]["commandId"].as_str().unwrap()));
+
+        assert!(a.rpc_is_recoverable_resume_error("sessionNotFound: no session s-1"));
+        assert!(a.rpc_is_recoverable_resume_error("session s-1 not found"));
+        assert!(!a.rpc_is_recoverable_resume_error("sessionInUse"));
+    }
+
+    #[test]
+    fn muse_msp_turn_and_interrupt_encoders() {
+        let a = Muse;
+        let images = vec!["data:image/png;base64,iVBORw0K".to_string()];
+        let t = parse_rpc_frame(
+            &a.rpc_encode_turn(
+                4,
+                &RpcTurnParams {
+                    session_id: "s-1",
+                    prompt: "fix the bug",
+                    image_urls: &images,
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: None,
+                    effort: Some("high"),
+                    plan_mode: false,
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(t["method"], "turn/start");
+        assert_eq!(t["params"]["sessionId"], "s-1");
+        assert!(is_uuid_v7(t["params"]["commandId"].as_str().unwrap()));
+        assert_eq!(t["params"]["input"][0], json!({"type": "text", "text": "fix the bug"}));
+        assert_eq!(
+            t["params"]["input"][1],
+            json!({"type": "image", "mediaType": "image/png", "base64Data": "iVBORw0K"})
+        );
+        assert_eq!(t["params"]["reasoningEffort"], "high");
+
+        let bare = parse_rpc_frame(
+            &a.rpc_encode_turn(
+                4,
+                &RpcTurnParams {
+                    session_id: "s-1",
+                    prompt: "hi",
+                    image_urls: &[],
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model: None,
+                    effort: None,
+                    plan_mode: false,
+                },
+            )
+            .unwrap(),
+        );
+        assert!(bare["params"].get("reasoningEffort").is_none());
+        assert_eq!(bare["params"]["input"].as_array().unwrap().len(), 1);
+
+        assert_eq!(
+            a.rpc_parse_turn_id(&json!({"turnId": "t-1", "disposition": "started"})),
+            Some("t-1".into())
+        );
+
+        let i = parse_rpc_frame(&a.rpc_encode_interrupt(5, "s-1", Some("t-1")).unwrap().unwrap());
+        assert_eq!(i["method"], "turn/interrupt");
+        assert_eq!(i["params"]["sessionId"], "s-1");
+        assert_eq!(i["params"]["turnId"], "t-1");
+        assert!(is_uuid_v7(i["params"]["commandId"].as_str().unwrap()));
+        // Without a turn id the host targets the current foreground turn.
+        let i2 = parse_rpc_frame(&a.rpc_encode_interrupt(6, "s-1", None).unwrap().unwrap());
+        assert!(i2["params"].get("turnId").is_none());
+    }
+
+    #[test]
+    fn muse_decode_streams_text_and_reasoning_deltas() {
+        let a = Muse;
+        let text = a.rpc_decode_notification(
+            "item/delta",
+            &json!({"itemId": "m1", "sessionId": "s", "delta": "Hel", "viewCursor": "1"}),
+        );
+        assert!(matches!(&text[..], [OutputItem::Text { text }] if text == "Hel"));
+        let explicit = a.rpc_decode_notification(
+            "item/delta",
+            &json!({"itemId": "m1", "field": "text", "delta": "lo", "viewCursor": "2"}),
+        );
+        assert!(matches!(&explicit[..], [OutputItem::Text { text }] if text == "lo"));
+        let thinking = a.rpc_decode_notification(
+            "item/delta",
+            &json!({"itemId": "r1", "field": "summary.0", "delta": "pondering", "viewCursor": "3"}),
+        );
+        assert!(matches!(&thinking[..], [OutputItem::Thinking { text }] if text == "pondering"));
+        // Tool output streams too, but the final text lands on item/completed.
+        assert!(a
+            .rpc_decode_notification("item/delta", &json!({"itemId": "c1", "field": "output", "delta": "x"}))
+            .is_empty());
+        // agentMessage completion must not duplicate the streamed text.
+        assert!(a
+            .rpc_decode_notification(
+                "item/completed",
+                &json!({"item": {"itemId": "m1", "kind": "agentMessage", "status": "completed", "revision": 2, "text": "Hello"}})
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn muse_decode_tool_call_lifecycle() {
+        let a = Muse;
+        let start = a.rpc_decode_notification(
+            "item/started",
+            &json!({"item": {"itemId": "c1", "kind": "toolCall", "status": "inProgress", "revision": 1,
+                              "tool": "shell", "args": "{\"command\":\"ls\"}"}}),
+        );
+        match &start[..] {
+            [OutputItem::ToolStart { tool, input }] => {
+                assert_eq!(tool, "shell");
+                assert!(input.contains("\"command\": \"ls\""), "args pretty-printed: {input}");
+            }
+            other => panic!("expected ToolStart, got {other:?}"),
+        }
+        // Almost-JSON args are passed through verbatim.
+        let raw = a.rpc_decode_notification(
+            "item/started",
+            &json!({"item": {"itemId": "c2", "kind": "toolCall", "status": "inProgress", "revision": 1,
+                              "tool": "edit", "args": "not json"}}),
+        );
+        assert!(matches!(&raw[..], [OutputItem::ToolStart { input, .. }] if input == "not json"));
+
+        let done = a.rpc_decode_notification(
+            "item/completed",
+            &json!({"item": {"itemId": "c1", "kind": "toolCall", "status": "completed", "revision": 3,
+                              "tool": "shell", "visibleOutput": "a.txt\n"}}),
+        );
+        assert!(matches!(&done[..], [OutputItem::ToolResult { text, is_error: false }] if text == "a.txt\n"));
+
+        let failed = a.rpc_decode_notification(
+            "item/completed",
+            &json!({"item": {"itemId": "c3", "kind": "toolCall", "status": "rejected", "revision": 2,
+                              "tool": "shell", "failureReason": "denied by user"}}),
+        );
+        assert!(matches!(&failed[..], [OutputItem::ToolResult { text, is_error: true }] if text == "denied by user"));
+
+        // User-message echoes are ignored (Verun renders its own bubble).
+        assert!(a
+            .rpc_decode_notification(
+                "item/started",
+                &json!({"item": {"itemId": "u1", "kind": "userMessage", "status": "completed", "revision": 1, "text": "hi"}})
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn muse_decode_turn_completed() {
+        let a = Muse;
+        let ok = a.rpc_decode_notification(
+            "turn/completed",
+            &json!({"sessionId": "s", "turnId": "t", "terminal": "completed", "viewCursor": "9",
+                    "usage": {"inputTokens": 120, "outputTokens": 40, "cachedTokens": 100,
+                              "cacheReadTokens": 90, "cacheWriteTokens": 10, "reasoningTokens": 5}}),
+        );
+        match &ok[..] {
+            [OutputItem::TurnEnd { status, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, error, .. }] => {
+                assert_eq!(status, "completed");
+                assert_eq!(*input_tokens, Some(120));
+                assert_eq!(*output_tokens, Some(40));
+                assert_eq!(*cache_read_tokens, Some(90));
+                assert_eq!(*cache_write_tokens, Some(10));
+                assert!(error.is_none());
+            }
+            other => panic!("expected TurnEnd, got {other:?}"),
+        }
+        let cancelled = a.rpc_decode_notification(
+            "turn/completed",
+            &json!({"sessionId": "s", "turnId": "t", "terminal": "cancelled"}),
+        );
+        assert!(matches!(&cancelled[..], [OutputItem::TurnEnd { status, .. }] if status == "interrupted"));
+        let failed = a.rpc_decode_notification(
+            "turn/completed",
+            &json!({"sessionId": "s", "turnId": "t", "terminal": "failed",
+                    "error": {"kind": "authRequired", "message": "run `muse login`", "retryable": false}}),
+        );
+        match &failed[..] {
+            [OutputItem::TurnEnd { status, error, .. }] => {
+                assert_eq!(status, "error");
+                assert_eq!(error.as_deref(), Some("run `muse login`"));
+            }
+            other => panic!("expected TurnEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn muse_approval_request_maps_to_approval_decide() {
+        let a = Muse;
+        assert!(a.rpc_is_approval("approval/request"));
+        assert!(!a.rpc_is_approval("approval/resolved"));
+        let params = json!({
+            "approvalId": "ap-1", "sessionId": "s-1", "itemId": "c1", "toolCallId": "c1",
+            "toolName": "shell", "turnId": "t-1", "taskId": "c1", "viewCursor": "5",
+            "judgeEscalated": false, "protectedWrite": false,
+            "rawArgs": "{\"command\":\"rm -rf build\"}",
+            "currentRequirementId": "req-1",
+            "subject": {"kind": "shell", "command": "rm -rf build"},
+            "availableChoices": [
+                {"choiceId": "ch-session", "decision": "approvedForSession", "label": "Always", "scope": "session"},
+                {"choiceId": "ch-once", "decision": "approved", "label": "Once", "scope": "once"},
+                {"choiceId": "ch-deny", "decision": "denied", "label": "Deny", "scope": "once", "acceptsFeedback": true}
+            ]
+        });
+        let entry = a.rpc_build_approval_entry("verun-s", "r1", "approval/request", &params);
+        assert_eq!(entry.tool_name, "Bash");
+        assert_eq!(entry.session_id, "verun-s");
+        assert_eq!(entry.tool_input["command"], "rm -rf build");
+
+        let allow = crate::task::ApprovalResponse { behavior: "allow".into(), updated_input: None, message: None };
+        let v = parse_rpc_frame(
+            &a.rpc_encode_approval_response("approval/request", &serde_json::Value::Null, &allow, &entry.tool_input)
+                .unwrap()
+                .unwrap(),
+        );
+        // MSP approvals are decided by a client command, not a JSON-RPC reply.
+        assert_eq!(v["method"], "approval/decide");
+        assert!(v["id"].is_string(), "string id so the ack is dropped by the reader");
+        assert_eq!(v["params"]["approvalId"], "ap-1");
+        assert_eq!(v["params"]["sessionId"], "s-1");
+        assert_eq!(v["params"]["requirementId"], "req-1");
+        assert_eq!(v["params"]["choiceId"], "ch-once");
+        assert!(is_uuid_v7(v["params"]["commandId"].as_str().unwrap()));
+        assert!(v["params"].get("feedback").is_none());
+
+        let deny = crate::task::ApprovalResponse {
+            behavior: "deny".into(),
+            updated_input: None,
+            message: Some("use cargo clean".into()),
+        };
+        let d = parse_rpc_frame(
+            &a.rpc_encode_approval_response("approval/request", &serde_json::Value::Null, &deny, &entry.tool_input)
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(d["params"]["choiceId"], "ch-deny");
+        assert_eq!(d["params"]["feedback"], "use cargo clean");
+
+        // fileAccess writes surface as Edit, reads as Read.
+        let write = a.rpc_build_approval_entry(
+            "s", "r", "approval/request",
+            &json!({"subject": {"kind": "fileAccess", "access": "write", "path": "/r/a.rs"}, "toolName": "edit"}),
+        );
+        assert_eq!(write.tool_name, "Edit");
+        assert_eq!(write.tool_input["file_path"], "/r/a.rs");
+        let read = a.rpc_build_approval_entry(
+            "s", "r", "approval/request",
+            &json!({"subject": {"kind": "fileAccess", "access": "read", "path": "/etc/hosts"}, "toolName": "read"}),
+        );
+        assert_eq!(read.tool_name, "Read");
     }
 
     #[test]

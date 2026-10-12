@@ -1872,7 +1872,7 @@ pub async fn stream_and_capture_rpc(
         tokio::select! {
             ev = events_rx.recv() => {
                 let Some(ev) = ev else { break };
-                match ev {
+                match crate::agent::rpc::promote_approval_notification(agent, ev) {
                     crate::agent::rpc::RpcEvent::Notification { method, params } => {
                         eprintln!("[verun][rpc][{session_id}] <- {method}");
 

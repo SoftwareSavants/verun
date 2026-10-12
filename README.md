@@ -12,7 +12,7 @@ Every task gets its own git worktree, branch, and set of ports - agents can't in
 
 ## Multi-agent support
 
-Pluggable agent backend with first-class support for Claude Code, Codex, and Grok (structured approvals, streaming, resume; plan mode where the agent supports it). Cursor, Gemini CLI, and OpenCode are also supported.
+Pluggable agent backend with first-class support for Claude Code, Codex, Grok, and Muse Code (structured approvals, streaming, resume; plan mode where the agent supports it). Cursor, Gemini CLI, and OpenCode are also supported.
 
 Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Astra.
 

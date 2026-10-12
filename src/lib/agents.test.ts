@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import { compareVersions, meetsVersionReq } from './agents'
+import { agentIcon, claudeIcon, compareVersions, meetsVersionReq, museIcon } from './agents'
+import { AGENT_DISPLAY_NAMES } from '../types'
 
 describe('agent version helpers', () => {
   test('compares plain semantic versions', () => {
@@ -17,5 +18,13 @@ describe('agent version helpers', () => {
   test('treats unparseable versions as not meeting requirements', () => {
     expect(Number.isNaN(compareVersions('Claude Code', '2.1.111'))).toBe(true)
     expect(meetsVersionReq('Claude Code', '2.1.111')).toBe(false)
+  })
+})
+
+describe('agent registry', () => {
+  test('registers Muse Code with its own icon and display name', () => {
+    expect(AGENT_DISPLAY_NAMES.muse).toBe('Muse Code')
+    expect(agentIcon('muse')).toBe(museIcon)
+    expect(agentIcon('muse')).not.toBe(claudeIcon)
   })
 })
