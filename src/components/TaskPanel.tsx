@@ -593,7 +593,7 @@ export const TaskPanel: Component = () => {
                       >
                         <Terminal size={13} />
                       </button>
-                      <Show when={hasGitActionsContent(t().id)}>
+                      <Show when={t().isGit !== false && hasGitActionsContent(t().id)}>
                         <span class="w-px h-4 bg-outline/8 mx-1" />
                         <GitActions
                           taskId={t().id}

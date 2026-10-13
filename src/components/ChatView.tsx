@@ -17,9 +17,9 @@ import {
   sideQuestionState,
 } from '../store/sideQuestion'
 import { addToast, setSelectedTaskId, setSelectedSessionIdForTask } from '../store/ui'
-import { setSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, sendMessage, createSession } from '../store/sessions'
+import { sessionById, setSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, sendMessage, createSession } from '../store/sessions'
 import { planModeForSession, thinkingModeForSession, fastModeForSession } from '../store/sessionContext'
-import { setTasks } from '../store/tasks'
+import { taskById, setTasks } from '../store/tasks'
 import { setMainView } from '../store/editorView'
 import { formatCost, formatTokens } from '../lib/format'
 
@@ -343,6 +343,10 @@ const CopyButton: Component<{ text: string }> = (props) => {
 }
 
 const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props) => {
+  const canForkWorktree = () => {
+    const task = taskById(sessionById(props.sessionId)?.taskId ?? '')
+    return task?.isGit !== false && !task?.existingDirectory
+  }
   const [open, setOpen] = createSignal(false)
   const [submenuOpen, setSubmenuOpen] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
@@ -414,6 +418,7 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
         </button>
         <div
           class="relative"
+          style={{ display: canForkWorktree() ? undefined : 'none' }}
           onMouseEnter={() => setSubmenuOpen(true)}
         >
           <button

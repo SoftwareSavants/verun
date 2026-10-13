@@ -9,6 +9,7 @@ import { ActionsPanel } from './ActionsPanel'
 import { rightPanelTab, setRightPanelTab, type RightPanelTab } from '../store/ui'
 import { problemCountForTask, isProblemsLoading } from '../store/problems'
 import { problemsHeight, setProblemsHeightAndPersist } from '../store/ui'
+import { taskById } from '../store/tasks'
 import { taskGit } from '../store/git'
 
 interface Props {
@@ -39,9 +40,11 @@ export const RightPanel: Component<Props> = (props) => {
 
   const counts = () => problemCountForTask(props.taskId)
 
+  const isGit = () => taskById(props.taskId)?.isGit !== false
+  const activeTab = () => !isGit() && ['changes', 'actions'].includes(rightPanelTab()) ? 'files' : rightPanelTab()
   const tabs = createMemo<TabDef[]>(() => {
-    const list = [...BASE_TABS]
-    if (taskGit(props.taskId).github) {
+    const list = BASE_TABS.filter(tab => isGit() || tab.id !== 'changes')
+    if (isGit() && taskGit(props.taskId).github) {
       list.push({ id: 'actions', label: 'Actions', icon: PlayCircle })
     }
     return list
@@ -55,7 +58,7 @@ export const RightPanel: Component<Props> = (props) => {
           <button
             class={clsx(
               'h-7 w-7 flex items-center justify-center rounded-md transition-colors no-drag',
-              rightPanelTab() === tab.id
+              activeTab() === tab.id
                 ? 'bg-surface-3 text-text-secondary'
                 : 'text-text-dim hover:text-text-muted hover:bg-surface-2'
             )}
@@ -69,16 +72,16 @@ export const RightPanel: Component<Props> = (props) => {
 
       {/* Content */}
       <div class="flex-1 overflow-hidden">
-        <Show when={rightPanelTab() === 'changes'}>
+        <Show when={activeTab() === 'changes'}>
           <CodeChanges taskId={props.taskId} />
         </Show>
-        <Show when={rightPanelTab() === 'files'}>
+        <Show when={activeTab() === 'files'}>
           <FilesPanel taskId={props.taskId} />
         </Show>
-        <Show when={rightPanelTab() === 'search'}>
+        <Show when={activeTab() === 'search'}>
           <GlobalSearchPanel taskId={props.taskId} />
         </Show>
-        <Show when={rightPanelTab() === 'actions' && !!taskGit(props.taskId).github}>
+        <Show when={activeTab() === 'actions' && !!taskGit(props.taskId).github}>
           <ActionsPanel taskId={props.taskId} />
         </Show>
       </div>

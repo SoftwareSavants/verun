@@ -127,7 +127,7 @@ vi.mock('../store/fileSync', () => ({
 }))
 
 vi.mock('./TaskPanel', () => ({ TaskPanel: () => null }))
-vi.mock('./NewTaskDialog', () => ({ NewTaskDialog: () => null }))
+vi.mock('./NewTaskView', () => ({ NewTaskView: () => null }))
 vi.mock('./ConfirmDialog', () => ({ ConfirmDialog: () => null }))
 vi.mock('./ToastContainer', () => ({ ToastContainer: () => null }))
 vi.mock('./SelectionMenu', () => ({ SelectionMenu: () => null }))

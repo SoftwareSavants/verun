@@ -28,6 +28,7 @@ mod terminal_links;
 mod tsgo_check;
 mod wakeup;
 mod watcher;
+mod workspace;
 mod worktree;
 
 use dashmap::DashMap;
@@ -338,6 +339,7 @@ pub fn run() {
             ipc::import_project_config,
             // Tasks
             ipc::create_task,
+            ipc::inspect_task_directory,
             ipc::begin_cloud_import,
             ipc::select_cloud_import,
             ipc::claude_cloud_availability,

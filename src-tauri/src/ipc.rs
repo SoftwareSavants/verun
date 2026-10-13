@@ -518,6 +518,7 @@ pub async fn create_task(
     project_id: String,
     base_branch: Option<String>,
     agent_type: Option<String>,
+    directory: Option<String>,
 ) -> Result<TaskWithSession, String> {
     let project = db::get_project(pool.inner(), &project_id)
         .await?
@@ -535,6 +536,7 @@ pub async fn create_task(
         hook_pty_map.inner(),
         setup_in_progress.inner(),
         task::CreateTaskParams {
+            directory,
             project_id,
             repo_path: project.repo_path,
             base_branch: branch,
@@ -708,6 +710,13 @@ pub async fn check_task_worktree(
         .await?
         .ok_or_else(|| format!("Task {id} not found"))?;
 
+    if t.existing_directory {
+        return tokio::task::spawn_blocking(move || {
+            (std::path::Path::new(&t.worktree_path).is_dir(), true)
+        })
+        .await
+        .map_err(|e| e.to_string());
+    }
     let project = db::get_project(pool.inner(), &t.project_id)
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
@@ -751,7 +760,11 @@ pub async fn restore_task(
         setup_in_progress.inner(),
         &t.id,
         &t.worktree_path,
-        &project.setup_hook,
+        if t.existing_directory {
+            ""
+        } else {
+            &project.setup_hook
+        },
         t.port_offset,
         &project.repo_path,
     );
@@ -1310,6 +1323,9 @@ pub async fn merge_branch(
         .await?
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
+    if t.existing_directory {
+        return Err("Merge branches from the existing repository directly".into());
+    }
     let project = db::get_project(pool.inner(), &t.project_id)
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
@@ -1723,7 +1739,8 @@ pub async fn git_commit_amend(
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
     let hash = flatten_join(
-        tokio::task::spawn_blocking(move || git_ops::commit_amend(&t.worktree_path, &message)).await,
+        tokio::task::spawn_blocking(move || git_ops::commit_amend(&t.worktree_path, &message))
+            .await,
     )?;
     emit_git_local_changed(&app, &task_id);
     Ok(hash)
@@ -1778,7 +1795,12 @@ pub async fn get_staged_diff(
 
     flatten_join(
         tokio::task::spawn_blocking(move || {
-            git_ops::get_staged_diff(&t.worktree_path, &file_path, context_lines, ignore_whitespace)
+            git_ops::get_staged_diff(
+                &t.worktree_path,
+                &file_path,
+                context_lines,
+                ignore_whitespace,
+            )
         })
         .await,
     )
@@ -1864,19 +1886,21 @@ pub async fn get_branch_commits(
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
     let base = project.base_branch.clone();
-    let cached = t.merge_base_sha.clone();
+    let cached = if t.existing_directory { None } else { t.merge_base_sha.clone() };
+    let existing_directory = t.existing_directory;
     let wt = t.worktree_path.clone();
     let tid = t.id.clone();
     let tx = db_tx.inner().clone();
 
     flatten_join(
         tokio::task::spawn_blocking(move || {
+            let base = if existing_directory { worktree::detect_base_branch(&wt) } else { base };
             // Compute + cache merge base on first call so it survives PR merges
             let merge_base = match cached {
                 Some(ref sha) => sha.clone(),
                 None => {
                     let sha = git_ops::find_merge_base(&wt, &base).unwrap_or_default();
-                    if !sha.is_empty() {
+                    if !sha.is_empty() && !existing_directory {
                         let _ = tx.try_send(db::DbWrite::SetMergeBaseSha {
                             id: tid,
                             sha: sha.clone(),
@@ -3904,4 +3928,13 @@ pub async fn resolve_terminal_file(
         })
         .await,
     )
+}
+
+#[tauri::command]
+pub async fn inspect_task_directory(
+    path: String,
+) -> Result<crate::workspace::DirectoryInfo, String> {
+    tokio::task::spawn_blocking(move || crate::workspace::inspect_directory(&path))
+        .await
+        .map_err(|e| e.to_string())?
 }

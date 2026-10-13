@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, on, onMount, onCleanup } from 'solid-js'
+import { Component, Show, createSignal, createEffect, on, onMount, onCleanup } from 'solid-js'
 import { listen, emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useWindowContext } from '../lib/windowContext'
@@ -12,7 +12,7 @@ import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setShowQuickOp
 import { hydrateTerminalsForTask } from '../store/terminals'
 import { useTaskShortcuts } from '../lib/useTaskShortcuts'
 import { TaskPanel } from './TaskPanel'
-import { NewTaskDialog } from './NewTaskDialog'
+import { NewTaskView } from './NewTaskView'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ToastContainer } from './ToastContainer'
 import { SelectionMenu } from './SelectionMenu'
@@ -135,11 +135,12 @@ export const TaskWindowShell: Component = () => {
   return (
     <>
       <div class="flex flex-col h-screen w-screen bg-surface-0 text-text-primary select-none overflow-hidden">
-        <TaskPanel />
+        <Show when={showNewTask() && ctx.projectId} fallback={<TaskPanel />}>
+          <NewTaskView projectId={ctx.projectId!} onClose={handleNewTaskClose} />
+        </Show>
       </div>
       <ToastContainer />
       <SelectionMenu pos={selMenu()} onClose={() => setSelMenu(null)} />
-      <NewTaskDialog open={showNewTask()} projectId={ctx.projectId} onClose={handleNewTaskClose} />
       <ConfirmDialog
         open={showQuitConfirm()}
         title="Quit Verun?"

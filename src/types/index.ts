@@ -29,6 +29,8 @@ export interface Task {
   projectId: string;
   name: string | null;
   worktreePath: string;
+  existingDirectory?: boolean;
+  isGit?: boolean;
   branch: string;
   createdAt: number;
   mergeBaseSha: string | null;

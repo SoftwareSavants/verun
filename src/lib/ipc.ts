@@ -66,8 +66,8 @@ export const importProjectConfig = (projectId: string, taskId?: string) =>
   invoke<{ setupHook: string; destroyHook: string; startCommand: string }>('import_project_config', { projectId, taskId: taskId ?? null })
 
 // Tasks
-export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType) =>
-  invoke<TaskWithSession>('create_task', { projectId, baseBranch, agentType })
+export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType, directory?: string) =>
+  invoke<TaskWithSession>('create_task', { projectId, baseBranch, agentType, directory })
 
 export const listTasks = (projectId: string): Promise<Task[]> =>
   DEMO
@@ -663,3 +663,6 @@ export const getResourceUsageNow = () =>
 
 export const resolveTerminalFile = (terminalId: string, path: string) =>
   invoke<{ taskId: string; relativePath: string }>('resolve_terminal_file', { terminalId, path })
+
+export interface DirectoryInfo { path: string; isGit: boolean; branch: string }
+export const inspectTaskDirectory = (path: string) => invoke<DirectoryInfo>('inspect_task_directory', { path })

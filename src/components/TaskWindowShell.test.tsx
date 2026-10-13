@@ -138,7 +138,7 @@ vi.mock('../store/fileSync', () => ({
 
 // Stub the heavy children so we don't drag in editor/xterm modules.
 vi.mock('./TaskPanel', () => ({ TaskPanel: () => null }))
-vi.mock('./NewTaskDialog', () => ({ NewTaskDialog: () => null }))
+vi.mock('./NewTaskView', () => ({ NewTaskView: () => null }))
 vi.mock('./ConfirmDialog', () => ({ ConfirmDialog: () => null }))
 vi.mock('./ToastContainer', () => ({ ToastContainer: () => null }))
 vi.mock('./SelectionMenu', () => ({ SelectionMenu: () => null }))

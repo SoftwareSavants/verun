@@ -137,14 +137,15 @@ export function setRightPanelTab(tab: RightPanelTab) {
 // to focus its input even if it's already open.
 export const [focusSearchRequest, setFocusSearchRequest] = createSignal(0)
 
-export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
-
-// Set to a project id to open the New Task dialog for that project. Shared
-// across Layout, Sidebar, and post-addProject flows so every entry point that
-// creates a project can open the dialog consistently.
+// The open draft belongs to this project. It creates no task until the first send.
+// All entry points share this state so navigation keeps the draft available.
 export const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null)
 
 export function requestNewTaskForProject(projectId: string) {
+  setSelectedProjectId(projectId)
+  setSelectedTaskId(null)
+  setShowSettings(false)
+  setShowArchived(false)
   setNewTaskProjectId(projectId)
 }
 

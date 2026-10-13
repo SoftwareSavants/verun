@@ -70,7 +70,7 @@ export async function initSetupListeners() {
       }
     } else if (status === 'failed') {
       setSetupTasks(taskId, { status: 'failed', error, terminalId, hookType: hookType as 'setup' | 'destroy' })
-      clearQueuedMessage(taskId)
+      // Keep the prompt available for editing or retrying setup.
     }
   })
 

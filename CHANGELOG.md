@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- New tasks open as drafts with workspace selection below the composer; sending the first message starts work in an isolated worktree, the project repository, or any existing folder
+- Existing-directory tasks preserve shared files on archive/delete and hide Git controls in non-Git folders
+
 ## 0.14.2 - 2026-10-12
 
 - Claude defaults to Opus 5.5 for new model selections; Opus 5 remains available

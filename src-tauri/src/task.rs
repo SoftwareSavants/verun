@@ -926,6 +926,7 @@ pub struct CreateTaskParams {
     pub from_task_window: bool,
     pub agent_type: String, // flows to the first session, not stored on the task
     pub source_window: String,
+    pub directory: Option<String>,
 }
 
 pub async fn create_task(
@@ -936,6 +937,7 @@ pub async fn create_task(
     setup_in_progress: &SetupInProgress,
     params: CreateTaskParams,
 ) -> Result<(Task, Session), String> {
+    let _workspace_guard = crate::workspace::LIFECYCLE_LOCK.lock().await;
     let CreateTaskParams {
         project_id,
         repo_path,
@@ -945,20 +947,30 @@ pub async fn create_task(
         from_task_window,
         agent_type,
         source_window,
+        directory,
     } = params;
     let id = Uuid::new_v4().to_string();
-    let branch = generate_branch_name(&repo_path);
+    let mut branch = generate_branch_name(&repo_path);
     let now = epoch_ms();
 
     // Phase 1: Create worktree only (fast — git ops)
-    let worktree_path = {
+    let existing_directory = directory.is_some();
+    let mut is_git = true;
+    let worktree_path = if let Some(path) = directory {
+        let info = tokio::task::spawn_blocking(move || crate::workspace::inspect_directory(&path))
+            .await
+            .map_err(|e| e.to_string())??;
+        branch = info.branch;
+        is_git = info.is_git;
+        info.path
+    } else {
         let rp = repo_path.clone();
         let br = branch.clone();
         let bb = base_branch;
         tokio::task::spawn_blocking(move || worktree::create_worktree(&rp, &br, &bb))
             .await
-            .map_err(|e| format!("Join error: {e}"))?
-    }?;
+            .map_err(|e| format!("Join error: {e}"))??
+    };
 
     // Write per-task verun MCP config under the app data dir (never the
     // project worktree, so committed `.mcp.json` files are left untouched).
@@ -1000,15 +1012,24 @@ pub async fn create_task(
         parent_task_id: None,
         agent_type: agent_type.clone(),
         last_pushed_sha: None,
+        existing_directory,
+        is_git,
     };
 
+    // Persist both records atomically before the first prompt can be sent.
+    let session = new_session(task.id.clone(), agent_type, None);
+    let (done, ready) = tokio::sync::oneshot::channel();
     db_tx
-        .send(db::DbWrite::InsertTask(task.clone()))
+        .send(db::DbWrite::InsertTaskWithSession {
+            task: Box::new(task.clone()),
+            session: Box::new(session.clone()),
+            lines: vec![],
+            done,
+        })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
-
-    // Auto-create the first session with the chosen agent
-    let session = create_session(app, db_tx, task.id.clone(), agent_type, None).await?;
+    ready.await.map_err(|e| format!("DB write failed: {e}"))??;
+    let _ = app.emit("session-created", &session);
 
     // Notify all windows about the new task so other windows can reload.
     // The source window skips the reload since it already has the task from
@@ -1040,7 +1061,7 @@ pub async fn create_task(
         setup_in_progress,
         &task.id,
         &worktree_path,
-        &setup_hook,
+        if existing_directory { "" } else { &setup_hook },
         port_offset,
         &repo_path,
     );
@@ -1060,6 +1081,21 @@ pub async fn delete_task(
     delete_branch: bool,
     skip_destroy_hook: bool,
 ) -> Result<(), String> {
+    let _workspace_guard = crate::workspace::LIFECYCLE_LOCK.lock().await;
+    let other_paths: Vec<String> =
+        sqlx::query_scalar("SELECT worktree_path FROM tasks WHERE id != ?")
+            .bind(&task.id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    let path = task.worktree_path.clone();
+    let shared =
+        tokio::task::spawn_blocking(move || crate::workspace::has_other_users(&path, &other_paths))
+            .await
+            .map_err(|e| e.to_string())?;
+    let cleanup_workspace =
+        crate::workspace::allows_cleanup(task.existing_directory, i64::from(shared));
+
     // Kill active processes belonging to THIS task only - never sessions on other tasks.
     let task_session_ids = db::list_all_session_ids_for_task(pool, &task.id)
         .await
@@ -1092,7 +1128,7 @@ pub async fn delete_task(
 
     let rp = repo_path.to_string();
     let wtp = task.worktree_path.clone();
-    let hook = if skip_destroy_hook {
+    let hook = if skip_destroy_hook || !cleanup_workspace {
         String::new()
     } else {
         destroy_hook.to_string()
@@ -1105,8 +1141,10 @@ pub async fn delete_task(
                 eprintln!("[verun] destroy hook failed: {e}");
             }
         }
-        worktree::delete_worktree(&rp, &wtp)?;
-        if delete_branch {
+        if cleanup_workspace {
+            worktree::delete_worktree(&rp, &wtp)?;
+        }
+        if cleanup_workspace && delete_branch {
             if let Err(e) = worktree::delete_branch(&rp, &branch) {
                 eprintln!("[verun] branch delete failed: {e}");
             }
@@ -1141,6 +1179,21 @@ pub async fn archive_task(
     repo_path: &str,
     skip_destroy_hook: bool,
 ) -> Result<(), String> {
+    let workspace_guard = crate::workspace::LIFECYCLE_LOCK.lock().await;
+    let other_paths: Vec<String> =
+        sqlx::query_scalar("SELECT worktree_path FROM tasks WHERE id != ?")
+            .bind(&task.id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    let path = task.worktree_path.clone();
+    let shared =
+        tokio::task::spawn_blocking(move || crate::workspace::has_other_users(&path, &other_paths))
+            .await
+            .map_err(|e| e.to_string())?;
+    let cleanup_workspace =
+        crate::workspace::allows_cleanup(task.existing_directory, i64::from(shared));
+
     // Kill active processes belonging to THIS task only - never sessions on other tasks.
     let task_session_ids = db::list_all_session_ids_for_task(pool, &task.id)
         .await
@@ -1193,9 +1246,9 @@ pub async fn archive_task(
         serde_json::json!({ "taskId": task.id, "reason": "archived" }),
     );
 
-    let rp = repo_path.to_string();
-    let branch = task.branch.clone();
-    let hook = if skip_destroy_hook {
+    let rp = task.worktree_path.clone();
+    let branch = "HEAD".to_string();
+    let hook = if skip_destroy_hook || !cleanup_workspace {
         String::new()
     } else {
         destroy_hook.to_string()
@@ -1205,6 +1258,7 @@ pub async fn archive_task(
     let task_id = task.id.clone();
     let db_tx_bg = db_tx.clone();
     tokio::spawn(async move {
+        let _workspace_guard = workspace_guard;
         let last_commit_message = tokio::task::spawn_blocking(move || {
             if !hook.is_empty() {
                 if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
@@ -1233,15 +1287,8 @@ pub async fn archive_task(
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
-/// Create a new session record (no process spawned yet — that happens on send_message)
-pub async fn create_session(
-    app: &AppHandle,
-    db_tx: &DbWriteTx,
-    task_id: String,
-    agent_type: String,
-    model: Option<String>,
-) -> Result<Session, String> {
-    let session = Session {
+fn new_session(task_id: String, agent_type: String, model: Option<String>) -> Session {
+    Session {
         id: Uuid::new_v4().to_string(),
         task_id,
         name: None,
@@ -1259,7 +1306,18 @@ pub async fn create_session(
         agent_type,
         model,
         closed_at: None,
-    };
+    }
+}
+
+/// Create a new session record (no process spawned yet — that happens on send_message)
+pub async fn create_session(
+    app: &AppHandle,
+    db_tx: &DbWriteTx,
+    task_id: String,
+    agent_type: String,
+    model: Option<String>,
+) -> Result<Session, String> {
+    let session = new_session(task_id, agent_type, model);
 
     db_tx
         .send(db::DbWrite::CreateSession(session.clone()))
@@ -2377,9 +2435,7 @@ fn spawn_turn_start_response_watcher(
     agent_kind: crate::agent::AgentKind,
     busy: Arc<AtomicBool>,
     current_turn_id: Arc<TokioMutex<Option<String>>>,
-    rx: tokio::sync::oneshot::Receiver<
-        Result<serde_json::Value, crate::agent::rpc::JsonRpcError>,
-    >,
+    rx: tokio::sync::oneshot::Receiver<Result<serde_json::Value, crate::agent::rpc::JsonRpcError>>,
 ) {
     tokio::spawn(async move {
         let err_msg = match rx.await {
@@ -3500,6 +3556,11 @@ pub async fn fork_session_to_new_task(
     let parent_task = db::get_task(pool, &parent_session.task_id)
         .await?
         .ok_or_else(|| format!("Task {} not found", parent_session.task_id))?;
+    if parent_task.existing_directory || !parent_task.is_git {
+        return Err(
+            "Fork into a new task requires an isolated worktree. Fork in this task instead.".into(),
+        );
+    }
     let project = db::get_project(pool, &parent_task.project_id)
         .await?
         .ok_or_else(|| format!("Project {} not found", parent_task.project_id))?;
@@ -3605,6 +3666,8 @@ pub async fn fork_session_to_new_task(
         parent_task_id: Some(parent_task.id.clone()),
         agent_type: parent_session.agent_type.clone(),
         last_pushed_sha: None,
+        existing_directory: false,
+        is_git: true,
     };
 
     let parent_agent = AgentKind::parse(&parent_session.agent_type).implementation();
@@ -3845,7 +3908,10 @@ mod tests {
     fn verun_mcp_config_path_helper_matches_unix_mcp_path() {
         let app_data = std::path::Path::new("/tmp/verun-app-data");
         let path = verun_mcp_config_path_for_task(app_data, "task-42");
-        assert_eq!(path, Some(crate::mcp::verun_mcp_config_path(app_data, "task-42")));
+        assert_eq!(
+            path,
+            Some(crate::mcp::verun_mcp_config_path(app_data, "task-42"))
+        );
     }
 
     #[test]

@@ -441,6 +441,8 @@ pub async fn begin(
         parent_task_id: None,
         agent_type: "claude".into(),
         last_pushed_sha: None,
+        existing_directory: false,
+        is_git: true,
     };
     let spawn = tokio::task::spawn_blocking({
         let staging = staging.clone();
@@ -636,7 +638,7 @@ pub async fn finish(
     // Enqueue writes together; a receipt confirms persistence before exposing the task.
     let (done, received) = tokio::sync::oneshot::channel();
     db_tx
-        .send(DbWrite::ImportCloudTask {
+        .send(DbWrite::InsertTaskWithSession {
             task: Box::new(task.clone()),
             session: Box::new(session.clone()),
             lines: lines.into_iter().map(|l| (l, now)).collect(),

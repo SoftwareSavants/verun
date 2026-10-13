@@ -295,6 +295,11 @@ pub fn migrations() -> Vec<Migration> {
               ON scheduled_wakeups(fire_at) WHERE fired_at IS NULL;
         "#,
         kind: MigrationKind::Up,
+    }, Migration {
+        version: 25,
+        description: "track existing task directories and git capability",
+        sql: "ALTER TABLE tasks ADD COLUMN existing_directory INTEGER NOT NULL DEFAULT 0; ALTER TABLE tasks ADD COLUMN is_git INTEGER NOT NULL DEFAULT 1;",
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -318,6 +323,8 @@ pub struct Project {
     pub default_agent_type: String,
 }
 
+fn default_true() -> bool { true }
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -325,6 +332,12 @@ pub struct Task {
     pub project_id: String,
     pub name: Option<String>,
     pub worktree_path: String,
+    #[sqlx(default)]
+    #[serde(default)]
+    pub existing_directory: bool,
+    #[sqlx(default)]
+    #[serde(default = "default_true")]
+    pub is_git: bool,
     pub branch: String,
     pub created_at: i64,
     pub merge_base_sha: Option<String>,
@@ -505,7 +518,7 @@ pub struct GitHubCacheEntry {
 
 #[allow(dead_code)]
 pub enum DbWrite {
-    ImportCloudTask {
+    InsertTaskWithSession {
         task: Box<Task>,
         session: Box<Session>,
         lines: Vec<(String, i64)>,
@@ -769,7 +782,7 @@ async fn drain_refs_for_sessions(
 
 pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(), sqlx::Error> {
     match write {
-        DbWrite::ImportCloudTask {
+        DbWrite::InsertTaskWithSession {
             task: t,
             session: s,
             lines,
@@ -777,9 +790,9 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
         } => {
             let result = async {
                 let mut tx = pool.begin().await?;
-                sqlx::query("INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, agent_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                sqlx::query("INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, agent_type, existing_directory, is_git) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                     .bind(&t.id).bind(&t.project_id).bind(&t.name).bind(&t.worktree_path)
-                    .bind(&t.branch).bind(t.created_at).bind(t.port_offset).bind(&t.agent_type)
+                    .bind(&t.branch).bind(t.created_at).bind(t.port_offset).bind(&t.agent_type).bind(t.existing_directory).bind(t.is_git)
                     .execute(&mut *tx).await?;
                 sqlx::query("INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, agent_type, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
                     .bind(&s.id).bind(&s.task_id).bind(&s.name).bind(&s.resume_session_id)
@@ -797,7 +810,7 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
                     .flat_map(|(line, _)| crate::blob::extract_hashes_from_output_line(line))
                     .collect();
                 log_refcount_err(
-                    "incr ImportCloudTask",
+                    "incr InsertTaskWithSession",
                     crate::blob::incr_refs(pool, &hashes).await,
                 );
             }
@@ -922,8 +935,8 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
         // -- Tasks --
         DbWrite::InsertTask(t) => {
             sqlx::query(
-                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id, agent_type) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks (id, project_id, name, worktree_path, branch, created_at, port_offset, parent_task_id, agent_type, existing_directory, is_git) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&t.id)
             .bind(&t.project_id)
@@ -934,6 +947,8 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
             .bind(t.port_offset)
             .bind(&t.parent_task_id)
             .bind(&t.agent_type)
+            .bind(t.existing_directory)
+            .bind(t.is_git)
             .execute(pool)
             .await?;
         }
@@ -1802,7 +1817,7 @@ pub async fn get_trust_level(pool: &SqlitePool, task_id: &str) -> Result<String,
 
 pub async fn get_repo_path_for_task(pool: &SqlitePool, task_id: &str) -> Result<String, String> {
     let row: Option<(String,)> = sqlx::query_as(
-        "SELECT p.repo_path FROM projects p \
+        "SELECT CASE WHEN t.existing_directory THEN t.worktree_path ELSE p.repo_path END FROM projects p \
          JOIN tasks t ON t.project_id = p.id \
          WHERE t.id = ?",
     )
@@ -1990,7 +2005,7 @@ pub(crate) mod tests {
     #[test]
     fn migration_versions_are_sequential() {
         let m = migrations();
-        assert_eq!(m.len(), 24);
+        assert_eq!(m.len(), 25);
         for (i, mig) in m.iter().enumerate() {
             assert_eq!(
                 mig.version,
@@ -2037,6 +2052,57 @@ pub(crate) mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn atomic_task_creation_preserves_directory_capabilities() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        let mut task = make_task("p-001");
+        task.existing_directory = true;
+        task.is_git = false;
+        let session = make_session(&task.id);
+        let (done, ready) = tokio::sync::oneshot::channel();
+        process_write(
+            &pool,
+            DbWrite::InsertTaskWithSession {
+                task: Box::new(task),
+                session: Box::new(session),
+                lines: vec![],
+                done,
+            },
+        )
+        .await
+        .unwrap();
+        ready.await.unwrap().unwrap();
+        let saved = get_task(&pool, "t-001").await.unwrap().unwrap();
+        assert!(saved.existing_directory);
+        assert!(!saved.is_git);
+        assert!(get_session(&pool, "s-001").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn direct_directory_task_persists_capabilities_and_uses_its_own_folder() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        let mut task = make_task("p-001");
+        task.existing_directory = true;
+        task.is_git = false;
+        task.worktree_path = "/notes".into();
+        process_write(&pool, DbWrite::InsertTask(task))
+            .await
+            .unwrap();
+        let saved = get_task(&pool, "t-001").await.unwrap().unwrap();
+        assert!(saved.existing_directory);
+        assert!(!saved.is_git);
+        assert_eq!(
+            get_repo_path_for_task(&pool, "t-001").await.unwrap(),
+            "/notes"
+        );
+    }
+
     pub(crate) fn make_task(project_id: &str) -> Task {
         Task {
             id: "t-001".into(),
@@ -2053,6 +2119,8 @@ pub(crate) mod tests {
             parent_task_id: None,
             agent_type: "claude".into(),
             last_pushed_sha: None,
+            existing_directory: false,
+            is_git: true,
         }
     }
 
@@ -2091,7 +2159,7 @@ pub(crate) mod tests {
         let (done, receipt) = tokio::sync::oneshot::channel();
         process_write(
             &pool,
-            DbWrite::ImportCloudTask {
+            DbWrite::InsertTaskWithSession {
                 task: Box::new(make_task("p-001")),
                 session: Box::new(session),
                 lines: vec![("history".into(), 1000)],
@@ -2107,7 +2175,7 @@ pub(crate) mod tests {
         let (done, receipt) = tokio::sync::oneshot::channel();
         process_write(
             &pool,
-            DbWrite::ImportCloudTask {
+            DbWrite::InsertTaskWithSession {
                 task: Box::new(make_task("p-001")),
                 session: Box::new(session),
                 lines: vec![("history".into(), 1000)],

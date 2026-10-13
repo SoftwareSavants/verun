@@ -2,6 +2,7 @@ import { createStore, produce, reconcile } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
 import type { GitStatus, BranchCommit, PrInfo, CiCheck, GitHubRepo } from '../types'
+import { taskById } from './tasks'
 import { selectedTaskId } from './ui'
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,7 @@ export async function refreshTaskGit(
   taskId: string,
   opts: RefreshOpts = {},
 ): Promise<void> {
+  if (taskById(taskId)?.isGit === false) return
   const { local = true, remote = false, force = false } = opts
 
   ensureKey(taskId)

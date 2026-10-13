@@ -1356,6 +1356,7 @@ async fn perform_spawn_task(
         hook_pty_map.inner(),
         setup_in_progress.inner(),
         crate::task::CreateTaskParams {
+            directory: None,
             project_id: project_id.clone(),
             repo_path: project.repo_path,
             base_branch: branch,
@@ -1678,7 +1679,9 @@ fn find_start_command_pty(map: &crate::pty::ActivePtyMap, task_id: &str) -> Opti
 /// project's `.mcp.json` is never read or written. Claude Code picks this
 /// file up via `--mcp-config <path>`.
 pub fn verun_mcp_config_path(app_data_dir: &Path, task_id: &str) -> PathBuf {
-    app_data_dir.join("mcp-configs").join(format!("{task_id}.json"))
+    app_data_dir
+        .join("mcp-configs")
+        .join(format!("{task_id}.json"))
 }
 
 /// Write the per-task verun MCP config file containing only the `verun`
@@ -2001,6 +2004,8 @@ mod tests {
             parent_task_id: None,
             agent_type: "claude".into(),
             last_pushed_sha: None,
+            existing_directory: false,
+            is_git: true,
         }
     }
 
@@ -2743,7 +2748,6 @@ mod tests {
     // the `verun` MCP server and (2) auto-approve our read-only and
     // worktree-scoped lifecycle tools. The file is local-scope (typically
     // gitignored) so it doesn't pollute committed state.
-
 
     #[test]
     fn pre_approve_adds_verun_to_enabled_mcpjson_servers() {

@@ -2,7 +2,7 @@ import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanu
 import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
 import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession, codexLivePlanForSession } from '../store/sessionContext'
 import { setSelectedSessionIdForTask, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
-import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
+import { isSetupRunning, setupFailed, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
@@ -2051,8 +2051,8 @@ export const MessageInput: Component<Props> = (props) => {
       {/* Queued message indicator (setup hook still running) */}
       <Show when={selectedTaskId() && queuedMessages[selectedTaskId()!]}>
         <div class="flex items-center gap-2 px-3 py-1.5 mb-1 text-xs text-text-dim bg-surface-1 rounded-lg border border-accent/10">
-          <Loader2 size={10} class="animate-spin text-accent shrink-0" />
-          <span class="truncate">Message queued — will send when setup completes</span>
+          <Show when={!setupFailed(selectedTaskId()!)}><Loader2 size={10} class="animate-spin text-accent shrink-0" /></Show>
+          <span class="truncate">{setupFailed(selectedTaskId()!) ? "Setup failed. Prompt saved; retry setup or edit it." : "Message queued — will send when setup completes"}</span>
           <button
             class="ml-auto shrink-0 text-text-dim hover:text-text-muted transition-colors"
             onClick={() => {

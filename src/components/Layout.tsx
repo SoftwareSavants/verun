@@ -5,7 +5,7 @@ import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
-import { NewTaskDialog } from './NewTaskDialog'
+import { NewTaskView } from './NewTaskView'
 import { AddProjectDialog } from './AddProjectDialog'
 import { CloneRepoDialog } from './CloneRepoDialog'
 import { BtsBuilderDialog } from './BtsBuilderDialog'
@@ -14,7 +14,7 @@ import * as ipc from '../lib/ipc'
 import { hydrateTerminalsForTask } from '../store/terminals'
 import { activeTasksForProject } from '../store/tasks'
 import { projects } from '../store/projects'
-import { selectedProjectId, selectedTaskId } from '../store/ui'
+import { selectedProjectId, selectedTaskId, setSelectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
 import { setShowQuickOpen } from '../store/ui'
 import { GlobalCommandPalette, setShowGlobalPalette } from './GlobalCommandPalette'
@@ -23,6 +23,12 @@ import { useTaskShortcuts } from '../lib/useTaskShortcuts'
 
 export const Layout: Component = () => {
   const [dragging, setDragging] = createSignal(false)
+  const [lastTaskId, setLastTaskId] = createSignal<string | null>(null)
+  createEffect(() => { const id = selectedTaskId(); if (id) setLastTaskId(id) })
+  const closeDraft = () => {
+    setNewTaskProjectId(null)
+    if (!selectedTaskId()) setSelectedTaskId(lastTaskId())
+  }
 
   // Restore sidebar width from localStorage
   onMount(() => {
@@ -184,15 +190,18 @@ export const Layout: Component = () => {
           <ArchivedPage />
         </Show>
         <Show when={!showSettings() && !showArchived()}>
-          <TaskPanel />
+          <Show when={newTaskProjectId() && selectedTaskId()}>
+            <button class="text-xs text-text-muted text-left px-5 pt-9 pb-2 bg-surface-1 hover:text-text-primary" onClick={() => setSelectedTaskId(null)}>New task · Draft</button>
+          </Show>
+          <div class="flex-1 min-h-0" style={{ display: newTaskProjectId() && !selectedTaskId() ? 'none' : undefined }}><TaskPanel /></div>
+          <Show when={newTaskProjectId()} keyed>{projectId =>
+            <div class="flex-1 min-h-0" style={{ display: selectedTaskId() ? 'none' : undefined }}>
+              <NewTaskView projectId={projectId} onClose={() => { if (newTaskProjectId() === projectId) closeDraft() }} />
+            </div>
+          }</Show>
         </Show>
       </div>
 
-      <NewTaskDialog
-        open={!!newTaskProjectId()}
-        projectId={newTaskProjectId()}
-        onClose={() => setNewTaskProjectId(null)}
-      />
       <AddProjectDialog
         open={!!addProjectPath()}
         repoPath={addProjectPath()}
