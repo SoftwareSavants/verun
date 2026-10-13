@@ -8,7 +8,7 @@ Spin up multiple AI coding agents - in isolated git worktrees or existing folder
 
 ## Run agents in parallel
 
-New tasks open as drafts. Write a prompt, choose where to run it below the composer, and send to start. Use a new worktree for an isolated branch and ports, the project folder to work in place, or any existing folder, including non-Git directories. Tasks sharing a folder see the same files; archiving or removing a direct-folder task preserves those files. For isolated worktrees, lifecycle hooks copy `.env` files, install dependencies, and start dev servers automatically so each agent starts ready to work. Define your setup once in a `.verun.json` and the whole team gets the same config.
+New tasks open as drafts. Write a prompt, pick a harness and model from the combined selector, choose where to run it below the composer, and send to start. Use a new worktree for an isolated branch and ports, the project folder to work in place, or any existing folder, including non-Git directories. Tasks sharing a folder see the same files; archiving or removing a direct-folder task preserves those files. For isolated worktrees, lifecycle hooks copy `.env` files, install dependencies, and start dev servers automatically so each agent starts ready to work. Define your setup once in a `.verun.json` and the whole team gets the same config.
 
 ## Multi-agent support
 

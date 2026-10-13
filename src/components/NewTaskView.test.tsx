@@ -9,7 +9,7 @@ vi.mock('../lib/ipc', () => ({
   inspectTaskDirectory: mocks.inspect,
 }))
 vi.mock('../store/projects', () => ({ projectById: () => ({ id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' }) }))
-vi.mock('../store/agents', () => ({ agents: [] }))
+vi.mock('../store/agents', () => ({ agents: [{ id: 'claude', name: 'Claude Code', installed: true, supportsModelSelection: true, models: [{ id: 'opus', label: 'Opus', description: '' }] }, { id: 'codex', name: 'Codex', installed: true, supportsModelSelection: true, models: [{ id: 'gpt', label: 'GPT', description: '' }] }] }))
 vi.mock('../store/draftTask', () => ({ startDraftTask: mocks.start }))
 vi.mock('./AgentPicker', () => ({ AgentPicker: () => <span>Claude</span> }))
 vi.mock('./CloudSessionPicker', () => ({ CloudSessionPicker: () => null }))
@@ -52,4 +52,14 @@ test('a selected non-Git folder is shown and creation errors preserve the prompt
   await screen.findByRole('alert')
   expect((screen.getByRole('textbox', { name: 'Task prompt' }) as HTMLTextAreaElement).value).toBe('Organize notes')
   expect(close).not.toHaveBeenCalled()
+})
+
+test('the combined picker passes both harness and model into task creation', async () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Choose model: Opus' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Codex' }))
+  fireEvent.click(screen.getByRole('button', { name: 'GPT' }))
+  fireEvent.input(screen.getByRole('textbox', { name: 'Task prompt' }), { target: { value: 'Build this' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ agentType: 'codex', model: 'gpt' })))
 })

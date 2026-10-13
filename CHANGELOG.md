@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New task composer combines harness and model selection in one dropdown with a harness sidebar and searchable models
+
 - Task drafts use a stable prompt/cloud switch, a tighter composer, and compact workspace details
 
 - New tasks open as drafts with workspace selection below the composer; sending the first message starts work in an isolated worktree, the project repository, or any existing folder

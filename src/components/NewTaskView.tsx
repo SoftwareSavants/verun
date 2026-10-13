@@ -6,7 +6,7 @@ import { agents } from '../store/agents'
 import { startDraftTask } from '../store/draftTask'
 import * as ipc from '../lib/ipc'
 import type { AgentType } from '../types'
-import { AgentPicker } from './AgentPicker'
+import { HarnessModelPicker } from './HarnessModelPicker'
 import { Select } from './Select'
 import { CloudSessionPicker } from './CloudSessionPicker'
 
@@ -14,6 +14,8 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
   const project = () => projectById(props.projectId)
   const [message, setMessage] = createSignal('')
   const [agent, setAgent] = createSignal<AgentType>('claude')
+  const [model, setModel] = createSignal<string>()
+  const selectedModel = () => model() ?? agents.find(a => a.id === agent())?.models?.[0]?.id
   const [baseBranch, setBaseBranch] = createSignal('main')
   const [branches, setBranches] = createSignal<string[]>([])
   const [workspace, setWorkspace] = createSignal('worktree')
@@ -32,6 +34,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
     onCleanup(() => { cancelled = true })
     const p = project()
     setAgent(p?.defaultAgentType ?? 'claude')
+    setModel(undefined)
     setBaseBranch(p?.baseBranch ?? 'main')
     setBranches([])
     ipc.refreshAgents().catch(() => {})
@@ -58,7 +61,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
     setSending(true)
     setError('')
     try {
-      await startDraftTask({ projectId: props.projectId, baseBranch: baseBranch(), agentType: agent(), directory: directory(), message: message().trim() })
+      await startDraftTask({ projectId: props.projectId, baseBranch: baseBranch(), agentType: agent(), model: selectedModel(), directory: directory(), message: message().trim() })
       props.onClose()
     } catch (e) { setError(String(e)) }
     finally { setSending(false) }
@@ -90,7 +93,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
               onInput={e => setMessage(e.currentTarget.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void send() } }} />
             <div class="flex items-center justify-between px-3 pb-3 gap-3">
-              <AgentPicker value={agent()} onChange={value => { if (!sending()) setAgent(value) }} projectId={props.projectId} defaultAgent={project()?.defaultAgentType} />
+              <HarnessModelPicker agent={agent()} model={selectedModel()} disabled={sending()} onPick={(nextAgent, nextModel) => { setAgent(nextAgent); setModel(nextModel) }} />
               <button aria-label="Send" title="Send (Enter)" disabled={!message().trim() || sending() || choosing() || unavailable()} onClick={send}
                 class="w-8 h-8 rounded-lg flex items-center justify-center bg-accent text-surface-0 disabled:opacity-35 transition-opacity">
                 <Show when={sending()} fallback={<ArrowUp size={16} />}><Loader2 size={16} class="animate-spin" /></Show>

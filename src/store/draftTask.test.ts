@@ -1,8 +1,8 @@
 import { beforeEach, expect, test, vi } from 'vitest'
-const m = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), queue: vi.fn(), running: vi.fn(), failed: vi.fn(), select: vi.fn(), toast: vi.fn(), current: vi.fn() }))
+const m = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), queue: vi.fn(), running: vi.fn(), failed: vi.fn(), select: vi.fn(), toast: vi.fn(), current: vi.fn(), model: vi.fn() }))
 vi.mock('../lib/ipc', () => ({ createTask: m.create }))
 vi.mock('./tasks', () => ({ setTasks: vi.fn() }))
-vi.mock('./sessions', () => ({ setSessions: vi.fn(), setOutputItems: vi.fn(), sendMessage: m.send }))
+vi.mock('./sessions', () => ({ setSessions: vi.fn(), setOutputItems: vi.fn(), sendMessage: m.send, updateSessionModel: m.model }))
 vi.mock('./setup', () => ({ isSetupRunning: m.running, setupFailed: m.failed, queueMessage: m.queue }))
 vi.mock('./ui', () => ({ selectedTaskId: m.current, setSelectedProjectId: vi.fn(), setSelectedTaskId: m.select, setSelectedSessionIdForTask: vi.fn(), setShowArchived: vi.fn(), addToast: m.toast }))
 import { startDraftTask } from './draftTask'
@@ -16,7 +16,7 @@ test('first message targets the new session in the chosen folder', async () => {
   await startDraftTask(input)
   expect(m.create).toHaveBeenCalledWith('p', 'main', 'claude', '/notes')
   expect(m.select).toHaveBeenCalledWith('task')
-  expect(m.send).toHaveBeenCalledWith('session', 'Organize notes')
+  expect(m.send).toHaveBeenCalledWith('session', 'Organize notes', undefined, undefined)
 })
 test('waits for setup before delivering the first message', async () => {
   m.running.mockReturnValue(true)
@@ -59,4 +59,15 @@ test('finishing creation does not steal focus after switching to another task', 
   resolve()
   await pending
   expect(m.select).not.toHaveBeenCalled()
+})
+
+test('chosen model is persisted and sent on the first turn', async () => {
+  await startDraftTask({ ...input, model: 'chosen-model' })
+  expect(m.model).toHaveBeenCalledWith('session', 'chosen-model')
+  expect(m.send).toHaveBeenCalledWith('session', 'Organize notes', undefined, 'chosen-model')
+})
+test('chosen model survives setup queuing', async () => {
+  m.running.mockReturnValue(true)
+  await startDraftTask({ ...input, model: 'chosen-model' })
+  expect(m.queue).toHaveBeenCalledWith('task', expect.objectContaining({ model: 'chosen-model' }))
 })
