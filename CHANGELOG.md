@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Task drafts use a stable prompt/cloud switch, a tighter composer, and compact workspace details
+
 - New tasks open as drafts with workspace selection below the composer; sending the first message starts work in an isolated worktree, the project repository, or any existing folder
 - Existing-directory tasks preserve shared files on archive/delete and hide Git controls in non-Git folders
 

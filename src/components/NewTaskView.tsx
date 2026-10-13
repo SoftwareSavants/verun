@@ -1,6 +1,6 @@
 import { Show, createSignal, createEffect, on, onCleanup } from 'solid-js'
 import { open } from '@tauri-apps/plugin-dialog'
-import { ArrowUp, X, Loader2 } from 'lucide-solid'
+import { ArrowUp, X, Loader2, Cloud, SquarePen, FolderOpen } from 'lucide-solid'
 import { projectById } from '../store/projects'
 import { agents } from '../store/agents'
 import { startDraftTask } from '../store/draftTask'
@@ -69,13 +69,24 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
       <div class="flex items-center gap-2 text-xs text-text-muted"><span>New task</span><span class="text-text-dim">/</span><span>{project()?.name}</span></div>
       <button class="btn-ghost no-drag" aria-label="Close draft" disabled={sending()} onClick={props.onClose}><X size={14} /></button>
     </header>
-    <div class="flex-1 min-h-0 overflow-auto flex flex-col justify-center px-6 pb-16">
-      <div class="w-full max-w-180 mx-auto">
-        <h1 class="text-2xl font-semibold text-text-primary mb-6">What would you like to work on?</h1>
+    <div class="flex-1 min-h-0 overflow-auto flex flex-col px-6 pt-12 sm:pt-20 pb-12">
+      <div class="w-full max-w-160 mx-auto">
+        <h1 class="text-2xl font-semibold tracking-tight text-text-primary mb-2">Start a task</h1>
+        <p class="text-sm text-text-muted mb-6">{project()?.name ? `What’s next for ${project()!.name}?` : 'What would you like to work on?'}</p>
+        <Show when={cloud()}>
+          <div role="group" aria-label="Task source" class="flex items-center gap-1 mb-5 border-b-1 border-b-solid border-b-outline/10 pb-2">
+            <button aria-pressed={source() === 'local'} disabled={sending()} onClick={() => { setSource('local'); queueMicrotask(() => textarea?.focus()) }}
+              class="flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-accent"
+              classList={{ 'bg-surface-2 text-text-primary': source() === 'local', 'text-text-muted hover:bg-surface-1': source() !== 'local' }}><SquarePen size={14} />Write a prompt</button>
+            <button aria-pressed={source() === 'cloud'} disabled={sending()} onClick={() => setSource('cloud')}
+              class="flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-accent"
+              classList={{ 'bg-surface-2 text-text-primary': source() === 'cloud', 'text-text-muted hover:bg-surface-1': source() !== 'cloud' }}><Cloud size={14} />Continue from cloud</button>
+          </div>
+        </Show>
         <Show when={source() === 'local'}>
           <div class="rounded-xl bg-surface-1 ring-1 ring-outline/10 focus-within:ring-accent/40 transition-colors">
             <textarea ref={textarea} aria-label="Task prompt" placeholder="Describe a task…" value={message()} disabled={sending()}
-              class="w-full min-h-32 resize-y bg-transparent text-sm text-text-primary p-4 outline-none leading-relaxed"
+              class="w-full min-h-28 max-h-64 resize-none bg-transparent text-sm text-text-primary p-4 outline-none leading-relaxed"
               onInput={e => setMessage(e.currentTarget.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void send() } }} />
             <div class="flex items-center justify-between px-3 pb-3 gap-3">
@@ -87,19 +98,22 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
             </div>
           </div>
           <div class="flex flex-wrap items-center gap-2 mt-3">
-            <div class="min-w-40"><Select label="Run in" value={workspace()} disabled={sending() || choosing()} onChange={chooseWorkspace}
+            <span class="text-xs text-text-muted">Run in</span><div class="min-w-40"><Select label="Run in" value={workspace()} disabled={sending() || choosing()} onChange={chooseWorkspace}
               options={[{ value: 'worktree', label: 'New worktree' }, { value: 'project', label: 'Project folder' }, ...(folder() ? [{ value: 'folder', label: folder()!.path.split('/').pop() || folder()!.path }] : []), { value: 'choose', label: 'Choose folder…' }]} /></div>
             <Show when={workspace() === 'worktree'}><div class="min-w-32"><Select label="Base branch" value={baseBranch()} disabled={sending()} onChange={setBaseBranch}
               options={[...new Set([baseBranch(), ...branches()])].map(value => ({ value, label: value }))} /></div></Show>
-            <Show when={cloud()}><button class="btn-ghost text-xs" disabled={sending()} onClick={() => setSource('cloud')}>Continue from cloud</button></Show>
           </div>
-          <p class="text-xs text-text-dim mt-2 break-all">{workspace() === 'worktree' ? `An isolated worktree will be created from ${baseBranch()}.` : directory()}</p>
-          <Show when={workspace() !== 'worktree'}><p class="text-xs text-text-dim mt-1">Works directly in this folder. Changes are shared with other tasks using it.</p></Show>
+          <div class="flex items-center gap-1.5 text-xs text-text-muted mt-3 min-w-0">
+            <Show when={workspace() !== 'worktree'} fallback={<span>Isolated changes on a new branch.</span>}>
+              <FolderOpen size={12} class="shrink-0" />
+              <span class="truncate" title={directory()}>{workspace() === 'project' ? project()?.name : directory()}</span>
+              <span class="shrink-0 text-text-dim">· Shared files</span>
+            </Show>
+          </div>
           <Show when={unavailable()}><p class="text-xs text-text-muted mt-3">{agents.find(a => a.id === agent())?.name} is not installed. Choose an installed agent.</p></Show>
           <Show when={sending()}><p role="status" class="text-xs text-text-muted mt-3">{workspace() === 'worktree' ? 'Preparing worktree…' : 'Starting task…'}</p></Show>
         </Show>
         <Show when={cloud()}><div style={{ display: source() === 'cloud' ? undefined : 'none' }}>
-          <button class="btn-ghost text-xs mb-3" onClick={() => setSource('local')}>Back to new task</button>
           <Show when={props.projectId} keyed>{projectId => <CloudSessionPicker projectId={projectId} onStarted={props.onClose} />}</Show>
         </div></Show>
         <Show when={error()}><p role="alert" class="text-sm text-red-400 mt-3">{error()}</p></Show>

@@ -22,7 +22,7 @@ beforeEach(() => {
   ipc.beginCloudImport.mockResolvedValue({ importId: 'prefetch', sessions: [{ index: 1, title: 'Notifications', updated: '1d ago' }] })
 })
 function choose(label: string) {
-  fireEvent.click(screen.getByRole('button', { name: label === 'Local' ? 'Back to new task' : 'Continue from cloud' }))
+  fireEvent.click(screen.getByRole('button', { name: label === 'Local' ? 'Write a prompt' : 'Continue from cloud' }))
 }
 test('opening New Task prefetches cloud sessions and reuses them across source changes', async () => {
   const [open, setOpen] = createSignal(false)
@@ -74,4 +74,16 @@ test('selecting a cloud session closes the draft immediately', async () => {
   choose('Claude cloud session')
   fireEvent.click(await screen.findByRole('button', { name: /Notifications/ }))
   expect(close).toHaveBeenCalledOnce()
+})
+
+test('source switch keeps the draft and clearly indicates the active mode', async () => {
+  render(() => <NewTaskView projectId="project" onClose={() => {}} />)
+  const cloud = await screen.findByRole('button', { name: 'Continue from cloud' })
+  fireEvent.input(screen.getByRole('textbox', { name: 'Task prompt' }), { target: { value: 'Keep my draft' } })
+  fireEvent.click(cloud)
+  expect(cloud.getAttribute('aria-pressed')).toBe('true')
+  expect(screen.getByRole('heading', { name: 'Start a task' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Write a prompt' }))
+  expect((screen.getByRole('textbox', { name: 'Task prompt' }) as HTMLTextAreaElement).value).toBe('Keep my draft')
+  expect(cloud.getAttribute('aria-pressed')).toBe('false')
 })
