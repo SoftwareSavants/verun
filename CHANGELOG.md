@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Task draft selectors use compact controls; model search has a rounded field without redundant headings
+
 - New task composer combines harness and model selection in one dropdown with a harness sidebar and searchable models
 
 - Task drafts use a stable prompt/cloud switch, a tighter composer, and compact workspace details

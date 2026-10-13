@@ -20,7 +20,7 @@ export function HarnessModelPicker(props: Props) {
   const [open, setOpen] = createSignal(false)
   const [browsing, setBrowsing] = createSignal(props.agent)
   const [query, setQuery] = createSignal('')
-  const [position, setPosition] = createSignal({ left: 0, top: 0, width: 460, height: 360 })
+  const [position, setPosition] = createSignal({ left: 0, top: 0, width: 420, height: 320 })
   let trigger!: HTMLButtonElement
   let panel!: HTMLDivElement
   const current = () => agents.find(a => a.id === props.agent)
@@ -32,10 +32,10 @@ export function HarnessModelPicker(props: Props) {
   const show = () => {
     if (props.disabled) return
     const rect = trigger.getBoundingClientRect()
-    const width = Math.min(460, window.innerWidth - 16)
+    const width = Math.min(420, window.innerWidth - 16)
     const below = window.innerHeight - rect.bottom - 12
     const above = rect.top - 12
-    const height = Math.min(360, Math.max(below, above))
+    const height = Math.min(320, Math.max(below, above))
     setPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)), top: below >= height ? rect.bottom + 6 : Math.max(8, rect.top - height - 6), width, height })
     setBrowsing(props.agent)
     setQuery('')
@@ -71,7 +71,7 @@ export function HarnessModelPicker(props: Props) {
   return <>
     <button ref={trigger} type="button" aria-label={`Choose model: ${label()}`} title={current()?.name}
       aria-haspopup="dialog" aria-expanded={open()} aria-controls={open() ? id : undefined} disabled={props.disabled}
-      class="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-text-secondary hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+      class="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-text-secondary hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
       onClick={() => open() ? close() : show()}>
       <SvgIcon svg={agentIcon(props.agent)} size={14} /><span>{label()}</span><ChevronDown size={12} class="text-text-dim" />
     </button>
@@ -81,7 +81,6 @@ export function HarnessModelPicker(props: Props) {
         class="fixed z-[101] flex overflow-hidden rounded-xl bg-surface-2 ring-1 ring-outline/10 shadow-xl"
         style={{ left: `${position().left}px`, top: `${position().top}px`, width: `${position().width}px`, height: `${position().height}px` }}>
         <div class="w-34 shrink-0 bg-surface-1 p-2 overflow-y-auto border-r-1 border-r-solid border-r-outline/8">
-          <p class="text-[10px] text-text-muted px-2 pt-1 pb-2">Harnesses</p>
           <For each={agents}>{agent => <button type="button" disabled={!agent.installed} aria-label={agent.name} aria-pressed={browsing() === agent.id}
             title={!agent.installed ? `${agent.name} is not installed` : agent.name}
             class="w-full flex items-center gap-2 text-left rounded-md px-2 py-2 text-xs disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent"
@@ -91,9 +90,8 @@ export function HarnessModelPicker(props: Props) {
           </button>}</For>
         </div>
         <div class="min-w-0 flex-1 flex flex-col">
-          <div class="p-3 border-b-1 border-b-solid border-b-outline/8">
-            <p class="text-xs font-medium text-text-primary mb-2">{harness()?.name ?? browsing()}</p>
-            <div class="flex items-center gap-2 text-text-muted"><Search size={13} /><input aria-label="Search models" placeholder="Search models…" value={query()} onInput={e => setQuery(e.currentTarget.value)} class="min-w-0 w-full bg-transparent text-xs text-text-primary outline-none" /></div>
+          <div class="p-2 pb-1">
+            <div class="flex items-center gap-2 rounded-md bg-surface-1 px-2.5 py-2 text-text-muted focus-within:ring-1 focus-within:ring-accent/40"><Search size={13} /><input aria-label="Search models" placeholder="Search models…" value={query()} onInput={e => setQuery(e.currentTarget.value)} class="min-w-0 w-full bg-transparent text-xs text-text-primary outline-none" /></div>
           </div>
           <div class="flex-1 overflow-y-auto p-1.5">
             <Show when={harness()?.supportsModelSelection && harness()?.models.length} fallback={<button class="w-full text-left rounded-md p-2 text-xs text-text-primary hover:bg-surface-3 focus-visible:ring-2 focus-visible:ring-accent" disabled={!harness()?.installed} onClick={() => pick()}>CLI default<span class="block text-text-muted mt-1">Use the harness’s configured model</span></button>}>

@@ -46,3 +46,11 @@ test('search filters models and Escape cancels browsing and restores focus', () 
   expect(pick).not.toHaveBeenCalled()
   expect(document.activeElement).toBe(trigger)
 })
+
+test('keeps the picker free of redundant headings', () => {
+  render(() => <HarnessModelPicker agent="claude" onPick={() => {}} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Choose model: Opus' }))
+  expect(screen.queryByText('Harnesses')).toBeNull()
+  expect(screen.getAllByText('Claude Code')).toHaveLength(1)
+  expect(screen.getByRole('textbox', { name: 'Search models' })).toBeTruthy()
+})

@@ -101,9 +101,9 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
             </div>
           </div>
           <div class="flex flex-wrap items-center gap-2 mt-3">
-            <span class="text-xs text-text-muted">Run in</span><div class="min-w-40"><Select label="Run in" value={workspace()} disabled={sending() || choosing()} onChange={chooseWorkspace}
+            <span class="text-xs text-text-muted">Run in</span><div class="min-w-0"><Select size="compact" label="Run in" value={workspace()} disabled={sending() || choosing()} onChange={chooseWorkspace}
               options={[{ value: 'worktree', label: 'New worktree' }, { value: 'project', label: 'Project folder' }, ...(folder() ? [{ value: 'folder', label: folder()!.path.split('/').pop() || folder()!.path }] : []), { value: 'choose', label: 'Choose folder…' }]} /></div>
-            <Show when={workspace() === 'worktree'}><div class="min-w-32"><Select label="Base branch" value={baseBranch()} disabled={sending()} onChange={setBaseBranch}
+            <Show when={workspace() === 'worktree'}><div class="min-w-0"><Select size="compact" label="Base branch" value={baseBranch()} disabled={sending()} onChange={setBaseBranch}
               options={[...new Set([baseBranch(), ...branches()])].map(value => ({ value, label: value }))} /></div></Show>
           </div>
           <div class="flex items-center gap-1.5 text-xs text-text-muted mt-3 min-w-0">
