@@ -1,11 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.14.4 - 2026-10-14
 
 - Terminal file links validate file existence before becoming clickable, ignoring dotted prose and nonexistent paths.
-
 - Terminal file links no longer mistake bare website addresses for local files.
-
 - Task headers show the owning project in main and detached windows (#274)
 - Terminal-mode tasks receive transcript-based titles while preserving manual names (#275)
 - Wrapped terminal file links open persistent tabs, including read-only files outside the workspace (#273)
