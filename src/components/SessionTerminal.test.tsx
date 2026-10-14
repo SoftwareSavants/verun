@@ -1,17 +1,20 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, fireEvent } from '@solidjs/testing-library'
 
 type Handler = (ev: { payload: { terminalId: string; exitCode: number | null } }) => void
 const ptyExitedHandlers: Handler[] = []
 type DropHandler = (ev: { payload: { paths: string[]; position?: { x: number; y: number } } }) => void
 const dropHandlers: DropHandler[] = []
+const dropTargets = new Map<DropHandler, string | undefined>()
+const webview = vi.hoisted(() => ({ label: 'main' }))
+vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ label: webview.label }) }))
 type OutputHandler = (ev: { payload: { terminalId: string; data: string; seq: number } }) => void
 const ptyOutputHandlers: OutputHandler[] = []
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn((event: string, handler: Handler | DropHandler | OutputHandler) => {
+  listen: vi.fn((event: string, handler: Handler | DropHandler | OutputHandler, options?: { target: { label: string } }) => {
     if (event === 'pty-exited') ptyExitedHandlers.push(handler as Handler)
-    if (event === 'tauri://drag-drop') dropHandlers.push(handler as DropHandler)
+    if (event === 'tauri://drag-drop') { dropHandlers.push(handler as DropHandler); dropTargets.set(handler as DropHandler, options?.target.label) }
     if (event === 'pty-output') ptyOutputHandlers.push(handler as OutputHandler)
     return Promise.resolve(() => {
       const a = ptyExitedHandlers.indexOf(handler as Handler)
@@ -52,7 +55,11 @@ async function flush() {
   await new Promise((r) => setTimeout(r, 0))
 }
 
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 beforeEach(() => {
+  webview.label = 'main'
+  vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([{ left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400 }] as unknown as DOMRectList)
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400 } as DOMRect)
   ptyExitedHandlers.length = 0
   dropHandlers.length = 0
   ptyOutputHandlers.length = 0
@@ -218,11 +225,8 @@ describe('SessionTerminal', () => {
     expect(ipcMocks.ptyWrite).toHaveBeenCalledWith('term-1', "'/tmp/a.png' '/tmp/My Pictures/b.png' ")
   })
 
-  // Regression: the previous implementation used a bbox hit-test against
-  // getBoundingClientRect (CSS px) vs Tauri's physical-px drop position,
-  // which silently dropped subsequent drops after layout shifts. Lock in
-  // that we forward every drop while the terminal is mounted.
-  test('drag-drop fires repeatedly without bbox gating', async () => {
+  // Repeated drops continue working without remounting the terminal.
+  test('drag-drop fires repeatedly in the visible terminal', async () => {
     ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
     render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
@@ -272,4 +276,41 @@ describe('SessionTerminal', () => {
     const shell = await findByTestId('shell-terminal')
     expect(shell.getAttribute('data-terminal-id')).toBe('term-2')
   })
+})
+
+test('a native drop targets only its own window, not another mounted session', async () => {
+  ipcMocks.claudeTerminalOpen.mockImplementation((id: string) => Promise.resolve({ terminalId: `term-${id}` }))
+  render(() => <SessionTerminal sessionId="one" />)
+  webview.label = 'detached'
+  render(() => <SessionTerminal sessionId="two" />)
+  await flush()
+  for (const handler of dropHandlers) {
+    if (!dropTargets.get(handler) || dropTargets.get(handler) === 'detached') handler({ payload: { paths: ['/tmp/image.png'] } })
+  }
+  expect(ipcMocks.ptyWrite.mock.calls).toEqual([['term-two', "'/tmp/image.png' "]])
+})
+test('hidden sessions and drops outside the terminal ignore attachments; physical coordinates respect display scale', async () => {
+  ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1' })
+  const view = render(() => <SessionTerminal sessionId="one" />)
+  await flush()
+  const root = view.container.firstElementChild as HTMLElement
+  const rects = vi.spyOn(root, 'getClientRects').mockReturnValue([] as unknown as DOMRectList)
+  dropHandlers[0]({ payload: { paths: ['/tmp/hidden.png'] } })
+  expect(ipcMocks.ptyWrite).not.toHaveBeenCalled()
+  rects.mockReturnValue([root.getBoundingClientRect()] as unknown as DOMRectList)
+  vi.stubGlobal('devicePixelRatio', 2)
+  dropHandlers[0]({ payload: { paths: ['/tmp/outside.png'], position: { x: 1200, y: 100 } } })
+  expect(ipcMocks.ptyWrite).not.toHaveBeenCalled()
+  dropHandlers[0]({ payload: { paths: ['/tmp/inside.png'], position: { x: 800, y: 600 } } })
+  expect(ipcMocks.ptyWrite).toHaveBeenCalledWith('term-1', "'/tmp/inside.png' ")
+})
+
+test('closing before async listener registration completes removes every listener', async () => {
+  ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1' })
+  const view = render(() => <SessionTerminal sessionId="one" />)
+  view.unmount()
+  await flush()
+  expect(dropHandlers).toHaveLength(0)
+  expect(ptyOutputHandlers).toHaveLength(0)
+  expect(ptyExitedHandlers).toHaveLength(0)
 })

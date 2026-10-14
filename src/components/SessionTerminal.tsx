@@ -1,5 +1,6 @@
 import { Component, createSignal, onMount, onCleanup, Show } from 'solid-js'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { Loader2 } from 'lucide-solid'
 import { ShellTerminal } from './ShellTerminal'
 import * as ipc from '../lib/ipc'
@@ -22,6 +23,8 @@ interface Props {
  * action so the user can respawn it without flipping the view-mode toggle.
  */
 export const SessionTerminal: Component<Props> = (props) => {
+  let root!: HTMLDivElement
+  let disposed = false
   const [terminalId, setTerminalId] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [exited, setExited] = createSignal(false)
@@ -54,7 +57,8 @@ export const SessionTerminal: Component<Props> = (props) => {
       setTerminalId(null)
     }
   }).then((fn) => {
-    unlisten = fn
+    if (disposed) fn()
+    else unlisten = fn
   })
 
   let unlistenOutput: UnlistenFn | undefined
@@ -64,23 +68,34 @@ export const SessionTerminal: Component<Props> = (props) => {
     if (!event.payload.data) return
     setReady(true)
   }).then((fn) => {
-    unlistenOutput = fn
+    if (disposed) fn()
+    else unlistenOutput = fn
   })
 
-  // Drop handler: SessionTerminal is the only drop target visible in Terminal
-  // view (MessageInput is unmounted), so any drop on the window forwards its
-  // paths to the PTY. No bbox hit-test — Tauri's drop position is in physical
-  // pixels which doesn't reliably match getBoundingClientRect's CSS pixels
-  // across displays / window moves.
+  // Native drop events are scoped to their originating webview. Hidden
+  // terminals must not consume them; convert physical coordinates to CSS
+  // pixels at drop time so display scale and layout changes remain correct.
   let unlistenDrop: UnlistenFn | undefined
   void listen<TauriDragDropPayload>('tauri://drag-drop', (event) => {
     const tid = terminalId()
     const paths = event.payload.paths ?? []
-    if (!tid || paths.length === 0) return
+    if (disposed || !tid || paths.length === 0 || !root?.getClientRects().length) return
+    const position = event.payload.position
+    if (position) {
+      const scale = window.devicePixelRatio || 1
+      const x = position.x / scale
+      const y = position.y / scale
+      const rect = root.getBoundingClientRect()
+      if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) return
+    }
     ipc.ptyWrite(tid, formatDroppedPathsForTerminal(paths)).catch(() => {})
-  }).then((fn) => { unlistenDrop = fn })
+  }, { target: { kind: 'Webview', label: getCurrentWebview().label } }).then((fn) => {
+    if (disposed) fn()
+    else unlistenDrop = fn
+  })
 
   onCleanup(() => {
+    disposed = true
     unlisten?.()
     unlistenDrop?.()
     unlistenOutput?.()
@@ -94,7 +109,7 @@ export const SessionTerminal: Component<Props> = (props) => {
   })
 
   return (
-    <div class="w-full h-full flex flex-col bg-surface-0">
+    <div ref={root} class="w-full h-full flex flex-col bg-surface-0">
       <Show
         when={!error()}
         fallback={

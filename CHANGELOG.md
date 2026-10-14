@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Terminal file drops target only the originating window and visible terminal, with scale-aware hit testing and reliable listener cleanup (#276)
+
 - Task draft selectors use compact controls; model search has a rounded field without redundant headings
 
 - New task composer combines harness and model selection in one dropdown with a harness sidebar and searchable models
