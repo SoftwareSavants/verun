@@ -8,6 +8,8 @@ Spin up multiple AI coding agents - in isolated git worktrees or existing folder
 
 ## Run agents in parallel
 
+Task headers identify the owning project, including in detached windows. Terminal-mode Claude tasks are automatically named from their conversation.
+
 New tasks open as drafts. Write a prompt, pick a harness and model from the combined selector, choose where to run it below the composer, and send to start. Use a new worktree for an isolated branch and ports, the project folder to work in place, or any existing folder, including non-Git directories. Tasks sharing a folder see the same files; archiving or removing a direct-folder task preserves those files. For isolated worktrees, lifecycle hooks copy `.env` files, install dependencies, and start dev servers automatically so each agent starts ready to work. Define your setup once in a `.verun.json` and the whole team gets the same config.
 
 ## Multi-agent support
@@ -36,7 +38,7 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 - **Problems panel** - project-wide type checking with click-to-navigate, one-click "ask agent to fix", and at most four background checker processes across all tasks
 - **Side-by-side diffs** - syntax-highlighted diffs for working-tree changes and individual commits
 - **Git workflow** - commit, push, create PR, merge, and inspect branch-scoped GitHub Actions/PR state without leaving the app; remote refresh is cached and only invalidated when relevant GitHub state changes
-- **Integrated terminal** - drop into any task's worktree with a built-in shell; click file paths to open task files at their line and column in the editor; bounded output buffers and parser backpressure keep noisy commands responsive while preserving recent scrollback across windows
+- **Integrated terminal** - drop into any task's worktree with a built-in shell; click wrapped file paths to open persistent editor tabs at their line and column, including read-only files outside the workspace; bounded output buffers and parser backpressure keep noisy commands responsive while preserving recent scrollback across windows
 - **File tree & Quick Open** - browse files (gitignored entries shown dimmed like VS Code), fuzzy-find with CMD+P, preview media and markdown inline
 - **Workspace search** - Cmd+Shift+F content search across the task's worktree with case/whole-word/regex toggles and include/exclude globs, powered by embedded ripgrep
 - **Multi-window** - pop any task into its own window for side-by-side work across monitors

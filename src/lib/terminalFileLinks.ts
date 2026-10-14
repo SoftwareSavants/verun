@@ -35,16 +35,47 @@ export function createFileLinkProvider(term: Terminal, open: (link: FileLink) =>
     const buffer = term.buffer.active
     let first = y - 1
     let last = first
+    const rowText = (row: number) => {
+      const line = buffer.getLine(row)
+      let result = ''
+      for (let x = 0; x < term.cols; x++) {
+        const cell = line?.getCell(x)
+        if (cell && cell.getWidth() !== 0) result += cell.getChars() || ' '
+      }
+      return result.trimEnd()
+    }
+    // Harnesses sometimes insert hard newlines with indentation inside long
+    // paths. Join only an unfinished path and a single indented continuation,
+    // never arbitrary adjacent output or a second absolute/relative path.
+    const joins = (row: number, depth = 0): boolean => {
+      if (row <= 0 || row >= buffer.length) return false
+      if (buffer.getLine(row)?.isWrapped) return true
+      const previous = rowText(row - 1)
+      const next = rowText(row)
+      let unfinished = /(?:^|\s)((?:\/|~\/|\.\.?\/)[^\s"'`]+)$/.exec(previous)?.[1]
+      if (!unfinished && depth < 99 && joins(row - 1, depth + 1)) unfinished = previous.trim()
+      if (!unfinished || !/^\s{2,}[^\s/][^\s]*$/.test(next) || /^\s+\.\.?\//.test(next)) return false
+      return /[-/]$/.test(unfinished) && (next.trim().includes('/') || findFileLinks(next.trim()).length > 0)
+    }
     // Bound work for pathological wrapped output.
-    while (first > 0 && buffer.getLine(first)?.isWrapped && y - first < 100) first--
-    while (last + 1 < buffer.length && buffer.getLine(last + 1)?.isWrapped && last - first < 100) last++
+    while (first > 0 && joins(first) && y - first < 100) first--
+    while (last + 1 < buffer.length && joins(last + 1) && last - first < 100) last++
     let text = ''
     const starts: { x: number; y: number }[] = []
     const ends: { x: number; y: number }[] = []
     for (let row = first; row <= last; row++) {
       const line = buffer.getLine(row)
       if (!line) continue
-      for (let x = 0; x < term.cols; x++) {
+      const trimIndent = row > first && !line.isWrapped
+      const content = rowText(row)
+      const from = trimIndent ? content.length - content.trimStart().length : 0
+      // Trim terminal padding only at a hard line break; preserve actual
+      // spaces across soft wraps so unrelated tokens never merge.
+      let to = term.cols
+      if (row === last || !buffer.getLine(row + 1)?.isWrapped) {
+        while (to > 0 && !(line.getCell(to - 1)?.getChars() ?? '').trim() && line.getCell(to - 1)?.getWidth() !== 0) to--
+      }
+      for (let x = from; x < Math.min(term.cols, to); x++) {
         const cell = line.getCell(x)
         if (!cell || cell.getWidth() === 0) continue
         const chars = cell.getChars() || ' '

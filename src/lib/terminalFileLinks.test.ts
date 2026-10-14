@@ -39,3 +39,31 @@ describe('terminal file links', () => {
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/a.ts', line: 2, column: 3 }))
   })
 })
+
+test('joins indented harness line breaks and makes both fragments clickable', () => {
+  const lines = ['cat /private/tmp/worktree-distributed-', '  codesplitting-290/session/scratchpad/file.txt']
+  const term = { cols: 60, buffer: { active: { length: lines.length, getLine: (row: number) => lines[row] === undefined ? undefined : {
+    isWrapped: false, getCell: (x: number) => ({ getChars: () => lines[row][x] ?? '', getWidth: () => 1 }),
+  } } } } as unknown as Terminal
+  for (const y of [1, 2]) {
+    const open = vi.fn()
+    let links: ILink[] | undefined
+    createFileLinkProvider(term, open).provideLinks(y, value => { links = value })
+    expect(links).toHaveLength(1)
+    links![0].activate(new MouseEvent('click'), links![0].text)
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ path: '/private/tmp/worktree-distributed-codesplitting-290/session/scratchpad/file.txt' }))
+  }
+})
+
+test('keeps unrelated indented file paths separate', () => {
+  const lines = ['/tmp/first.txt', '  src/second.ts']
+  const term = { cols: 40, buffer: { active: { length: 2, getLine: (row: number) => lines[row] === undefined ? undefined : {
+    isWrapped: false, getCell: (x: number) => ({ getChars: () => lines[row][x] ?? '', getWidth: () => 1 }),
+  } } } } as unknown as Terminal
+  const open = vi.fn()
+  let links: ILink[] | undefined
+  createFileLinkProvider(term, open).provideLinks(2, value => { links = value })
+  expect(links).toHaveLength(1)
+  links![0].activate(new MouseEvent('click'), links![0].text)
+  expect(open).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/second.ts' }))
+})

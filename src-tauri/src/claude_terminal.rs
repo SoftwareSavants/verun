@@ -708,6 +708,17 @@ fn shell_quote(s: &str) -> String {
     out
 }
 
+fn terminal_title_prompt(items: &[OutputItem]) -> Option<String> {
+    items.iter().find_map(|item| match item {
+        OutputItem::TranscriptUserMessage { text, is_meta: false } => {
+            let text = text.trim();
+            (text.chars().count() >= 8 && !text.starts_with('/') && !text.starts_with('<'))
+                .then(|| text.to_string())
+        }
+        _ => None,
+    })
+}
+
 async fn run_tail_driver(
     app: AppHandle,
     pool: SqlitePool,
@@ -716,6 +727,7 @@ async fn run_tail_driver(
     session_id: String,
     mut rx: mpsc::UnboundedReceiver<OutputItem>,
 ) {
+    let mut naming_started = false;
     // Batch items that arrive in the same poll tick into a single emit+write
     // to cut down on event overhead and DB round-trips.
     loop {
@@ -726,6 +738,13 @@ async fn run_tail_driver(
         let mut items = vec![first];
         while let Ok(next) = rx.try_recv() {
             items.push(next);
+        }
+
+        if !naming_started {
+            if let Some(prompt) = terminal_title_prompt(&items) {
+                naming_started = true;
+                crate::task::name_terminal_task(app.clone(), pool.clone(), session_id.clone(), prompt);
+            }
         }
 
         // The live event drops `UserAttachment` items so the raw base64
@@ -762,6 +781,17 @@ async fn run_tail_driver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn naming_uses_real_terminal_prompts_not_commands_or_metadata() {
+        let items = vec![
+            OutputItem::TranscriptUserMessage { text: "internal context".into(), is_meta: true },
+            OutputItem::TranscriptUserMessage { text: "/compact".into(), is_meta: false },
+            OutputItem::TranscriptUserMessage { text: "hi".into(), is_meta: false },
+            OutputItem::TranscriptUserMessage { text: "Fix notification delivery".into(), is_meta: false },
+        ];
+        assert_eq!(terminal_title_prompt(&items).as_deref(), Some("Fix notification delivery"));
+    }
 
     #[test]
     fn shell_quote_wraps_plain_value_in_single_quotes() {

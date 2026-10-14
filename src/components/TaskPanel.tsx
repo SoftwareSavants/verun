@@ -1,3 +1,4 @@
+import { TaskHeading } from './TaskHeading';
 import { clsx } from "clsx";
 import {
   AlertCircle,
@@ -472,9 +473,7 @@ export const TaskPanel: Component = () => {
                   data-tauri-drag-region
                 >
                   <div class="flex items-center gap-2 min-w-0 no-drag">
-                    <h2 class="text-[13px] font-medium text-text-primary truncate shrink-0">
-                      {t().name || "New task"}
-                    </h2>
+                    <TaskHeading projectName={projectById(t().projectId)?.name} taskName={t().name} />
                     <button
                       class="text-[11px] text-text-tertiary hover:text-text-secondary truncate min-w-0 transition-colors"
                       title="Click to copy path"

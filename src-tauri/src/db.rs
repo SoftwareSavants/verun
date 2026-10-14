@@ -1426,6 +1426,13 @@ pub async fn list_projects(pool: &SqlitePool) -> Result<Vec<Project>, String> {
 
 // Tasks
 
+/// Atomic guard: a user rename during title generation always wins.
+pub async fn set_unnamed_task_title(pool: &SqlitePool, id: &str, title: &str) -> Result<bool, String> {
+    sqlx::query("UPDATE tasks SET name = ? WHERE id = ? AND (name IS NULL OR trim(name) = '')")
+        .bind(title).bind(id).execute(pool).await
+        .map(|result| result.rows_affected() > 0).map_err(|e| e.to_string())
+}
+
 pub async fn get_task(pool: &SqlitePool, id: &str) -> Result<Option<Task>, String> {
     sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
         .bind(id)
@@ -2283,6 +2290,17 @@ pub(crate) mod tests {
         assert_eq!(t.project_id, "p-001");
         assert_eq!(t.branch, "silly-penguin");
         assert!(t.name.is_none());
+    }
+
+    #[tokio::test]
+    async fn automatic_task_name_never_overwrites_a_manual_name() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        assert!(set_unnamed_task_title(&pool, "t-001", "Generated title").await.unwrap());
+        process_write(&pool, DbWrite::UpdateTaskName { id: "t-001".into(), name: "My title".into() }).await.unwrap();
+        assert!(!set_unnamed_task_title(&pool, "t-001", "Late generated title").await.unwrap());
+        assert_eq!(get_task(&pool, "t-001").await.unwrap().unwrap().name.as_deref(), Some("My title"));
     }
 
     #[tokio::test]

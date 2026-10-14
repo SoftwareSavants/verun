@@ -1,3 +1,4 @@
+import { isExternalFile } from '../lib/editorFilePath'
 import { Component, Switch, Match, Show, createSignal, createEffect, on } from 'solid-js'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
@@ -51,6 +52,12 @@ export const FileViewer: Component<Props> = (props) => {
         </div>
       </div>
     }>
+      <Match when={isExternalFile(resolvedPath()) && !['image', 'video', 'audio', 'pdf'].includes(type())}>
+        <div class="flex flex-col h-full min-h-0">
+          <div class="text-xs text-text-muted px-3 py-2 truncate" title={resolvedPath()}>{resolvedPath()} · Read-only</div>
+          <div class="flex-1 min-h-0"><CodeEditor taskId={props.taskId} relativePath={resolvedPath()} /></div>
+        </div>
+      </Match>
       <Match when={type() === 'image'}>
         <ImageViewer taskId={props.taskId} relativePath={resolvedPath()} />
       </Match>
@@ -100,7 +107,7 @@ function useAssetUrl(taskId: () => string, relativePath: () => string) {
     setLoading(true)
     setError(null)
     try {
-      const absPath = await ipc.resolveWorktreeFilePath(tid, rp)
+      const absPath = isExternalFile(rp) ? rp : await ipc.resolveWorktreeFilePath(tid, rp)
       setUrl(convertFileSrc(absPath))
     } catch (e) {
       setError(String(e))

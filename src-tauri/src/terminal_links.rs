@@ -14,9 +14,8 @@ pub fn resolve_file(root: &Path, cwd: &Path, path: &str) -> Result<String, Strin
     let base = root
         .canonicalize()
         .map_err(|e| format!("Cannot resolve task folder: {e}"))?;
-    let relative = file.strip_prefix(base).map_err(|_| {
-        "This file is outside the task folder. Open its project to edit it.".to_string()
-    })?;
+    // Absolute tab keys distinguish external read-only files from workspace files.
+    let relative = file.strip_prefix(base).unwrap_or(&file);
     if !file.is_file() {
         return Err(format!("Not a file: {path}"));
     }
@@ -69,14 +68,14 @@ mod tests {
         assert!(resolve_file(root.path(), &src, ".").is_err());
     }
     #[test]
-    fn rejects_files_outside_the_editor_worktree_including_symlinks() {
+    fn resolves_external_files_and_symlinks_to_absolute_paths() {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::NamedTempFile::new().unwrap();
-        assert!(resolve_file(root.path(), root.path(), outside.path().to_str().unwrap()).is_err());
+        assert_eq!(resolve_file(root.path(), root.path(), outside.path().to_str().unwrap()).unwrap(), outside.path().canonicalize().unwrap().to_string_lossy());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(outside.path(), root.path().join("escape.txt")).unwrap();
-            assert!(resolve_file(root.path(), root.path(), "escape.txt").is_err());
+            assert_eq!(resolve_file(root.path(), root.path(), "escape.txt").unwrap(), outside.path().canonicalize().unwrap().to_string_lossy());
         }
     }
 }

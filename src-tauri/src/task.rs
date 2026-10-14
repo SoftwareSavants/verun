@@ -3202,15 +3202,32 @@ fn title_generation_args(prompt: &str) -> Vec<String> {
     ]
 }
 
+/// Naming is detached from the terminal driver so CLI output never waits on it.
+pub(crate) fn name_terminal_task(app: AppHandle, pool: SqlitePool, session_id: String, prompt: String) {
+    tokio::spawn(async move {
+        let Ok(Some(session)) = db::get_session(&pool, &session_id).await else { return };
+        let Ok(Some(task)) = db::get_task(&pool, &session.task_id).await else { return };
+        if task.name.as_deref().is_some_and(|name| !name.trim().is_empty()) { return; }
+        let Ok(Some(title)) = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            generate_session_title(&prompt, &task.worktree_path),
+        ).await else { return };
+        if db::set_unnamed_task_title(&pool, &task.id, &title).await.unwrap_or(false) {
+            let _ = app.emit("task-name", stream::TaskNameEvent { task_id: task.id, name: title });
+        }
+    });
+}
+
 /// Generate a short title using a standalone Haiku call (fast, doesn't affect session).
 /// Uses the Claude CLI regardless of agent type since title generation is a Verun feature.
 async fn generate_session_title(first_message: &str, worktree_path: &str) -> Option<String> {
     let prompt = format!(
-        "Generate a 3-5 word title summarizing what the user wants. Reply with ONLY the title, nothing else. If the message is too vague or unclear to summarize (e.g. just a greeting), reply with exactly NONE.\n\nUser message: {}",
+        "Generate a 3-5 word title summarizing what the user wants. Reply with ONLY the title, nothing else. Never include passwords, tokens, credentials, or other secret values in the title. If the message is too vague or unclear to summarize (e.g. just a greeting), reply with exactly NONE.\n\nUser message: {}",
         first_message.chars().take(300).collect::<String>()
     );
     let output = tokio::process::Command::new(AgentKind::Claude.implementation().cli_binary())
         .args(title_generation_args(&prompt))
+        .kill_on_drop(true)
         .env_remove("CLAUDECODE")
         .env("CLAUDE_CODE_ENTRYPOINT", "verun")
         .current_dir(worktree_path)
