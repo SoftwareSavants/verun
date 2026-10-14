@@ -72,3 +72,19 @@ test('does not mistake bare website addresses for local files', () => {
   expect(findFileLinks('(clutter-clear-flow-git-dev-morgans-projects-0b2e72ef.vercel.app), example.com www.example.dev/docs example.io/path/file.ts user@example.com')).toEqual([])
   expect(findFileLinks('./example.com /tmp/example.app src/example.io example.com.ts').map(link => link.path)).toEqual(['./example.com', '/tmp/example.app', 'src/example.io', 'example.com.ts'])
 })
+
+test('only exposes filesystem-validated candidates, including unusual real filenames', async () => {
+  const text = 'accounting.invoices accounting.contacts actual.custom /settings'
+  const term = { cols: 80, buffer: { active: { length: 1, getLine: (row: number) => row === 0 ? {
+    isWrapped: false, getCell: (x: number) => ({ getChars: () => text[x] ?? '', getWidth: () => 1 }),
+  } : undefined } } } as unknown as Terminal
+  const validate = vi.fn(async (link: { path: string }) => {
+    if (link.path === '/settings') throw new Error('Not a file')
+    return link.path === 'actual.custom'
+  })
+  const links = await new Promise<ILink[] | undefined>(resolve => {
+    createFileLinkProvider(term, vi.fn(), validate).provideLinks(1, resolve)
+  })
+  expect(links?.map(link => link.text)).toEqual(['actual.custom'])
+  expect(validate).toHaveBeenCalledWith(expect.objectContaining({ path: 'accounting.invoices' }))
+})

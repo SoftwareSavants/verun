@@ -8,7 +8,7 @@ export interface FileLink {
   end: number
 }
 
-/** Keep recognition synchronous; Rust resolves and validates only on activation. */
+/** Parse candidates synchronously; the provider validates them before exposing links. */
 export function findFileLinks(text: string): FileLink[] {
   const links: FileLink[] = []
   const tokens = /"[^"\r\n]+"(?::\d+(?::\d+)?)?|'[^'\r\n]+'(?::\d+(?::\d+)?)?|[^\s<>"'`]+/g
@@ -34,7 +34,7 @@ export function findFileLinks(text: string): FileLink[] {
   return links
 }
 
-export function createFileLinkProvider(term: Terminal, open: (link: FileLink) => void): ILinkProvider {
+export function createFileLinkProvider(term: Terminal, open: (link: FileLink) => void, validate?: (link: FileLink) => Promise<boolean>): ILinkProvider {
   return { provideLinks(y, callback) {
     const buffer = term.buffer.active
     let first = y - 1
@@ -90,11 +90,19 @@ export function createFileLinkProvider(term: Terminal, open: (link: FileLink) =>
         }
       }
     }
-    callback(findFileLinks(text).filter(link => starts[link.start].y <= y && ends[link.end - 1].y >= y).map(link => ({
+    const candidates = findFileLinks(text).filter(link => starts[link.start].y <= y && ends[link.end - 1].y >= y)
+    const publish = (links: FileLink[]) => callback(links.map(link => ({
       text: text.slice(link.start, link.end),
       range: { start: starts[link.start], end: ends[link.end - 1] },
       decorations: { pointerCursor: true, underline: true },
       activate: () => open(link),
     })))
+    if (!validate) { publish(candidates); return }
+    // Validation uses Rust IPC, never browser filesystem access. Missing files
+    // and prose that resembles paths are simply not links. No negative cache:
+    // newly created files should become clickable on the next hover.
+    void Promise.all(candidates.map(async link => {
+      try { return await validate(link) } catch { return false }
+    })).then(valid => publish(candidates.filter((_, index) => valid[index])))
   } }
 }

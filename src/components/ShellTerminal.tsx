@@ -318,7 +318,11 @@ export const ShellTerminal: Component<Props> = (props) => {
     term.loadAddon(fitAddon)
     term.loadAddon(searchAddon)
     term.loadAddon(new WebLinksAddon())
-    term.registerLinkProvider(createFileLinkProvider(term, link => { void openTerminalFile(props.terminalId, link) }))
+    term.registerLinkProvider(createFileLinkProvider(
+      term,
+      link => { void openTerminalFile(props.terminalId, link) },
+      async link => { await ipc.resolveTerminalFile(props.terminalId, link.path); return true },
+    ))
     const unicode11 = new Unicode11Addon()
     term.loadAddon(unicode11)
     term.unicode.activeVersion = '11'

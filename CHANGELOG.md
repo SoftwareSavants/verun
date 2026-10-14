@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Terminal file links validate file existence before becoming clickable, ignoring dotted prose and nonexistent paths.
+
 - Terminal file links no longer mistake bare website addresses for local files.
 
 - Task headers show the owning project in main and detached windows (#274)
