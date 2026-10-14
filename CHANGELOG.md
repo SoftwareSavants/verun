@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Terminal file links no longer mistake bare website addresses for local files.
+
 - Task headers show the owning project in main and detached windows (#274)
 - Terminal-mode tasks receive transcript-based titles while preserving manual names (#275)
 - Wrapped terminal file links open persistent tabs, including read-only files outside the workspace (#273)

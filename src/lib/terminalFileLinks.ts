@@ -20,6 +20,10 @@ export function findFileLinks(text: string): FileLink[] {
     const location = raw.match(/(?::(\d+)(?::(\d+))?|\((\d+),(\d+)\))$/)
     const path = (location ? raw.slice(0, location.index) : raw).replace(/^["']|["']$/g, '')
     if (!path || path.includes('://') || path.includes(':')) continue
+    // Bare domains are ambiguous with filenames. Prefer web addresses for
+    // common host suffixes; explicit local paths still resolve as files.
+    const host = path.split('/')[0]
+    if (/^(?:[\w.+-]+@)?(?:[a-z\d](?:[a-z\d-]*[a-z\d])?\.)+(?:com|org|net|edu|gov|io|ai|app|dev|co|me|cloud|tech|xyz|online|site|vercel|pages)$/i.test(host)) continue
     if (!path.includes('/') && !/^(?:Makefile|Dockerfile|README|LICENSE|\.[\w.-]+)$/.test(path) && !/^[\w@.+-]*[a-zA-Z_-][\w@.+-]*\.[a-zA-Z][\w-]*$/.test(path)) continue
     if (!path.includes('/') && /^v?\d+(\.\d+)+$/.test(path)) continue
     const line = Number(location?.[1] ?? location?.[3] ?? 1)

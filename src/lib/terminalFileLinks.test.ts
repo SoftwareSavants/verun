@@ -67,3 +67,8 @@ test('keeps unrelated indented file paths separate', () => {
   links![0].activate(new MouseEvent('click'), links![0].text)
   expect(open).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/second.ts' }))
 })
+
+test('does not mistake bare website addresses for local files', () => {
+  expect(findFileLinks('(clutter-clear-flow-git-dev-morgans-projects-0b2e72ef.vercel.app), example.com www.example.dev/docs example.io/path/file.ts user@example.com')).toEqual([])
+  expect(findFileLinks('./example.com /tmp/example.app src/example.io example.com.ts').map(link => link.path)).toEqual(['./example.com', '/tmp/example.app', 'src/example.io', 'example.com.ts'])
+})
