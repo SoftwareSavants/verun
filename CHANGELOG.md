@@ -1,15 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.14.3 - 2026-10-14
 
 - Terminal file drops target only the originating window and visible terminal, with scale-aware hit testing and reliable listener cleanup (#276)
-
 - Task draft selectors use compact controls; model search has a rounded field without redundant headings
-
 - New task composer combines harness and model selection in one dropdown with a harness sidebar and searchable models
-
 - Task drafts use a stable prompt/cloud switch, a tighter composer, and compact workspace details
-
 - New tasks open as drafts with workspace selection below the composer; sending the first message starts work in an isolated worktree, the project repository, or any existing folder
 - Existing-directory tasks preserve shared files on archive/delete and hide Git controls in non-Git folders
 
