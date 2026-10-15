@@ -1,3 +1,5 @@
+import { openTaskBoard, showTaskBoard } from '../store/ui';
+import { Columns3 } from 'lucide-solid';
 import {
   Component,
   For,
@@ -428,6 +430,9 @@ export const Sidebar: Component = () => {
           </button>
         </div>
 
+        <button type="button" class="mx-2 my-1 px-2 py-2 flex items-center gap-2 rounded-md text-xs text-text-secondary hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent" classList={{ 'bg-surface-3': showTaskBoard() }} aria-pressed={showTaskBoard()} onClick={openTaskBoard}>
+          <Columns3 size={14} />Task board
+        </button>
         <GroupToolbar attention={otherAttention()} onAttention={jumpToAttention} />
         {/* Project + task list */}
         <div class="flex-1 overflow-y-auto overflow-x-hidden px-2 no-drag">

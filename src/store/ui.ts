@@ -10,6 +10,7 @@ const savedTaskId = typeof localStorage !== 'undefined' ? localStorage.getItem('
 const [_selectedTaskId, _setSelectedTaskId] = createSignal<string | null>(savedTaskId)
 export const selectedTaskId = _selectedTaskId
 export function setSelectedTaskId(id: string | null) {
+  setShowTaskBoard(false)
   _setSelectedTaskId(id)
   if (id) localStorage.setItem('verun:selectedTaskId', id)
   else localStorage.removeItem('verun:selectedTaskId')
@@ -169,6 +170,13 @@ export const [showCloneRepo, setShowCloneRepo] = createSignal(false)
 // "added a project from disk" flow. Layout.tsx mounts a second dialog
 // instance bound to this signal.
 export const [setupProject, setSetupProject] = createSignal<import('../types').Project | null>(null)
+
+export const [showTaskBoard, setShowTaskBoard] = createSignal(false)
+export function openTaskBoard() {
+  setShowSettings(false)
+  setShowArchived(false)
+  setShowTaskBoard(true)
+}
 
 export const [showSettings, setShowSettings] = createSignal(false)
 export const [showArchived, setShowArchived] = createSignal(false)

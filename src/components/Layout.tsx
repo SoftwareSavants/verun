@@ -1,3 +1,5 @@
+import { TaskBoardPage } from './TaskBoardPage'
+import { showTaskBoard, setShowTaskBoard } from '../store/ui'
 import { visibleProjects } from '../store/projectGroups'
 import { Component, Show, onMount, onCleanup, createSignal, createEffect } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
@@ -134,6 +136,7 @@ export const Layout: Component = () => {
         e.preventDefault()
         setShowSettings(!showSettings())
       }
+      if (e.key === 'Escape' && showTaskBoard()) { e.preventDefault(); setShowTaskBoard(false) }
       if (e.key === 'Escape' && showSettings()) {
         e.preventDefault()
         setShowSettings(false)
@@ -189,7 +192,9 @@ export const Layout: Component = () => {
         <Show when={showArchived() && !showSettings()}>
           <ArchivedPage />
         </Show>
+        <Show when={showTaskBoard() && !showSettings() && !showArchived()}><TaskBoardPage /></Show>
         <Show when={!showSettings() && !showArchived()}>
+          <div class="flex-1 min-h-0 flex flex-col" style={{ display: showTaskBoard() ? 'none' : undefined }}>
           <Show when={newTaskProjectId() && selectedTaskId()}>
             <button class="text-xs text-text-muted text-left px-5 pt-9 pb-2 bg-surface-1 hover:text-text-primary" onClick={() => setSelectedTaskId(null)}>New task · Draft</button>
           </Show>
@@ -199,6 +204,7 @@ export const Layout: Component = () => {
               <NewTaskView projectId={projectId} onClose={() => { if (newTaskProjectId() === projectId) closeDraft() }} />
             </div>
           }</Show>
+          </div>
         </Show>
       </div>
 

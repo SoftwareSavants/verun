@@ -59,6 +59,7 @@ vi.mock('../store/projects', () => ({
 vi.mock('../store/agents', () => ({ loadAgents: vi.fn(() => Promise.resolve()) }))
 
 vi.mock('../store/ui', () => ({
+  showTaskBoard: () => false,
   selectedTaskId: () => 't-001',
   setSelectedTaskId: vi.fn(),
   setSelectedProjectId: vi.fn(),

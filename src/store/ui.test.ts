@@ -237,3 +237,16 @@ describe('pickAndAddProject', () => {
     expect(addProjectPath()).toBeNull()
   })
 })
+
+test('board navigation preserves the selected task and exits for task or draft navigation', async () => {
+  const { showTaskBoard, openTaskBoard } = await import('./ui')
+  setSelectedTaskId('board-task')
+  openTaskBoard()
+  expect(showTaskBoard()).toBe(true)
+  expect(selectedTaskId()).toBe('board-task')
+  focusOrSelectTask({ id: 'other-task', projectId: 'p', name: 'Other' })
+  expect(showTaskBoard()).toBe(false)
+  openTaskBoard()
+  requestNewTaskForProject('p')
+  expect(showTaskBoard()).toBe(false)
+})

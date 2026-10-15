@@ -2,6 +2,7 @@ import { onCleanup } from 'solid-js'
 import { modPressed } from './platform'
 import {
   selectedTaskId,
+  showTaskBoard,
   setSelectedSessionIdForTask,
   rightPanelTab,
   setRightPanelTab,
@@ -51,6 +52,7 @@ export interface TaskShortcutsOptions {
 // drift between shells (issue #243).
 export function useTaskShortcuts(opts: TaskShortcutsOptions = {}) {
   const handleKey = (e: KeyboardEvent) => {
+    if (showTaskBoard()) return
     const tid = selectedTaskId()
 
     // Cmd+P — quick file open

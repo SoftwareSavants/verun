@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Live task board groups work by attention, running, ready, and archived states, with project/group filters and task search (#271)
+
 ## 0.14.4 - 2026-10-14
 
 - Terminal file links validate file existence before becoming clickable, ignoring dotted prose and nonexistent paths.

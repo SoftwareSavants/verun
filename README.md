@@ -20,6 +20,8 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 
 ## Stay in control without babysitting
 
+- **Task board** - scan live Needs attention, Running, and Ready columns across projects and groups; search tasks, open a card, or reveal archived work. Columns follow agent activity automatically.
+
 - **Steps** - queue follow-up prompts while an agent is working; arm them to auto-send on idle, or fire manually
 - **Side question (`/btw`)** - type `/btw <question>` mid-stream (or click the "Ask sideways" button that appears in the corner of the chat while Claude is working) to ask an ephemeral question - the answer shows in a floating panel and never enters conversation history
 - **Fork from any message** - hover any past reply to rewind the conversation in place, or branch into a new task with the worktree restored to the code as it was at that exact turn. Verun takes a git snapshot at every turn, so you can undo an entire direction - not just a line of code
