@@ -6,7 +6,7 @@ Status: proposed implementation plan. Research completed 2026-10-15; no hooks in
 
 Verun supports six harnesses. Managed interactive terminal mode currently exists only for Claude (`src-tauri/src/claude_terminal.rs`). Codex uses app-server RPC, Grok uses ACP, and Cursor/Gemini/OpenCode use headless JSON output. Monitoring their interactive terminals requires separate launch/lifecycle integration; hooks alone do not add terminal mode.
 
-Local version probes: Claude 2.1.300, Codex 0.159.2, Grok 1.0.34, OpenCode 1.18.4. Gemini was not found on PATH. `agent` resolves to `/Users/abdulrahman/.grok/bin/agent` and reports Grok 0.2.112, whereas Verun's Cursor adapter requests `agent`. Cursor availability is therefore unverified. These are identity/version probes, not live event validation.
+Local version probes: Claude 2.1.300, Codex 0.159.2, Grok 1.0.34, OpenCode 1.18.4. Gemini was not found on PATH. `agent` resolves to `/Users/abdulrahman/.grok/bin/agent` and reports Grok 0.2.112, whereas Verun's Cursor adapter requests `agent`. Follow-up: `cursor-agent` resolves to `/Users/abdulrahman/.local/bin/cursor-agent` and reports Cursor version `2026.07.23-e383d2b`; its help confirms stream-json and per-launch `--plugin-dir` support. Cursor is installed under this unambiguous executable name. These are identity/version probes, not live event validation.
 
 ## Harness-by-harness findings
 
@@ -30,7 +30,7 @@ Local version probes: Claude 2.1.300, Codex 0.159.2, Grok 1.0.34, OpenCode 1.18.
 
 ### Cursor Agent
 - Documented hook family includes beforeSubmitPrompt, stop, session lifecycle and tool hooks. Permission-policy hooks must not be mistaken for proof that a human-facing approval dialog is open.
-- Plan: first resolve the actual Cursor executable and test CLI support. Keep headless stream lifecycle as the current source; enable interactive start/stop coverage only after a CLI fixture proves it. Waiting detection remains partial until approval and AskQuestion events are verified.
+- Plan: prefer the verified `cursor-agent` executable over the ambiguous `agent` alias, then test CLI hook support using a per-launch plugin. Keep headless stream lifecycle as the current source; enable interactive start/stop coverage only after a CLI fixture proves it. Waiting detection remains partial until approval and AskQuestion events are verified.
 - Do not install permissive hooks merely to observe status or assume editor/cloud support means identical CLI behavior.
 - Source: https://cursor.com/docs/hooks
 
@@ -64,7 +64,7 @@ Local version probes: Claude 2.1.300, Codex 0.159.2, Grok 1.0.34, OpenCode 1.18.
 - [ ] Grok: unify current ACP activity, then validate and integrate TUI hooks.
 - [ ] OpenCode: event subscription/plugin adapter and managed-terminal launch integration.
 - [ ] Gemini: install/identify an appropriate CLI in a deliberate test environment, validate hooks, then implement terminal integration.
-- [ ] Cursor: fix executable discovery and complete the CLI event probe before promising full waiting detection.
+- [ ] Cursor: prefer `cursor-agent` in executable discovery and complete the CLI event probe before promising full waiting detection.
 
 Providers can ship independently once their coverage gates pass. Partial support is explicit; no regex spinner scraping, CPU-based busy detection, frontend polling, or direct vendor API credentials.
 
