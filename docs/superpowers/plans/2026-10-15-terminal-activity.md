@@ -29,8 +29,9 @@ Local version probes: Claude 2.1.300, Codex 0.159.2, Grok 1.0.34, OpenCode 1.18.
 - Source: https://geminicli.com/docs/hooks/reference/
 
 ### Cursor Agent
-- Documented hook family includes beforeSubmitPrompt, stop, session lifecycle and tool hooks. Permission-policy hooks must not be mistaken for proof that a human-facing approval dialog is open.
+- Documented hook family includes beforeSubmitPrompt, stop, session lifecycle and tool hooks. Local inspection of Cursor 2026.07.23-e383d2b confirms beforeSubmitPrompt and stop dispatcher handlers with conversation_id and generation_id; stop also forwards status and loop_count. This is installed-code evidence, not an end-to-end event capture. Permission-policy hooks must not be mistaken for proof that a human-facing approval dialog is open.
 - Plan: prefer the verified `cursor-agent` executable over the ambiguous `agent` alias, then test CLI hook support using a per-launch plugin. Keep headless stream lifecycle as the current source; enable interactive start/stop coverage only after a CLI fixture proves it. Waiting detection remains partial until approval and AskQuestion events are verified.
+- The installed Claude-hook compatibility map explicitly maps PermissionRequest and Notification to null. This rules out copying Claude approval hooks as-is; it does not prove every possible native input signal is absent. AskQuestion exists internally, but no public observer hook for it was verified. Mark terminal approval/input coverage partial until independently demonstrated.
 - Do not install permissive hooks merely to observe status or assume editor/cloud support means identical CLI behavior.
 - Source: https://cursor.com/docs/hooks
 
