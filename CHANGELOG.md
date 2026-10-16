@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.5 - 2026-10-16
+
 - Terminal-to-chat transitions no longer ingest the same Claude user, assistant, and tool messages from both streaming and transcript sources (#277)
 
 - Claude terminal activity feeds the task board and sidebar through isolated observer hooks, with explicit unknown status and process-exit recovery

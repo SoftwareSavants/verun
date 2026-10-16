@@ -1,6 +1,6 @@
 [package]
 name = "verun"
-version = "0.14.4"
+version = "0.14.5"
 description = "Parallel Claude Code Agent Orchestrator for macOS"
 authors = ["SoftwareSavants"]
 edition = "2021"
