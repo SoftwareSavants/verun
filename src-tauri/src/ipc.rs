@@ -2497,10 +2497,14 @@ pub fn pty_ack(
 
 #[tauri::command]
 pub async fn pty_write(
+    app: AppHandle,
     pty_map: State<'_, ActivePtyMap>,
     terminal_id: String,
     data: String,
 ) -> Result<(), String> {
+    if data.contains('\u{3}') || data == "\u{1b}" {
+        crate::activity::terminal_interrupt(&app, &terminal_id);
+    }
     let map = pty_map.inner().clone();
     flatten_join(
         tokio::task::spawn_blocking(move || pty::write_pty(&map, &terminal_id, data.as_bytes()))

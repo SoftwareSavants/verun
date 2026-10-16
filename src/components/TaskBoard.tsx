@@ -17,6 +17,7 @@ const columns: { id: BoardColumn; name: string; empty: string; color: string }[]
   { id: 'attention', name: 'Needs attention', empty: 'Nothing needs your attention.', color: 'bg-status-error' },
   { id: 'running', name: 'Running', empty: 'No agents working right now.', color: 'bg-accent' },
   { id: 'ready', name: 'Ready', empty: 'Tasks ready to continue appear here.', color: 'bg-text-muted' },
+  { id: 'unknown', name: 'Status unavailable', empty: '', color: 'bg-text-dim' },
   { id: 'archived', name: 'Archived', empty: 'No archived tasks.', color: 'bg-text-dim' },
 ]
 export function TaskBoard(props: {
@@ -52,7 +53,7 @@ export function TaskBoard(props: {
       </div>
     </header>
     <div class="flex-1 min-h-0 overflow-x-auto px-6 pb-5 flex gap-4">
-      <For each={columns.filter(c => c.id !== 'archived' || archived())}>{column => {
+      <For each={columns.filter(c => (c.id !== 'archived' || archived()) && (c.id !== 'unknown' || filtered().some(card => card.column === 'unknown')))}>{column => {
         const cards = () => filtered().filter(c => c.column === column.id)
         return <section role="region" aria-label={column.name} class="flex-1 min-w-60 flex flex-col min-h-0">
           <div class="flex items-center gap-2 pb-3 shrink-0">

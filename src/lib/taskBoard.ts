@@ -1,5 +1,6 @@
-export type BoardColumn = 'attention' | 'running' | 'ready' | 'archived'
+export type BoardColumn = 'attention' | 'running' | 'ready' | 'archived' | 'unknown'
 export interface BoardActivity {
+  unknown?: boolean
   archived?: boolean
   approval?: boolean
   error?: boolean
@@ -20,5 +21,6 @@ export function taskBoardState(activity: BoardActivity): { column: BoardColumn; 
   if (activity.archiving) return { column: 'running', label: 'Archiving' }
   if (activity.creating) return { column: 'running', label: 'Setting up' }
   if (activity.running) return { column: 'running', label: 'Running' }
+  if (activity.unknown) return { column: 'unknown', label: 'Status unavailable' }
   return { column: 'ready', label: activity.merged ? 'PR merged' : activity.prOpen ? 'PR open' : 'Ready to continue' }
 }

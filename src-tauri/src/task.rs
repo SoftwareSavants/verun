@@ -1548,6 +1548,9 @@ pub async fn send_message(
                 send_set_model,
             } => {
                 let user_bytes = agent.encode_stream_user_message(&message, &attachments)?;
+                if agent.kind() == AgentKind::Claude {
+                    crate::transcript_source::claim_input(&app, &session_id, &user_bytes);
+                }
                 persist_verun_user_message(
                     &app,
                     db_tx,
@@ -2592,6 +2595,9 @@ pub async fn spawn_session_process(
 
             if !prewarm {
                 let bytes = agent.encode_stream_user_message(&message, &attachments)?;
+                if agent.kind() == AgentKind::Claude {
+                    crate::transcript_source::claim_input(&app, &session_id, &bytes);
+                }
                 stdin_handle
                     .write_all(&bytes)
                     .await

@@ -1,3 +1,4 @@
+mod activity;
 pub mod agent;
 mod blob;
 mod bts_scaffold;
@@ -25,6 +26,7 @@ mod snapshots;
 mod stream;
 mod task;
 mod terminal_links;
+mod transcript_source;
 mod tsgo_check;
 mod wakeup;
 mod watcher;
@@ -43,6 +45,7 @@ pub type WindowTaskMap = DashMap<String, String>;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if activity::run_hook_if_requested() { return; }
     // macOS defaults RLIMIT_NOFILE soft to 256. With multiple tasks each
     // holding LSP + codex app-server + PTY + watcher FDs, a burst of
     // concurrent `git` spawns (e.g. sidebar refresh when a task is added)
@@ -70,6 +73,8 @@ pub fn run() {
                 .add_migrations("sqlite:verun.db", db::migrations())
                 .build(),
         )
+        .manage(activity::ActivityStore::default())
+        .manage(transcript_source::SourceRegistry::default())
         .manage(ipc::new_agent_cache())
         .manage(task::new_active_map())
         .manage(task::new_pending_approvals())
@@ -323,6 +328,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            activity::session_activity_snapshot,
             // Projects
             ipc::add_project,
             ipc::gh_status,

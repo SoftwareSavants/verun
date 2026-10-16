@@ -1545,6 +1545,9 @@ pub async fn stream_and_capture(
     trust_level: Arc<AtomicU8>,
     agent: Box<dyn crate::agent::Agent>,
 ) -> StreamResult {
+    let claims = (agent.kind() == crate::agent::AgentKind::Claude)
+        .then(|| crate::transcript_source::for_session(&app, &session_id)).flatten();
+    let mut claude_message = None;
     let mut reader = BufReader::new(stdout).lines();
     let mut buffer: Vec<OutputItem> = Vec::new();
     let mut last_flush = Instant::now();
@@ -1582,7 +1585,7 @@ pub async fn stream_and_capture(
                         // Parse each line exactly once. Every downstream check (control_request,
                         // control_response, resume_id extraction, rate_limit, event parse) now
                         // works off this one `Value`.
-                        let v: serde_json::Value = match serde_json::from_str(&line) {
+                        let mut v: serde_json::Value = match serde_json::from_str(&line) {
                             Ok(v) => v,
                             Err(e) => {
                                 eprintln!("[verun][stream][{session_id}] JSON parse error: {e}");
@@ -1593,6 +1596,9 @@ pub async fn stream_and_capture(
                                 continue;
                             }
                         };
+                        let display_owned = claims.as_ref().is_none_or(|claims| {
+                            claims.lock().unwrap().stream(&mut v, &mut claude_message)
+                        });
                         let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
                         // Incoming `control_response` — resolve the matching pending oneshot so
@@ -1673,7 +1679,7 @@ pub async fn stream_and_capture(
                         }
 
                         // Parse NDJSON into structured items (already have Value — no re-parse)
-                        let items = parse_sdk_event_value(&v);
+                        let items = if display_owned { parse_sdk_event_value(&v) } else { Vec::new() };
 
                         // Emit text/thinking deltas immediately for real-time streaming
                         let mut has_immediate = false;

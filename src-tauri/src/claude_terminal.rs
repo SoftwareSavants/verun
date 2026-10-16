@@ -28,7 +28,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::claude_jsonl;
-use crate::claude_transcript_tail::{spawn_transcript_tail, TranscriptTail};
+use crate::claude_transcript_tail::{spawn_transcript_tail_with_claims, TranscriptTail};
 use crate::db::{self, DbWrite, DbWriteTx};
 use crate::pty::{self, ActivePtyMap};
 use crate::stream::{self, OutputItem, SessionOutputEvent};
@@ -51,6 +51,7 @@ pub struct ClaudeTerminalHandle {
     /// Driver task that forwards OutputItems to the app event stream + DB.
     /// Owned here so we can abort it if needed.
     driver: Option<tokio::task::JoinHandle<()>>,
+    _activity: Option<crate::activity::ActivityBridge>,
 }
 
 impl Drop for ClaudeTerminalHandle {
@@ -146,6 +147,19 @@ pub async fn open_claude_terminal(
             (PathBuf::new(), 0, cmd)
         }
     };
+    let activity = Some(
+        crate::activity::ActivityBridge::start(app.clone(), &session_id)
+            .await
+            .unwrap_or_else(|_| {
+                crate::activity::ActivityBridge::unavailable(app.clone(), &session_id)
+            }),
+    );
+    let command = match &activity {
+        Some(bridge) if !bridge.settings.is_empty() => {
+            format!("{command} --settings {}", shell_quote(&bridge.settings))
+        }
+        _ => command,
+    };
     let worktree_path = task.worktree_path.clone();
     let pty_map_clone = pty_map.clone();
     let app_for_pty = app.clone();
@@ -177,6 +191,15 @@ pub async fn open_claude_terminal(
     .await
     .map_err(|e| format!("spawn_pty join: {e}"))??;
 
+    if let Some(bridge) = &activity {
+        bridge.attach(&spawn.terminal_id);
+    }
+    if let Some(handle) = pty_map.get(&spawn.terminal_id) {
+        if let Some(code) = handle.output.exit_status() {
+            crate::activity::terminal_exit(&app, &spawn.terminal_id, code);
+        }
+    }
+
     let (item_tx, item_rx) = mpsc::unbounded_channel::<OutputItem>();
 
     // For resumes: tail the known JSONL immediately.
@@ -199,7 +222,7 @@ pub async fn open_claude_terminal(
         (None, Some(w))
     } else {
         (
-            Some(spawn_transcript_tail(&jsonl_path, start_offset, item_tx)),
+            Some(spawn_transcript_tail_with_claims(&jsonl_path, start_offset, item_tx, crate::transcript_source::for_session(&app, &session_id))),
             None,
         )
     };
@@ -228,6 +251,7 @@ pub async fn open_claude_terminal(
         _tail: tail,
         _watcher: watcher,
         driver: Some(driver),
+        _activity: activity,
     };
     ct_map.insert(session_id.clone(), handle);
 
@@ -685,7 +709,7 @@ fn spawn_fresh_session_watcher_and_tail(
         // The inner tail handle is dropped when this task exits (or is
         // aborted). Drop fires its stop channel, which cancels the tail
         // loop. So one abort on `_watcher` cleans everything up.
-        let _tail = spawn_transcript_tail(&path, 0, sender);
+        let _tail = spawn_transcript_tail_with_claims(&path, 0, sender, crate::transcript_source::for_session(&sink.app, &sink.session_id));
         // Park forever; the parent aborts us when the terminal handle is
         // dropped (close_claude_terminal / close_all_for_task).
         std::future::pending::<()>().await;
@@ -936,6 +960,7 @@ mod tests {
             _tail: None,
             _watcher: None,
             driver: None,
+            _activity: None,
         }
     }
 

@@ -170,6 +170,7 @@ impl Agent for Claude {
 
         let user_msg = serde_json::json!({
             "type": "user",
+            "uuid": uuid::Uuid::new_v4().to_string(),
             "session_id": "",
             "parent_tool_use_id": null,
             "message": { "role": "user", "content": content_blocks },

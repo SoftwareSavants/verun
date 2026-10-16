@@ -934,6 +934,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(text.trim_end()).expect("valid json");
         assert_eq!(v["type"], "user");
         assert_eq!(v["session_id"], "");
+        assert!(uuid::Uuid::parse_str(v["uuid"].as_str().expect("stable input identity")).is_ok());
         assert!(v["parent_tool_use_id"].is_null());
         assert_eq!(v["message"]["role"], "user");
         let content = v["message"]["content"].as_array().expect("content array");

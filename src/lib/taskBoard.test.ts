@@ -14,3 +14,8 @@ test('idle and merged tasks remain ready, never implicitly completed', () => {
   expect(taskBoardState({ error: true }).column).toBe('attention')
   expect(taskBoardState({ conflicts: true }).label).toBe('Merge conflicts')
 })
+test('unknown terminal activity never claims readiness', () => {
+  expect(taskBoardState({ unknown: true })).toEqual({ column: 'unknown', label: 'Status unavailable' })
+  expect(taskBoardState({ unknown: true, running: true }).column).toBe('running')
+  expect(taskBoardState({ unknown: true, approval: true }).column).toBe('attention')
+})

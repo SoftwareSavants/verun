@@ -1,6 +1,6 @@
 # Harness activity and terminal status plan
 
-Status: proposed implementation plan. Research completed 2026-10-15; no hooks installed or sessions started for this audit.
+Status: Claude terminal observer implementation in progress. Research completed 2026-10-15; isolated CLI probes now verify lifecycle hooks. Other harness adapters remain planned.
 
 ## Scope and evidence
 
@@ -77,3 +77,20 @@ Providers can ship independently once their coverage gates pass. Partial support
 - Two sessions in one task, two tasks in one directory, detached windows and subagents remain correctly attributed.
 - Existing user hooks continue to run, and an unavailable relay never changes approval decisions or agent behavior.
 - Documentation-only research is complete. Implementation requires failing tests first, full make check, warning-free Clippy, frontend typecheck and native end-to-end verification per repo instructions.
+
+## Claude implementation notes (2026-10-15)
+
+- Activity has its own Rust store and monotonically revisioned snapshot/events; process lifecycle flags remain unchanged. Board and sidebar normalize structured status alongside terminal observations.
+- The Verun executable has a silent `--verun-activity` relay mode that runs before Tauri initialization. Per-launch `--settings` hooks post only allowlisted metadata to a loopback socket with a random token. No global/project configuration is written; hook failures return neutral success. The relay bounds payload size and execution time.
+- Claude's PermissionRequest has no tool_use_id. Anonymous permission waits remain until PostToolBatch or a turn boundary, rather than being cleared by an unrelated tool. Explicit request IDs are tracked independently.
+- Escape/Ctrl-C make status unknown until a subsequent hook; process exits reconcile without waiting for renderer acknowledgement. Closing terminal mode releases its override. Older launch tokens, foreign native session IDs and subagent events cannot overwrite the main session.
+- Coverage remains partial: permission approval can continue displaying waiting until its tool batch finishes; stop hooks can subsequently be blocked by other hooks; subagent waits and sandbox permission notifications are not covered. No silence/spinner heuristic is used. Native end-to-end verification is still required; desktop automation times out attaching to the dev app.
+- Remaining delivery gates above are intentionally unchecked until the full native interaction matrix passes. Other providers' managed terminal integration is not included in this change.
+
+### Verification and related duplication fix
+
+- Claude 2.1.300 print-mode lifecycle probe: SessionStart → UserPromptSubmit → Stop → SessionEnd, with neutral relay output and a successful response.
+- Forced-denial probe: PreToolUse → PermissionRequest (no tool_use_id) → PostToolBatch → Stop. The observer did not approve the command.
+- Native session clear/resume boundaries are handled separately from PTY exit; stale events from the former session are ignored after rebinding.
+- #277: SDK input UUIDs and assistant message IDs were verified against the installed CLI's JSONL. Both ingestion paths now share identity-based ownership, preserving intentional repeated text. This prevents new duplicates; old persisted duplicates lack sufficient provenance for safe automatic removal. Process handoff/scheduling remains tracked separately in #256.
+- Broader parent/subagent UX and aggregate child activity are tracked in #67.

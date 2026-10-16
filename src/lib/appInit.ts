@@ -1,3 +1,4 @@
+import { initActivityListeners } from '../store/activity'
 import { createSignal } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { loadProjects, initProjectListeners } from '../store/projects'
@@ -42,6 +43,7 @@ function initEnvPathFocusRefresh() {
 export async function initListeners() {
   await Promise.all([
     initSessionListeners(),
+    initActivityListeners(),
     initTerminalListeners(),
     initGitListeners(),
     initGitHubDebugListeners(),

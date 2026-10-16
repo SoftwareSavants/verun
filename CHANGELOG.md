@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Terminal-to-chat transitions no longer ingest the same Claude user, assistant, and tool messages from both streaming and transcript sources (#277)
+
+- Claude terminal activity feeds the task board and sidebar through isolated observer hooks, with explicit unknown status and process-exit recovery
+
 - Live task board groups work by attention, running, ready, and archived states, with project/group filters and task search (#271)
 
 ## 0.14.4 - 2026-10-14

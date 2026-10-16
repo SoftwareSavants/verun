@@ -666,3 +666,7 @@ export const resolveTerminalFile = (terminalId: string, path: string) =>
 
 export interface DirectoryInfo { path: string; isGit: boolean; branch: string }
 export const inspectTaskDirectory = (path: string) => invoke<DirectoryInfo>('inspect_task_directory', { path })
+
+export function sessionActivitySnapshot(): Promise<import('./sessionActivity').SessionActivity[]> {
+  return invoke('session_activity_snapshot')
+}

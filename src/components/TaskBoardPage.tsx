@@ -1,3 +1,5 @@
+import { sessionActivity } from '../store/activity'
+import { effectiveActivity } from '../lib/sessionActivity'
 import { createMemo } from 'solid-js'
 import { TaskBoard } from './TaskBoard'
 import { taskBoardState } from '../lib/taskBoard'
@@ -11,13 +13,15 @@ import * as ipc from '../lib/ipc'
 
 export function TaskBoardPage() {
   const activity = createMemo(() => {
-    const result = new Map<string, { running: boolean; error: boolean; approval: boolean }>()
+    const result = new Map<string, { running: boolean; error: boolean; approval: boolean; unknown: boolean }>()
     for (const session of sessions) {
       if (session.closedAt) continue
-      const state = result.get(session.taskId) ?? { running: false, error: false, approval: false }
-      state.running ||= session.status === 'running'
-      state.error ||= session.status === 'error'
-      state.approval ||= (pendingApprovals[session.id]?.length ?? 0) > 0
+      const state = result.get(session.taskId) ?? { running: false, error: false, approval: false, unknown: false }
+      const observed = effectiveActivity(session.status, (pendingApprovals[session.id]?.length ?? 0) > 0, sessionActivity[session.id]?.phase)
+      state.running ||= observed.running
+      state.error ||= observed.error
+      state.approval ||= observed.approval
+      state.unknown ||= observed.unknown
       result.set(session.taskId, state)
     }
     return result

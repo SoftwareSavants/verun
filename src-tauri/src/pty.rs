@@ -325,6 +325,7 @@ pub fn spawn_pty(
     // Spawn a dedicated OS thread for blocking read
     let tid = terminal_id.clone();
     let exit_map = map.clone();
+    let exit_app = app.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         // Trailing partial UTF-8 bytes from the previous read get prepended
@@ -360,6 +361,7 @@ pub fn spawn_pty(
             None
         };
         output.finish(exit_code);
+        crate::activity::terminal_exit(&exit_app, &tid, exit_code);
     });
 
     Ok(SpawnResult {
