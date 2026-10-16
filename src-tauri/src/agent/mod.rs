@@ -439,6 +439,15 @@ pub trait Agent: Send + Sync {
         None
     }
 
+    /// Bytes written to the model-listing command's stdin, for agents whose
+    /// catalog is served over a protocol rather than printed by a subcommand
+    /// (e.g. Muse's `model/list` over `muse serve`). When set, the command is
+    /// treated as a long-lived server: it is stopped as soon as
+    /// [`Agent::parse_model_list`] yields a non-empty list.
+    fn model_list_stdin(&self) -> Option<Vec<u8>> {
+        None
+    }
+
     /// Parse the stdout of the model-listing command into `ModelOption`s.
     fn parse_model_list(&self, _output: &str) -> Vec<ModelOption> {
         vec![]
@@ -1561,7 +1570,102 @@ mod tests {
         assert!(!a.supports_plan_mode());
         assert!(!a.install_hint().is_empty());
         assert!(!a.docs_url().is_empty());
-        assert_eq!(a.available_models()[0].id, "muse-spark-1.3");
+        // Static fallback leads with the host's own default so a stale
+        // hardcoded id can never break session/start.
+        assert_eq!(a.available_models()[0].id, "default");
+        assert_eq!(a.model_list_args(), Some(vec!["serve".to_string()]));
+    }
+
+    #[test]
+    fn muse_model_list_queries_msp_catalog() {
+        let a = Muse;
+        let stdin = a.model_list_stdin().expect("muse lists models over MSP stdin");
+        let frames: Vec<serde_json::Value> = String::from_utf8(stdin)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(frames[0]["method"], "initialize");
+        assert_eq!(frames[1]["method"], "model/list");
+        assert_eq!(frames[1]["id"], 2);
+
+        // Exact `model/list` result shape (MSP SS3.10): newest first; the
+        // catalog default is moved to the front; contributor tiers are flagged.
+        let out = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"experimentalApi":false}}"#, "\n",
+            r#"{"jsonrpc":"2.0","method":"session/listChanged","params":{}}"#, "\n",
+            r#"{"jsonrpc":"2.0","id":2,"result":{"providerId":"meta","profileId":null,"source":"providerCatalog","models":["#,
+            r#"{"modelId":"muse-spark-open","displayLabel":"Muse Spark Open","description":"Open-weight model","isDefault":false,"isActive":false,"providerId":"meta","profileId":null,"contextLimit":1000000,"outputLimit":null,"cost":null,"releaseDate":"2026-10-15"},"#,
+            r#"{"modelId":"muse-spark-1.3","displayLabel":"Muse Spark 1.3","description":null,"isDefault":true,"isActive":false,"providerId":"meta","profileId":null,"contextLimit":null,"outputLimit":null,"cost":null,"releaseDate":"2026-09-02"},"#,
+            r#"{"modelId":"muse-spark-1.3-contributor","displayLabel":"Muse Spark 1.3 (Contributor)","description":null,"isDefault":false,"isActive":false,"providerId":"meta","profileId":null,"contextLimit":null,"outputLimit":null,"cost":null,"releaseDate":"2026-09-02"}"#,
+            r#"]}}"#, "\n",
+        );
+        let models = a.parse_model_list(out);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["muse-spark-1.3", "muse-spark-open", "muse-spark-1.3-contributor"]);
+        assert_eq!(models[0].label, "Muse Spark 1.3");
+        assert_eq!(models[1].description, "Open-weight model");
+        assert!(
+            models[2].description.to_lowercase().contains("train"),
+            "contributor tier must warn that code may be used for training: {}",
+            models[2].description
+        );
+        // Not ready yet (no id-2 response) / error response -> empty.
+        assert!(a.parse_model_list(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#).is_empty());
+        assert!(a
+            .parse_model_list(r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32001,"message":"authRequired"}}"#)
+            .is_empty());
+    }
+
+    #[test]
+    fn muse_turn_with_model_sets_session_model_first() {
+        // MSP turn/start has no model field and session/resume carries none,
+        // so a picked model rides as a session/setModel frame ahead of the turn.
+        let turn = |model| {
+            Muse.rpc_encode_turn(
+                4,
+                &RpcTurnParams {
+                    session_id: "s-1",
+                    prompt: "hi",
+                    image_urls: &[],
+                    trust_level: crate::policy::TrustLevel::Normal,
+                    model,
+                    effort: None,
+                    plan_mode: false,
+                },
+            )
+            .unwrap()
+        };
+        let bytes = turn(Some("muse-spark-open"));
+        let frames: Vec<serde_json::Value> = std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0]["method"], "session/setModel");
+        assert!(frames[0]["id"].is_string(), "ack is dropped; only turn/start is awaited");
+        assert_eq!(frames[0]["params"]["sessionId"], "s-1");
+        assert_eq!(frames[0]["params"]["model"]["modelId"], "muse-spark-open");
+        assert!(is_uuid_v7(frames[0]["params"]["commandId"].as_str().unwrap()));
+        assert_eq!(frames[1]["method"], "turn/start");
+        assert_eq!(frames[1]["id"], 4);
+        // Host default / no model: just the turn.
+        assert_eq!(std::str::from_utf8(&turn(Some("default"))).unwrap().lines().count(), 1);
+        assert_eq!(std::str::from_utf8(&turn(None)).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn muse_default_model_sentinel_omits_model_id() {
+        let s = parse_rpc_frame(
+            &Muse
+                .rpc_encode_start(
+                    2,
+                    &RpcStartParams { cwd: "/r", trust_level: crate::policy::TrustLevel::Normal, model: Some("default") },
+                )
+                .unwrap(),
+        );
+        assert!(s["params"].get("modelId").is_none());
     }
 
     #[test]

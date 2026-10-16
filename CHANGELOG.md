@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Muse Code (Meta) agent support via `muse serve` (MSP): streaming, tool calls, approvals, interrupt, resume, image attachments, and reasoning effort
+- Muse Code model picker lists the live catalog from `muse serve` (`model/list`), defaults to the host's model, flags Contributor tiers, and applies model switches mid-session
 
 ## 0.14.2 - 2026-10-12
 

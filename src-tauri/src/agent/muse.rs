@@ -9,6 +9,9 @@ fn frame(v: &Value) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
+/// Model-picker sentinel for "let the host choose": sent as no `modelId`.
+const DEFAULT_MODEL: &str = "default";
+
 /// Every MSP command carries a client-minted UUIDv7 idempotency handle.
 fn command_id() -> String {
     uuid::Uuid::now_v7().to_string()
@@ -92,12 +95,70 @@ impl Agent for Muse {
         "https://dev.meta.ai/docs/muse-code"
     }
 
-    /// First entry is the default.
+    /// Static fallback, used when `model/list` is unavailable (e.g. not
+    /// logged in). Leads with the host default — encoded as no `modelId` —
+    /// so a stale hardcoded id can never break `session/start`.
     fn available_models(&self) -> Vec<ModelOption> {
         vec![
-            ModelOption::new("muse-spark-1.3", "Muse Spark 1.3", "Meta's latest coding model"),
+            ModelOption::new(DEFAULT_MODEL, "Default", "Muse Code's configured default model"),
+            ModelOption::new("muse-spark-1.3", "Muse Spark 1.3", "Meta's flagship coding model"),
             ModelOption::new("muse-spark-1.2", "Muse Spark 1.2", "Previous Muse Spark model"),
         ]
+    }
+
+    /// The catalog is served over MSP: `muse serve` + `initialize` +
+    /// `model/list` on stdin (see [`Agent::model_list_stdin`]).
+    fn model_list_args(&self) -> Option<Vec<String>> {
+        Some(vec!["serve".into()])
+    }
+
+    fn model_list_stdin(&self) -> Option<Vec<u8>> {
+        let mut bytes = request(
+            json!(1),
+            "initialize",
+            json!({
+                "clientInfo": { "name": "verun", "version": env!("CARGO_PKG_VERSION") },
+                "capabilities": { "userInputDialogs": false }
+            }),
+        )
+        .ok()?;
+        bytes.extend(request(json!(2), "model/list", json!({})).ok()?);
+        Some(bytes)
+    }
+
+    /// Parse the `model/list` response (id 2) out of `muse serve` stdout.
+    /// Rows arrive newest first; the catalog default is moved to the front
+    /// since Verun treats index 0 as the default.
+    fn parse_model_list(&self, output: &str) -> Vec<ModelOption> {
+        let Some(models) = output
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .find(|v| v.get("id") == Some(&json!(2)))
+            .and_then(|v| v.pointer("/result/models").and_then(|m| m.as_array()).cloned())
+        else {
+            return vec![];
+        };
+        let mut default = Vec::new();
+        let mut rest = Vec::new();
+        for m in &models {
+            let Some(id) = str_field(m, "modelId") else {
+                continue;
+            };
+            let label = str_field(m, "displayLabel").unwrap_or(id);
+            let mut description = str_field(m, "description").unwrap_or("").to_string();
+            // Meta may train on code sent to Contributor-tier models.
+            if id.contains("contributor") && !description.to_lowercase().contains("train") {
+                description = "Contributor tier: Meta may use your code for training".to_string();
+            }
+            let opt = ModelOption::new(id, label, &description);
+            if m.get("isDefault").and_then(|d| d.as_bool()) == Some(true) {
+                default.push(opt);
+            } else {
+                rest.push(opt);
+            }
+        }
+        default.extend(rest);
+        default
     }
 
     fn build_session_args(&self, _args: &SessionArgs<'_>) -> Vec<String> {
@@ -145,7 +206,7 @@ impl Agent for Muse {
             "workspaceRoot": p.cwd,
             "approvalMode": trust_level_to_approval_mode(p.trust_level),
         });
-        if let Some(m) = p.model {
+        if let Some(m) = p.model.filter(|m| *m != DEFAULT_MODEL) {
             params["modelId"] = json!(m);
         }
         request(json!(req_id), "session/start", params)
@@ -181,7 +242,23 @@ impl Agent for Muse {
         if let Some(e) = p.effort {
             params["reasoningEffort"] = json!(e);
         }
-        request(json!(req_id), "turn/start", params)
+        // turn/start has no model field and session/resume carries none, so
+        // a picked model is (re)applied ahead of every turn. The setModel ack
+        // gets a string id and is dropped; only turn/start is awaited.
+        let mut bytes = match p.model.filter(|m| *m != DEFAULT_MODEL) {
+            Some(m) => request(
+                json!(format!("verun-set-model-{}", command_id())),
+                "session/setModel",
+                json!({
+                    "commandId": command_id(),
+                    "sessionId": p.session_id,
+                    "model": { "modelId": m }
+                }),
+            )?,
+            None => Vec::new(),
+        };
+        bytes.extend(request(json!(req_id), "turn/start", params)?);
+        Ok(bytes)
     }
 
     fn rpc_parse_turn_id(&self, r: &Value) -> Option<String> {

@@ -2725,6 +2725,69 @@ fn check_agent_impl(agent: &dyn crate::agent::Agent) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Run an agent's model-listing command and return its stdout. `stdin` is
+/// written up front and the pipe is held open, so protocol servers (Muse's
+/// `muse serve`) stay up long enough to answer; the child is killed as soon
+/// as `done` accepts the output so far, at EOF, or at `timeout`.
+fn run_model_list_command(
+    bin: &str,
+    args: &[String],
+    stdin: Option<Vec<u8>>,
+    done: impl Fn(&str) -> bool,
+    timeout: std::time::Duration,
+) -> String {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+
+    let Ok(mut child) = std::process::Command::new(bin)
+        .args(args)
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return String::new();
+    };
+    let mut child_stdin = child.stdin.take();
+    if let (Some(pipe), Some(bytes)) = (child_stdin.as_mut(), stdin.as_deref()) {
+        let _ = pipe.write_all(bytes).and_then(|_| pipe.flush());
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    if let Some(mut stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = stdout.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    let deadline = std::time::Instant::now() + timeout;
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(chunk) => {
+                out.extend_from_slice(&chunk);
+                if done(&String::from_utf8_lossy(&out)) {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    drop(child_stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Cached agent detection result — populated once at startup, refreshed on demand.
 pub type AgentCache = std::sync::Arc<std::sync::RwLock<Vec<AgentInfo>>>;
 
@@ -2751,6 +2814,9 @@ where
     agents
 }
 
+/// Upper bound on one agent's model-listing command during detection.
+const MODEL_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Blocking detection of all agents — run via spawn_blocking at startup.
 pub fn detect_all_agents() -> Vec<AgentInfo> {
     crate::agent::AgentKind::all()
@@ -2763,13 +2829,16 @@ pub fn detect_all_agents() -> Vec<AgentInfo> {
             let models = if installed {
                 agent
                     .model_list_args()
-                    .and_then(|args| {
-                        std::process::Command::new(agent.cli_binary())
-                            .args(&args)
-                            .output()
-                            .ok()
+                    .map(|args| {
+                        let out = run_model_list_command(
+                            agent.cli_binary(),
+                            &args,
+                            agent.model_list_stdin(),
+                            |o| !agent.parse_model_list(o).is_empty(),
+                            MODEL_LIST_TIMEOUT,
+                        );
+                        agent.parse_model_list(&out)
                     })
-                    .map(|out| agent.parse_model_list(&String::from_utf8_lossy(&out.stdout)))
                     .filter(|v| !v.is_empty())
                     .unwrap_or_else(|| agent.available_models())
             } else {
@@ -3623,6 +3692,35 @@ pub async fn get_resource_usage_now(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_model_list_feeds_stdin_and_stops_once_parsed() {
+        // A long-lived server: answers after reading a request line, then
+        // would keep running forever. The helper must return as soon as the
+        // output parses, not wait for exit.
+        let out = run_model_list_command(
+            "sh",
+            &["-c".to_string(), "read l; echo \"got:$l\"; sleep 30".to_string()],
+            Some(b"ping\n".to_vec()),
+            |o| o.contains("got:ping"),
+            std::time::Duration::from_secs(10),
+        );
+        assert!(out.contains("got:ping"), "{out}");
+    }
+
+    #[test]
+    fn run_model_list_times_out_on_silent_child() {
+        let start = std::time::Instant::now();
+        let out = run_model_list_command(
+            "sh",
+            &["-c".to_string(), "sleep 30".to_string()],
+            Some(Vec::new()),
+            |o| !o.is_empty(),
+            std::time::Duration::from_millis(300),
+        );
+        assert!(out.is_empty());
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
 
     #[test]
     fn derive_dir_name_handles_https_url() {
