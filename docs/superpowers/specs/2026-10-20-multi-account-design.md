@@ -1,7 +1,7 @@
 # Multiple accounts per harness
 
 **Date:** 2026-10-20
-**Status:** Builder-checked, awaiting approval
+**Status:** Approved 2026-10-20
 
 ## Intent
 
