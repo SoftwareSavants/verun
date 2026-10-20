@@ -1,3 +1,4 @@
+mod accounts;
 mod activity;
 pub mod agent;
 mod blob;
