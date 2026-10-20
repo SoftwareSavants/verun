@@ -209,6 +209,14 @@ pub fn run() {
             app.manage(pool);
             app.manage(db_tx);
             app.manage(blob::AppDataDir(app_data_dir));
+            // Account secrets (API keys) live in the OS keychain, never SQLite.
+            // The service name carries the bundle id, so dev and prod builds
+            // keep separate secrets.
+            app.manage(accounts::Secrets(std::sync::Arc::new(
+                accounts::secrets::KeychainSecretStore::new(accounts::secrets::keychain_service(
+                    &app.config().identifier,
+                )),
+            )));
 
             #[cfg(unix)]
             {
