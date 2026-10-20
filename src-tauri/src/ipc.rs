@@ -2869,6 +2869,7 @@ pub fn detect_all_agents() -> Vec<AgentInfo> {
                 supports_skills: agent.supports_skills(),
                 supports_attachments: agent.supports_attachments(),
                 supports_fork: agent.supports_fork(),
+                account_support: account_support_info(&*agent),
             }
         })
         .collect()
@@ -2913,6 +2914,38 @@ pub struct AgentInfo {
     pub supports_skills: bool,
     pub supports_attachments: bool,
     pub supports_fork: bool,
+    pub account_support: Option<AccountSupportInfo>,
+}
+
+/// What the UI needs to know about a harness's added accounts: which buttons
+/// to offer and what to say beside them.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSupportInfo {
+    pub login: bool,
+    pub logout: bool,
+    pub existing_dir: bool,
+    pub required_secret: Option<String>,
+    pub login_hint: Option<String>,
+    pub logout_hint: Option<String>,
+    pub min_cli_version: Option<String>,
+    pub blocked_reason: Option<String>,
+}
+
+/// The account support of `agent` as the UI sees it, or `None` for a harness
+/// without added accounts.
+pub fn account_support_info(agent: &dyn crate::agent::Agent) -> Option<AccountSupportInfo> {
+    let profile = agent.account_profile()?;
+    Some(AccountSupportInfo {
+        login: profile.login_args.is_some(),
+        logout: profile.logout_args.is_some(),
+        existing_dir: profile.allows_existing_dir,
+        required_secret: profile.required_secret.map(str::to_string),
+        login_hint: profile.login_hint.map(str::to_string),
+        logout_hint: profile.logout_hint.map(str::to_string),
+        min_cli_version: profile.min_cli_version.map(str::to_string),
+        blocked_reason: agent.account_blocked_reason(),
+    })
 }
 
 #[tauri::command]
@@ -3960,6 +3993,7 @@ mod tests {
             supports_skills: false,
             supports_attachments: true,
             supports_fork: true,
+            account_support: None,
         }];
         let sample_clone = sample.clone();
 
@@ -3969,6 +4003,117 @@ mod tests {
         assert_eq!(returned.len(), 1);
         assert_eq!(cache.read().unwrap().len(), 1);
         assert_eq!(cache.read().unwrap()[0].id, "claude");
+    }
+
+    #[test]
+    fn account_support_info_only_for_supporting_harnesses() {
+        assert_eq!(
+            account_support_info(&crate::agent::Claude),
+            Some(AccountSupportInfo {
+                login: true,
+                logout: true,
+                existing_dir: true,
+                required_secret: None,
+                login_hint: None,
+                logout_hint: None,
+                min_cli_version: None,
+                blocked_reason: None,
+            })
+        );
+        // Codex has not opted in: the trait defaults mean no added accounts.
+        assert_eq!(account_support_info(&crate::agent::Codex), None);
+    }
+
+    /// A harness that sets every optional field of the profile and is blocked,
+    /// to check that each one reaches the summary.
+    struct FullySpecifiedAgent;
+
+    impl crate::agent::Agent for FullySpecifiedAgent {
+        fn kind(&self) -> crate::agent::AgentKind {
+            crate::agent::AgentKind::Gemini
+        }
+        fn display_name(&self) -> &'static str {
+            "Fake"
+        }
+        fn cli_binary(&self) -> &'static str {
+            "fake"
+        }
+        fn input_mode(&self) -> crate::agent::InputMode {
+            crate::agent::InputMode::PositionalOrStdin
+        }
+        fn build_session_args(&self, _args: &crate::agent::SessionArgs<'_>) -> Vec<String> {
+            Vec::new()
+        }
+        fn install_hint(&self) -> &'static str {
+            ""
+        }
+        fn available_models(&self) -> Vec<crate::agent::ModelOption> {
+            Vec::new()
+        }
+        fn account_profile(&self) -> Option<crate::agent::AccountProfile> {
+            Some(crate::agent::AccountProfile {
+                scrub_vars: &["FAKE_HOME"],
+                fixed_env: &[("FAKE_NO_UPDATE", "1")],
+                api_key_vars: &["FAKE_API_KEY"],
+                // The bare CLI is a login command; no logout command at all.
+                login_args: Some(&[]),
+                logout_args: None,
+                login_hint: Some("Sign in, then type /quit."),
+                logout_hint: Some("Type /signout."),
+                allows_existing_dir: false,
+                required_secret: Some("FAKE_API_KEY"),
+                in_project_env: false,
+                min_cli_version: Some("0.25.0"),
+            })
+        }
+        fn account_blocked_reason(&self) -> Option<String> {
+            Some("Installed through npm.".to_string())
+        }
+    }
+
+    #[test]
+    fn account_support_info_maps_the_profile_fields_the_ui_shows() {
+        assert_eq!(
+            account_support_info(&FullySpecifiedAgent),
+            Some(AccountSupportInfo {
+                login: true,
+                logout: false,
+                existing_dir: false,
+                required_secret: Some("FAKE_API_KEY".into()),
+                login_hint: Some("Sign in, then type /quit.".into()),
+                logout_hint: Some("Type /signout.".into()),
+                min_cli_version: Some("0.25.0".into()),
+                blocked_reason: Some("Installed through npm.".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn account_support_serializes_with_the_keys_of_the_frontend_type() {
+        // The keys of `AccountSupport` in src/types/index.ts.
+        let json = serde_json::to_value(account_support_info(&FullySpecifiedAgent)).unwrap();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "blockedReason",
+                "existingDir",
+                "login",
+                "loginHint",
+                "logout",
+                "logoutHint",
+                "minCliVersion",
+                "requiredSecret",
+            ]
+        );
+        assert_eq!(json["existingDir"], false);
+        assert_eq!(json["minCliVersion"], "0.25.0");
     }
 }
 

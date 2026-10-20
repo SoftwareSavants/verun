@@ -18,7 +18,7 @@
 //! serializable tag stored on `sessions.agent_type` in the DB; it maps 1:1
 //! to a concrete impl via [`AgentKind::implementation`].
 //!
-//! The trait groups methods into four concerns:
+//! The trait groups methods into five concerns:
 //!
 //! 1. **Identity** — `kind`, `display_name`, `cli_binary`, `install_hint`,
 //!    `docs_url`. Purely descriptive.
@@ -35,6 +35,10 @@
 //!    `defers_resume_id_until_turn_end`, `persists_across_turns`,
 //!    `abort_strategy`, `encode_stream_user_message`, `encode_stream_interrupt`.
 //!    Govern how the process is spawned, reused, and cancelled.
+//! 5. **Accounts** - `account_profile`, `account_home_env`,
+//!    `account_standard_home`, `prepare_account_dir`, `read_account_identity`,
+//!    `account_blocked_reason`. Describe how the CLI runs as an added account
+//!    next to the user's own login; the `accounts` module acts on them.
 //!
 //! ## Turn model
 //!
@@ -99,8 +103,9 @@ mod gemini;
 mod grok;
 mod opencode;
 
+use crate::accounts::identity::AccountIdentity;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // Re-export the concrete types so callers can reference them if needed.
 pub use claude::Claude;
@@ -395,6 +400,56 @@ pub struct RpcTokenUsage {
 }
 
 // ---------------------------------------------------------------------------
+// Account support
+// ---------------------------------------------------------------------------
+//
+// A harness takes part in multiple accounts by describing itself with these
+// types and the account methods on `Agent`. The `accounts` module acts on the
+// description and never branches on which harness it is.
+
+/// How a harness runs next to the user's own login: which env vars isolate an
+/// account, which commands sign it in and out, and what the UI needs to know
+/// before it offers one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountProfile {
+    /// Vars removed from the env of an added account's processes, so nothing
+    /// Verun inherited (the home var, API keys, tokens) can override it.
+    pub scrub_vars: &'static [&'static str],
+    /// Vars every added account sets, before its own env vars.
+    pub fixed_env: &'static [(&'static str, &'static str)],
+    /// Vars that sign the CLI in without a login. An account whose env holds
+    /// one shows as "API key" while it has no login of its own.
+    pub api_key_vars: &'static [&'static str],
+    /// Args after the binary for the login and logout terminals. `Some(&[])`
+    /// runs the bare CLI, `None` means the harness has no such command.
+    pub login_args: Option<&'static [&'static str]>,
+    pub logout_args: Option<&'static [&'static str]>,
+    /// What the user does in the login or logout terminal when the command
+    /// alone does not finish the job.
+    pub login_hint: Option<&'static str>,
+    pub logout_hint: Option<&'static str>,
+    /// An account may use a dir the user already logged in from.
+    pub allows_existing_dir: bool,
+    /// An env var every account has to define as a secret (Cursor's API key).
+    pub required_secret: Option<&'static str>,
+    /// The project's account for this harness also applies to task shells,
+    /// hooks and the start command.
+    pub in_project_env: bool,
+    /// The oldest CLI version that supports added accounts.
+    pub min_cli_version: Option<&'static str>,
+}
+
+/// Where an identity is read from.
+#[derive(Debug, Clone, Copy)]
+pub enum AccountHome<'a> {
+    /// The Default account: whatever home the CLI uses when Verun overrides
+    /// nothing.
+    Default { user_home: &'a Path },
+    /// The config dir of an added account.
+    Dir(&'a Path),
+}
+
+// ---------------------------------------------------------------------------
 // The trait
 // ---------------------------------------------------------------------------
 
@@ -665,6 +720,47 @@ pub trait Agent: Send + Sync {
     /// overrides this.
     fn discover_skills(&self, _scan_root: Option<&Path>, _user_home: &Path) -> Vec<AgentSkill> {
         Vec::new()
+    }
+
+    // ── Accounts ───────────────────────────────────────────────────────
+    //
+    // How the harness runs as an added account. The defaults describe a
+    // harness without support: no profile, and the rest is never asked.
+
+    /// The harness's account support. `None`: no added accounts, only the
+    /// Default login.
+    fn account_profile(&self) -> Option<AccountProfile> {
+        None
+    }
+
+    /// Env vars that make the CLI use `dir` as its home. The dir is passed
+    /// byte for byte: Claude hashes the exact string into its keychain entry.
+    fn account_home_env(&self, _dir: &Path) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// The CLI's own home (Claude: `~/.claude`), which an added account may
+    /// not use: named explicitly it is a login separate from Default.
+    fn account_standard_home(&self, _user_home: &Path) -> Option<PathBuf> {
+        None
+    }
+
+    /// Lays out what the CLI needs inside a dir Verun created for an account.
+    /// Never called for a dir the user brought in.
+    fn prepare_account_dir(&self, dir: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)
+    }
+
+    /// Who is signed in at `home`, read from the CLI's files. It blocks on
+    /// file I/O, so async callers go through `spawn_blocking`.
+    fn read_account_identity(&self, _home: AccountHome<'_>) -> AccountIdentity {
+        AccountIdentity::default()
+    }
+
+    /// Why added accounts cannot work with the CLI as installed, shown in
+    /// Settings. `None`: nothing in the way.
+    fn account_blocked_reason(&self) -> Option<String> {
+        None
     }
 
     // ── JSON-RPC approval-response encoders (Codex app-server) ─────────

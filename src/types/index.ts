@@ -111,6 +111,18 @@ export interface AgentSkill {
   description: string;
 }
 
+/** What the UI needs to offer added accounts of a harness. */
+export interface AccountSupport {
+  login: boolean;
+  logout: boolean;
+  existingDir: boolean;
+  requiredSecret: string | null;
+  loginHint: string | null;
+  logoutHint: string | null;
+  minCliVersion: string | null;
+  blockedReason: string | null;
+}
+
 export interface AgentInfo {
   id: AgentType;
   name: string;
@@ -128,6 +140,8 @@ export interface AgentInfo {
   supportsSkills: boolean;
   supportsAttachments: boolean;
   supportsFork: boolean;
+  /** null: the harness has no added accounts, only the Default login. */
+  accountSupport: AccountSupport | null;
 }
 
 /**
