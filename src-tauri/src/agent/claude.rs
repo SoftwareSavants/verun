@@ -3,7 +3,8 @@ use super::{
     SessionArgs,
 };
 use crate::accounts::identity::{
-    non_empty_str, read_json_with_retry, AccountIdentity, SignInStatus,
+    non_empty_str, read_json_with_retry, unknown_identity, unread_file_identity, AccountIdentity,
+    SignInStatus,
 };
 use crate::markdown_skills::{scan_commands_dir, scan_skills_dir};
 use std::collections::HashSet;
@@ -267,11 +268,16 @@ impl Agent for Claude {
 
     fn account_profile(&self) -> Option<AccountProfile> {
         Some(AccountProfile {
+            // Everything that can sign Claude in or route it elsewhere. An
+            // account that needs a base URL sets its own.
             scrub_vars: &[
                 CONFIG_DIR_VAR,
                 "ANTHROPIC_API_KEY",
                 "ANTHROPIC_AUTH_TOKEN",
                 "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "ANTHROPIC_BASE_URL",
             ],
             fixed_env: &[],
             api_key_vars: &[
@@ -308,8 +314,10 @@ impl Agent for Claude {
 
 /// Who `claude` is signed in as at `home`. The signed-in account is the
 /// `oauthAccount` of `.claude.json`, which logout removes; the tokens are in
-/// the keychain and are never read. A file that is missing or unreadable is a
-/// home nobody has signed in to.
+/// the keychain and are never read. A home without the file, or without an
+/// account in it, has nobody signed in. A file that is there but cannot be
+/// read, or is not shaped like Claude's config, says nothing either way, so it
+/// is `Unknown` rather than a guess at "signed out".
 ///
 /// `inherited_config_dir` is the `CLAUDE_CONFIG_DIR` Verun itself was started
 /// with, passed in so tests need not touch the process env.
@@ -317,25 +325,25 @@ fn claude_identity(
     home: AccountHome<'_>,
     inherited_config_dir: Option<OsString>,
 ) -> AccountIdentity {
-    let signed_out = AccountIdentity {
-        status: SignInStatus::SignedOut,
-        ..AccountIdentity::default()
+    let path = claude_json_path(home, inherited_config_dir);
+    let Some(json) = read_json_with_retry(&path) else {
+        return unread_file_identity(&path);
     };
-    let Some(json) = read_json_with_retry(&claude_json_path(home, inherited_config_dir)) else {
-        return signed_out;
+    let Some(config) = json.as_object() else {
+        return unknown_identity(&path, "is not a JSON object");
     };
-    let Some(account) = json
-        .get("oauthAccount")
-        .filter(|account| account.is_object())
-    else {
-        return signed_out;
-    };
-    AccountIdentity {
-        status: SignInStatus::SignedIn,
-        email: non_empty_str(account, "emailAddress"),
-        org_name: non_empty_str(account, "organizationName"),
-        plan: non_empty_str(account, "organizationType").map(|kind| plan_name(&kind)),
-        providers: Vec::new(),
+    match config.get("oauthAccount") {
+        None | Some(serde_json::Value::Null) => {
+            AccountIdentity::with_status(SignInStatus::SignedOut)
+        }
+        Some(account) if account.is_object() => AccountIdentity {
+            status: SignInStatus::SignedIn,
+            email: non_empty_str(account, "emailAddress"),
+            org_name: non_empty_str(account, "organizationName"),
+            plan: non_empty_str(account, "organizationType").map(|kind| plan_name(&kind)),
+            providers: Vec::new(),
+        },
+        Some(_) => unknown_identity(&path, "has an oauthAccount that is not an object"),
     }
 }
 
@@ -681,6 +689,9 @@ mod tests {
                     "ANTHROPIC_API_KEY",
                     "ANTHROPIC_AUTH_TOKEN",
                     "CLAUDE_CODE_OAUTH_TOKEN",
+                    "CLAUDE_CODE_USE_BEDROCK",
+                    "CLAUDE_CODE_USE_VERTEX",
+                    "ANTHROPIC_BASE_URL",
                 ],
                 fixed_env: &[],
                 api_key_vars: &[
@@ -740,13 +751,6 @@ mod tests {
 
     fn write_claude_json(dir: &Path, json: &str) {
         fs::write(dir.join(".claude.json"), json).unwrap();
-    }
-
-    fn signed_out() -> AccountIdentity {
-        AccountIdentity {
-            status: SignInStatus::SignedOut,
-            ..AccountIdentity::default()
-        }
     }
 
     #[test]
@@ -822,21 +826,62 @@ mod tests {
     fn claude_identity_signed_out_without_oauth_account() {
         // Logout removes the account, and a dir that never saw a login has no
         // file at all.
-        for json in [
-            Some("{}"),
-            Some(r#"{"oauthAccount":null}"#),
-            Some(r#"{"oauthAccount":"dev@acme.com"}"#),
-            Some("not json"),
-            None,
-        ] {
+        for json in [Some("{}"), Some(r#"{"oauthAccount":null}"#), None] {
             let dir = TempDir::new().unwrap();
             if let Some(json) = json {
                 write_claude_json(dir.path(), json);
             }
             assert_eq!(
                 Claude.read_account_identity(AccountHome::Dir(dir.path())),
-                signed_out(),
+                AccountIdentity::with_status(SignInStatus::SignedOut),
                 "file: {json:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_identity_unknown_when_the_file_cannot_be_read() {
+        // The file is there, so someone may well be signed in; "signed out"
+        // would refuse the account on a guess.
+        let unknown = AccountIdentity::with_status(SignInStatus::Unknown);
+        // Not JSON, and empty, which is what a truncating rewrite leaves.
+        for json in ["not json", ""] {
+            let dir = TempDir::new().unwrap();
+            write_claude_json(dir.path(), json);
+            assert_eq!(
+                Claude.read_account_identity(AccountHome::Dir(dir.path())),
+                unknown,
+                "file: {json:?}"
+            );
+        }
+        // Not a file.
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(".claude.json")).unwrap();
+        assert_eq!(
+            Claude.read_account_identity(AccountHome::Dir(dir.path())),
+            unknown
+        );
+    }
+
+    #[test]
+    fn claude_identity_unknown_for_an_unexpected_shape() {
+        // Valid JSON, but not what Claude writes: not a logout either.
+        for json in [
+            r#"{"oauthAccount":"dev@acme.com"}"#,
+            r#"{"oauthAccount":42}"#,
+            r#"{"oauthAccount":true}"#,
+            r#"{"oauthAccount":[]}"#,
+            "[]",
+            r#""dev@acme.com""#,
+            "42",
+            "null",
+        ] {
+            let dir = TempDir::new().unwrap();
+            write_claude_json(dir.path(), json);
+            assert_eq!(
+                Claude.read_account_identity(AccountHome::Dir(dir.path())),
+                AccountIdentity::with_status(SignInStatus::Unknown),
+                "file: {json}"
             );
         }
     }

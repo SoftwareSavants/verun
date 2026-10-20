@@ -413,7 +413,8 @@ pub struct RpcTokenUsage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccountProfile {
     /// Vars removed from the env of an added account's processes, so nothing
-    /// Verun inherited (the home var, API keys, tokens) can override it.
+    /// Verun inherited (the home var, API keys, tokens, provider routing) can
+    /// override it. An account that needs one sets it in its own env.
     pub scrub_vars: &'static [&'static str],
     /// Vars every added account sets, before its own env vars.
     pub fixed_env: &'static [(&'static str, &'static str)],

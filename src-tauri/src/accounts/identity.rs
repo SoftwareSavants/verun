@@ -16,10 +16,15 @@ use std::time::Duration;
 #[serde(rename_all = "camelCase")]
 pub enum SignInStatus {
     SignedIn,
+    /// Nobody is signed in: logged out, or never logged in. A session on a
+    /// signed-out account is refused, so a reader says this only when the
+    /// files show it.
     SignedOut,
     /// No login of its own, but the account's env supplies an API key.
     ApiKey,
-    /// Nothing on disk says either way.
+    /// Nothing on disk says either way: a file that cannot be read, or that
+    /// is not shaped the way the CLI writes it. It never blocks an account, so
+    /// a reader reports it instead of guessing `SignedOut`.
     #[default]
     Unknown,
 }
@@ -36,6 +41,16 @@ pub struct AccountIdentity {
     /// Signed-in providers, for harnesses where one login holds several
     /// (OpenCode). Empty for the rest.
     pub providers: Vec<String>,
+}
+
+impl AccountIdentity {
+    /// An identity that knows only the sign-in status.
+    pub fn with_status(status: SignInStatus) -> Self {
+        Self {
+            status,
+            ..Self::default()
+        }
+    }
 }
 
 /// How many times a JSON file is read before its parse error is believed, and
@@ -90,6 +105,29 @@ fn read_json_retrying(
         }
     }
     None
+}
+
+/// What to report when `read_json_with_retry` found nothing at `path`.
+///
+/// A file that is not there is a home nobody has signed in to: `SignedOut`. A
+/// file that is there but could not be read or parsed says nothing either
+/// way, so it is `Unknown`; `SignedOut` is the status that makes an account
+/// refuse to run, and a file that is merely unreadable must not do that.
+/// Every harness's reader goes through here, so they all decide the same way.
+pub fn unread_file_identity(path: &Path) -> AccountIdentity {
+    match path.try_exists() {
+        Ok(false) => AccountIdentity::with_status(SignInStatus::SignedOut),
+        Ok(true) => unknown_identity(path, "exists but could not be read as JSON"),
+        Err(e) => unknown_identity(path, &format!("could not be checked: {e}")),
+    }
+}
+
+/// `Unknown`, for a file at `path` that is there but gives no answer, with the
+/// reason on stderr so it can be diagnosed. `reason` must not quote the file:
+/// it may hold tokens.
+pub fn unknown_identity(path: &Path, reason: &str) -> AccountIdentity {
+    eprintln!("[verun][accounts] {} {reason}", path.display());
+    AccountIdentity::with_status(SignInStatus::Unknown)
 }
 
 /// The string at `key` of a JSON object, when it is there and not empty.
@@ -211,19 +249,13 @@ mod tests {
         }
     }
 
-    fn with_status(status: SignInStatus) -> AccountIdentity {
-        AccountIdentity {
-            status,
-            ..AccountIdentity::default()
-        }
-    }
-
     #[test]
     fn api_key_overlay_marks_signed_out_account_with_key() {
         let profile = profile_with(&["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"], None);
         let env = [secret_env("ANTHROPIC_AUTH_TOKEN")];
         for status in [SignInStatus::SignedOut, SignInStatus::Unknown] {
-            let identity = with_api_key_overlay(with_status(status), &profile, &env);
+            let identity =
+                with_api_key_overlay(AccountIdentity::with_status(status), &profile, &env);
             assert_eq!(identity.status, SignInStatus::ApiKey, "from {status:?}");
         }
     }
@@ -232,7 +264,11 @@ mod tests {
     fn api_key_overlay_marks_account_with_required_secret() {
         let profile = profile_with(&[], Some("CURSOR_API_KEY"));
         let env = [secret_env("CURSOR_API_KEY")];
-        let identity = with_api_key_overlay(with_status(SignInStatus::Unknown), &profile, &env);
+        let identity = with_api_key_overlay(
+            AccountIdentity::with_status(SignInStatus::Unknown),
+            &profile,
+            &env,
+        );
         assert_eq!(identity.status, SignInStatus::ApiKey);
     }
 
@@ -243,12 +279,18 @@ mod tests {
         let key_env = [secret_env("ANTHROPIC_API_KEY")];
         // No key in the env: still signed out, however much other env there is.
         for env in [&[][..], &other_env[..]] {
-            let identity =
-                with_api_key_overlay(with_status(SignInStatus::SignedOut), &profile, env);
-            assert_eq!(identity, with_status(SignInStatus::SignedOut));
+            let identity = with_api_key_overlay(
+                AccountIdentity::with_status(SignInStatus::SignedOut),
+                &profile,
+                env,
+            );
+            assert_eq!(
+                identity,
+                AccountIdentity::with_status(SignInStatus::SignedOut)
+            );
         }
         // A login the CLI really has is not replaced by a key.
-        let signed_in = with_status(SignInStatus::SignedIn);
+        let signed_in = AccountIdentity::with_status(SignInStatus::SignedIn);
         assert_eq!(
             with_api_key_overlay(signed_in.clone(), &profile, &key_env),
             signed_in
@@ -373,5 +415,86 @@ mod tests {
         assert_eq!(read_json_retrying(&path, 3, || waits += 1), None);
         // Three reads, so two pauses: none after the last one.
         assert_eq!(waits, 2);
+    }
+
+    #[test]
+    fn unread_file_identity_is_signed_out_for_a_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(
+            unread_file_identity(&tmp.path().join("auth.json")),
+            AccountIdentity::with_status(SignInStatus::SignedOut)
+        );
+    }
+
+    #[test]
+    fn unread_file_identity_is_unknown_for_a_file_that_is_there() {
+        // The caller got nothing from a file that exists, so it could not
+        // be read or parsed. That says nothing about a login, and a guess of
+        // "signed out" would make the account refuse to run.
+        let tmp = TempDir::new().unwrap();
+        let corrupt = tmp.path().join("corrupt.json");
+        std::fs::write(&corrupt, "{").unwrap();
+        let folder = tmp.path().join("folder.json");
+        std::fs::create_dir(&folder).unwrap();
+        for path in [corrupt, folder] {
+            assert_eq!(
+                unread_file_identity(&path),
+                AccountIdentity::with_status(SignInStatus::Unknown),
+                "path: {path:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unread_file_identity_counts_a_dangling_symlink_as_missing() {
+        let tmp = TempDir::new().unwrap();
+        let link = tmp.path().join("auth.json");
+        std::os::unix::fs::symlink(tmp.path().join("gone.json"), &link).unwrap();
+        assert_eq!(
+            unread_file_identity(&link),
+            AccountIdentity::with_status(SignInStatus::SignedOut)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unread_file_identity_is_unknown_when_existence_cannot_be_checked() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Puts the permissions back so the temp dir can be removed, even when
+        // the assertion fails.
+        struct Unlock(std::path::PathBuf);
+        impl Drop for Unlock {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let file = locked.join("auth.json");
+        std::fs::write(&file, "{}").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let _unlock = Unlock(locked);
+
+        // A folder nobody may search hides even whether the file is there.
+        // root ignores the permission bits, and then there is nothing to test.
+        if file.try_exists().is_ok() {
+            return;
+        }
+        assert_eq!(
+            unread_file_identity(&file),
+            AccountIdentity::with_status(SignInStatus::Unknown)
+        );
+    }
+
+    #[test]
+    fn unknown_identity_is_unknown_and_carries_nothing_else() {
+        assert_eq!(
+            unknown_identity(Path::new("/x/.claude.json"), "has a shape nobody expected"),
+            AccountIdentity::with_status(SignInStatus::Unknown)
+        );
     }
 }
