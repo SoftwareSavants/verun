@@ -1972,6 +1972,7 @@ mod tests {
             agent_type: "claude".into(),
             model: None,
             closed_at: None,
+            account_id: None,
         }
     }
 

@@ -300,6 +300,33 @@ pub fn migrations() -> Vec<Migration> {
         description: "track existing task directories and git capability",
         sql: "ALTER TABLE tasks ADD COLUMN existing_directory INTEGER NOT NULL DEFAULT 0; ALTER TABLE tasks ADD COLUMN is_git INTEGER NOT NULL DEFAULT 1;",
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 26,
+        description: "create accounts and project_accounts tables, add account_id to sessions",
+        sql: r#"
+            CREATE TABLE accounts (
+                id TEXT PRIMARY KEY,
+                agent_type TEXT NOT NULL,
+                label TEXT NOT NULL,
+                color TEXT NOT NULL,
+                config_dir TEXT NOT NULL,
+                managed_dir INTEGER NOT NULL DEFAULT 0,
+                env TEXT NOT NULL DEFAULT '[]',
+                removed_at INTEGER,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE project_accounts (
+                project_id TEXT NOT NULL,
+                agent_type TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                PRIMARY KEY (project_id, agent_type)
+            );
+
+            ALTER TABLE sessions ADD COLUMN account_id TEXT;
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -385,6 +412,9 @@ pub struct Session {
     pub model: Option<String>,
     #[sqlx(default)]
     pub closed_at: Option<i64>,
+    /// The extra login this session runs on. NULL means the Default account.
+    #[sqlx(default)]
+    pub account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -510,6 +540,76 @@ pub struct GitHubCacheEntry {
     pub fetched_at: i64,
     pub stale_at: i64,
     pub expires_at: i64,
+}
+
+/// One environment variable an account injects into its sessions. A secret's
+/// value lives in the OS keychain, never in the row, so its `value` is `None`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountEnvVar {
+    pub key: String,
+    pub value: Option<String>,
+    pub secret: bool,
+}
+
+/// An extra login for a coding-agent harness. The Default account (the user's
+/// own CLI login) is never a row: a session with no `account_id` runs on it.
+/// Removing an account only sets `removed_at`, so sessions bound to it keep
+/// resolving the row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Account {
+    pub id: String,
+    pub agent_type: String,
+    pub label: String,
+    pub color: String,
+    pub config_dir: String,
+    /// Verun created `config_dir`, so Verun may delete it with the account.
+    pub managed_dir: bool,
+    pub env: Vec<AccountEnvVar>,
+    pub removed_at: Option<i64>,
+    pub created_at: i64,
+}
+
+/// A project's chosen account for one harness. No row means the Default account.
+#[derive(Debug, Clone, Serialize, FromRow, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAccount {
+    pub project_id: String,
+    pub agent_type: String,
+    pub account_id: String,
+}
+
+/// `accounts` row as stored: `env` is a JSON list of `AccountEnvVar`.
+#[derive(FromRow)]
+struct AccountRow {
+    id: String,
+    agent_type: String,
+    label: String,
+    color: String,
+    config_dir: String,
+    managed_dir: bool,
+    env: String,
+    removed_at: Option<i64>,
+    created_at: i64,
+}
+
+impl AccountRow {
+    fn into_account(self) -> Result<Account, String> {
+        let env = serde_json::from_str(&self.env)
+            .map_err(|e| format!("account {} has an unreadable env list: {e}", self.id))?;
+        Ok(Account {
+            id: self.id,
+            agent_type: self.agent_type,
+            label: self.label,
+            color: self.color,
+            config_dir: self.config_dir,
+            managed_dir: self.managed_dir,
+            env,
+            removed_at: self.removed_at,
+            created_at: self.created_at,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -671,6 +771,26 @@ pub enum DbWrite {
         fired_at: i64,
     },
 
+    // Accounts. Each confirms through `done`, like `InsertTaskWithSession`,
+    // so a caller can wait for the row before acting on it.
+    /// Insert the account, or on an id clash replace only its label, color and env.
+    UpsertAccount {
+        account: Account,
+        done: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    MarkAccountRemoved {
+        id: String,
+        removed_at: i64,
+        done: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    /// Bind the project's harness to `account_id`; `None` clears the binding.
+    SetProjectAccount {
+        project_id: String,
+        agent_type: String,
+        account_id: Option<String>,
+        done: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+
     // Startup recovery
     ResetRunningSessions,
 }
@@ -794,9 +914,10 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
                     .bind(&t.id).bind(&t.project_id).bind(&t.name).bind(&t.worktree_path)
                     .bind(&t.branch).bind(t.created_at).bind(t.port_offset).bind(&t.agent_type).bind(t.existing_directory).bind(t.is_git)
                     .execute(&mut *tx).await?;
-                sqlx::query("INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, agent_type, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                sqlx::query("INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, agent_type, model, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
                     .bind(&s.id).bind(&s.task_id).bind(&s.name).bind(&s.resume_session_id)
                     .bind(&s.status).bind(s.started_at).bind(&s.agent_type).bind(&s.model)
+                    .bind(&s.account_id)
                     .execute(&mut *tx).await?;
                 for (line, at) in &lines {
                     sqlx::query("INSERT INTO output_lines (session_id, line, emitted_at) VALUES (?, ?, ?)")
@@ -881,7 +1002,7 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
             .collect();
             let drained = drain_refs_for_sessions(pool, &session_ids).await?;
 
-            // Cascade: audit_log → trust_levels → steps → output_lines → turn_snapshots → sessions → tasks → project
+            // Cascade: audit_log → trust_levels → steps → output_lines → turn_snapshots → sessions → tasks → project_accounts → project
             sqlx::query(
                 "DELETE FROM policy_audit_log WHERE task_id IN \
                  (SELECT id FROM tasks WHERE project_id = ?)",
@@ -923,6 +1044,10 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
             .execute(pool)
             .await?;
             sqlx::query("DELETE FROM tasks WHERE project_id = ?")
+                .bind(&id)
+                .execute(pool)
+                .await?;
+            sqlx::query("DELETE FROM project_accounts WHERE project_id = ?")
                 .bind(&id)
                 .execute(pool)
                 .await?;
@@ -1055,8 +1180,8 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
         // -- Sessions --
         DbWrite::CreateSession(s) => {
             sqlx::query(
-                "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at, account_id) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&s.id)
             .bind(&s.task_id)
@@ -1075,6 +1200,7 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
             .bind(&s.agent_type)
             .bind(&s.model)
             .bind(s.closed_at)
+            .bind(&s.account_id)
             .execute(pool)
             .await?;
         }
@@ -1391,6 +1517,78 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
                 .bind(id)
                 .execute(pool)
                 .await?;
+        }
+
+        // -- Accounts --
+        DbWrite::UpsertAccount { account, done } => {
+            let result = async {
+                let env = serde_json::to_string(&account.env).map_err(|e| e.to_string())?;
+                sqlx::query(
+                    "INSERT INTO accounts (id, agent_type, label, color, config_dir, managed_dir, env, removed_at, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                     ON CONFLICT(id) DO UPDATE SET label = excluded.label, color = excluded.color, env = excluded.env",
+                )
+                .bind(&account.id)
+                .bind(&account.agent_type)
+                .bind(&account.label)
+                .bind(&account.color)
+                .bind(&account.config_dir)
+                .bind(account.managed_dir)
+                .bind(&env)
+                .bind(account.removed_at)
+                .bind(account.created_at)
+                .execute(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+                Ok::<(), String>(())
+            }
+            .await;
+            let _ = done.send(result);
+        }
+        DbWrite::MarkAccountRemoved {
+            id,
+            removed_at,
+            done,
+        } => {
+            let result = sqlx::query("UPDATE accounts SET removed_at = ? WHERE id = ?")
+                .bind(removed_at)
+                .bind(&id)
+                .execute(pool)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            let _ = done.send(result);
+        }
+        DbWrite::SetProjectAccount {
+            project_id,
+            agent_type,
+            account_id,
+            done,
+        } => {
+            let result = match account_id {
+                Some(account_id) => {
+                    sqlx::query(
+                        "INSERT INTO project_accounts (project_id, agent_type, account_id) \
+                         VALUES (?, ?, ?) \
+                         ON CONFLICT(project_id, agent_type) DO UPDATE SET account_id = excluded.account_id",
+                    )
+                    .bind(&project_id)
+                    .bind(&agent_type)
+                    .bind(&account_id)
+                    .execute(pool)
+                    .await
+                }
+                None => {
+                    sqlx::query("DELETE FROM project_accounts WHERE project_id = ? AND agent_type = ?")
+                        .bind(&project_id)
+                        .bind(&agent_type)
+                        .execute(pool)
+                        .await
+                }
+            }
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+            let _ = done.send(result);
         }
 
         // -- Startup recovery --
@@ -1809,6 +2007,76 @@ pub async fn list_due_wakeups(
     .map_err(|e| e.to_string())
 }
 
+// Accounts
+
+/// Every account, removed ones included, oldest first.
+#[allow(dead_code)] // consumed by the account service
+pub async fn list_accounts(pool: &SqlitePool) -> Result<Vec<Account>, String> {
+    sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts ORDER BY created_at ASC, id ASC")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(AccountRow::into_account)
+        .collect()
+}
+
+#[allow(dead_code)] // consumed by the account service
+pub async fn get_account(pool: &SqlitePool, id: &str) -> Result<Option<Account>, String> {
+    sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(AccountRow::into_account)
+        .transpose()
+}
+
+#[allow(dead_code)] // consumed by the account service
+pub async fn list_project_accounts(pool: &SqlitePool) -> Result<Vec<ProjectAccount>, String> {
+    sqlx::query_as::<_, ProjectAccount>(
+        "SELECT * FROM project_accounts ORDER BY project_id ASC, agent_type ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// A project's bindings as `agent_type -> account_id`. A harness with no entry
+/// runs on the Default account.
+#[allow(dead_code)] // consumed by the account service
+pub async fn project_account_ids(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT agent_type, account_id FROM project_accounts WHERE project_id = ?",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map(|rows| rows.into_iter().collect())
+    .map_err(|e| e.to_string())
+}
+
+/// Names of the projects bound to the account, alphabetically.
+#[allow(dead_code)] // consumed by the account service
+pub async fn projects_using_account(
+    pool: &SqlitePool,
+    account_id: &str,
+) -> Result<Vec<String>, String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT p.name FROM project_accounts pa \
+         JOIN projects p ON p.id = pa.project_id \
+         WHERE pa.account_id = ? \
+         ORDER BY p.name ASC, p.id ASC",
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
 // Policy
 
 pub async fn get_trust_level(pool: &SqlitePool, task_id: &str) -> Result<String, String> {
@@ -2012,7 +2280,7 @@ pub(crate) mod tests {
     #[test]
     fn migration_versions_are_sequential() {
         let m = migrations();
-        assert_eq!(m.len(), 25);
+        assert_eq!(m.len(), 26);
         for (i, mig) in m.iter().enumerate() {
             assert_eq!(
                 mig.version,
@@ -2150,6 +2418,7 @@ pub(crate) mod tests {
             agent_type: "claude".into(),
             model: None,
             closed_at: None,
+            account_id: None,
         }
     }
 
@@ -3276,12 +3545,14 @@ pub(crate) mod tests {
 
     #[test]
     fn session_serializes_as_camel_case() {
-        let s = make_session("t-001");
+        let mut s = make_session("t-001");
+        s.account_id = Some("a1".into());
         let json = serde_json::to_value(&s).unwrap();
         assert!(json.get("taskId").is_some());
         assert!(json.get("resumeSessionId").is_some());
         assert!(json.get("startedAt").is_some());
         assert!(json.get("endedAt").is_some());
+        assert_eq!(json["accountId"], "a1");
     }
 
     #[test]
@@ -3951,5 +4222,468 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(ref_count(&pool, &h1).await, 0);
         assert_eq!(ref_count(&pool, &h2).await, 0);
+    }
+
+    // -- Account tests --
+
+    fn make_account(id: &str, created_at: i64) -> Account {
+        Account {
+            id: id.into(),
+            agent_type: "claude".into(),
+            label: format!("Account {id}"),
+            color: "#d97757".into(),
+            config_dir: format!("/tmp/verun-accounts/{id}"),
+            managed_dir: true,
+            env: vec![],
+            removed_at: None,
+            created_at,
+        }
+    }
+
+    fn env_var(key: &str, value: Option<&str>, secret: bool) -> AccountEnvVar {
+        AccountEnvVar {
+            key: key.into(),
+            value: value.map(Into::into),
+            secret,
+        }
+    }
+
+    fn binding(project_id: &str, agent_type: &str, account_id: &str) -> ProjectAccount {
+        ProjectAccount {
+            project_id: project_id.into(),
+            agent_type: agent_type.into(),
+            account_id: account_id.into(),
+        }
+    }
+
+    fn account_ids(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(agent_type, account_id)| (agent_type.to_string(), account_id.to_string()))
+            .collect()
+    }
+
+    async fn upsert_account_confirmed(pool: &SqlitePool, account: Account) -> Result<(), String> {
+        let (done, receipt) = tokio::sync::oneshot::channel();
+        process_write(pool, DbWrite::UpsertAccount { account, done })
+            .await
+            .unwrap();
+        receipt.await.unwrap()
+    }
+
+    async fn mark_account_removed_confirmed(
+        pool: &SqlitePool,
+        id: &str,
+        removed_at: i64,
+    ) -> Result<(), String> {
+        let (done, receipt) = tokio::sync::oneshot::channel();
+        process_write(
+            pool,
+            DbWrite::MarkAccountRemoved {
+                id: id.into(),
+                removed_at,
+                done,
+            },
+        )
+        .await
+        .unwrap();
+        receipt.await.unwrap()
+    }
+
+    async fn set_project_account_confirmed(
+        pool: &SqlitePool,
+        project_id: &str,
+        agent_type: &str,
+        account_id: Option<&str>,
+    ) -> Result<(), String> {
+        let (done, receipt) = tokio::sync::oneshot::channel();
+        process_write(
+            pool,
+            DbWrite::SetProjectAccount {
+                project_id: project_id.into(),
+                agent_type: agent_type.into(),
+                account_id: account_id.map(Into::into),
+                done,
+            },
+        )
+        .await
+        .unwrap();
+        receipt.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn account_round_trips_with_env_json() {
+        let pool = test_pool().await;
+        let mut account = make_account("a1", 1000);
+        account.env = vec![
+            env_var("ANTHROPIC_BASE_URL", Some("https://proxy"), false),
+            env_var("ANTHROPIC_API_KEY", None, true),
+        ];
+
+        upsert_account_confirmed(&pool, account.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(get_account(&pool, "a1").await.unwrap(), Some(account));
+        assert_eq!(get_account(&pool, "missing").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn upsert_account_replaces_label_color_env() {
+        let pool = test_pool().await;
+        let mut original = make_account("a1", 1000);
+        original.env = vec![env_var("OLD", Some("1"), false)];
+        upsert_account_confirmed(&pool, original.clone())
+            .await
+            .unwrap();
+
+        // Only label, color and env change after creation; the harness, dir
+        // and creation time are fixed even if a later upsert disagrees.
+        let mut edited = make_account("a1", 2000);
+        edited.agent_type = "codex".into();
+        edited.config_dir = "/elsewhere".into();
+        edited.managed_dir = false;
+        edited.label = "Renamed".into();
+        edited.color = "#000000".into();
+        edited.env = vec![env_var("NEW", Some("2"), false)];
+        upsert_account_confirmed(&pool, edited.clone())
+            .await
+            .unwrap();
+
+        let expected = Account {
+            label: "Renamed".into(),
+            color: "#000000".into(),
+            env: edited.env,
+            ..original
+        };
+        assert_eq!(get_account(&pool, "a1").await.unwrap(), Some(expected));
+        assert_eq!(list_accounts(&pool).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mark_account_removed_sets_removed_at() {
+        let pool = test_pool().await;
+        let account = make_account("a1", 1000);
+        upsert_account_confirmed(&pool, account.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            get_account(&pool, "a1").await.unwrap().unwrap().removed_at,
+            None
+        );
+
+        mark_account_removed_confirmed(&pool, "a1", 1700)
+            .await
+            .unwrap();
+
+        // Marked, not deleted: sessions bound to it still resolve the row.
+        let expected = Account {
+            removed_at: Some(1700),
+            ..account
+        };
+        assert_eq!(get_account(&pool, "a1").await.unwrap(), Some(expected));
+    }
+
+    #[tokio::test]
+    async fn list_accounts_orders_by_created_at_and_includes_removed() {
+        let pool = test_pool().await;
+        for (id, created_at) in [("a-late", 3000), ("a-early", 1000), ("a-mid", 2000)] {
+            upsert_account_confirmed(&pool, make_account(id, created_at))
+                .await
+                .unwrap();
+        }
+        mark_account_removed_confirmed(&pool, "a-mid", 2500)
+            .await
+            .unwrap();
+
+        let accounts = list_accounts(&pool).await.unwrap();
+
+        let ids: Vec<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["a-early", "a-mid", "a-late"]);
+        assert_eq!(accounts[1].removed_at, Some(2500));
+    }
+
+    #[tokio::test]
+    async fn set_project_account_inserts_replaces_and_clears() {
+        let pool = test_pool().await;
+
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            project_account_ids(&pool, "p-001").await.unwrap(),
+            account_ids(&[("claude", "a1")])
+        );
+
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a2"))
+            .await
+            .unwrap();
+        assert_eq!(
+            project_account_ids(&pool, "p-001").await.unwrap(),
+            account_ids(&[("claude", "a2")])
+        );
+
+        set_project_account_confirmed(&pool, "p-001", "claude", None)
+            .await
+            .unwrap();
+        assert!(project_account_ids(&pool, "p-001")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_project_account_is_scoped_to_one_project_and_harness() {
+        let pool = test_pool().await;
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-001", "codex", Some("c1"))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-002", "claude", Some("a2"))
+            .await
+            .unwrap();
+        assert_eq!(
+            project_account_ids(&pool, "p-001").await.unwrap(),
+            account_ids(&[("claude", "a1"), ("codex", "c1")])
+        );
+
+        set_project_account_confirmed(&pool, "p-001", "claude", None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            project_account_ids(&pool, "p-001").await.unwrap(),
+            account_ids(&[("codex", "c1")])
+        );
+        assert_eq!(
+            project_account_ids(&pool, "p-002").await.unwrap(),
+            account_ids(&[("claude", "a2")])
+        );
+        assert_eq!(
+            list_project_accounts(&pool).await.unwrap(),
+            vec![
+                binding("p-001", "codex", "c1"),
+                binding("p-002", "claude", "a2")
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn projects_using_account_lists_project_names() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            projects_using_account(&pool, "a1").await.unwrap(),
+            vec!["My App"]
+        );
+        assert!(projects_using_account(&pool, "a2")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn projects_using_account_orders_by_name_and_skips_other_accounts() {
+        let pool = test_pool().await;
+        for (id, name, created_at) in [
+            ("p-001", "My App", 1000),
+            ("p-002", "Zeta", 2000),
+            ("p-003", "Alpha", 3000),
+            ("p-004", "Elsewhere", 4000),
+        ] {
+            let mut project = make_project();
+            project.id = id.into();
+            project.name = name.into();
+            project.repo_path = format!("/tmp/{id}");
+            project.created_at = created_at;
+            process_write(&pool, DbWrite::InsertProject(project))
+                .await
+                .unwrap();
+        }
+        for project_id in ["p-001", "p-002", "p-003"] {
+            set_project_account_confirmed(&pool, project_id, "claude", Some("a1"))
+                .await
+                .unwrap();
+        }
+        set_project_account_confirmed(&pool, "p-004", "claude", Some("a2"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            projects_using_account(&pool, "a1").await.unwrap(),
+            vec!["Alpha", "My App", "Zeta"]
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_project_removes_project_accounts() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        let mut other = make_project();
+        other.id = "p-002".into();
+        other.repo_path = "/tmp/other".into();
+        process_write(&pool, DbWrite::InsertProject(other))
+            .await
+            .unwrap();
+        upsert_account_confirmed(&pool, make_account("a1", 1000))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-001", "codex", Some("c1"))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-002", "claude", Some("a1"))
+            .await
+            .unwrap();
+
+        process_write(&pool, DbWrite::DeleteProject { id: "p-001".into() })
+            .await
+            .unwrap();
+
+        assert!(project_account_ids(&pool, "p-001")
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            list_project_accounts(&pool).await.unwrap(),
+            vec![binding("p-002", "claude", "a1")]
+        );
+        // Bindings go with the project; the account itself stays.
+        assert!(get_account(&pool, "a1").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn account_writes_report_failures_through_done() {
+        let pool = test_pool().await;
+        pool.close().await;
+
+        assert!(upsert_account_confirmed(&pool, make_account("a1", 1000))
+            .await
+            .is_err());
+        assert!(mark_account_removed_confirmed(&pool, "a1", 1700)
+            .await
+            .is_err());
+        assert!(
+            set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+                .await
+                .is_err()
+        );
+        assert!(
+            set_project_account_confirmed(&pool, "p-001", "claude", None)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_account_id_persists_on_all_inserts() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+
+        let mut created = make_session("t-001");
+        created.id = "s-created".into();
+        created.account_id = Some("a1".into());
+        process_write(&pool, DbWrite::CreateSession(created))
+            .await
+            .unwrap();
+
+        let mut default_account = make_session("t-001");
+        default_account.id = "s-default".into();
+        process_write(&pool, DbWrite::CreateSession(default_account))
+            .await
+            .unwrap();
+
+        let mut task = make_task("p-001");
+        task.id = "t-002".into();
+        let mut with_task = make_session("t-002");
+        with_task.id = "s-with-task".into();
+        with_task.account_id = Some("a1".into());
+        let (done, receipt) = tokio::sync::oneshot::channel();
+        process_write(
+            &pool,
+            DbWrite::InsertTaskWithSession {
+                task: Box::new(task),
+                session: Box::new(with_task),
+                lines: vec![],
+                done,
+            },
+        )
+        .await
+        .unwrap();
+        receipt.await.unwrap().unwrap();
+
+        for id in ["s-created", "s-with-task"] {
+            let saved = get_session(&pool, id).await.unwrap().unwrap();
+            assert_eq!(saved.account_id.as_deref(), Some("a1"), "session {id}");
+        }
+        // NULL is the Default account.
+        let saved = get_session(&pool, "s-default").await.unwrap().unwrap();
+        assert_eq!(saved.account_id, None);
+    }
+
+    #[tokio::test]
+    async fn migration_26_keeps_existing_sessions_on_the_default_account() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let all = migrations();
+        for m in &all[..25] {
+            sqlx::query(m.sql).execute(&pool).await.unwrap();
+        }
+        for sql in [
+            "INSERT INTO projects (id, name, repo_path, created_at) VALUES ('p-old', 'Old', '/tmp/old', 1)",
+            "INSERT INTO tasks (id, project_id, worktree_path, branch, created_at) VALUES ('t-old', 'p-old', '/tmp/old/wt', 'old', 2)",
+            "INSERT INTO sessions (id, task_id, started_at, agent_type) VALUES ('s-old', 't-old', 3, 'claude')",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+
+        sqlx::query(all[25].sql).execute(&pool).await.unwrap();
+
+        let old = get_session(&pool, "s-old").await.unwrap().unwrap();
+        assert_eq!(old.account_id, None);
+        assert!(list_accounts(&pool).await.unwrap().is_empty());
+        assert!(list_project_accounts(&pool).await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn account_serializes_as_camel_case() {
+        let mut account = make_account("a1", 1000);
+        account.removed_at = Some(1700);
+        account.env = vec![env_var("ANTHROPIC_API_KEY", None, true)];
+        let json = serde_json::to_value(&account).unwrap();
+        assert_eq!(json["agentType"], "claude");
+        assert_eq!(json["configDir"], "/tmp/verun-accounts/a1");
+        assert_eq!(json["managedDir"], true);
+        assert_eq!(json["removedAt"], 1700);
+        assert_eq!(json["createdAt"], 1000);
+        assert_eq!(
+            json["env"],
+            serde_json::json!([{"key": "ANTHROPIC_API_KEY", "value": null, "secret": true}])
+        );
+    }
+
+    #[test]
+    fn project_account_serializes_as_camel_case() {
+        let json = serde_json::to_value(binding("p-001", "claude", "a1")).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"projectId": "p-001", "agentType": "claude", "accountId": "a1"})
+        );
     }
 }

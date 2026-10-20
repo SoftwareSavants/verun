@@ -67,6 +67,7 @@ const makeSession = (): Session => ({
   agentType: 'claude',
   model: null,
   closedAt: null,
+  accountId: null,
 })
 
 describe('archiveTask', () => {

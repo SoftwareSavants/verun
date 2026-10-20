@@ -603,6 +603,7 @@ pub async fn finish(
         agent_type: "claude".into(),
         model: None,
         closed_at: None,
+        account_id: None,
     };
     let data_dir = {
         use tauri::Manager;

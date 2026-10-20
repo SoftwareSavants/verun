@@ -1308,6 +1308,7 @@ fn new_session(task_id: String, agent_type: String, model: Option<String>) -> Se
         agent_type,
         model,
         closed_at: None,
+        account_id: None,
     }
 }
 
@@ -3386,6 +3387,41 @@ pub enum WorktreeForkState {
     Current,
 }
 
+/// Session row for a fork of `parent` after `fork_after_message_uuid`, placed
+/// in `task_id`. It starts idle with the usage accrued up to that message and
+/// keeps the parent's agent, model and account: a transcript never moves
+/// between account homes.
+fn forked_session(
+    parent: &Session,
+    task_id: &str,
+    id: String,
+    resume_session_id: String,
+    fork_after_message_uuid: &str,
+    usage: &db::SessionUsageDelta,
+    started_at: i64,
+) -> Session {
+    Session {
+        id,
+        task_id: task_id.to_string(),
+        name: parent.name.as_ref().map(|n| format!("{n} (fork)")),
+        resume_session_id: Some(resume_session_id),
+        status: "idle".to_string(),
+        started_at,
+        ended_at: None,
+        total_cost: usage.total_cost,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_write_tokens: usage.cache_write_tokens,
+        parent_session_id: Some(parent.id.clone()),
+        forked_at_message_uuid: Some(fork_after_message_uuid.to_string()),
+        agent_type: parent.agent_type.clone(),
+        model: parent.model.clone(),
+        closed_at: None,
+        account_id: parent.account_id.clone(),
+    }
+}
+
 /// Fork a session at a specific assistant message uuid into a NEW session
 /// inside the SAME task (the worktree is unchanged).
 ///
@@ -3449,25 +3485,15 @@ pub async fn fork_session_in_task(
     let parent_lines = db::get_output_lines(pool, &parent.id, None, None).await?;
     let fork_usage = session_usage_up_to_marker(&parent_lines, &fork_after_message_uuid)?;
 
-    let new_session = Session {
-        id: new_verun_sid.clone(),
-        task_id: parent.task_id.clone(),
-        name: parent.name.as_ref().map(|n| format!("{n} (fork)")),
-        resume_session_id: Some(new_csid),
-        status: "idle".to_string(),
-        started_at: now,
-        ended_at: None,
-        total_cost: fork_usage.total_cost,
-        input_tokens: fork_usage.input_tokens,
-        output_tokens: fork_usage.output_tokens,
-        cache_read_tokens: fork_usage.cache_read_tokens,
-        cache_write_tokens: fork_usage.cache_write_tokens,
-        parent_session_id: Some(parent.id.clone()),
-        forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
-        agent_type: parent.agent_type.clone(),
-        model: parent.model.clone(),
-        closed_at: None,
-    };
+    let new_session = forked_session(
+        &parent,
+        &parent.task_id,
+        new_verun_sid.clone(),
+        new_csid,
+        &fork_after_message_uuid,
+        &fork_usage,
+        now,
+    );
 
     // Single transaction: insert session row + copy output_lines up to the
     // matching verun_turn_snapshot marker. If the marker is missing we fail
@@ -3581,8 +3607,8 @@ async fn insert_session_row_tx(
     s: &Session,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at, account_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.task_id)
@@ -3601,6 +3627,7 @@ async fn insert_session_row_tx(
     .bind(&s.agent_type)
     .bind(&s.model)
     .bind(s.closed_at)
+    .bind(&s.account_id)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert session: {e}"))?;
@@ -3800,25 +3827,15 @@ pub async fn fork_session_to_new_task(
         .map_err(|e| format!("spawn_blocking: {e}"))??;
     }
 
-    let new_session = Session {
-        id: new_verun_sid.clone(),
-        task_id: new_task.id.clone(),
-        name: parent_session.name.as_ref().map(|n| format!("{n} (fork)")),
-        resume_session_id: Some(new_csid),
-        status: "idle".to_string(),
-        started_at: now,
-        ended_at: None,
-        total_cost: fork_usage.total_cost,
-        input_tokens: fork_usage.input_tokens,
-        output_tokens: fork_usage.output_tokens,
-        cache_read_tokens: fork_usage.cache_read_tokens,
-        cache_write_tokens: fork_usage.cache_write_tokens,
-        parent_session_id: Some(parent_session.id.clone()),
-        forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
-        agent_type: parent_session.agent_type.clone(),
-        model: parent_session.model.clone(),
-        closed_at: None,
-    };
+    let new_session = forked_session(
+        &parent_session,
+        &new_task.id,
+        new_verun_sid.clone(),
+        new_csid,
+        &fork_after_message_uuid,
+        &fork_usage,
+        now,
+    );
 
     // Single transaction: task row + session row + copied output_lines.
     // If anything fails, the DB rolls back cleanly. The filesystem worktree
@@ -4091,5 +4108,96 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("No active session"), "got: {err}");
+    }
+
+    // -- Session account on forks --
+
+    use crate::db::tests::{
+        make_project, make_session, make_task, process_write_for_tests, test_pool,
+    };
+
+    #[test]
+    fn forked_session_keeps_the_source_account() {
+        let mut parent = make_session("t-001");
+        parent.name = Some("Refactor".into());
+        parent.agent_type = "codex".into();
+        parent.model = Some("gpt-5".into());
+        parent.account_id = Some("a1".into());
+        let usage = db::SessionUsageDelta {
+            total_cost: 0.5,
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 30,
+            cache_write_tokens: 40,
+        };
+
+        let fork = forked_session(
+            &parent,
+            "t-002",
+            "s-fork".into(),
+            "resume-fork".into(),
+            "msg-1",
+            &usage,
+            9000,
+        );
+
+        assert_eq!(fork.account_id.as_deref(), Some("a1"));
+        assert_eq!(fork.id, "s-fork");
+        assert_eq!(fork.task_id, "t-002");
+        assert_eq!(fork.name.as_deref(), Some("Refactor (fork)"));
+        assert_eq!(fork.resume_session_id.as_deref(), Some("resume-fork"));
+        assert_eq!(fork.status, "idle");
+        assert_eq!(fork.started_at, 9000);
+        assert_eq!(fork.ended_at, None);
+        assert_eq!(fork.closed_at, None);
+        assert_eq!(fork.parent_session_id.as_deref(), Some("s-001"));
+        assert_eq!(fork.forked_at_message_uuid.as_deref(), Some("msg-1"));
+        assert_eq!(fork.agent_type, "codex");
+        assert_eq!(fork.model.as_deref(), Some("gpt-5"));
+        assert_eq!(fork.total_cost, 0.5);
+        assert_eq!(
+            (
+                fork.input_tokens,
+                fork.output_tokens,
+                fork.cache_read_tokens,
+                fork.cache_write_tokens
+            ),
+            (10, 20, 30, 40)
+        );
+    }
+
+    #[test]
+    fn forked_session_of_a_default_account_session_stays_default() {
+        let parent = make_session("t-001");
+        let fork = forked_session(
+            &parent,
+            "t-001",
+            "s-fork".into(),
+            "resume-fork".into(),
+            "msg-1",
+            &db::SessionUsageDelta::default(),
+            9000,
+        );
+        assert_eq!(fork.account_id, None);
+    }
+
+    #[tokio::test]
+    async fn insert_session_row_tx_persists_account_id() {
+        let pool = test_pool().await;
+        process_write_for_tests(&pool, db::DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write_for_tests(&pool, db::DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        let mut session = make_session("t-001");
+        session.account_id = Some("a1".into());
+
+        let mut tx = pool.begin().await.unwrap();
+        insert_session_row_tx(&mut tx, &session).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let saved = db::get_session(&pool, "s-001").await.unwrap().unwrap();
+        assert_eq!(saved.account_id.as_deref(), Some("a1"));
     }
 }

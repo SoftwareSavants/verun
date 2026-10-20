@@ -61,6 +61,8 @@ export interface Session {
   agentType: AgentType;
   model: string | null;
   closedAt: number | null;
+  /** The extra login this session runs on. `null` is the Default account. */
+  accountId: string | null;
 }
 
 export interface OutputLine {
