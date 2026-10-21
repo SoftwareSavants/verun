@@ -120,18 +120,18 @@ pub const ACCOUNT_SCRIPT_VAR: &str = "VERUN_ACCOUNT_SCRIPT";
 ///
 /// Setting the patch on the shell itself would lose to the profile, which can
 /// export `CLAUDE_CONFIG_DIR` or a provider key over the account's. The
-/// returned command only execs `/bin/sh` on the script in
+/// returned command only execs `/bin/sh` to eval the script in
 /// `ACCOUNT_SCRIPT_VAR`. The script unsets that var and the patch's removals,
 /// exports its sets and then runs `command`, so a var in both lists ends up
 /// set, as in `apply_to_std_command`. A `sh -c` reads no profile, so nothing
 /// undoes the exports. The command is plain enough to parse the same way in
 /// zsh, bash and fish.
 ///
-/// Values reach `command` only through its environment, never its arguments,
-/// and the returned command holds none of them. The script drops its own var
-/// first so that what `command` starts cannot read the values back from it.
-/// The sh that runs the script does hold them in its own arguments until
-/// `command` replaces it, so `command` should start with `exec`.
+/// Values reach `command` only through its environment: no process has them in
+/// its arguments. The returned command holds none, and the sh reads the script
+/// from its own environment and evals it instead of getting it as an argument.
+/// The script drops its own var first so that what `command` starts cannot
+/// read the values back from it.
 ///
 /// An empty patch needs none of this: `command` comes back as it is, with no
 /// vars.
@@ -162,8 +162,10 @@ pub fn shell_wrap(command: &str, env: &EnvPatch) -> (String, Vec<(String, String
         script.push_str(&format!("export {exports}; "));
     }
     script.push_str(command);
-    // The var is expanded in double quotes, so the script stays one word.
-    let outer = format!("exec /bin/sh -c \"${ACCOUNT_SCRIPT_VAR}\"");
+    // The single quotes make the login shell pass `eval "$VAR"` on as it is.
+    // The sh expands the var from its own env, so the script, secrets and all,
+    // is never an argument of any process.
+    let outer = format!("exec /bin/sh -c 'eval \"${ACCOUNT_SCRIPT_VAR}\"'");
     (outer, vec![(ACCOUNT_SCRIPT_VAR.to_string(), script)])
 }
 
@@ -1052,7 +1054,7 @@ mod tests {
     fn shell_wrap_script_unsets_then_exports_then_runs() {
         let (outer, vars) = shell_wrap("exec claude --model 'opus'", &client_patch());
 
-        assert_eq!(outer, r#"exec /bin/sh -c "$VERUN_ACCOUNT_SCRIPT""#);
+        assert_eq!(outer, r#"exec /bin/sh -c 'eval "$VERUN_ACCOUNT_SCRIPT"'"#);
         assert_eq!(
             vars,
             pairs(&[(
@@ -1157,6 +1159,33 @@ mod tests {
         );
 
         assert_eq!(printed, "unset|sk-ant-secret");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_wrap_keeps_values_out_of_argv() {
+        let patch = EnvPatch {
+            remove: strings(&["ANTHROPIC_API_KEY"]),
+            set: pairs(&[
+                ("ANTHROPIC_API_KEY", "sk-ant-secret"),
+                ("CLAUDE_CONFIG_DIR", "/x/Client Accounts/o'brien"),
+            ]),
+        };
+
+        // The login shell gets the outer command as an argument: no value in
+        // it, and no assignment either.
+        let (outer, _) = shell_wrap("exec claude", &patch);
+        assert!(!outer.contains("sk-ant-secret"), "{outer}");
+        assert!(!outer.contains("o'brien"), "{outer}");
+        assert!(!outer.contains('='), "{outer}");
+
+        // The sh that runs the script reads it from its env, so its own
+        // arguments hold no value either. The command does not start with
+        // exec, so that sh is still there for ps to show.
+        let printed = run_wrapped("", "ps -o args= -p $$", &patch);
+        assert!(printed.contains("eval"), "ps printed {printed:?}");
+        assert!(!printed.contains("sk-ant-secret"), "{printed}");
+        assert!(!printed.contains("o'brien"), "{printed}");
     }
 
     #[cfg(unix)]
