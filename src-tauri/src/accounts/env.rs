@@ -43,19 +43,22 @@ impl EnvPatch {
         self.remove.is_empty() && self.set.is_empty()
     }
 
-    /// Adds `other`, the later patch, to this one. For a key both set,
-    /// `other`'s value wins, and a key `other` sets is dropped from this
-    /// patch's removals: an earlier account's scrub does not stand against a
-    /// later account's own value.
+    /// Adds `other`, the later patch, to this one, so the result does what
+    /// applying this patch and then `other` would. The later patch wins
+    /// outright, its removals included: a var it removes is deleted from this
+    /// patch's `set`, and a var it sets replaces any earlier value and is no
+    /// longer removed. That holds for a var `other` both removes and sets too,
+    /// which ends up set, as when `other` is applied alone.
     pub fn merge(&mut self, other: EnvPatch) {
-        self.remove
-            .retain(|key| !other.set.iter().any(|(set_key, _)| set_key == key));
+        // Removals first, then sets: the order a patch is applied in.
         for key in other.remove {
+            self.set.retain(|(set_key, _)| *set_key != key);
             if !self.remove.contains(&key) {
                 self.remove.push(key);
             }
         }
         for (key, value) in other.set {
+            self.remove.retain(|removed| *removed != key);
             self.set_var(key, value);
         }
     }
@@ -150,6 +153,10 @@ pub fn project_env(
 /// own account. A session on Default has none, so its own harness keeps the
 /// env it inherited, and the project's account for that harness is not used.
 ///
+/// The session's account is merged last and wins outright, so its harness's
+/// scrub list also removes what the other accounts set: another account's
+/// custom `ANTHROPIC_API_KEY` cannot override a Claude account.
+///
 /// `session_account` is an account of `session_agent_type`'s harness, and it
 /// is applied whether or not that harness reaches the project's shells. May
 /// block on the keychain like `account_env`.
@@ -172,7 +179,8 @@ pub fn session_env(
 }
 
 /// The accounts' patches merged in order, for the accounts whose harness
-/// wants them in a project's env. Both combinations are built from this.
+/// wants them in a project's env, so a later account wins outright (see
+/// `EnvPatch::merge`). Both combinations are built from this.
 fn merged_project_env<'a>(
     accounts: impl Iterator<Item = &'a Account>,
     secrets: &dyn SecretStore,
@@ -350,6 +358,25 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// What applying `patch` does to the env of a command, sorted: `Some` sets
+    /// a var and `None` removes it. Patches with the same effect are
+    /// interchangeable, however they list their vars.
+    fn effect(patch: &EnvPatch) -> Vec<(String, Option<String>)> {
+        let mut cmd = std::process::Command::new("claude");
+        patch.apply_to_std_command(&mut cmd);
+        let mut env = recorded_env(&cmd);
+        env.sort();
+        env
+    }
+
+    fn sets(patch: &EnvPatch, key: &str, value: &str) -> bool {
+        effect(patch).contains(&(key.to_string(), Some(value.to_string())))
+    }
+
+    fn removes(patch: &EnvPatch, key: &str) -> bool {
+        effect(patch).contains(&(key.to_string(), None))
     }
 
     // -- account_env --
@@ -542,12 +569,29 @@ mod tests {
     #[test]
     fn project_env_carries_a_bound_claude_account() {
         let secrets = MemorySecretStore::default();
-        let a1 = account("a1", vec![plain("ANTHROPIC_BASE_URL", "https://proxy")]);
-
-        assert_eq!(
-            project_env(std::slice::from_ref(&a1), &secrets).unwrap(),
-            account_env(&Claude, &a1, &secrets).unwrap()
+        secrets
+            .set("a1", "ANTHROPIC_API_KEY", "sk-ant-one")
+            .unwrap();
+        let a1 = account(
+            "a1",
+            vec![
+                secret("ANTHROPIC_API_KEY"),
+                plain("ANTHROPIC_BASE_URL", "https://proxy"),
+            ],
         );
+
+        let patch = project_env(std::slice::from_ref(&a1), &secrets).unwrap();
+
+        // The account's own key and URL still beat its scrub list, and the rest
+        // of the list is removed: the same effect as the account alone.
+        assert_eq!(
+            effect(&patch),
+            effect(&account_env(&Claude, &a1, &secrets).unwrap())
+        );
+        assert!(sets(&patch, "ANTHROPIC_API_KEY", "sk-ant-one"));
+        assert!(sets(&patch, "ANTHROPIC_BASE_URL", "https://proxy"));
+        assert!(sets(&patch, "CLAUDE_CONFIG_DIR", "/acc/a1"));
+        assert!(removes(&patch, "ANTHROPIC_AUTH_TOKEN"));
     }
 
     #[test]
@@ -573,7 +617,65 @@ mod tests {
 
         // The session's account alone: nothing of the project's account is left.
         assert_eq!(patch.set, pairs(&[("CLAUDE_CONFIG_DIR", "/acc/a2")]));
-        assert_eq!(patch, account_env(&Claude, &a2, &secrets).unwrap());
+        assert_eq!(
+            effect(&patch),
+            effect(&account_env(&Claude, &a2, &secrets).unwrap())
+        );
+    }
+
+    #[test]
+    fn session_env_default_session_follows_project_account_of_another_harness() {
+        // A Default Codex session in a project bound to a Claude account: the
+        // `claude` the agent runs itself uses the project's account.
+        let secrets = MemorySecretStore::default();
+        let a1 = account("a1", vec![plain("ANTHROPIC_BASE_URL", "https://proxy")]);
+
+        let patch = session_env("codex", None, std::slice::from_ref(&a1), &secrets).unwrap();
+
+        assert_eq!(
+            effect(&patch),
+            effect(&account_env(&Claude, &a1, &secrets).unwrap())
+        );
+        assert!(sets(&patch, "CLAUDE_CONFIG_DIR", "/acc/a1"));
+        assert!(sets(&patch, "ANTHROPIC_BASE_URL", "https://proxy"));
+    }
+
+    #[test]
+    fn session_env_session_scrub_beats_other_account_custom_var() {
+        // Only Claude has a profile so far, so two Claude accounts stand in for
+        // two harnesses: `other` defines a var that the session account's
+        // scrub list names. It is merged first, as session_env merges the
+        // project's other accounts before the session's own.
+        let secrets = MemorySecretStore::default();
+        let other = account("a1", vec![plain("ANTHROPIC_API_KEY", "sk-other")]);
+        let own = account("a2", vec![]);
+
+        let mut patch = account_env(&Claude, &other, &secrets).unwrap();
+        assert!(sets(&patch, "ANTHROPIC_API_KEY", "sk-other"));
+        patch.merge(account_env(&Claude, &own, &secrets).unwrap());
+
+        // The key is gone from the env, not just from `set`.
+        assert!(!patch.set.iter().any(|(key, _)| key == "ANTHROPIC_API_KEY"));
+        assert!(removes(&patch, "ANTHROPIC_API_KEY"));
+        assert!(sets(&patch, "CLAUDE_CONFIG_DIR", "/acc/a2"));
+    }
+
+    #[test]
+    fn session_env_merges_the_session_account_after_the_other_accounts() {
+        // The same case through session_env. Claude accounts stand in again, and
+        // the session reports another harness so the project's Claude account
+        // counts as an other harness's.
+        let secrets = MemorySecretStore::default();
+        let other = account("a1", vec![plain("ANTHROPIC_API_KEY", "sk-other")]);
+        let own = account("a2", vec![]);
+
+        let patch = session_env("codex", Some(&own), &[other], &secrets).unwrap();
+
+        assert_eq!(
+            effect(&patch),
+            effect(&account_env(&Claude, &own, &secrets).unwrap())
+        );
+        assert!(removes(&patch, "ANTHROPIC_API_KEY"));
     }
 
     #[test]
@@ -642,11 +744,43 @@ mod tests {
     }
 
     #[test]
-    fn merge_into_an_empty_patch_changes_nothing() {
-        // A patch may remove and set the same var (an API key account scrubs
-        // the inherited key and sets its own); merging must keep both.
+    fn merge_later_remove_deletes_earlier_set() {
+        let mut patch = EnvPatch::from_vars(pairs(&[("FOO", "1"), ("BAR", "1")]));
+        patch.merge(EnvPatch {
+            remove: strings(&["FOO"]),
+            set: vec![],
+        });
+
+        // FOO is only removed now. What the earlier patch set for BAR stays.
+        assert_eq!(patch.remove, strings(&["FOO"]));
+        assert_eq!(patch.set, pairs(&[("BAR", "1")]));
+    }
+
+    #[test]
+    fn merge_a_var_the_later_patch_removes_and_sets_ends_up_set() {
+        // An API key account scrubs the inherited key and sets its own. Merged
+        // after anything else it must still set it.
+        let mut patch = EnvPatch {
+            remove: strings(&["TOKEN"]),
+            set: pairs(&[("KEY", "old")]),
+        };
+        patch.merge(EnvPatch {
+            remove: strings(&["KEY", "TOKEN"]),
+            set: pairs(&[("KEY", "new")]),
+        });
+
+        assert_eq!(patch.remove, strings(&["TOKEN"]));
+        assert_eq!(patch.set, pairs(&[("KEY", "new")]));
+    }
+
+    #[test]
+    fn merge_into_an_empty_patch_keeps_the_effect_of_the_later_one() {
         let account_patch = EnvPatch {
-            remove: strings(&["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"]),
+            remove: strings(&[
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CONFIG_DIR",
+            ]),
             set: pairs(&[
                 ("CLAUDE_CONFIG_DIR", "/acc/a1"),
                 ("ANTHROPIC_API_KEY", "sk"),
@@ -654,10 +788,24 @@ mod tests {
         };
         let mut patch = EnvPatch::default();
         patch.merge(account_patch.clone());
-        assert_eq!(patch, account_patch);
+
+        // The vars it both removes and sets are just set now.
+        assert_eq!(patch.remove, strings(&["ANTHROPIC_AUTH_TOKEN"]));
+        assert_eq!(patch.set, account_patch.set);
+        assert_eq!(effect(&patch), effect(&account_patch));
+    }
+
+    #[test]
+    fn merging_an_empty_patch_changes_nothing() {
+        let mut patch = EnvPatch {
+            remove: strings(&["A"]),
+            set: pairs(&[("B", "1")]),
+        };
+        let before = patch.clone();
 
         patch.merge(EnvPatch::default());
-        assert_eq!(patch, account_patch);
+
+        assert_eq!(patch, before);
     }
 
     #[test]
