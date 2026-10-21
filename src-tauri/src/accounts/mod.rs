@@ -2,6 +2,7 @@
 
 pub mod env;
 pub mod identity;
+pub mod manage;
 pub mod paths;
 pub mod secrets;
 pub mod service;

@@ -1,7 +1,7 @@
-use crate::accounts::service::{
-    self as accounts_service, resolve_new_session_account, AccountsSnapshot, NewAccountInput,
-    UpdateAccountInput,
+use crate::accounts::manage::{
+    self as accounts_manage, AccountsSnapshot, NewAccountInput, UpdateAccountInput,
 };
+use crate::accounts::service::resolve_new_session_account;
 use crate::accounts::{AccountError, AccountSelection};
 use crate::claude_home::{self, ClaudeHome};
 use crate::claude_terminal::{self, ClaudeTerminalMap, OpenClaudeTerminalResult};
@@ -2826,7 +2826,7 @@ async fn publish_accounts(
     pool: &SqlitePool,
     user_home: &std::path::Path,
 ) -> Result<AccountsSnapshot, String> {
-    let snapshot = accounts_service::snapshot(pool, user_home).await?;
+    let snapshot = accounts_manage::snapshot(pool, user_home).await?;
     let _ = app.emit("accounts-changed", &snapshot);
     Ok(snapshot)
 }
@@ -2834,7 +2834,7 @@ async fn publish_accounts(
 #[tauri::command]
 pub async fn list_accounts(pool: State<'_, SqlitePool>) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
-    accounts_service::snapshot(pool.inner(), &user_home).await
+    accounts_manage::snapshot(pool.inner(), &user_home).await
 }
 
 #[tauri::command]
@@ -2847,7 +2847,7 @@ pub async fn create_account(
     input: NewAccountInput,
 ) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
-    accounts_service::create_account(
+    accounts_manage::create_account(
         pool.inner(),
         db_tx.inner(),
         secrets.0.clone(),
@@ -2871,7 +2871,7 @@ pub async fn update_account(
     input: UpdateAccountInput,
 ) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
-    accounts_service::update_account(pool.inner(), db_tx.inner(), secrets.0.clone(), input)
+    accounts_manage::update_account(pool.inner(), db_tx.inner(), secrets.0.clone(), input)
         .await
         .map_err(|e| e.to_ipc())?;
     publish_accounts(&app, pool.inner(), &user_home).await
@@ -2887,7 +2887,7 @@ pub async fn remove_account(
     delete_dir: bool,
 ) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
-    accounts_service::remove_account(
+    accounts_manage::remove_account(
         pool.inner(),
         db_tx.inner(),
         secrets.0.clone(),
@@ -2910,7 +2910,7 @@ pub async fn set_project_account(
     account_id: Option<String>,
 ) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
-    accounts_service::set_project_account(
+    accounts_manage::set_project_account(
         pool.inner(),
         db_tx.inner(),
         &project_id,
