@@ -207,6 +207,7 @@ async fn fire_wakeup(
             fast_mode: false,
             task_name: task.name,
             agent_type: session.agent_type,
+            account_id: session.account_id,
             external: true,
             wakeup_reason: Some(reason.unwrap_or_default()),
         },

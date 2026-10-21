@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste, AccountSelection } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 
@@ -66,8 +66,8 @@ export const importProjectConfig = (projectId: string, taskId?: string) =>
   invoke<{ setupHook: string; destroyHook: string; startCommand: string }>('import_project_config', { projectId, taskId: taskId ?? null })
 
 // Tasks
-export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType, directory?: string) =>
-  invoke<TaskWithSession>('create_task', { projectId, baseBranch, agentType, directory })
+export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType, directory?: string, account?: AccountSelection) =>
+  invoke<TaskWithSession>('create_task', { projectId, baseBranch, agentType, directory, account: account ?? null })
 
 export const listTasks = (projectId: string): Promise<Task[]> =>
   DEMO
@@ -102,8 +102,8 @@ export const stopHook = (taskId: string) =>
   invoke<void>('stop_hook', { taskId })
 
 // Sessions
-export const createSession = (taskId: string, agentType: string, model?: string) =>
-  invoke<Session>('create_session', { taskId, agentType, model })
+export const createSession = (taskId: string, agentType: string, model?: string, account?: AccountSelection) =>
+  invoke<Session>('create_session', { taskId, agentType, model, account: account ?? null })
 
 export const sendMessage = (sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) =>
   invoke<void>('send_message', { sessionId, message, attachments, model, planMode, thinkingMode, fastMode })

@@ -2021,7 +2021,6 @@ pub async fn list_accounts(pool: &SqlitePool) -> Result<Vec<Account>, String> {
         .collect()
 }
 
-#[allow(dead_code)] // consumed by the account service
 pub async fn get_account(pool: &SqlitePool, id: &str) -> Result<Option<Account>, String> {
     sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE id = ?")
         .bind(id)
@@ -2044,7 +2043,6 @@ pub async fn list_project_accounts(pool: &SqlitePool) -> Result<Vec<ProjectAccou
 
 /// A project's bindings as `agent_type -> account_id`. A harness with no entry
 /// runs on the Default account.
-#[allow(dead_code)] // consumed by the account service
 pub async fn project_account_ids(
     pool: &SqlitePool,
     project_id: &str,
@@ -4226,7 +4224,7 @@ pub(crate) mod tests {
 
     // -- Account tests --
 
-    fn make_account(id: &str, created_at: i64) -> Account {
+    pub(crate) fn make_account(id: &str, created_at: i64) -> Account {
         Account {
             id: id.into(),
             agent_type: "claude".into(),
@@ -4263,7 +4261,10 @@ pub(crate) mod tests {
             .collect()
     }
 
-    async fn upsert_account_confirmed(pool: &SqlitePool, account: Account) -> Result<(), String> {
+    pub(crate) async fn upsert_account_confirmed(
+        pool: &SqlitePool,
+        account: Account,
+    ) -> Result<(), String> {
         let (done, receipt) = tokio::sync::oneshot::channel();
         process_write(pool, DbWrite::UpsertAccount { account, done })
             .await
@@ -4271,7 +4272,7 @@ pub(crate) mod tests {
         receipt.await.unwrap()
     }
 
-    async fn mark_account_removed_confirmed(
+    pub(crate) async fn mark_account_removed_confirmed(
         pool: &SqlitePool,
         id: &str,
         removed_at: i64,
@@ -4290,7 +4291,7 @@ pub(crate) mod tests {
         receipt.await.unwrap()
     }
 
-    async fn set_project_account_confirmed(
+    pub(crate) async fn set_project_account_confirmed(
         pool: &SqlitePool,
         project_id: &str,
         agent_type: &str,

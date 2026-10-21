@@ -927,6 +927,8 @@ pub struct CreateTaskParams {
     pub port_offset: i64,
     pub from_task_window: bool,
     pub agent_type: String, // flows to the first session, not stored on the task
+    /// The first session's account (`None`: Default). Resolved by the caller.
+    pub account_id: Option<String>,
     pub source_window: String,
     pub directory: Option<String>,
 }
@@ -948,6 +950,7 @@ pub async fn create_task(
         port_offset,
         from_task_window,
         agent_type,
+        account_id,
         source_window,
         directory,
     } = params;
@@ -1019,7 +1022,7 @@ pub async fn create_task(
     };
 
     // Persist both records atomically before the first prompt can be sent.
-    let session = new_session(task.id.clone(), agent_type, None);
+    let session = new_session(task.id.clone(), agent_type, None, account_id);
     let (done, ready) = tokio::sync::oneshot::channel();
     db_tx
         .send(db::DbWrite::InsertTaskWithSession {
@@ -1289,7 +1292,12 @@ pub async fn archive_task(
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
-fn new_session(task_id: String, agent_type: String, model: Option<String>) -> Session {
+fn new_session(
+    task_id: String,
+    agent_type: String,
+    model: Option<String>,
+    account_id: Option<String>,
+) -> Session {
     Session {
         id: Uuid::new_v4().to_string(),
         task_id,
@@ -1308,19 +1316,23 @@ fn new_session(task_id: String, agent_type: String, model: Option<String>) -> Se
         agent_type,
         model,
         closed_at: None,
-        account_id: None,
+        account_id,
     }
 }
 
 /// Create a new session record (no process spawned yet — that happens on send_message)
+///
+/// `account_id` is the account the session runs on for life (`None`: Default);
+/// callers resolve it with `accounts::service::resolve_new_session_account`.
 pub async fn create_session(
     app: &AppHandle,
     db_tx: &DbWriteTx,
     task_id: String,
     agent_type: String,
     model: Option<String>,
+    account_id: Option<String>,
 ) -> Result<Session, String> {
-    let session = new_session(task_id, agent_type, model);
+    let session = new_session(task_id, agent_type, model, account_id);
 
     db_tx
         .send(db::DbWrite::CreateSession(session.clone()))
@@ -1398,6 +1410,10 @@ pub struct SendMessageParams {
     pub fast_mode: bool,
     pub task_name: Option<String>,
     pub agent_type: String,
+    /// The session's account (`None`: Default), copied from its row (or from
+    /// the in-memory session when the row may not be written yet) so a spawn
+    /// needn't read it again.
+    pub account_id: Option<String>,
     /// `true` when the message did NOT originate from the UI (e.g. an
     /// agent calling `verun_send_message` over MCP). The UI optimistically
     /// inserts its own user message on submit; external messages need an
@@ -1445,6 +1461,7 @@ pub async fn send_message(
         fast_mode,
         task_name,
         agent_type,
+        account_id,
         external,
         wakeup_reason,
     } = params;
@@ -1780,6 +1797,7 @@ pub async fn send_message(
             thinking_mode,
             fast_mode,
             agent_type,
+            account_id,
             message,
             attachments,
             prewarm: false,
@@ -1977,6 +1995,9 @@ pub struct SpawnSessionParams {
     pub thinking_mode: bool,
     pub fast_mode: bool,
     pub agent_type: String,
+    /// The session's account (`None`: Default).
+    #[allow(dead_code)] // consumed by the spawn env
+    pub account_id: Option<String>,
     pub message: String,
     pub attachments: Vec<Attachment>,
     pub prewarm: bool,
@@ -2017,6 +2038,7 @@ async fn spawn_rpc_session(
         thinking_mode,
         fast_mode,
         agent_type,
+        account_id: _, // the spawn env doesn't use it yet
         message,
         attachments,
         prewarm,
@@ -2531,6 +2553,7 @@ pub async fn spawn_session_process(
         thinking_mode,
         fast_mode,
         agent_type,
+        account_id: _, // the spawn env doesn't use it yet
         message,
         attachments,
         prewarm,
@@ -4199,5 +4222,25 @@ mod tests {
 
         let saved = db::get_session(&pool, "s-001").await.unwrap().unwrap();
         assert_eq!(saved.account_id.as_deref(), Some("a1"));
+    }
+
+    // -- Session account at creation --
+
+    #[test]
+    fn new_session_records_the_account() {
+        let bound = new_session(
+            "t-001".into(),
+            "claude".into(),
+            Some("opus".into()),
+            Some("a1".into()),
+        );
+        assert_eq!(bound.account_id.as_deref(), Some("a1"));
+        assert_eq!(bound.task_id, "t-001");
+        assert_eq!(bound.agent_type, "claude");
+        assert_eq!(bound.model.as_deref(), Some("opus"));
+        assert_eq!(bound.status, "idle");
+
+        let default = new_session("t-001".into(), "claude".into(), None, None);
+        assert_eq!(default.account_id, None);
     }
 }

@@ -1,3 +1,5 @@
+use crate::accounts::service::resolve_new_session_account;
+use crate::accounts::AccountSelection;
 use crate::claude_terminal::{self, ClaudeTerminalMap, OpenClaudeTerminalResult};
 use crate::db::{self, DbWriteTx, OutputLine, Project, Session, Step, Task};
 use crate::file_search::{SearchMap, SearchOpts};
@@ -519,10 +521,19 @@ pub async fn create_task(
     base_branch: Option<String>,
     agent_type: Option<String>,
     directory: Option<String>,
+    account: Option<AccountSelection>,
 ) -> Result<TaskWithSession, String> {
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or_else(|| format!("Project {project_id} not found"))?;
+
+    let agent_type =
+        agent_type.unwrap_or_else(|| crate::agent::AgentKind::Claude.as_str().to_string());
+    // Before the worktree exists, so a bad pick leaves nothing behind.
+    let account_id =
+        resolve_new_session_account(pool.inner(), &project_id, &agent_type, account.as_ref())
+            .await
+            .map_err(|e| e.to_ipc())?;
 
     let from_task_window = window.label().starts_with("task-");
     let source_window = window.label().to_string();
@@ -543,8 +554,8 @@ pub async fn create_task(
             setup_hook: project.setup_hook,
             port_offset,
             from_task_window,
-            agent_type: agent_type
-                .unwrap_or_else(|| crate::agent::AgentKind::Claude.as_str().to_string()),
+            agent_type,
+            account_id,
             source_window,
         },
     )
@@ -796,15 +807,26 @@ pub async fn rename_task(
 // ---------------------------------------------------------------------------
 
 /// Create a new session (no process spawned — call send_message to talk to Claude)
+///
+/// `account` is the account picked for it; without one the task's project decides.
 #[tauri::command]
 pub async fn create_session(
     app: AppHandle,
+    pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     task_id: String,
     agent_type: String,
     model: Option<String>,
+    account: Option<AccountSelection>,
 ) -> Result<Session, String> {
-    task::create_session(&app, db_tx.inner(), task_id, agent_type, model).await
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    let account_id =
+        resolve_new_session_account(pool.inner(), &t.project_id, &agent_type, account.as_ref())
+            .await
+            .map_err(|e| e.to_ipc())?;
+    task::create_session(&app, db_tx.inner(), task_id, agent_type, model, account_id).await
 }
 
 /// Fork an existing session at a specific assistant message uuid into a new
@@ -934,6 +956,7 @@ pub async fn send_message(
             fast_mode: fast_mode.unwrap_or(false),
             task_name: t.name,
             agent_type: session.agent_type.clone(),
+            account_id: session.account_id,
             external: false,
             wakeup_reason: None,
         },
@@ -1002,6 +1025,7 @@ pub async fn prewarm_session(
             thinking_mode: false,
             fast_mode: false,
             agent_type: session.agent_type.clone(),
+            account_id: session.account_id,
             message: String::new(),
             attachments: Vec::new(),
             prewarm: true,

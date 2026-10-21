@@ -61,6 +61,54 @@ describe('ipc', () => {
     expect(typeof ipc.getStorageStats).toBe('function')
   })
 
+  describe('account selection', () => {
+    test('createSession passes the account selection', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ id: 's1' })
+      await ipc.createSession('t1', 'claude', undefined, { kind: 'account', id: 'a1' })
+      expect(invoke).toHaveBeenCalledWith('create_session', {
+        taskId: 't1',
+        agentType: 'claude',
+        model: undefined,
+        account: { kind: 'account', id: 'a1' },
+      })
+    })
+
+    test('createSession sends account null by default', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ id: 's1' })
+      await ipc.createSession('t1', 'claude', 'opus')
+      expect(invoke).toHaveBeenCalledWith('create_session', {
+        taskId: 't1',
+        agentType: 'claude',
+        model: 'opus',
+        account: null,
+      })
+    })
+
+    test('createTask passes the account selection', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ task: { id: 't1' }, session: { id: 's1' } })
+      await ipc.createTask('p1', 'main', 'codex', undefined, { kind: 'default' })
+      expect(invoke).toHaveBeenCalledWith('create_task', {
+        projectId: 'p1',
+        baseBranch: 'main',
+        agentType: 'codex',
+        directory: undefined,
+        account: { kind: 'default' },
+      })
+    })
+
+    test('createTask sends account null by default', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ task: { id: 't1' }, session: { id: 's1' } })
+      await ipc.createTask('p1')
+      expect(invoke).toHaveBeenCalledWith('create_task', {
+        projectId: 'p1',
+        baseBranch: undefined,
+        agentType: undefined,
+        directory: undefined,
+        account: null,
+      })
+    })
+  })
+
   describe('askSideQuestion', () => {
     test('forwards camelCase args to ask_side_question and resolves to typed object', async () => {
       vi.mocked(invoke).mockResolvedValueOnce({ response: 'ok', synthetic: false })

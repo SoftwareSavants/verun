@@ -4,14 +4,47 @@ pub mod env;
 pub mod identity;
 pub mod paths;
 pub mod secrets;
+pub mod service;
 
 pub use secrets::Secrets;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Starts the `Err` string of an IPC command that failed with an
 /// `AccountError`. The rest is the JSON `to_ipc` builds.
 pub const ACCOUNT_ERROR_PREFIX: &str = "ACCOUNT_ERROR:";
+
+/// What the user chose for a new session's account. The frontend sends this
+/// (or nothing) with `create_task` and `create_session`; the JSON shape is the
+/// `AccountSelection` union in `src/types/index.ts`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AccountSelection {
+    /// The project's account for the session's harness. Same as no choice.
+    ProjectDefault,
+    /// The Default account (the user's own CLI login), whatever the project uses.
+    Default,
+    /// One added account.
+    Account { id: String },
+}
+
+/// The account a new session is bound to: the one picked when starting it,
+/// else the project's account for the harness, else Default (`None`).
+/// `project_accounts` is the project's `agent_type -> account_id` bindings.
+/// This only chooses. `service::resolve_new_session_account` also checks that
+/// a picked account can be used.
+pub fn resolve_session_account(
+    selection: Option<&AccountSelection>,
+    agent_type: &str,
+    project_accounts: &HashMap<String, String>,
+) -> Option<String> {
+    match selection {
+        Some(AccountSelection::Default) => None,
+        Some(AccountSelection::Account { id }) => Some(id.clone()),
+        Some(AccountSelection::ProjectDefault) | None => project_accounts.get(agent_type).cloned(),
+    }
+}
 
 /// Why an account cannot be used or changed. It crosses IPC as the `to_ipc`
 /// string, and the UI turns each kind into a message with a way to fix it.
@@ -60,7 +93,6 @@ impl AccountError {
     /// The error as the `Err` string of an IPC command: `ACCOUNT_ERROR:` and
     /// then a JSON object with `kind` (the variant name in camelCase),
     /// `accountId`, `label`, `projects` and `message`.
-    #[allow(dead_code)] // consumed by the account service
     pub fn to_ipc(&self) -> String {
         let payload = match self {
             AccountError::Removed { account_id, label } => AccountErrorPayload {
@@ -308,6 +340,77 @@ mod tests {
                 !message.contains(['\u{2013}', '\u{2014}']),
                 "dash: {message}"
             );
+        }
+    }
+
+    /// A project's bindings as `agent_type -> account_id`.
+    fn bindings(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(agent_type, account_id)| (agent_type.to_string(), account_id.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn resolve_uses_project_default_when_unspecified() {
+        let project = bindings(&[("claude", "a1")]);
+        assert_eq!(
+            resolve_session_account(None, "claude", &project),
+            Some("a1".to_string())
+        );
+        assert_eq!(
+            resolve_session_account(Some(&AccountSelection::ProjectDefault), "claude", &project),
+            Some("a1".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_explicit_default_ignores_project_account() {
+        let project = bindings(&[("claude", "a1")]);
+        assert_eq!(
+            resolve_session_account(Some(&AccountSelection::Default), "claude", &project),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_explicit_account_wins() {
+        let project = bindings(&[("claude", "a1")]);
+        let picked = AccountSelection::Account { id: "a2".into() };
+        assert_eq!(
+            resolve_session_account(Some(&picked), "claude", &project),
+            Some("a2".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_other_harness_binding_not_used() {
+        let project = bindings(&[("claude", "a1")]);
+        assert_eq!(resolve_session_account(None, "codex", &project), None);
+        assert_eq!(
+            resolve_session_account(Some(&AccountSelection::ProjectDefault), "codex", &project),
+            None
+        );
+    }
+
+    #[test]
+    fn account_selection_reads_the_shapes_the_frontend_sends() {
+        // Mirrors the `AccountSelection` union in src/types/index.ts.
+        let cases = [
+            (
+                json!({"kind": "projectDefault"}),
+                AccountSelection::ProjectDefault,
+            ),
+            (json!({"kind": "default"}), AccountSelection::Default),
+            (
+                json!({"kind": "account", "id": "a1"}),
+                AccountSelection::Account { id: "a1".into() },
+            ),
+        ];
+        for (input, expected) in cases {
+            let parsed: AccountSelection = serde_json::from_value(input.clone())
+                .unwrap_or_else(|e| panic!("not an AccountSelection ({e}): {input}"));
+            assert_eq!(parsed, expected, "input: {input}");
         }
     }
 }

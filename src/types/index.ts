@@ -111,6 +111,16 @@ export interface AgentSkill {
   description: string;
 }
 
+/**
+ * Which account a new session should run on. `projectDefault` is the project's
+ * account for the harness, and what leaving the choice out means; `default` is
+ * the user's own CLI login, whatever the project uses.
+ */
+export type AccountSelection =
+  | { kind: "projectDefault" }
+  | { kind: "default" }
+  | { kind: "account"; id: string };
+
 /** What the UI needs to offer added accounts of a harness. */
 export interface AccountSupport {
   login: boolean;

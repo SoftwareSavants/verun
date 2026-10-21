@@ -1317,11 +1317,49 @@ async fn perform_send_user_message(
             fast_mode: false,
             task_name: task.name,
             agent_type: session.agent_type,
+            account_id: session.account_id,
             external: true,
             wakeup_reason: None,
         },
     )
     .await
+}
+
+/// The first message of a session that was just created over MCP.
+///
+/// Built from the in-memory `Task` and `Session` that `create_task` /
+/// `create_session` returned, never from the DB: their rows may still be
+/// queued on the async writer, so `db::get_session` could miss them. The
+/// session's account comes along so the spawn uses it. The trust level is
+/// Normal, what a task without a trust row gets; a caller whose task may have
+/// another one sets it on the result.
+fn send_params_for_new_session(
+    task: &db::Task,
+    session: &db::Session,
+    repo_path: String,
+    message: String,
+) -> crate::task::SendMessageParams {
+    crate::task::SendMessageParams {
+        session_id: session.id.clone(),
+        task_id: task.id.clone(),
+        project_id: task.project_id.clone(),
+        worktree_path: task.worktree_path.clone(),
+        repo_path,
+        port_offset: task.port_offset,
+        trust_level: crate::policy::TrustLevel::Normal,
+        message,
+        resume_session_id: None,
+        attachments: Vec::new(),
+        model: session.model.clone(),
+        plan_mode: false,
+        thinking_mode: false,
+        fast_mode: false,
+        task_name: task.name.clone(),
+        agent_type: session.agent_type.clone(),
+        account_id: session.account_id.clone(),
+        external: true,
+        wakeup_reason: None,
+    }
 }
 
 async fn perform_spawn_task(
@@ -1342,6 +1380,16 @@ async fn perform_spawn_task(
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or_else(|| format!("Project {project_id} not found"))?;
+    // MCP callers don't pick an account: the first session takes the
+    // project's account for its harness. Resolved before the worktree exists.
+    let account_id = crate::accounts::service::resolve_new_session_account(
+        pool.inner(),
+        &project_id,
+        &agent_type,
+        None,
+    )
+    .await
+    .map_err(|e| e.to_ipc())?;
     let port_offset = db::next_port_offset(pool.inner(), &project_id).await?;
     let branch = base_branch.unwrap_or(project.base_branch);
     // Hold on to the project's repo_path for the optional initial_message
@@ -1364,6 +1412,7 @@ async fn perform_spawn_task(
             port_offset,
             from_task_window: false,
             agent_type: agent_type.clone(),
+            account_id,
             source_window: String::new(),
         },
     )
@@ -1371,12 +1420,12 @@ async fn perform_spawn_task(
 
     let mut delivered = false;
     if let Some(msg) = initial_message {
-        // Construct SendMessageParams from the in-memory task/session that
+        // Build the SendMessageParams from the in-memory task/session that
         // create_task just returned. Going through perform_send_user_message
         // would `db::get_session` / `db::get_repo_path_for_task` against rows
         // still queued on the async DB writer and fail with "no project found
-        // for task". A fresh task has no trust_level row, so the default
-        // ("normal") matches what get_trust_level would return anyway.
+        // for task". A fresh task has no trust_level row, so the seam's default
+        // (Normal) matches what get_trust_level would return anyway.
         let active = app.state::<crate::task::ActiveMap>();
         let pending = app.state::<crate::task::PendingApprovals>();
         let pending_meta = app.state::<crate::task::PendingApprovalMeta>();
@@ -1388,26 +1437,7 @@ async fn perform_spawn_task(
             pending.inner().clone(),
             pending_meta.inner().clone(),
             pending_ctrl.inner().clone(),
-            crate::task::SendMessageParams {
-                session_id: session.id.clone(),
-                task_id: task.id.clone(),
-                project_id: project_id.clone(),
-                worktree_path: task.worktree_path.clone(),
-                repo_path,
-                port_offset,
-                trust_level: crate::policy::TrustLevel::from_str("normal"),
-                message: msg,
-                resume_session_id: None,
-                attachments: Vec::new(),
-                model: None,
-                plan_mode: false,
-                thinking_mode: false,
-                fast_mode: false,
-                task_name: task.name.clone(),
-                agent_type: agent_type.clone(),
-                external: true,
-                wakeup_reason: None,
-            },
+            send_params_for_new_session(&task, &session, repo_path, msg),
         )
         .await;
         match result {
@@ -1542,12 +1572,24 @@ async fn perform_create_session(
         .await?
         .ok_or_else(|| format!("Task '{task_id}' not found."))?;
 
+    // MCP callers don't pick an account: the new session takes the task's
+    // project's account for its harness.
+    let account_id = crate::accounts::service::resolve_new_session_account(
+        pool.inner(),
+        &task.project_id,
+        &agent_type,
+        None,
+    )
+    .await
+    .map_err(|e| e.to_ipc())?;
+
     let session = crate::task::create_session(
         app,
         db_tx.inner(),
         task.id.clone(),
         agent_type.clone(),
         model.clone(),
+        account_id,
     )
     .await?;
 
@@ -1557,6 +1599,8 @@ async fn perform_create_session(
         let pending = app.state::<crate::task::PendingApprovals>();
         let pending_meta = app.state::<crate::task::PendingApprovalMeta>();
         let pending_ctrl = app.state::<crate::task::PendingControlResponses>();
+        // The task already exists, so unlike a fresh one its trust level may
+        // not be the default.
         let trust_level = crate::policy::TrustLevel::from_str(
             &db::get_trust_level(pool.inner(), &task.id).await?,
         );
@@ -1569,24 +1613,8 @@ async fn perform_create_session(
             pending_meta.inner().clone(),
             pending_ctrl.inner().clone(),
             crate::task::SendMessageParams {
-                session_id: session.id.clone(),
-                task_id: task.id.clone(),
-                project_id: task.project_id.clone(),
-                worktree_path: task.worktree_path.clone(),
-                repo_path,
-                port_offset: task.port_offset,
                 trust_level,
-                message: msg,
-                resume_session_id: None,
-                attachments: Vec::new(),
-                model: model.clone(),
-                plan_mode: false,
-                thinking_mode: false,
-                fast_mode: false,
-                task_name: task.name.clone(),
-                agent_type: agent_type.clone(),
-                external: true,
-                wakeup_reason: None,
+                ..send_params_for_new_session(&task, &session, repo_path, msg)
             },
         )
         .await;
@@ -5117,5 +5145,70 @@ mod tests {
         assert_eq!(payload["task_id"], "t-a");
         assert_eq!(payload["session_id"], "s-new");
         assert_eq!(payload["initial_message_delivered"], true);
+    }
+
+    #[test]
+    fn new_session_send_params_carry_account() {
+        let fresh_task = task("t-a", "p-1", "alpha", 1000);
+        let mut fresh_session = session("s-new", "t-a", 2000);
+        fresh_session.account_id = Some("a1".into());
+
+        let params = send_params_for_new_session(
+            &fresh_task,
+            &fresh_session,
+            "/tmp/p-1".into(),
+            "hello".into(),
+        );
+
+        assert_eq!(params.account_id, fresh_session.account_id);
+        assert_eq!(params.account_id.as_deref(), Some("a1"));
+    }
+
+    #[test]
+    fn new_session_send_params_for_a_default_session_have_no_account() {
+        let fresh_task = task("t-a", "p-1", "alpha", 1000);
+        let fresh_session = session("s-new", "t-a", 2000);
+
+        let params = send_params_for_new_session(
+            &fresh_task,
+            &fresh_session,
+            "/tmp/p-1".into(),
+            "hello".into(),
+        );
+
+        assert_eq!(params.account_id, None);
+    }
+
+    #[test]
+    fn new_session_send_params_describe_the_first_external_turn() {
+        let mut fresh_task = task("t-a", "p-1", "alpha", 1000);
+        fresh_task.port_offset = 3;
+        let mut fresh_session = session("s-new", "t-a", 2000);
+        fresh_session.agent_type = "codex".into();
+        fresh_session.model = Some("gpt-5".into());
+
+        let params = send_params_for_new_session(
+            &fresh_task,
+            &fresh_session,
+            "/repo/p-1".into(),
+            "hello".into(),
+        );
+
+        assert_eq!(params.session_id, "s-new");
+        assert_eq!(params.task_id, "t-a");
+        assert_eq!(params.project_id, "p-1");
+        assert_eq!(params.worktree_path, fresh_task.worktree_path);
+        assert_eq!(params.repo_path, "/repo/p-1");
+        assert_eq!(params.port_offset, 3);
+        assert_eq!(params.trust_level, crate::policy::TrustLevel::Normal);
+        assert_eq!(params.message, "hello");
+        assert_eq!(params.resume_session_id, None);
+        assert!(params.attachments.is_empty());
+        assert_eq!(params.model.as_deref(), Some("gpt-5"));
+        assert!(!params.plan_mode && !params.thinking_mode && !params.fast_mode);
+        assert_eq!(params.task_name, fresh_task.name);
+        assert_eq!(params.agent_type, "codex");
+        assert!(params.external);
+        assert_eq!(params.wakeup_reason, None);
     }
 }
