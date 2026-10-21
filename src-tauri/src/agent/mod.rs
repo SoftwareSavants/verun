@@ -716,10 +716,11 @@ pub trait Agent: Send + Sync {
     }
 
     /// Discover agent-specific skills/commands available in the given scan
-    /// root (typically a repo root or worktree path) and the user's home
-    /// directory. Returns empty by default; each agent that supports skills
+    /// root (typically a repo root or worktree path) and in `agent_home`, the
+    /// harness's config root (Claude: `~/.claude`, or the dir of the session's
+    /// account). Returns empty by default; each agent that supports skills
     /// overrides this.
-    fn discover_skills(&self, _scan_root: Option<&Path>, _user_home: &Path) -> Vec<AgentSkill> {
+    fn discover_skills(&self, _scan_root: Option<&Path>, _agent_home: &Path) -> Vec<AgentSkill> {
         Vec::new()
     }
 

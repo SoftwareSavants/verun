@@ -1539,8 +1539,9 @@ fn process_github_remote_invalidation(
 /// When a `control_request` (tool approval) is detected, we emit it to the
 /// frontend and block until the user responds via `respond_to_approval`.
 ///
-/// `claude_home` is where Claude keeps the transcript of this session: the
-/// home of the session's account. Only Claude sessions read it.
+/// `claude_home` is where Claude keeps its files for this session: the home of
+/// the session's account. It holds the transcript, and tool reads under it are
+/// auto-approved. Only Claude sessions read it.
 #[allow(clippy::too_many_arguments)]
 pub async fn stream_and_capture(
     app: AppHandle,
@@ -1642,7 +1643,7 @@ pub async fn stream_and_capture(
                         if let Some(cr) = handle_control_request(
                             &app, &session_id, &task_id, &v, &stdin,
                             &pending_approvals, &pending_approval_meta,
-                            &worktree_path, &repo_path,
+                            &worktree_path, &repo_path, claude_home.root(),
                             &trust_level, &db_tx,
                         ).await {
                             if cr.handled {
@@ -2143,6 +2144,7 @@ async fn handle_control_request(
     pending_meta: &PendingApprovalMeta,
     worktree_path: &str,
     repo_path: &str,
+    claude_home: &Path,
     trust_level: &Arc<AtomicU8>,
     db_tx: &DbWriteTx,
 ) -> Option<ControlRequestResult> {
@@ -2214,6 +2216,7 @@ async fn handle_control_request(
                 worktree_path,
                 repo_path,
                 TrustLevel::from_atomic(trust_level),
+                claude_home,
             ),
             prompt.as_ref(),
         )

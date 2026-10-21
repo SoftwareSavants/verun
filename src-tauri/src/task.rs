@@ -2514,11 +2514,11 @@ fn spawn_turn_start_response_watcher(
 /// `claude_home::process_default()`.
 ///
 /// A spawn doesn't need a home to exist: only that best-effort snapshot reads
-/// it, and only for Claude. So a session on the Default account, and every
-/// session of another harness, keeps spawning when `$HOME` can't be resolved:
-/// it gets the standard layout under `/`, where the snapshot finds no
-/// transcript. The one thing that stops a spawn is a Claude session on an
-/// added account whose row is missing.
+/// it, and only for a harness that keeps a Claude transcript (Claude). So a
+/// session on the Default account, and every session of another harness, keeps
+/// spawning when `$HOME` can't be resolved: it gets the standard layout under
+/// `/`, where the snapshot finds no transcript. The one thing that stops a
+/// spawn is a Claude session on an added account whose row is missing.
 async fn session_claude_home(
     pool: &SqlitePool,
     kind: AgentKind,
@@ -2527,7 +2527,7 @@ async fn session_claude_home(
 ) -> Result<ClaudeHome, String> {
     let default_home = process_default
         .unwrap_or_else(|| ClaudeHome::default_home(std::path::Path::new("/"), None));
-    if kind != AgentKind::Claude {
+    if !kind.implementation().uses_claude_jsonl() {
         return Ok(default_home);
     }
     claude_home::for_account_with_default(pool, account_id, Some(default_home)).await

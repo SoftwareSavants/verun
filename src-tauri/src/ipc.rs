@@ -1,5 +1,6 @@
 use crate::accounts::service::resolve_new_session_account;
 use crate::accounts::AccountSelection;
+use crate::claude_home::{self, ClaudeHome};
 use crate::claude_terminal::{self, ClaudeTerminalMap, OpenClaudeTerminalResult};
 use crate::db::{self, DbWriteTx, OutputLine, Project, Session, Step, Task};
 use crate::file_search::{SearchMap, SearchOpts};
@@ -2770,23 +2771,58 @@ pub use crate::agent::AgentSkill;
 
 #[tauri::command]
 pub async fn list_agent_skills(
+    pool: State<'_, SqlitePool>,
     agent_kind: String,
     scan_root: Option<String>,
+    account_id: Option<String>,
 ) -> Result<Vec<AgentSkill>, String> {
     let kind = crate::agent::AgentKind::parse(&agent_kind);
     if !kind.implementation().supports_skills() {
         return Ok(vec![]);
     }
-    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+    let Some(agent_home) = skills_home(
+        &pool,
+        kind,
+        account_id.as_deref(),
+        claude_home::process_default(),
+    )
+    .await?
+    else {
         return Ok(vec![]);
     };
     tokio::task::spawn_blocking(move || {
         let agent = kind.implementation();
         let root = scan_root.as_deref().map(std::path::Path::new);
-        agent.discover_skills(root, &home)
+        agent.discover_skills(root, &agent_home)
     })
     .await
     .map_err(|e| format!("skill discovery task failed: {e}"))
+}
+
+/// The config root `list_agent_skills` scans for harness `kind` on a session of
+/// `account_id`. Claude's is the home of the session's account. No other
+/// harness discovers skills yet, so those get the user's home. `None`: there
+/// is no `$HOME` to look in, so no skills to list, as ever for the Default
+/// account. Only an account that can't be found is an error.
+///
+/// `process_default` is `claude_home::process_default()`, passed in so tests
+/// skip the process env.
+async fn skills_home(
+    pool: &SqlitePool,
+    kind: crate::agent::AgentKind,
+    account_id: Option<&str>,
+    process_default: Option<ClaudeHome>,
+) -> Result<Option<std::path::PathBuf>, String> {
+    // Only a harness that lives in a Claude home has one to resolve, and its
+    // account says which. Another harness's account is not a Claude account.
+    if !kind.implementation().uses_claude_jsonl() {
+        return Ok(std::env::var_os("HOME").map(std::path::PathBuf::from));
+    }
+    if account_id.is_none() && process_default.is_none() {
+        return Ok(None);
+    }
+    let home = claude_home::for_account_with_default(pool, account_id, process_default).await?;
+    Ok(Some(home.root().to_path_buf()))
 }
 
 #[tauri::command]
@@ -3790,6 +3826,9 @@ pub async fn get_resource_usage_now(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentKind;
+    use crate::db::tests::{make_account, test_pool, upsert_account_confirmed};
+    use std::path::PathBuf;
 
     #[test]
     fn derive_dir_name_handles_https_url() {
@@ -4138,6 +4177,61 @@ mod tests {
         );
         assert_eq!(json["existingDir"], false);
         assert_eq!(json["minCliVersion"], "0.25.0");
+    }
+
+    // -- list_agent_skills: which home is scanned --
+
+    fn default_home() -> ClaudeHome {
+        ClaudeHome::default_home(std::path::Path::new("/Users/me"), None)
+    }
+
+    #[tokio::test]
+    async fn claude_skills_come_from_the_sessions_account_home() {
+        let pool = test_pool().await;
+        upsert_account_confirmed(&pool, make_account("a1", 1))
+            .await
+            .unwrap();
+
+        // An added account: its dir, as stored. The Default home is not used.
+        assert_eq!(
+            skills_home(&pool, AgentKind::Claude, Some("a1"), Some(default_home())).await,
+            Ok(Some(PathBuf::from("/tmp/verun-accounts/a1")))
+        );
+        // The Default account: the process default's root.
+        assert_eq!(
+            skills_home(&pool, AgentKind::Claude, None, Some(default_home())).await,
+            Ok(Some(PathBuf::from("/Users/me/.claude")))
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_skills_of_a_missing_account_are_an_error_not_the_default() {
+        let pool = test_pool().await;
+        let err = skills_home(&pool, AgentKind::Claude, Some("nope"), Some(default_home()))
+            .await
+            .unwrap_err();
+        assert!(err.contains("nope"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn default_skills_without_a_home_are_simply_none() {
+        // No account and no $HOME to look in: nothing to list, and no error.
+        let pool = test_pool().await;
+        assert_eq!(
+            skills_home(&pool, AgentKind::Claude, None, None).await,
+            Ok(None)
+        );
+    }
+
+    #[tokio::test]
+    async fn other_harnesses_get_the_user_home_and_no_account_lookup() {
+        // The account here is not a Claude account and no row exists for it:
+        // looking it up must not be what decides their (empty) skill list.
+        let pool = test_pool().await;
+        assert_eq!(
+            skills_home(&pool, AgentKind::Codex, Some("codex-account"), None).await,
+            Ok(std::env::var_os("HOME").map(PathBuf::from))
+        );
     }
 }
 

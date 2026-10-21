@@ -1,12 +1,17 @@
 //! Where Claude Code keeps its files for one account.
 //!
-//! `claude` writes a session's transcript to `<root>/projects/<slug>/<id>.jsonl`
-//! and keeps its config in `.claude.json`. For the Default account the root is
-//! `~/.claude` and the config sits beside it at `~/.claude.json`, unless Verun
-//! itself was started with `CLAUDE_CONFIG_DIR` (Default sessions keep Verun's
-//! env). An added account runs with `CLAUDE_CONFIG_DIR=<dir>`, which moves both
-//! inside the dir. `ClaudeHome` is the one place that turns an account into
-//! those paths, so nothing else builds a Claude path from `$HOME`.
+//! Under its root, `claude` writes a session's transcript to
+//! `projects/<slug>/<id>.jsonl` and loads `skills/`, `commands/` and `plugins/`.
+//! Its config is `.claude.json`. For the Default account the root is `~/.claude`
+//! and the config sits beside it at `~/.claude.json`, unless Verun itself was
+//! started with `CLAUDE_CONFIG_DIR` (Default sessions keep Verun's env). An
+//! added account runs with `CLAUDE_CONFIG_DIR=<dir>`, which makes the dir the
+//! root and puts the config inside it.
+//!
+//! `ClaudeHome` is the one place that turns an account into those paths. What
+//! Verun reads or writes of an account's Claude files goes through it:
+//! transcripts, worktree trust, the read policy, skill discovery and the
+//! signed-in identity.
 
 use std::path::{Path, PathBuf};
 
@@ -35,7 +40,7 @@ impl ClaudeHome {
     /// `~/.claude` and the config is `~/.claude.json`, beside it.
     pub fn default_home(user_home: &Path, inherited_config_dir: Option<&str>) -> Self {
         match inherited_config_dir.filter(|dir| !dir.is_empty()) {
-            Some(dir) => Self::in_config_dir(dir, false),
+            Some(dir) => Self::in_config_dir(Path::new(dir), false),
             None => Self {
                 root: user_home.join(".claude"),
                 config_json: user_home.join(".claude.json"),
@@ -46,13 +51,13 @@ impl ClaudeHome {
 
     /// The home of an added account that runs with `CLAUDE_CONFIG_DIR=dir`.
     /// `dir` is the spelling the account stores and is never changed here.
-    pub fn for_config_dir(dir: &str) -> Self {
-        Self::in_config_dir(dir, true)
+    pub fn for_config_dir(dir: impl AsRef<Path>) -> Self {
+        Self::in_config_dir(dir.as_ref(), true)
     }
 
     /// A home that `CLAUDE_CONFIG_DIR` names: the config file is inside it.
-    fn in_config_dir(dir: &str, account_home: bool) -> Self {
-        let root = PathBuf::from(dir);
+    fn in_config_dir(dir: &Path, account_home: bool) -> Self {
+        let root = dir.to_path_buf();
         Self {
             config_json: root.join(".claude.json"),
             root,
@@ -60,18 +65,15 @@ impl ClaudeHome {
         }
     }
 
-    #[allow(dead_code)] // consumed by the read policy
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    #[allow(dead_code)] // consumed by the trust pre-seed
     pub fn config_json(&self) -> &Path {
         &self.config_json
     }
 
     /// Whether this is an added account's dir rather than the Default home.
-    #[allow(dead_code)] // consumed by the trust pre-seed
     pub fn is_account_home(&self) -> bool {
         self.account_home
     }
@@ -89,8 +91,15 @@ impl ClaudeHome {
     /// The transcript of Claude session `session_id` started in `cwd`. Stats
     /// the disk like `projects_dir`.
     pub fn session_path(&self, cwd: &Path, session_id: &str) -> PathBuf {
-        self.projects_dir(cwd).join(format!("{session_id}.jsonl"))
+        transcript_in(&self.projects_dir(cwd), session_id)
     }
+}
+
+/// The transcript of Claude session `session_id` inside `projects_dir`, a
+/// folder `ClaudeHome::projects_dir` returned. Claude names the file after the
+/// session id. Builds a path only: it reads nothing and may not exist yet.
+pub fn transcript_in(projects_dir: &Path, session_id: &str) -> PathBuf {
+    projects_dir.join(format!("{session_id}.jsonl"))
 }
 
 /// The longest slug Claude keeps whole, in UTF-16 units.
@@ -331,6 +340,27 @@ mod tests {
         assert_eq!(home.root(), Path::new("/acc/a1"));
         assert_eq!(home.config_json(), Path::new("/acc/a1/.claude.json"));
         assert!(home.is_account_home());
+    }
+
+    #[test]
+    fn for_config_dir_keeps_a_path_spelling_as_given() {
+        // A dir that reaches here as a path is used byte for byte, as a
+        // stored string is: nothing tidies `.`, `..` or a trailing slash.
+        let dir = Path::new("/x/Client Accounts/./acme/../acme/");
+        let home = ClaudeHome::for_config_dir(dir);
+        assert_eq!(home.root().as_os_str(), dir.as_os_str());
+        assert_eq!(
+            home.config_json().as_os_str(),
+            dir.join(".claude.json").as_os_str()
+        );
+    }
+
+    #[test]
+    fn transcript_in_names_the_file_after_the_session_id() {
+        assert_eq!(
+            transcript_in(Path::new("/acc/a1/projects/-tmp-wt"), "abc-123"),
+            Path::new("/acc/a1/projects/-tmp-wt/abc-123.jsonl")
+        );
     }
 
     #[test]

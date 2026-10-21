@@ -28,7 +28,7 @@ use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::claude_home;
+use crate::claude_home::{self, ClaudeHome};
 use crate::claude_transcript_tail::{spawn_transcript_tail_with_claims, TranscriptTail};
 use crate::db::{self, DbWrite, DbWriteTx};
 use crate::pty::{self, ActivePtyMap};
@@ -146,7 +146,7 @@ pub async fn open_claude_terminal(
 
     let (jsonl_path, start_offset, command) = match &resume_id_opt {
         Some(rid) => {
-            let path = projects_dir.join(format!("{rid}.jsonl"));
+            let path = claude_home::transcript_in(&projects_dir, rid);
             // Skip whatever's already on disk (already in output_lines).
             let offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, rid, model.as_deref());
@@ -176,10 +176,10 @@ pub async fn open_claude_terminal(
     let app_for_pty = app.clone();
     let task_id_for_pty = task.id.clone();
 
-    // Pre-trust this worktree in ~/.claude.json so the TUI doesn't prompt on
-    // first spawn. Errors are non-fatal: at worst the user answers the
-    // trust prompt once for this folder.
-    if let Err(e) = pre_trust_worktree(&worktree_path).await {
+    // Pre-trust this worktree in the session's Claude config so the TUI
+    // doesn't prompt on first spawn. Errors are non-fatal: at worst the user
+    // answers the trust prompt once for this folder.
+    if let Err(e) = pre_trust_worktree(&claude_home, &worktree_path).await {
         eprintln!("[verun][claude-terminal] pre_trust_worktree failed: {e}");
     }
 
@@ -528,8 +528,9 @@ pub fn close_all_for_task(pty_map: &ActivePtyMap, ct_map: &ClaudeTerminalMap, ta
     pty::close_all_for_task(pty_map, task_id);
 }
 
-/// Pre-mark a worktree as trusted in `~/.claude.json` so the Claude TUI
-/// doesn't prompt with the "Do you trust this folder?" dialog on first
+/// Pre-mark a worktree as trusted in the Claude config of `home` (`~/.claude.json`
+/// for the Default account, `<dir>/.claude.json` for an added one) so the Claude
+/// TUI doesn't prompt with the "Do you trust this folder?" dialog on first
 /// spawn. Verun owns the worktree (we created it, we picked the branch,
 /// we're the one running `claude` in it) so the dialog is pure friction.
 ///
@@ -540,18 +541,28 @@ pub fn close_all_for_task(pty_map: &ActivePtyMap, ct_map: &ClaudeTerminalMap, ta
 /// if Claude crashes mid-write or another spawn races us. A module-level
 /// mutex serializes our own concurrent merges.
 ///
+/// An added account's dir starts empty, so Claude would also greet it with the
+/// first-run wizard: its config gets a top-level `hasCompletedOnboarding`
+/// too, unless the key is already there. The Default account's is the user's
+/// own and is left alone.
+///
 /// Errors are non-fatal at the call site - if we can't pre-trust, the
 /// user just sees the trust prompt once. Worth the extra robustness.
-pub(crate) async fn pre_trust_worktree(worktree_path: &str) -> Result<(), String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| "HOME env var not set".to_string())?;
-    let config_path = home.join(".claude.json");
-    pre_trust_worktree_at(&config_path, worktree_path).await
+pub(crate) async fn pre_trust_worktree(
+    home: &ClaudeHome,
+    worktree_path: &str,
+) -> Result<(), String> {
+    pre_trust_worktree_at(home.config_json(), worktree_path, home.is_account_home()).await
 }
 
 /// Test-friendly variant that accepts an explicit config path.
-async fn pre_trust_worktree_at(config_path: &Path, worktree_path: &str) -> Result<(), String> {
+/// `mark_onboarding` also sets the top-level `hasCompletedOnboarding` to `true`
+/// when the config has no such key.
+async fn pre_trust_worktree_at(
+    config_path: &Path,
+    worktree_path: &str,
+    mark_onboarding: bool,
+) -> Result<(), String> {
     static MUTEX: Mutex<()> = Mutex::const_new(());
     let _guard = MUTEX.lock().await;
 
@@ -563,11 +574,13 @@ async fn pre_trust_worktree_at(config_path: &Path, worktree_path: &str) -> Resul
         Err(e) => return Err(format!("read {}: {e}", config_path.display())),
     };
 
-    let projects = config
+    let config_obj = config
         .as_object_mut()
-        .ok_or_else(|| format!("{} is not a JSON object", config_path.display()))?
-        .entry("projects")
-        .or_insert_with(|| json!({}));
+        .ok_or_else(|| format!("{} is not a JSON object", config_path.display()))?;
+    // Only a missing key is ours to set: whatever Claude recorded stays.
+    let onboarding_missing = mark_onboarding && !config_obj.contains_key("hasCompletedOnboarding");
+
+    let projects = config_obj.entry("projects").or_insert_with(|| json!({}));
     let projects_obj = projects
         .as_object_mut()
         .ok_or_else(|| "`projects` is not a JSON object".to_string())?;
@@ -579,9 +592,10 @@ async fn pre_trust_worktree_at(config_path: &Path, worktree_path: &str) -> Resul
         .as_object_mut()
         .ok_or_else(|| format!("`projects[{worktree_path}]` is not a JSON object"))?;
 
-    // Idempotent: skip the disk write if both flags already match.
+    // Idempotent: skip the disk write if every flag already matches.
     if entry_obj.get("hasTrustDialogAccepted") == Some(&Value::Bool(true))
         && entry_obj.get("hasCompletedProjectOnboarding") == Some(&Value::Bool(true))
+        && !onboarding_missing
     {
         return Ok(());
     }
@@ -591,6 +605,9 @@ async fn pre_trust_worktree_at(config_path: &Path, worktree_path: &str) -> Resul
         "hasCompletedProjectOnboarding".to_string(),
         Value::Bool(true),
     );
+    if onboarding_missing {
+        config_obj.insert("hasCompletedOnboarding".to_string(), Value::Bool(true));
+    }
 
     let serialized =
         serde_json::to_vec_pretty(&config).map_err(|e| format!("serialize claude config: {e}"))?;
@@ -716,7 +733,7 @@ fn spawn_fresh_session_watcher_and_tail(
             },
         );
 
-        let path = projects_dir.join(format!("{new_id}.jsonl"));
+        let path = claude_home::transcript_in(&projects_dir, &new_id);
         // The inner tail handle is dropped when this task exits (or is
         // aborted). Drop fires its stop channel, which cancels the tail
         // loop. So one abort on `_watcher` cleans everything up.
@@ -860,7 +877,9 @@ mod tests {
         let config = dir.path().join(".claude.json");
         assert!(!config.exists());
 
-        pre_trust_worktree_at(&config, "/repo/wt").await.unwrap();
+        pre_trust_worktree_at(&config, "/repo/wt", false)
+            .await
+            .unwrap();
 
         let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
         assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
@@ -886,7 +905,9 @@ mod tests {
         });
         std::fs::write(&config, serde_json::to_vec_pretty(&starting).unwrap()).unwrap();
 
-        pre_trust_worktree_at(&config, "/repo/wt").await.unwrap();
+        pre_trust_worktree_at(&config, "/repo/wt", false)
+            .await
+            .unwrap();
 
         let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
         assert_eq!(v["userId"], "u-1");
@@ -911,7 +932,9 @@ mod tests {
         });
         std::fs::write(&config, serde_json::to_vec_pretty(&starting).unwrap()).unwrap();
 
-        pre_trust_worktree_at(&config, "/repo/wt").await.unwrap();
+        pre_trust_worktree_at(&config, "/repo/wt", false)
+            .await
+            .unwrap();
 
         let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
         assert_eq!(
@@ -940,7 +963,9 @@ mod tests {
 
         // Tiny sleep so a write would produce a different mtime.
         std::thread::sleep(std::time::Duration::from_millis(20));
-        pre_trust_worktree_at(&config, "/repo/wt").await.unwrap();
+        pre_trust_worktree_at(&config, "/repo/wt", false)
+            .await
+            .unwrap();
 
         let mtime_after = std::fs::metadata(&config).unwrap().modified().unwrap();
         assert_eq!(
@@ -957,10 +982,129 @@ mod tests {
         let config = dir.path().join(".claude.json");
         std::fs::write(&config, b"not json").unwrap();
 
-        let err = pre_trust_worktree_at(&config, "/repo/wt")
+        let err = pre_trust_worktree_at(&config, "/repo/wt", false)
             .await
             .unwrap_err();
         assert!(err.contains("parse"));
+    }
+
+    #[tokio::test]
+    async fn pre_trust_marks_onboarding_complete_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        // What `claude auth login` leaves in a fresh dir: the account, no
+        // onboarding flag.
+        let starting = json!({ "oauthAccount": { "emailAddress": "dev@acme.com" } });
+        std::fs::write(&config, serde_json::to_vec_pretty(&starting).unwrap()).unwrap();
+
+        pre_trust_worktree_at(&config, "/repo/wt", true)
+            .await
+            .unwrap();
+
+        let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(v["hasCompletedOnboarding"], true);
+        assert_eq!(v["oauthAccount"]["emailAddress"], "dev@acme.com");
+        assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
+    }
+
+    #[tokio::test]
+    async fn pre_trust_sets_onboarding_only_when_the_key_is_absent() {
+        // Whatever Claude recorded stays, so a flag it wrote is never
+        // overridden.
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        let starting = json!({ "hasCompletedOnboarding": false });
+        std::fs::write(&config, serde_json::to_vec_pretty(&starting).unwrap()).unwrap();
+
+        pre_trust_worktree_at(&config, "/repo/wt", true)
+            .await
+            .unwrap();
+
+        let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(v["hasCompletedOnboarding"], false);
+        assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
+    }
+
+    #[tokio::test]
+    async fn pre_trust_marks_onboarding_even_when_the_worktree_is_already_trusted() {
+        // The no-op shortcut must not skip a flag it was asked to add.
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        let starting = json!({
+            "projects": {
+                "/repo/wt": {
+                    "hasTrustDialogAccepted": true,
+                    "hasCompletedProjectOnboarding": true,
+                }
+            }
+        });
+        std::fs::write(&config, serde_json::to_vec_pretty(&starting).unwrap()).unwrap();
+
+        pre_trust_worktree_at(&config, "/repo/wt", true)
+            .await
+            .unwrap();
+
+        let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(v["hasCompletedOnboarding"], true);
+    }
+
+    #[tokio::test]
+    async fn pre_trust_is_idempotent_when_onboarding_is_already_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        let starting = json!({
+            "hasCompletedOnboarding": true,
+            "projects": {
+                "/repo/wt": {
+                    "hasTrustDialogAccepted": true,
+                    "hasCompletedProjectOnboarding": true,
+                }
+            }
+        });
+        std::fs::write(&config, serde_json::to_vec_pretty(&starting).unwrap()).unwrap();
+        let mtime_before = std::fs::metadata(&config).unwrap().modified().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        pre_trust_worktree_at(&config, "/repo/wt", true)
+            .await
+            .unwrap();
+
+        let mtime_after = std::fs::metadata(&config).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "should be a no-op when nothing is left to set"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_trust_writes_inside_account_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let account_dir = tmp.path().join("acc");
+        std::fs::create_dir(&account_dir).unwrap();
+        let home = ClaudeHome::for_config_dir(&account_dir);
+
+        pre_trust_worktree(&home, "/repo/wt").await.unwrap();
+
+        let config = account_dir.join(".claude.json");
+        let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
+        assert_eq!(v["hasCompletedOnboarding"], true);
+        // The Default account's file, beside `~/.claude`, is not touched.
+        assert!(!tmp.path().join(".claude.json").exists());
+    }
+
+    #[tokio::test]
+    async fn pre_trust_default_home_leaves_onboarding_alone() {
+        let user_home = tempfile::tempdir().unwrap();
+        let home = ClaudeHome::default_home(user_home.path(), None);
+
+        pre_trust_worktree(&home, "/repo/wt").await.unwrap();
+
+        let config = user_home.path().join(".claude.json");
+        let v: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(v["projects"]["/repo/wt"]["hasTrustDialogAccepted"], true);
+        // The Default account's onboarding is the user's own: never set here.
+        assert!(v.get("hasCompletedOnboarding").is_none());
     }
 
     fn test_handle(task_id: &str, session_id: &str, terminal_id: &str) -> ClaudeTerminalHandle {

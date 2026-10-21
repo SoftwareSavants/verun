@@ -6,9 +6,10 @@ use crate::accounts::identity::{
     non_empty_str, read_json_with_retry, unknown_identity, unread_file_identity, AccountIdentity,
     SignInStatus,
 };
+use crate::claude_home::ClaudeHome;
 use crate::markdown_skills::{scan_commands_dir, scan_skills_dir};
 use std::collections::HashSet;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 /// The env var that moves all of Claude's state: settings, history and the
@@ -242,7 +243,7 @@ impl Agent for Claude {
         Ok(payload)
     }
 
-    fn discover_skills(&self, scan_root: Option<&Path>, user_home: &Path) -> Vec<AgentSkill> {
+    fn discover_skills(&self, scan_root: Option<&Path>, agent_home: &Path) -> Vec<AgentSkill> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut out: Vec<AgentSkill> = Vec::new();
 
@@ -259,9 +260,9 @@ impl Agent for Claude {
             add(scan_skills_dir(&root.join(".agents/skills")));
             add(scan_commands_dir(&root.join(".claude/commands")));
         }
-        add(scan_skills_dir(&user_home.join(".claude/skills")));
-        add(scan_commands_dir(&user_home.join(".claude/commands")));
-        add(scan_installed_plugins(user_home));
+        add(scan_skills_dir(&agent_home.join("skills")));
+        add(scan_commands_dir(&agent_home.join("commands")));
+        add(scan_installed_plugins(agent_home));
 
         out
     }
@@ -304,7 +305,9 @@ impl Agent for Claude {
     }
 
     fn account_standard_home(&self, user_home: &Path) -> Option<PathBuf> {
-        Some(user_home.join(".claude"))
+        // The standard layout, whatever `CLAUDE_CONFIG_DIR` Verun inherited.
+        let standard = ClaudeHome::default_home(user_home, None);
+        Some(standard.root().to_path_buf())
     }
 
     fn read_account_identity(&self, home: AccountHome<'_>) -> AccountIdentity {
@@ -347,19 +350,20 @@ fn claude_identity(
     }
 }
 
-/// The `.claude.json` of a home. With a config dir it is inside the dir;
-/// without one it sits beside `~/.claude`, not in it.
+/// The `.claude.json` of a home, wherever `ClaudeHome` puts it: inside the dir
+/// of an added account, beside `~/.claude` for Default. Default sessions keep
+/// Verun's own env, so a `CLAUDE_CONFIG_DIR` exported where Verun was launched
+/// is the Default home; as when sessions resolve their home, a value that is
+/// empty or not UTF-8 counts as unset.
 fn claude_json_path(home: AccountHome<'_>, inherited_config_dir: Option<OsString>) -> PathBuf {
-    let dir = match home {
-        AccountHome::Dir(dir) => dir.to_path_buf(),
-        // Default sessions keep Verun's own env, so a config dir exported
-        // where Verun was launched is the Default home. Empty counts as unset.
-        AccountHome::Default { user_home } => inherited_config_dir
-            .filter(|dir| !dir.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| user_home.to_path_buf()),
+    let claude_home = match home {
+        AccountHome::Dir(dir) => ClaudeHome::for_config_dir(dir),
+        AccountHome::Default { user_home } => ClaudeHome::default_home(
+            user_home,
+            inherited_config_dir.as_deref().and_then(OsStr::to_str),
+        ),
     };
-    dir.join(".claude.json")
+    claude_home.config_json().to_path_buf()
 }
 
 /// The plan name for an `organizationType`; types not listed pass through.
@@ -399,12 +403,12 @@ fn chrome_default_enabled_at(config_path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Reads `<user_home>/.claude/plugins/installed_plugins.json` and scans each
+/// Reads `<agent_home>/plugins/installed_plugins.json` and scans each
 /// active plugin's `skills/` and `commands/` directories. Mirrors how the CLI
 /// itself resolves plugin content — catalog entries under `marketplaces/`
 /// without a matching manifest entry are ignored.
-fn scan_installed_plugins(user_home: &Path) -> Vec<AgentSkill> {
-    let manifest = user_home.join(".claude/plugins/installed_plugins.json");
+fn scan_installed_plugins(agent_home: &Path) -> Vec<AgentSkill> {
+    let manifest = agent_home.join("plugins/installed_plugins.json");
     let Ok(text) = std::fs::read_to_string(&manifest) else {
         return Vec::new();
     };
@@ -465,6 +469,11 @@ mod tests {
         );
     }
 
+    /// The Default account's Claude home under a temp user home.
+    fn claude_dir(home: &TempDir) -> PathBuf {
+        home.path().join(".claude")
+    }
+
     fn write_skill(dir: &Path, name: &str, body: &str) {
         let skill_dir = dir.join(name);
         fs::create_dir_all(&skill_dir).unwrap();
@@ -476,8 +485,8 @@ mod tests {
         fs::write(dir.join(format!("{name}.md")), body).unwrap();
     }
 
-    fn write_installed_plugins(home: &Path, install_paths: &[&Path]) {
-        let plugins_dir = home.join(".claude/plugins");
+    fn write_installed_plugins(agent_home: &Path, install_paths: &[&Path]) {
+        let plugins_dir = agent_home.join("plugins");
         fs::create_dir_all(&plugins_dir).unwrap();
         let entries: Vec<String> = install_paths
             .iter()
@@ -522,9 +531,9 @@ mod tests {
             "plugin-only",
             "---\nname: plugin-only\ndescription: pl\n---\n",
         );
-        write_installed_plugins(home.path(), &[&install_path]);
+        write_installed_plugins(&claude_dir(&home), &[&install_path]);
 
-        let skills = Claude.discover_skills(Some(project.path()), home.path());
+        let skills = Claude.discover_skills(Some(project.path()), &claude_dir(&home));
         let names: HashSet<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains("global-only"));
         assert!(names.contains("project-only"));
@@ -552,7 +561,7 @@ mod tests {
             "---\nname: review\ndescription: project override\n---\n",
         );
 
-        let skills = Claude.discover_skills(Some(project.path()), home.path());
+        let skills = Claude.discover_skills(Some(project.path()), &claude_dir(&home));
         let review: Vec<&AgentSkill> = skills.iter().filter(|s| s.name == "review").collect();
         assert_eq!(review.len(), 1);
         assert_eq!(review[0].description, "project override");
@@ -565,7 +574,7 @@ mod tests {
         fs::create_dir_all(&global_dir).unwrap();
         write_skill(&global_dir, "g1", "---\nname: g1\ndescription: g\n---\n");
 
-        let skills = Claude.discover_skills(None, home.path());
+        let skills = Claude.discover_skills(None, &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["g1"]);
     }
@@ -573,7 +582,7 @@ mod tests {
     #[test]
     fn discover_skills_returns_empty_when_nothing_exists() {
         let home = TempDir::new().unwrap();
-        assert!(Claude.discover_skills(None, home.path()).is_empty());
+        assert!(Claude.discover_skills(None, &claude_dir(&home)).is_empty());
     }
 
     #[test]
@@ -589,9 +598,9 @@ mod tests {
             "review",
             "---\nname: review\ndescription: PR review\n---\n",
         );
-        write_installed_plugins(home.path(), &[&install_path]);
+        write_installed_plugins(&claude_dir(&home), &[&install_path]);
 
-        let skills = Claude.discover_skills(None, home.path());
+        let skills = Claude.discover_skills(None, &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["review"]);
     }
@@ -609,7 +618,7 @@ mod tests {
             "---\nname: example-skill\ndescription: catalog only\n---\n",
         );
 
-        let skills = Claude.discover_skills(None, home.path());
+        let skills = Claude.discover_skills(None, &claude_dir(&home));
         assert!(skills.iter().all(|s| s.name != "example-skill"));
     }
 
@@ -624,7 +633,7 @@ mod tests {
             "---\nname: bump-version\ndescription: Bump the version\n---\n",
         );
 
-        let skills = Claude.discover_skills(Some(project.path()), home.path());
+        let skills = Claude.discover_skills(Some(project.path()), &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"bump-version"));
     }
@@ -639,7 +648,7 @@ mod tests {
             "---\nname: my-global-cmd\ndescription: Global\n---\n",
         );
 
-        let skills = Claude.discover_skills(None, home.path());
+        let skills = Claude.discover_skills(None, &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"my-global-cmd"));
     }
@@ -653,9 +662,9 @@ mod tests {
             "plugin-cmd",
             "---\nname: plugin-cmd\ndescription: from plugin\n---\n",
         );
-        write_installed_plugins(home.path(), &[&install_path]);
+        write_installed_plugins(&claude_dir(&home), &[&install_path]);
 
-        let skills = Claude.discover_skills(None, home.path());
+        let skills = Claude.discover_skills(None, &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"plugin-cmd"));
     }
@@ -672,9 +681,37 @@ mod tests {
             "---\nname: tauri-v2\ndescription: Tauri v2 helper\n---\n",
         );
 
-        let skills = Claude.discover_skills(Some(project.path()), home.path());
+        let skills = Claude.discover_skills(Some(project.path()), &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"tauri-v2"));
+    }
+
+    #[test]
+    fn discover_skills_reads_account_dir_layout() {
+        // An account's dir is Claude's home itself: skills, commands and
+        // plugins sit directly in it, with no `.claude` level.
+        let account = TempDir::new().unwrap();
+        write_skill(
+            &account.path().join("skills"),
+            "x",
+            "---\nname: x\ndescription: from the account\n---\n",
+        );
+        write_command(
+            &account.path().join("commands"),
+            "deploy",
+            "---\nname: deploy\ndescription: account command\n---\n",
+        );
+        let install_path = account.path().join("plugins/cache/mp/plugin-x/1.0.0");
+        write_skill(
+            &install_path.join("skills"),
+            "from-plugin",
+            "---\nname: from-plugin\ndescription: account plugin\n---\n",
+        );
+        write_installed_plugins(account.path(), &[&install_path]);
+
+        let skills = Claude.discover_skills(None, account.path());
+        let names: HashSet<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, HashSet::from(["x", "deploy", "from-plugin"]));
     }
 
     // ── Accounts ────────────────────────────────────────────────────────
@@ -943,6 +980,27 @@ mod tests {
         assert_eq!(default_email(None).as_deref(), Some("home@x.dev"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn claude_identity_default_treats_a_non_utf8_inherited_config_dir_as_unset() {
+        // The same reading sessions give the variable when they resolve their
+        // home, so both land on the same `.claude.json`.
+        use std::os::unix::ffi::OsStringExt;
+        let home = TempDir::new().unwrap();
+        write_claude_json(
+            home.path(),
+            r#"{"oauthAccount":{"emailAddress":"home@x.dev"}}"#,
+        );
+        let inherited = OsString::from_vec(vec![b'/', 0xff, b'x']);
+        let identity = claude_identity(
+            AccountHome::Default {
+                user_home: home.path(),
+            },
+            Some(inherited),
+        );
+        assert_eq!(identity.email.as_deref(), Some("home@x.dev"));
+    }
+
     #[test]
     fn claude_identity_of_an_added_dir_ignores_the_inherited_config_dir() {
         let dir = TempDir::new().unwrap();
@@ -968,7 +1026,7 @@ mod tests {
         let project = std::env::current_dir()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-        let skills = Claude.discover_skills(project.as_deref(), &home);
+        let skills = Claude.discover_skills(project.as_deref(), &home.join(".claude"));
         println!("discovered {} skills", skills.len());
         let mut names: Vec<_> = skills.iter().map(|s| s.name.clone()).collect();
         names.sort();

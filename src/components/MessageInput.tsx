@@ -428,6 +428,7 @@ export const MessageInput: Component<Props> = (props) => {
     if (!sess || !task || !project) return null
     return {
       agentKind: sess.agentType,
+      accountId: sess.accountId ?? null,
       projectRoot: project.repoPath,
       taskId: task.id,
       worktreePath: task.worktreePath,

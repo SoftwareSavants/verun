@@ -109,6 +109,28 @@ describe('ipc', () => {
     })
   })
 
+  describe('listAgentSkills', () => {
+    test('passes the scan root and the account', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce([])
+      await ipc.listAgentSkills('claude', '/repo', 'a1')
+      expect(invoke).toHaveBeenCalledWith('list_agent_skills', {
+        agentKind: 'claude',
+        scanRoot: '/repo',
+        accountId: 'a1',
+      })
+    })
+
+    test('sends nulls when there is no scan root or account', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce([])
+      await ipc.listAgentSkills('claude')
+      expect(invoke).toHaveBeenCalledWith('list_agent_skills', {
+        agentKind: 'claude',
+        scanRoot: null,
+        accountId: null,
+      })
+    })
+  })
+
   describe('askSideQuestion', () => {
     test('forwards camelCase args to ask_side_question and resolves to typed object', async () => {
       vi.mocked(invoke).mockResolvedValueOnce({ response: 'ok', synthetic: false })
