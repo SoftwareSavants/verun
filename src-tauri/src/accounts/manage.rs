@@ -30,6 +30,40 @@ use crate::db::{self, Account, AccountEnvVar, DbWrite, DbWriteTx, ProjectAccount
 /// one folder.
 static ACCOUNT_CHANGES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// A turn at changing accounts. Every change takes one before its first check
+/// and hands it back with its result, and the caller sends the snapshot of the
+/// change (`publish`) before giving the turn up by dropping it. That way the
+/// snapshots reach the windows in the order the changes were stored. One built
+/// or sent after the turn was over could be overtaken by the snapshot of the
+/// next change, and a window would be left showing the older state.
+#[must_use = "an account change is not over until its snapshot is out, and the turn holds up every other change until it is dropped"]
+pub struct Turn {
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl Turn {
+    /// Waits for the turn.
+    pub async fn take() -> Self {
+        Turn {
+            _guard: ACCOUNT_CHANGES.lock().await,
+        }
+    }
+
+    /// Builds the snapshot of the accounts as they are now (see `snapshot`),
+    /// gives it to `emit` and returns it. `emit` is what sends it to the
+    /// windows. Nothing is emitted if the snapshot cannot be built.
+    pub async fn publish(
+        &self,
+        pool: &SqlitePool,
+        user_home: &Path,
+        emit: impl FnOnce(&AccountsSnapshot),
+    ) -> Result<AccountsSnapshot, String> {
+        let snapshot = snapshot(pool, user_home).await?;
+        emit(&snapshot);
+        Ok(snapshot)
+    }
+}
+
 /// An account as the frontend reads it: its row and who is signed in to it.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -604,6 +638,9 @@ async fn install_account(
 ///
 /// The folder checks, the keychain calls and the folder work run in
 /// `spawn_blocking`.
+///
+/// The result comes with the turn of the change (see `Turn`), still held. A
+/// create that fails gives its turn up.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_account(
     pool: &SqlitePool,
@@ -614,8 +651,8 @@ pub async fn create_account(
     input: NewAccountInput,
     id: String,
     now: i64,
-) -> Result<Account, AccountError> {
-    let _turn = ACCOUNT_CHANGES.lock().await;
+) -> Result<(Account, Turn), AccountError> {
+    let turn = Turn::take().await;
     let kind = harness_kind(&input.agent_type)?;
     let agent = kind.implementation();
     let NewAccountPlan {
@@ -659,7 +696,7 @@ pub async fn create_account(
         .await;
         return Err(error);
     }
-    Ok(account)
+    Ok((account, turn))
 }
 
 /// Changes the label, color and env of the live account `input.id`; the env
@@ -673,13 +710,15 @@ pub async fn create_account(
 /// the old ones were not read, so there is nothing to put back. The secrets that
 /// went away are deleted after the row is stored: if that fails they only
 /// linger, unused, and are logged.
+///
+/// The result comes with the turn of the change (see `Turn`), still held.
 pub async fn update_account(
     pool: &SqlitePool,
     db_tx: &DbWriteTx,
     secrets: Arc<dyn SecretStore>,
     input: UpdateAccountInput,
-) -> Result<Account, AccountError> {
-    let _turn = ACCOUNT_CHANGES.lock().await;
+) -> Result<(Account, Turn), AccountError> {
+    let turn = Turn::take().await;
     let account = live(load_account(pool, &input.id).await?)?;
     let agent = AgentKind::parse(&account.agent_type).implementation();
     let AccountUpdatePlan {
@@ -702,7 +741,7 @@ pub async fn update_account(
         Ok(())
     })
     .await;
-    Ok(updated)
+    Ok((updated, turn))
 }
 
 /// Removes the account `account_id`: it is marked removed on `now`, and can
@@ -716,6 +755,8 @@ pub async fn update_account(
 /// stays removable whatever state the keychain or the disk is in, and what a
 /// failure leaves behind is only logged. Removing an account that is already
 /// removed keeps its first time and runs the cleanup again.
+///
+/// The result is the turn of the change (see `Turn`), still held.
 pub async fn remove_account(
     pool: &SqlitePool,
     db_tx: &DbWriteTx,
@@ -723,8 +764,8 @@ pub async fn remove_account(
     account_id: &str,
     delete_dir: bool,
     now: i64,
-) -> Result<(), AccountError> {
-    let _turn = ACCOUNT_CHANGES.lock().await;
+) -> Result<Turn, AccountError> {
+    let turn = Turn::take().await;
     let account = load_account(pool, account_id).await?;
     let projects = db::projects_using_account(pool, account_id)
         .await
@@ -752,20 +793,22 @@ pub async fn remove_account(
         Ok(())
     })
     .await;
-    Ok(())
+    Ok(turn)
 }
 
 /// Makes `account_id` the account of `project_id` for the harness
 /// `agent_type`, or with `None` clears the choice, so the harness runs on
 /// Default. The account must exist, belong to the harness and not be removed.
+///
+/// The result is the turn of the change (see `Turn`), still held.
 pub async fn set_project_account(
     pool: &SqlitePool,
     db_tx: &DbWriteTx,
     project_id: &str,
     agent_type: &str,
     account_id: Option<String>,
-) -> Result<(), AccountError> {
-    let _turn = ACCOUNT_CHANGES.lock().await;
+) -> Result<Turn, AccountError> {
+    let turn = Turn::take().await;
     let kind = harness_kind(agent_type)?;
     if let Some(account_id) = &account_id {
         load_live_account(pool, account_id, kind.as_str()).await?;
@@ -776,7 +819,8 @@ pub async fn set_project_account(
         account_id,
         done,
     })
-    .await
+    .await?;
+    Ok(turn)
 }
 
 #[cfg(test)]
@@ -800,6 +844,12 @@ mod tests {
 
     // -- Fixtures for the account commands --
 
+    /// The change lock is one for the whole process and the tests run in
+    /// parallel, so a test that changes accounts or looks at who holds the lock
+    /// takes this first (every `Lab` does, for as long as it lives). While one
+    /// holds it, no other test is in the middle of a change.
+    static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// What the account commands work on: a database with its write queue, a
     /// keychain, the app data dir and the user's home.
     struct Lab {
@@ -808,6 +858,7 @@ mod tests {
         store: Arc<dyn SecretStore>,
         app_data: TempDir,
         user_home: TempDir,
+        _alone: tokio::sync::MutexGuard<'static, ()>,
     }
 
     impl Lab {
@@ -816,6 +867,7 @@ mod tests {
         }
 
         async fn with_store(store: Arc<dyn SecretStore>) -> Self {
+            let alone = ONE_AT_A_TIME.lock().await;
             let pool = test_pool().await;
             Self {
                 db_tx: db::spawn_write_queue(pool.clone()),
@@ -823,6 +875,7 @@ mod tests {
                 store,
                 app_data: TempDir::new().unwrap(),
                 user_home: TempDir::new().unwrap(),
+                _alone: alone,
             }
         }
 
@@ -850,10 +903,13 @@ mod tests {
                 1000,
             )
             .await
+            .map(|(account, _turn)| account)
         }
 
         async fn update(&self, input: UpdateAccountInput) -> Result<Account, AccountError> {
-            update_account(&self.pool, &self.db_tx, self.store.clone(), input).await
+            update_account(&self.pool, &self.db_tx, self.store.clone(), input)
+                .await
+                .map(|(account, _turn)| account)
         }
 
         async fn remove(&self, id: &str, delete_dir: bool) -> Result<(), AccountError> {
@@ -866,6 +922,7 @@ mod tests {
                 2000,
             )
             .await
+            .map(|_turn| ())
         }
 
         async fn bind(
@@ -882,6 +939,7 @@ mod tests {
                 account_id.map(Into::into),
             )
             .await
+            .map(|_turn| ())
         }
 
         /// The snapshot, with nothing in Verun's own env.
@@ -2220,6 +2278,7 @@ mod tests {
         // A second request, now asking for the folder too.
         remove_account(&lab.pool, &lab.db_tx, lab.store.clone(), "a1", true, 3000)
             .await
+            .map(drop)
             .unwrap();
 
         assert_eq!(lab.stored().await[0].removed_at, Some(2000));
@@ -2383,6 +2442,109 @@ mod tests {
             );
             assert_eq!(lab.stored().await.len(), 1, "round {round}");
         }
+    }
+
+    // -- Publishing --
+
+    /// Creates the account `id` and keeps the turn of the change.
+    async fn create_keeping_the_turn(lab: &Lab, id: &str) -> Turn {
+        let (_, turn) = create_account(
+            &lab.pool,
+            &lab.db_tx,
+            lab.store.clone(),
+            lab.app_data.path(),
+            lab.user_home.path(),
+            new_claude(id),
+            id.into(),
+            1000,
+        )
+        .await
+        .unwrap();
+        turn
+    }
+
+    #[tokio::test]
+    async fn publish_hands_out_the_snapshot_while_the_turn_is_still_held() {
+        let lab = Lab::new().await;
+        let turn = create_keeping_the_turn(&lab, "a1").await;
+        let mut emitted = None;
+
+        let returned = turn
+            .publish(&lab.pool, lab.user_home.path(), |snapshot| {
+                // Nobody else can change an account between the snapshot and
+                // the change it shows.
+                assert!(
+                    ACCOUNT_CHANGES.try_lock().is_err(),
+                    "emitted after the turn was over"
+                );
+                emitted = Some(snapshot.clone());
+            })
+            .await
+            .unwrap();
+
+        let ids: Vec<&str> = returned
+            .accounts
+            .iter()
+            .map(|view| view.account.id.as_str())
+            .collect();
+        assert_eq!(ids, ["a1"]);
+        assert_eq!(emitted, Some(returned));
+    }
+
+    #[tokio::test]
+    async fn snapshots_go_out_in_the_order_the_changes_were_stored() {
+        // Four accounts are created at once, each publishing right after its
+        // own change. Whichever goes first, snapshot n is the state right after
+        // change n: one account, then two, and so on. A snapshot built or sent
+        // after the turn was given up could already show a later change, or
+        // arrive after a newer one and leave a window with the older state.
+        for round in 0..10 {
+            let lab = Lab::new().await;
+            let emitted = std::sync::Mutex::new(Vec::new());
+            let change = |n: usize| {
+                let (lab, emitted) = (&lab, &emitted);
+                async move {
+                    let turn = create_keeping_the_turn(lab, &format!("a{n}")).await;
+                    turn.publish(&lab.pool, lab.user_home.path(), |snapshot| {
+                        emitted.lock().unwrap().push(snapshot.accounts.len());
+                    })
+                    .await
+                    .unwrap();
+                }
+            };
+
+            tokio::join!(change(1), change(2), change(3), change(4));
+
+            assert_eq!(*emitted.lock().unwrap(), [1, 2, 3, 4], "round {round}");
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_emits_nothing_when_the_snapshot_cannot_be_built() {
+        let _alone = ONE_AT_A_TIME.lock().await;
+        // No migrations ran, so every query fails.
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let home = TempDir::new().unwrap();
+        let turn = Turn::take().await;
+        let mut emitted = false;
+
+        let result = turn.publish(&pool, home.path(), |_| emitted = true).await;
+
+        assert!(result.is_err());
+        assert!(!emitted);
+    }
+
+    #[tokio::test]
+    async fn a_refused_change_gives_up_its_turn() {
+        let lab = Lab::new().await;
+
+        let refused = lab.create("a1", new_claude("  ")).await;
+
+        assert!(refused.is_err());
+        assert!(
+            ACCOUNT_CHANGES.try_lock().is_ok(),
+            "the refused change kept its turn, which would hold up every other change"
+        );
     }
 
     // -- Blocking work --

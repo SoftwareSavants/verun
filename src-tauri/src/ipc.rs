@@ -2820,15 +2820,19 @@ fn account_user_home() -> Result<std::path::PathBuf, AccountError> {
 }
 
 /// Tells every window that the accounts changed, with the fresh snapshot, and
-/// hands the snapshot back for the command's result.
+/// hands the snapshot back for the command's result. `turn` is the one the
+/// change took and still holds, so that snapshots go out in the order the
+/// changes were stored.
 async fn publish_accounts(
+    turn: &accounts_manage::Turn,
     app: &AppHandle,
     pool: &SqlitePool,
     user_home: &std::path::Path,
 ) -> Result<AccountsSnapshot, String> {
-    let snapshot = accounts_manage::snapshot(pool, user_home).await?;
-    let _ = app.emit("accounts-changed", &snapshot);
-    Ok(snapshot)
+    turn.publish(pool, user_home, |snapshot| {
+        let _ = app.emit("accounts-changed", snapshot);
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2847,7 +2851,7 @@ pub async fn create_account(
     input: NewAccountInput,
 ) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
-    accounts_manage::create_account(
+    let (_, turn) = accounts_manage::create_account(
         pool.inner(),
         db_tx.inner(),
         secrets.0.clone(),
@@ -2859,7 +2863,7 @@ pub async fn create_account(
     )
     .await
     .map_err(|e| e.to_ipc())?;
-    publish_accounts(&app, pool.inner(), &user_home).await
+    publish_accounts(&turn, &app, pool.inner(), &user_home).await
 }
 
 #[tauri::command]
@@ -2871,10 +2875,11 @@ pub async fn update_account(
     input: UpdateAccountInput,
 ) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
-    accounts_manage::update_account(pool.inner(), db_tx.inner(), secrets.0.clone(), input)
-        .await
-        .map_err(|e| e.to_ipc())?;
-    publish_accounts(&app, pool.inner(), &user_home).await
+    let (_, turn) =
+        accounts_manage::update_account(pool.inner(), db_tx.inner(), secrets.0.clone(), input)
+            .await
+            .map_err(|e| e.to_ipc())?;
+    publish_accounts(&turn, &app, pool.inner(), &user_home).await
 }
 
 #[tauri::command]
@@ -2887,7 +2892,7 @@ pub async fn remove_account(
     delete_dir: bool,
 ) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
-    accounts_manage::remove_account(
+    let turn = accounts_manage::remove_account(
         pool.inner(),
         db_tx.inner(),
         secrets.0.clone(),
@@ -2897,7 +2902,7 @@ pub async fn remove_account(
     )
     .await
     .map_err(|e| e.to_ipc())?;
-    publish_accounts(&app, pool.inner(), &user_home).await
+    publish_accounts(&turn, &app, pool.inner(), &user_home).await
 }
 
 #[tauri::command]
@@ -2910,7 +2915,7 @@ pub async fn set_project_account(
     account_id: Option<String>,
 ) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
-    accounts_manage::set_project_account(
+    let turn = accounts_manage::set_project_account(
         pool.inner(),
         db_tx.inner(),
         &project_id,
@@ -2919,7 +2924,7 @@ pub async fn set_project_account(
     )
     .await
     .map_err(|e| e.to_ipc())?;
-    publish_accounts(&app, pool.inner(), &user_home).await
+    publish_accounts(&turn, &app, pool.inner(), &user_home).await
 }
 
 // ---------------------------------------------------------------------------
