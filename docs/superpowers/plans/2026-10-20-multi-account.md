@@ -347,7 +347,7 @@ impl AccountError { pub fn to_ipc(&self) -> String } // PREFIX + JSON {kind, acc
 pub const ACCOUNT_SCRIPT_VAR: &str = "VERUN_ACCOUNT_SCRIPT";
 pub fn shell_wrap(command: &str, env: &EnvPatch) -> (String, Vec<(String, String)>)
 // empty env -> (command unchanged, vec![])
-// else -> ("exec /bin/sh -c \"$VERUN_ACCOUNT_SCRIPT\"", vec![(ACCOUNT_SCRIPT_VAR, script)])
+// else -> ("exec /bin/sh -c 'eval \"$VERUN_ACCOUNT_SCRIPT\"'", vec![(ACCOUNT_SCRIPT_VAR, script)])  (ruling: eval keeps values out of argv)
 // script = "unset VERUN_ACCOUNT_SCRIPT <remove...>; export K1='v1' K2='v2'; <command>"  (values via shell_quote)
 ```
 The outer string runs under the user's `$SHELL -lic` after their profile has loaded, so the exports win. Values reach the child only through its environment, never its argv. The outer string is plain enough to parse the same way in zsh, bash and fish.
@@ -637,7 +637,7 @@ fn terminal_command_and_env(base_cmd: String, verun_vars: Vec<(String, String)>,
 - [ ] **Step 1: Write the failing tests:**
 ```rust
 #[test] fn terminal_command_unchanged_for_default()  // "exec claude --resume 'r1'" stays byte-identical
-#[test] fn terminal_command_wraps_for_account()      // outer == "exec /bin/sh -c \"$VERUN_ACCOUNT_SCRIPT\""; script exports CLAUDE_CONFIG_DIR
+#[test] fn terminal_command_wraps_for_account()      // outer == "exec /bin/sh -c 'eval \"$VERUN_ACCOUNT_SCRIPT\"'"; script exports CLAUDE_CONFIG_DIR
 #[tokio::test] async fn validate_session_for_terminal_returns_account_id()
 ```
 - [ ] **Step 2: Run** `cargo test terminal_command` and `cargo test validate_session_for_terminal`. Expected: FAIL.
