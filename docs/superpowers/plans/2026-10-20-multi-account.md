@@ -826,7 +826,7 @@ it('account wrappers invoke the right commands', ...) // list_accounts; create_a
 - Modify: `src/types/index.ts`, `src/lib/ipc.ts`
 
 **Interfaces:**
-- Consumes: `account_env` (Task 5), `shell_wrap` (Task 6), `spawn_pty` with `EnvPatch` (Task 11), `snapshot` (Task 15).
+- Consumes: `account_env` (Task 5), `accounts::env::pty_command_and_env` (the shared PTY wrapper, Task 14 fix), `spawn_pty` with `EnvPatch` (Task 11), `snapshot` (Task 15).
 - Produces:
 ```rust
 #[derive(Default)] pub struct LoginGuard(pub std::sync::Mutex<Option<String>>); // active terminal id
@@ -847,7 +847,7 @@ export const startAccountTerminal = (accountId: string, action: AccountTerminalA
 How the command runs:
 - It loads the live account and its profile's `login_args` / `logout_args` (`None` is `Invalid`).
 - The env is `account_env`. There is no sign-in check here, because signing in is the point.
-- It runs `spawn_pty(app, pty_map, format!("account-{id}"), <user home>, rows, cols, Some(outer), EnvPatch::from_vars(wrap_vars), true, Some(format!("{label} login")), false, None)`.
+- It builds `(outer, pty_env) = pty_command_and_env(&terminal_command(..), Vec::new(), &env)` and runs `spawn_pty(app, pty_map, format!("account-{id}"), <user home>, rows, cols, Some(outer), pty_env, true, Some(format!("{label} login")), false, None)`.
 - It stores the terminal id in the guard and returns the profile's hint for the action.
 
 - [ ] **Step 1: Write the failing tests:**
