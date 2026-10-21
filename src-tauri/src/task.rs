@@ -10,6 +10,7 @@ use crate::worktree;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1434,8 +1435,11 @@ pub struct SendMessageParams {
 /// * **Fast path** (persistent agent, process already alive): encode the
 ///   user message via `agent.encode_stream_user_message` and write it to
 ///   the existing stdin. No spawn, no cold start.
-/// * **Spawn path** (no live process, or non-persistent agent): build the
-///   command, spawn the child, and hand off to `spawn_session_process`.
+/// * **Spawn path** (no live process, or non-persistent agent): check the
+///   session's account, then name the task, save the message, build the
+///   command, spawn the child, and hand off to `spawn_session_process`
+///   (`run_spawn_path`). An account that can't be used fails the send before
+///   anything is saved.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_message(
     app: AppHandle,
@@ -1753,39 +1757,18 @@ pub async fn send_message(
         return Err("Session is already processing a message".to_string());
     }
 
-    spawn_session_title_generation(
-        app.clone(),
-        db_tx.clone(),
-        session_id.clone(),
-        task_id.clone(),
-        message.clone(),
-        worktree_path.clone(),
-        is_first_turn,
-        task_name.is_none(),
-    );
-
-    persist_verun_user_message(
-        &app,
-        db_tx,
-        &session_id,
-        &message,
-        &attachments,
-        plan_mode,
-        thinking_mode,
-        fast_mode,
-        external,
-        wakeup_reason.clone(),
-    )
-    .await;
-
-    spawn_session_process(
+    run_spawn_path(AppSpawnPath {
         app,
-        db_tx.clone(),
+        db_tx: db_tx.clone(),
         active,
         pending_approvals,
         pending_approval_meta,
         pending_control_responses,
-        SpawnSessionParams {
+        is_first_turn,
+        task_needs_name: task_name.is_none(),
+        external,
+        wakeup_reason,
+        params: SpawnSessionParams {
             session_id,
             task_id,
             project_id,
@@ -1800,11 +1783,12 @@ pub async fn send_message(
             fast_mode,
             agent_type,
             account_id,
+            account_env: None,
             message,
             attachments,
             prewarm: false,
         },
-    )
+    })
     .await
 }
 
@@ -2035,6 +2019,139 @@ async fn session_account_env(
     .map_err(|e| e.to_ipc())
 }
 
+/// The env a spawn uses: the one its caller already resolved, else what
+/// `resolve` finds.
+async fn resolved_or<Fut>(
+    resolved: Option<EnvPatch>,
+    resolve: impl FnOnce() -> Fut,
+) -> Result<EnvPatch, String>
+where
+    Fut: Future<Output = Result<EnvPatch, String>>,
+{
+    match resolved {
+        Some(env) => Ok(env),
+        None => resolve().await,
+    }
+}
+
+/// The account env a spawn uses. `send_message` resolves it before it saves
+/// anything and passes it down in `SpawnSessionParams::account_env`; a spawn
+/// that got none (prewarm) resolves the session's own here.
+async fn spawn_account_env(
+    app: &AppHandle,
+    resolved: Option<EnvPatch>,
+    project_id: &str,
+    agent_type: &str,
+    account_id: Option<&str>,
+) -> Result<EnvPatch, String> {
+    resolved_or(resolved, || {
+        session_account_env(app, project_id, agent_type, account_id)
+    })
+    .await
+}
+
+/// The steps `send_message` takes to start a new process for a message. A
+/// trait only so a test can check the order they run in without an
+/// `AppHandle`; `AppSpawnPath` is the real one.
+trait SpawnPath: Send + Sync {
+    /// The account env the process spawns with. Fails when the session's
+    /// account can't be used.
+    fn account_env(&self) -> impl Future<Output = Result<EnvPatch, String>> + Send;
+    /// Starts naming the session and the task in the background.
+    fn start_title_generation(&self);
+    /// Saves the user's message to the session's history.
+    fn persist_message(&self) -> impl Future<Output = ()> + Send;
+    /// Spawns the CLI with `account_env`.
+    fn spawn(self, account_env: EnvPatch) -> impl Future<Output = Result<(), String>> + Send;
+}
+
+/// Starts a new process for a message. The account comes first: a session on
+/// one that can't be used (signed out, removed, missing) ends here with the
+/// error, before the task is named or the message saved. Neither would reach an
+/// agent that never starts, and the message would be in the history twice once
+/// the user fixes the account and sends it again.
+async fn run_spawn_path(path: impl SpawnPath) -> Result<(), String> {
+    let account_env = path.account_env().await?;
+    path.start_title_generation();
+    path.persist_message().await;
+    path.spawn(account_env).await
+}
+
+/// The real `SpawnPath`: the steps on the app, the database queue and the
+/// process maps, for the session in `params`.
+struct AppSpawnPath {
+    app: AppHandle,
+    db_tx: DbWriteTx,
+    active: ActiveMap,
+    pending_approvals: PendingApprovals,
+    pending_approval_meta: PendingApprovalMeta,
+    pending_control_responses: PendingControlResponses,
+    /// The session's first turn, so the message names the session.
+    is_first_turn: bool,
+    /// The task has no name yet, so the message names it.
+    task_needs_name: bool,
+    /// The message did not come from the UI (`SendMessageParams::external`).
+    external: bool,
+    wakeup_reason: Option<String>,
+    /// `account_env` is `None` until the account has been resolved.
+    params: SpawnSessionParams,
+}
+
+impl SpawnPath for AppSpawnPath {
+    async fn account_env(&self) -> Result<EnvPatch, String> {
+        session_account_env(
+            &self.app,
+            &self.params.project_id,
+            &self.params.agent_type,
+            self.params.account_id.as_deref(),
+        )
+        .await
+    }
+
+    fn start_title_generation(&self) {
+        spawn_session_title_generation(
+            self.app.clone(),
+            self.db_tx.clone(),
+            self.params.session_id.clone(),
+            self.params.task_id.clone(),
+            self.params.message.clone(),
+            self.params.worktree_path.clone(),
+            self.is_first_turn,
+            self.task_needs_name,
+        );
+    }
+
+    async fn persist_message(&self) {
+        persist_verun_user_message(
+            &self.app,
+            &self.db_tx,
+            &self.params.session_id,
+            &self.params.message,
+            &self.params.attachments,
+            self.params.plan_mode,
+            self.params.thinking_mode,
+            self.params.fast_mode,
+            self.external,
+            self.wakeup_reason.clone(),
+        )
+        .await;
+    }
+
+    async fn spawn(mut self, account_env: EnvPatch) -> Result<(), String> {
+        self.params.account_env = Some(account_env);
+        spawn_session_process(
+            self.app,
+            self.db_tx,
+            self.active,
+            self.pending_approvals,
+            self.pending_approval_meta,
+            self.pending_control_responses,
+            self.params,
+        )
+        .await
+    }
+}
+
 /// Params for [`spawn_session_process`]. `prewarm=true` skips writing any
 /// initial user message; the CLI just boots and waits for the first send.
 pub struct SpawnSessionParams {
@@ -2053,6 +2170,10 @@ pub struct SpawnSessionParams {
     pub agent_type: String,
     /// The session's account (`None`: Default).
     pub account_id: Option<String>,
+    /// The account's env, when the caller has already resolved it:
+    /// `send_message` does so before it saves the message. `None` (prewarm):
+    /// the spawn resolves it from `account_id` itself.
+    pub account_env: Option<EnvPatch>,
     pub message: String,
     pub attachments: Vec<Attachment>,
     pub prewarm: bool,
@@ -2094,6 +2215,7 @@ async fn spawn_rpc_session(
         fast_mode,
         agent_type,
         account_id,
+        account_env: resolved_env,
         message,
         attachments,
         prewarm,
@@ -2101,8 +2223,14 @@ async fn spawn_rpc_session(
 
     // Resolved before anything is spawned, so an account that can't be used
     // leaves no process behind.
-    let account_env =
-        session_account_env(&app, &project_id, &agent_type, account_id.as_deref()).await?;
+    let account_env = spawn_account_env(
+        &app,
+        resolved_env,
+        &project_id,
+        &agent_type,
+        account_id.as_deref(),
+    )
+    .await?;
     let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
     let mcp_config_path = verun_mcp_config_path_for_task(&app_data, &task_id);
     let args_list = agent.build_session_args(&crate::agent::SessionArgs {
@@ -2633,6 +2761,7 @@ pub async fn spawn_session_process(
         fast_mode,
         agent_type,
         account_id,
+        account_env: resolved_env,
         message,
         attachments,
         prewarm,
@@ -2640,8 +2769,14 @@ pub async fn spawn_session_process(
     // Resolved before anything is spawned, so an account that can't be used
     // leaves no process behind. The env goes first: it reports a missing
     // account in the form the UI acts on, which the home lookup does not.
-    let account_env =
-        session_account_env(&app, &project_id, &agent_type, account_id.as_deref()).await?;
+    let account_env = spawn_account_env(
+        &app,
+        resolved_env,
+        &project_id,
+        &agent_type,
+        account_id.as_deref(),
+    )
+    .await?;
     let claude_home = session_claude_home(
         app.state::<SqlitePool>().inner(),
         agent.kind(),
@@ -4053,6 +4188,7 @@ mod tests {
     use super::*;
     use crate::accounts::env::account_env;
     use crate::accounts::secrets::MemorySecretStore;
+    use crate::accounts::AccountError;
     use crate::agent::Claude;
 
     #[test]
@@ -4695,6 +4831,141 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
             format!("{}\n/acc/a1|verun|unset|hello", cwd.display())
+        );
+    }
+
+    // -- Order of the spawn path --
+
+    fn account_patch(dir: &str) -> EnvPatch {
+        EnvPatch::from_vars(vec![("CLAUDE_CONFIG_DIR".to_string(), dir.to_string())])
+    }
+
+    /// What a `RecordingPath` was asked to do.
+    #[derive(Debug, PartialEq)]
+    enum Step {
+        AccountEnv,
+        Title,
+        Persist,
+        Spawn(EnvPatch),
+    }
+
+    /// A `SpawnPath` that only notes the steps it is asked to take, in order.
+    /// Its account resolves to `account`.
+    struct RecordingPath {
+        steps: Arc<std::sync::Mutex<Vec<Step>>>,
+        account: Result<EnvPatch, String>,
+    }
+
+    impl RecordingPath {
+        fn new(account: Result<EnvPatch, String>) -> (Self, Arc<std::sync::Mutex<Vec<Step>>>) {
+            let steps = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let path = Self {
+                steps: steps.clone(),
+                account,
+            };
+            (path, steps)
+        }
+
+        fn note(&self, step: Step) {
+            self.steps.lock().unwrap().push(step);
+        }
+    }
+
+    impl SpawnPath for RecordingPath {
+        async fn account_env(&self) -> Result<EnvPatch, String> {
+            self.note(Step::AccountEnv);
+            self.account.clone()
+        }
+
+        fn start_title_generation(&self) {
+            self.note(Step::Title);
+        }
+
+        async fn persist_message(&self) {
+            self.note(Step::Persist);
+        }
+
+        async fn spawn(self, account_env: EnvPatch) -> Result<(), String> {
+            self.note(Step::Spawn(account_env));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_path_stops_at_an_account_that_cannot_be_used() {
+        let error = AccountError::SignedOut {
+            account_id: "a1".into(),
+            label: "Acme".into(),
+        }
+        .to_ipc();
+        let (path, steps) = RecordingPath::new(Err(error.clone()));
+
+        let result = run_spawn_path(path).await;
+
+        // The caller gets the error as it is. Nothing else happened: no title
+        // call for an account that cannot run, and no message in the history
+        // for an agent that never received it (it would show twice once the
+        // user fixes the account and sends it again).
+        assert_eq!(result, Err(error));
+        assert_eq!(*steps.lock().unwrap(), vec![Step::AccountEnv]);
+    }
+
+    #[tokio::test]
+    async fn spawn_path_names_the_task_and_saves_the_message_once_the_account_passes() {
+        let env = account_patch("/acc/a1");
+        let (path, steps) = RecordingPath::new(Ok(env.clone()));
+
+        assert_eq!(run_spawn_path(path).await, Ok(()));
+
+        // The account comes first, and the env it found is the one the
+        // process spawns with.
+        assert_eq!(
+            *steps.lock().unwrap(),
+            vec![
+                Step::AccountEnv,
+                Step::Title,
+                Step::Persist,
+                Step::Spawn(env)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spawn_uses_the_env_its_caller_resolved() {
+        let env = account_patch("/acc/a1");
+        let resolved_again = AtomicBool::new(false);
+
+        let found = resolved_or(Some(env.clone()), || async {
+            resolved_again.store(true, Ordering::SeqCst);
+            Ok(account_patch("/acc/other"))
+        })
+        .await;
+
+        assert_eq!(found, Ok(env));
+        assert!(
+            !resolved_again.load(Ordering::SeqCst),
+            "the account was resolved a second time"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spawn_nobody_resolved_for_resolves_the_account_itself() {
+        // Prewarm and any other direct caller: an added account must never
+        // start on the Default env because the caller had nothing to pass.
+        let env = account_patch("/acc/a1");
+        assert_eq!(
+            resolved_or(None, || async { Ok(env.clone()) }).await,
+            Ok(env)
+        );
+
+        let error = AccountError::Removed {
+            account_id: "a1".into(),
+            label: "Acme".into(),
+        }
+        .to_ipc();
+        assert_eq!(
+            resolved_or(None, || async { Err(error.clone()) }).await,
+            Err(error)
         );
     }
 }

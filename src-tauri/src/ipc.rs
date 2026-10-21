@@ -1027,6 +1027,7 @@ pub async fn prewarm_session(
             fast_mode: false,
             agent_type: session.agent_type.clone(),
             account_id: session.account_id,
+            account_env: None,
             message: String::new(),
             attachments: Vec::new(),
             prewarm: true,
