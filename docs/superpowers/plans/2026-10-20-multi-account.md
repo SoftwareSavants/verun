@@ -41,7 +41,8 @@ New backend files:
 - `src-tauri/src/accounts/secrets.rs`: `SecretStore`, keychain and memory stores
 - `src-tauri/src/accounts/identity.rs`: `AccountIdentity`, JWT and JSON helpers
 - `src-tauri/src/accounts/env.rs`: `EnvPatch`, account/project/session env, `shell_wrap`
-- `src-tauri/src/accounts/service.rs`: DB-backed resolution, usability checks, CRUD, snapshot
+- `src-tauri/src/accounts/service.rs`: DB-backed resolution and usability checks
+- `src-tauri/src/accounts/manage.rs`: account CRUD, project binding, snapshot and `Turn::publish` (split out in Task 15's fix round)
 - `src-tauri/src/accounts/login.rs`: login and logout terminals
 - `src-tauri/src/claude_home.rs`: `ClaudeHome` and the transcript folder slug
 
@@ -826,7 +827,7 @@ it('account wrappers invoke the right commands', ...) // list_accounts; create_a
 - Modify: `src/types/index.ts`, `src/lib/ipc.ts`
 
 **Interfaces:**
-- Consumes: `account_env` (Task 5), `accounts::env::pty_command_and_env` (the shared PTY wrapper, Task 14 fix), `spawn_pty` with `EnvPatch` (Task 11), `snapshot` (Task 15).
+- Consumes: `account_env` (Task 5), `accounts::env::pty_command_and_env` (the shared PTY wrapper, Task 14 fix), `spawn_pty` with `EnvPatch` (Task 11), the snapshot publishing in `accounts::manage` (Task 15: publish while holding the account-changes turn, e.g. through `Turn::publish`).
 - Produces:
 ```rust
 #[derive(Default)] pub struct LoginGuard(pub std::sync::Mutex<Option<String>>); // active terminal id
@@ -835,7 +836,7 @@ it('account wrappers invoke the right commands', ...) // list_accounts; create_a
 pub fn terminal_command(cli_binary: &str, args: &[&str]) -> String // "exec <bin>" + " " + shell_quote(arg) per arg
 pub fn claim(guard: &LoginGuard, terminal_alive: impl Fn(&str) -> bool) -> Result<(), AccountError> // Busy if a live terminal holds it
 pub fn exited_terminal_id(payload: &str) -> Option<String>        // parses {"terminalId":..,"exitCode":..}
-pub fn install_exit_listener(app: &AppHandle)                      // app.listen("pty-exited"): guarded id -> clear, emit fresh "accounts-changed"
+pub fn install_exit_listener(app: &AppHandle)                      // app.listen("pty-exited"): guarded id -> clear, publish a fresh "accounts-changed" snapshot through accounts::manage (under the account-changes turn)
 // IPC start_account_terminal(account_id: String, action: AccountTerminalAction, rows: u16, cols: u16) -> AccountTerminal
 ```
 ```ts
@@ -1202,7 +1203,7 @@ it('marks removed accounts', ...)             // title === 'Acme (removed)'
 
 ### Task 26: OpenCode accounts
 
-**Files:** Modify `src-tauri/src/agent/opencode.rs`, `src-tauri/src/accounts/service.rs` (test)
+**Files:** Modify `src-tauri/src/agent/opencode.rs`, `src-tauri/src/accounts/service.rs` (project_env test)
 
 **Interfaces:**
 - **Home env:** `[("XDG_DATA_HOME", "<dir>/data"), ("XDG_STATE_HOME", "<dir>/state")]`.
@@ -1231,7 +1232,7 @@ it('marks removed accounts', ...)             // title === 'Acme (removed)'
 
 ### Task 27: Cursor API-key accounts
 
-**Files:** Modify `src-tauri/src/agent/cursor.rs`, `src-tauri/src/accounts/service.rs` (test), `src-tauri/src/ipc.rs` (test)
+**Files:** Modify `src-tauri/src/agent/cursor.rs`, `src-tauri/src/accounts/manage.rs` (create_account test), `src-tauri/src/ipc.rs` (test)
 
 **Interfaces:**
 - **Home env:** `[("CURSOR_CONFIG_DIR", "<dir>/cfg"), ("CURSOR_DATA_DIR", "<dir>/data")]`.
