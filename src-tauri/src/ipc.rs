@@ -2903,9 +2903,9 @@ pub async fn set_project_account(
 }
 
 /// Opens a PTY that runs the harness's own login or logout command on the
-/// account. One at a time: a second start is refused while a terminal is open.
-/// When the terminal ends, every window gets the accounts as they are then
-/// (`accounts-changed`).
+/// account. One at a time: a second start is refused while the first terminal's
+/// process is still running. When the terminal ends, every window gets the
+/// accounts as they are then (`accounts-changed`).
 #[tauri::command]
 pub async fn start_account_terminal(
     app: AppHandle,

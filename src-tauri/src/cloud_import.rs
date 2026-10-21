@@ -695,10 +695,7 @@ pub async fn finish(
     if import.task.project_id != project.id {
         return Err("Import project mismatch".into());
     }
-    if pty_map
-        .get(&import.terminal_id)
-        .is_some_and(|pty| !pty.output.has_exited())
-    {
+    if pty::is_running(pty_map, &import.terminal_id) {
         return Err("Claude is still completing the import. Please retry shortly.".into());
     }
     let progress = |phase: &str| {

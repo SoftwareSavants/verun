@@ -87,9 +87,9 @@ pub fn terminal_command(cli_binary: &str, args: &[&str]) -> String {
 
 /// Takes the login terminal for a start that is about to spawn it, or `Busy` if
 /// another one is open or still being started. `terminal_alive` says whether a
-/// terminal id is still a PTY of Verun's. One that is not (it was closed and
-/// nobody saw it end) is stale and does not count, or it would hold the guard
-/// for good.
+/// terminal id is a PTY of Verun's that is still running. One that is not (it
+/// ended, or it was closed) is stale and does not count: its exit event may
+/// never come, and the guard would hold it for good.
 ///
 /// The caller spawns the terminal and then `record`s its id, or `release`s the
 /// claim if the spawn failed. Until then the claim keeps a second start out.
@@ -132,10 +132,36 @@ fn finish(guard: &LoginGuard, terminal_id: &str) -> bool {
     true
 }
 
+/// The claim a start holds from `claim` until it has recorded its terminal.
+/// Dropping it before then frees the guard again, whether the spawn failed or
+/// the start was dropped while it waited for the spawn: a claim that nothing
+/// is left to record would hold the guard for good.
+struct Claimed<'a> {
+    /// `None` once the terminal is recorded: there is nothing left to free.
+    guard: Option<&'a LoginGuard>,
+}
+
+impl Claimed<'_> {
+    /// The start spawned `terminal_id`, which holds the guard now.
+    fn record(mut self, terminal_id: &str) {
+        if let Some(guard) = self.guard.take() {
+            record(guard, terminal_id);
+        }
+    }
+}
+
+impl Drop for Claimed<'_> {
+    fn drop(&mut self) {
+        if let Some(guard) = self.guard.take() {
+            release(guard);
+        }
+    }
+}
+
 /// Runs `spawn` as the login terminal: claims the guard first, so a second
 /// start is refused (`Busy`) while this one is alive or still spawning, and
 /// then records the id `spawn` returns. A spawn that fails frees the guard
-/// again.
+/// again, and so does a start that is dropped before its spawn is done.
 async fn start_guarded<Fut>(
     guard: &LoginGuard,
     terminal_alive: impl Fn(&str) -> bool,
@@ -145,16 +171,10 @@ where
     Fut: Future<Output = Result<String, AccountError>>,
 {
     claim(guard, terminal_alive)?;
-    match spawn().await {
-        Ok(terminal_id) => {
-            record(guard, &terminal_id);
-            Ok(terminal_id)
-        }
-        Err(error) => {
-            release(guard);
-            Err(error)
-        }
-    }
+    let claimed = Claimed { guard: Some(guard) };
+    let terminal_id = spawn().await?;
+    claimed.record(&terminal_id);
+    Ok(terminal_id)
 }
 
 // -- What the terminal runs --
@@ -232,7 +252,7 @@ async fn load_launch(
 /// `rows` x `cols` in the user's home folder that runs the harness's command on
 /// the account's env, and the harness's hint for it.
 ///
-/// `Busy` while another login or logout terminal is open. Everything that can
+/// `Busy` while another login or logout terminal is running. Everything that can
 /// fail for a reason of the account (it is gone, a secret can't be read, the
 /// harness lacks the command) fails before the guard is claimed or anything is
 /// spawned.
@@ -262,7 +282,7 @@ pub async fn start(
 
     let terminal_id = start_guarded(
         &guard,
-        |terminal_id| pty_map.contains_key(terminal_id),
+        |terminal_id| pty::is_running(&pty_map, terminal_id),
         || {
             let (app, map) = (app.clone(), pty_map.inner().clone());
             let task_id = format!("account-{account_id}");
@@ -292,10 +312,7 @@ pub async fn start(
     // A process that is over already (the CLI is not installed, say) may have
     // ended before its id was recorded, and then the exit listener found no
     // terminal to match it with. Look again now that the guard knows it.
-    if pty_map
-        .get(&terminal_id)
-        .is_none_or(|pty| pty.output.has_exited())
-    {
+    if !pty::is_running(&pty_map, &terminal_id) {
         terminal_ended(app, &terminal_id);
     }
     Ok(AccountTerminal { terminal_id, hint })
@@ -330,7 +347,8 @@ pub fn install_exit_listener(app: &AppHandle) {
 ///
 /// The exit event and a start that finds its process over already both come
 /// here. Whichever comes first does the work, as it is the one that finds the id
-/// in the guard.
+/// in the guard. An event for a terminal that a later start has replaced in the
+/// guard finds nothing to free and is ignored.
 ///
 /// It runs on the thread that emitted the event, which must not wait: the
 /// snapshot is built on a task of its own.
@@ -374,6 +392,7 @@ mod tests {
     use crate::db::tests::{
         make_account, mark_account_removed_confirmed, test_pool, upsert_account_confirmed,
     };
+    use crate::pty_output::OutputBuffer;
     use serde_json::json;
     use std::cell::RefCell;
     use std::path::Path;
@@ -853,8 +872,8 @@ mod tests {
 
     #[test]
     fn claim_frees_stale_terminal() {
-        // t1 was closed without anyone seeing it end, so nothing runs behind
-        // its id.
+        // t1 ended, or was closed, without anyone seeing it: nothing runs
+        // behind its id.
         let guard = holding("t1");
         let asked = RefCell::new(Vec::new());
 
@@ -932,6 +951,43 @@ mod tests {
         assert_eq!(claim(&guard, nothing_to_ask), Ok(()));
     }
 
+    #[test]
+    fn an_exit_that_comes_after_a_new_start_is_ignored() {
+        // t1 is over and a new start took its place in the guard before t1's
+        // exit event was sent.
+        let guard = holding("t1");
+        claim(&guard, |_| false).unwrap();
+        record(&guard, "t2");
+
+        assert!(!finish(&guard, "t1"), "the old exit freed the new terminal");
+
+        assert_eq!(held(&guard), Some("t2".to_string()));
+    }
+
+    #[test]
+    fn a_login_that_ended_with_its_exit_event_held_back_does_not_lock_out_the_next() {
+        let map = pty::new_active_pty_map();
+        let output = Arc::new(OutputBuffer::default());
+        pty::insert_test_pty(&map, "t1", Arc::clone(&output));
+        let guard = holding("t1");
+
+        // While the CLI runs, it holds the guard.
+        assert_eq!(
+            claim(&guard, |id| pty::is_running(&map, id)),
+            Err(AccountError::Busy)
+        );
+
+        // The page showing it is reloaded while it waits for the browser, so
+        // the output it was sent is never acknowledged. The CLI ends, and its
+        // exit event, which waits for that acknowledgement, never comes.
+        output.attach("main", 0);
+        output.push("Open this link to sign in");
+        output.finish(Some(0));
+        assert_eq!(output.take_exit(), None, "the exit event was not held back");
+
+        assert_eq!(claim(&guard, |id| pty::is_running(&map, id)), Ok(()));
+    }
+
     // -- Starting under the guard --
 
     #[tokio::test]
@@ -969,6 +1025,30 @@ mod tests {
             start_guarded(&guard, nothing_to_ask, || async { Ok("t2".to_string()) }).await,
             Ok("t2".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn a_start_that_is_dropped_while_spawning_frees_the_guard() {
+        let guard = LoginGuard::default();
+
+        // The start is given up while it waits for a spawn that never ends.
+        tokio::select! {
+            biased;
+            _ = start_guarded(&guard, nothing_to_ask, || {
+                std::future::pending::<Result<String, AccountError>>()
+            }) => panic!("the spawn never ends"),
+            // Polled once the start is waiting for its spawn.
+            _ = async {
+                assert_eq!(
+                    claim(&guard, |_| false),
+                    Err(AccountError::Busy),
+                    "the start had not claimed the guard"
+                );
+            } => {}
+        }
+
+        assert_eq!(held(&guard), None);
+        assert_eq!(claim(&guard, nothing_to_ask), Ok(()));
     }
 
     #[tokio::test]

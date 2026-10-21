@@ -451,6 +451,17 @@ pub fn pids_for_tasks(map: &ActivePtyMap) -> Vec<(String, u32)> {
         .collect()
 }
 
+/// Whether the PTY `terminal_id` is in the map and its process has not ended.
+/// Being in the map says nothing of the process: a PTY stays there after the
+/// process ends, until somebody closes it. Nor does the `pty-exited` event: it
+/// waits until the window showing the PTY has acknowledged all of its output
+/// (see `OutputBuffer::take_exit`), and a window that went away, a page that
+/// was reloaded say, never does.
+pub fn is_running(map: &ActivePtyMap, terminal_id: &str) -> bool {
+    map.get(terminal_id)
+        .is_some_and(|pty| !pty.output.has_exited())
+}
+
 /// Close a PTY: kill the child process and remove from the map.
 pub fn close_pty(map: &ActivePtyMap, terminal_id: &str) -> Result<(), String> {
     if let Some((_, handle)) = map.remove(terminal_id) {
@@ -534,6 +545,43 @@ fn decode_pty_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
 
     let to_emit: Vec<u8> = pending.drain(..valid_up_to).collect();
     String::from_utf8_lossy(&to_emit).into_owned()
+}
+
+/// Registers a PTY in `map` the way `spawn_pty` does, for the tests of what is
+/// done with the map. Its output is `output`, which the test drives (`finish`
+/// is what the reader thread does when the process is over). The process
+/// behind it is a shell that has exited already, so nothing about it changes
+/// under the test.
+#[cfg(test)]
+pub(crate) fn insert_test_pty(map: &ActivePtyMap, terminal_id: &str, output: Arc<OutputBuffer>) {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new("/bin/sh");
+    command.args(["-c", "exit 0"]);
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    child.wait().unwrap();
+    let writer = pair.master.take_writer().unwrap();
+    map.insert(
+        terminal_id.to_string(),
+        PtyHandle {
+            cwd: "/".to_string(),
+            pid: child.process_id(),
+            task_id: "test-task".to_string(),
+            name: "test".to_string(),
+            is_start_command: false,
+            hook_type: None,
+            master: Mutex::new(pair.master),
+            writer: Mutex::new(writer),
+            child: Mutex::new(child),
+            output,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -748,6 +796,49 @@ mod tests {
             );
             assert_eq!(cmd.get_env("PATH"), None, "{case}");
         }
+    }
+
+    #[test]
+    fn a_pty_is_running_until_its_process_ends() {
+        let map = new_active_pty_map();
+        let output = Arc::new(OutputBuffer::default());
+        insert_test_pty(&map, "t1", Arc::clone(&output));
+
+        assert!(is_running(&map, "t1"));
+
+        // What the reader thread does when the process is over. The PTY is in
+        // the map still, as it stays there until somebody closes it.
+        output.finish(Some(0));
+
+        assert!(map.contains_key("t1"));
+        assert!(!is_running(&map, "t1"));
+    }
+
+    #[test]
+    fn a_pty_that_is_not_in_the_map_is_not_running() {
+        let map = new_active_pty_map();
+        let output = Arc::new(OutputBuffer::default());
+        insert_test_pty(&map, "t1", output);
+
+        assert!(!is_running(&map, "t2"));
+        close_pty(&map, "t1").unwrap();
+        assert!(!is_running(&map, "t1"));
+    }
+
+    #[test]
+    fn a_pty_whose_exit_event_is_held_back_is_over_all_the_same() {
+        // A window shows the PTY and the page is reloaded: the output it was
+        // sent is never acknowledged, so the exit event, which waits for that,
+        // is not sent.
+        let map = new_active_pty_map();
+        let output = Arc::new(OutputBuffer::default());
+        insert_test_pty(&map, "t1", Arc::clone(&output));
+        output.attach("main", 0);
+        output.push("Open this link to sign in");
+        output.finish(Some(0));
+        assert_eq!(output.take_exit(), None, "the exit event was not held back");
+
+        assert!(!is_running(&map, "t1"));
     }
 }
 
