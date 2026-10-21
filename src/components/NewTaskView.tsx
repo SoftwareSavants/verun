@@ -37,9 +37,12 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
     setModel(undefined)
     setBaseBranch(p?.baseBranch ?? 'main')
     setBranches([])
+    // Each project runs on its own Claude account, so the previous project's cloud access is not this one's.
+    setCloud(false)
+    setSource('local')
     ipc.refreshAgents().catch(() => {})
     if (p) ipc.getRepoInfo(p.repoPath).then(info => { if (!cancelled) setBranches(info.branches) }).catch(() => {})
-    ipc.claudeCloudAvailability().then(result => { if (!cancelled) setCloud(result.available) }).catch(() => {})
+    ipc.claudeCloudAvailability(props.projectId).then(result => { if (!cancelled) setCloud(result.available) }).catch(() => {})
     queueMicrotask(() => textarea?.focus())
   }))
 

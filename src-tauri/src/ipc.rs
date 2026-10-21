@@ -422,9 +422,21 @@ pub struct ImportedHooks {
 // Tasks
 // ---------------------------------------------------------------------------
 
+/// Whether the cloud import of `project_id` can list sessions, on the Claude
+/// account that project uses. A probe: an account that can't be used is
+/// reported as unavailable with the reason, not as an error.
 #[tauri::command]
-pub async fn claude_cloud_availability() -> crate::cloud_import::Availability {
-    crate::cloud_import::availability().await
+pub async fn claude_cloud_availability(
+    app: AppHandle,
+    project_id: String,
+) -> crate::cloud_import::Availability {
+    let secrets = app.state::<crate::accounts::Secrets>().0.clone();
+    crate::cloud_import::project_availability(
+        app.state::<SqlitePool>().inner(),
+        secrets,
+        &project_id,
+    )
+    .await
 }
 
 #[tauri::command]

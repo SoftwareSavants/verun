@@ -131,6 +131,15 @@ describe('ipc', () => {
     })
   })
 
+  describe('claudeCloudAvailability', () => {
+    test('asks about the given project', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ available: false, reason: 'Account "Acme" is signed out' })
+      const result = await ipc.claudeCloudAvailability('p1')
+      expect(invoke).toHaveBeenCalledWith('claude_cloud_availability', { projectId: 'p1' })
+      expect(result).toEqual({ available: false, reason: 'Account "Acme" is signed out' })
+    })
+  })
+
   describe('askSideQuestion', () => {
     test('forwards camelCase args to ask_side_question and resolves to typed object', async () => {
       vi.mocked(invoke).mockResolvedValueOnce({ response: 'ok', synthetic: false })

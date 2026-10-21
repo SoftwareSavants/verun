@@ -6,8 +6,8 @@ const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 export interface CloudSessionChoice { index: number; title: string; updated: string }
 export interface CloudImportStart { importId: string; sessions: CloudSessionChoice[] }
 export interface CloudImportProgress { importId: string; phase: string }
-export const claudeCloudAvailability = () =>
-  invoke<{ available: boolean; reason: string | null }>('claude_cloud_availability')
+export const claudeCloudAvailability = (projectId: string) =>
+  invoke<{ available: boolean; reason: string | null }>('claude_cloud_availability', { projectId })
 export const beginCloudImport = (projectId: string) =>
   invoke<CloudImportStart>('begin_cloud_import', { projectId })
 export const selectCloudImport = (projectId: string, importId: string, index: number) =>

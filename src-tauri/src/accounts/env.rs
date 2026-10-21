@@ -220,6 +220,29 @@ pub(crate) fn run_in_sh(profile: &str, outer: &str, env: &EnvPatch) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// What a command does to one var of its child's env, for the tests that check
+/// what a spawn site hands its child.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub(crate) enum EnvChange {
+    /// The command never mentions it, so the child inherits it as it is.
+    Untouched,
+    Removed,
+    Set(String),
+}
+
+/// What `cmd` does to `key` in the env of its child.
+#[cfg(test)]
+pub(crate) fn env_change(cmd: &tokio::process::Command, key: &str) -> EnvChange {
+    cmd.as_std()
+        .get_envs()
+        .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+        .map_or(EnvChange::Untouched, |(_, value)| match value {
+            Some(value) => EnvChange::Set(value.to_string_lossy().into_owned()),
+            None => EnvChange::Removed,
+        })
+}
+
 /// The env of one added account. `agent` is the account's harness.
 ///
 /// `remove` is the harness's whole scrub list, so nothing Verun inherited can

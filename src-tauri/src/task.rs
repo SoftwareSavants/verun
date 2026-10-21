@@ -4411,7 +4411,7 @@ fn run_git_ignoring_env(cwd: &std::path::Path, args: &[&str]) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::env::account_env;
+    use crate::accounts::env::{account_env, env_change, EnvChange};
     use crate::accounts::secrets::MemorySecretStore;
     use crate::accounts::AccountError;
     use crate::agent::Claude;
@@ -5088,25 +5088,6 @@ mod tests {
     }
 
     // -- Env of a session's CLI --
-
-    /// What a command does to one var of its child's env.
-    #[derive(Debug, PartialEq)]
-    enum EnvChange {
-        /// The command never mentions it, so the child inherits it as it is.
-        Untouched,
-        Removed,
-        Set(String),
-    }
-
-    fn env_change(cmd: &tokio::process::Command, key: &str) -> EnvChange {
-        cmd.as_std()
-            .get_envs()
-            .find(|(name, _)| *name == std::ffi::OsStr::new(key))
-            .map_or(EnvChange::Untouched, |(_, value)| match value {
-                Some(value) => EnvChange::Set(value.to_string_lossy().into_owned()),
-                None => EnvChange::Removed,
-            })
-    }
 
     #[test]
     fn agent_command_applies_account_env() {
