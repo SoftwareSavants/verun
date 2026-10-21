@@ -6,10 +6,15 @@
 //! and `project_env` and `session_env` combine the patches of the accounts a
 //! spawn follows. The spawn sites apply the result. Default sessions have no
 //! account and get an empty patch, so they keep the env they have today.
+//!
+//! A spawn through the user's login shell cannot just apply the patch to the
+//! shell: the profile runs after it and can undo it. `shell_wrap` applies the
+//! patch from inside the shell instead.
 
 use super::secrets::SecretStore;
 use super::AccountError;
 use crate::agent::{Agent, AgentKind};
+use crate::claude_terminal::shell_quote;
 use crate::db::{Account, AccountEnvVar};
 use std::path::Path;
 
@@ -20,10 +25,27 @@ use std::path::Path;
 /// set. That is how an account with its own `ANTHROPIC_API_KEY` works: the
 /// harness's scrub list removes the key Verun inherited and the account sets
 /// its own.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct EnvPatch {
     pub remove: Vec<String>,
     pub set: Vec<(String, String)>,
+}
+
+/// Shows which vars the patch removes and sets, with every set value masked as
+/// `***`. A value can be a secret read from the keychain, and a patch ends up
+/// in log lines, panic messages and failed assertions.
+impl std::fmt::Debug for EnvPatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let masked: Vec<(&str, &str)> = self
+            .set
+            .iter()
+            .map(|(key, _)| (key.as_str(), "***"))
+            .collect();
+        f.debug_struct("EnvPatch")
+            .field("remove", &self.remove)
+            .field("set", &masked)
+            .finish()
+    }
 }
 
 impl EnvPatch {
@@ -38,7 +60,6 @@ impl EnvPatch {
     }
 
     /// Whether applying the patch would change nothing.
-    #[allow(dead_code)] // consumed by the account service
     pub fn is_empty(&self) -> bool {
         self.remove.is_empty() && self.set.is_empty()
     }
@@ -88,6 +109,62 @@ impl EnvPatch {
         self.set.retain(|(existing, _)| *existing != key);
         self.set.push((key, value));
     }
+}
+
+/// The env var that carries the script `shell_wrap` builds.
+pub const ACCOUNT_SCRIPT_VAR: &str = "VERUN_ACCOUNT_SCRIPT";
+
+/// Wraps `command` so that `env` is applied by `/bin/sh` after the user's
+/// login shell has loaded its profile. Returns the command to run under
+/// `$SHELL -lic` and the env vars to spawn that shell with.
+///
+/// Setting the patch on the shell itself would lose to the profile, which can
+/// export `CLAUDE_CONFIG_DIR` or a provider key over the account's. The
+/// returned command only execs `/bin/sh` on the script in
+/// `ACCOUNT_SCRIPT_VAR`. The script unsets that var and the patch's removals,
+/// exports its sets and then runs `command`, so a var in both lists ends up
+/// set, as in `apply_to_std_command`. A `sh -c` reads no profile, so nothing
+/// undoes the exports. The command is plain enough to parse the same way in
+/// zsh, bash and fish.
+///
+/// Values reach `command` only through its environment, never its arguments,
+/// and the returned command holds none of them. The script drops its own var
+/// first so that what `command` starts cannot read the values back from it.
+/// The sh that runs the script does hold them in its own arguments until
+/// `command` replaces it, so `command` should start with `exec`.
+///
+/// An empty patch needs none of this: `command` comes back as it is, with no
+/// vars.
+///
+/// `command` runs in `sh`, not in the user's shell, so it must be plain POSIX
+/// sh. It sees the profile's exports but not its aliases or functions. The
+/// keys of `env` go into the script as they are, so they must be valid shell
+/// names. The returned vars hold the secret values: never log them.
+#[allow(dead_code)] // consumed by the PTY spawn sites
+pub fn shell_wrap(command: &str, env: &EnvPatch) -> (String, Vec<(String, String)>) {
+    if env.is_empty() {
+        return (command.to_string(), Vec::new());
+    }
+    let unset = std::iter::once(ACCOUNT_SCRIPT_VAR)
+        .chain(env.remove.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut script = format!("unset {unset}; ");
+    // No `export` clause for a patch that only removes: a bare `export` prints
+    // the whole env, secrets included, to the terminal.
+    if !env.set.is_empty() {
+        let exports = env
+            .set
+            .iter()
+            .map(|(key, value)| format!("{key}={}", shell_quote(value)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        script.push_str(&format!("export {exports}; "));
+    }
+    script.push_str(command);
+    // The var is expanded in double quotes, so the script stays one word.
+    let outer = format!("exec /bin/sh -c \"${ACCOUNT_SCRIPT_VAR}\"");
+    (outer, vec![(ACCOUNT_SCRIPT_VAR.to_string(), script)])
 }
 
 /// The env of one added account. `agent` is the account's harness.
@@ -883,5 +960,226 @@ mod tests {
         let mut cmd = std::process::Command::new("claude");
         EnvPatch::default().apply_to_std_command(&mut cmd);
         assert_eq!(recorded_env(&cmd), vec![]);
+    }
+
+    #[test]
+    fn env_patch_debug_masks_values() {
+        let patch = EnvPatch {
+            remove: strings(&["ANTHROPIC_API_KEY"]),
+            set: pairs(&[
+                ("CLAUDE_CONFIG_DIR", "/acc/a1"),
+                ("ANTHROPIC_API_KEY", "sk-ant-secret"),
+            ]),
+        };
+
+        // The keys show and every value is masked: a patch cannot tell a
+        // secret from a plain value.
+        assert_eq!(
+            format!("{patch:?}"),
+            r#"EnvPatch { remove: ["ANTHROPIC_API_KEY"], set: [("CLAUDE_CONFIG_DIR", "***"), ("ANTHROPIC_API_KEY", "***")] }"#
+        );
+        // The pretty form goes through the same impl.
+        let pretty = format!("{patch:#?}");
+        assert!(!pretty.contains("sk-ant-secret"), "{pretty}");
+        assert!(!pretty.contains("/acc/a1"), "{pretty}");
+    }
+
+    // -- shell_wrap --
+
+    /// What `shell_wrap(inner, patch)` prints when run the way a spawn site
+    /// runs it: in a plain `/bin/sh` that inherited `ANTHROPIC_API_KEY=leak`,
+    /// with the script var set. `profile` is shell code that runs first in the
+    /// same shell, standing in for what the user's profile exports before the
+    /// outer command. The sh gets no other env, so the result depends neither
+    /// on the developer's env nor on their profile.
+    #[cfg(unix)]
+    fn run_wrapped(profile: &str, inner: &str, patch: &EnvPatch) -> String {
+        let (outer, vars) = shell_wrap(inner, patch);
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", &format!("{profile}{outer}")])
+            .env_clear()
+            .env("ANTHROPIC_API_KEY", "leak");
+        for (key, value) in &vars {
+            cmd.env(key, value);
+        }
+        let output = cmd.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// The patch of the cases below: drop an inherited key, set a dir whose
+    /// name has a space and a quote.
+    fn client_patch() -> EnvPatch {
+        EnvPatch {
+            remove: strings(&["ANTHROPIC_API_KEY"]),
+            set: pairs(&[("CLAUDE_CONFIG_DIR", "/x/Client Accounts/o'brien")]),
+        }
+    }
+
+    #[test]
+    fn shell_wrap_is_identity_for_empty_env() {
+        let (outer, vars) = shell_wrap("exec claude --model 'opus'", &EnvPatch::default());
+
+        assert_eq!(outer, "exec claude --model 'opus'");
+        assert_eq!(vars, vec![]);
+    }
+
+    #[test]
+    fn shell_wrap_outer_command_contains_no_values() {
+        let patch = EnvPatch {
+            remove: strings(&["ANTHROPIC_API_KEY"]),
+            set: pairs(&[
+                ("ANTHROPIC_API_KEY", "sk-ant-secret"),
+                ("CLAUDE_CONFIG_DIR", "/x/acc"),
+            ]),
+        };
+
+        let (outer, vars) = shell_wrap("exec claude", &patch);
+
+        assert!(!outer.contains("sk-ant-secret"), "{outer}");
+        assert!(!outer.contains("/x/acc"), "{outer}");
+        // The values travel in the script var instead.
+        assert_eq!(vars.len(), 1);
+        assert!(vars[0].1.contains("sk-ant-secret"));
+    }
+
+    #[test]
+    fn shell_wrap_script_unsets_then_exports_then_runs() {
+        let (outer, vars) = shell_wrap("exec claude --model 'opus'", &client_patch());
+
+        assert_eq!(outer, r#"exec /bin/sh -c "$VERUN_ACCOUNT_SCRIPT""#);
+        assert_eq!(
+            vars,
+            pairs(&[(
+                ACCOUNT_SCRIPT_VAR,
+                "unset VERUN_ACCOUNT_SCRIPT ANTHROPIC_API_KEY; export CLAUDE_CONFIG_DIR='/x/Client Accounts/o'\\''brien'; exec claude --model 'opus'"
+            )])
+        );
+    }
+
+    #[test]
+    fn shell_wrap_without_removals_still_unsets_the_script_var() {
+        let patch = EnvPatch::from_vars(pairs(&[
+            ("CLAUDE_CONFIG_DIR", "/x/a"),
+            ("ANTHROPIC_BASE_URL", "https://proxy"),
+        ]));
+
+        let (_, vars) = shell_wrap("exec claude", &patch);
+
+        assert_eq!(
+            vars,
+            pairs(&[(
+                ACCOUNT_SCRIPT_VAR,
+                "unset VERUN_ACCOUNT_SCRIPT; export CLAUDE_CONFIG_DIR='/x/a' ANTHROPIC_BASE_URL='https://proxy'; exec claude"
+            )])
+        );
+    }
+
+    #[test]
+    fn shell_wrap_without_sets_omits_the_export_clause() {
+        let patch = EnvPatch {
+            remove: strings(&["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"]),
+            set: vec![],
+        };
+
+        let (_, vars) = shell_wrap("exec claude", &patch);
+
+        // No bare `export`, which would print the whole env.
+        assert_eq!(
+            vars,
+            pairs(&[(
+                ACCOUNT_SCRIPT_VAR,
+                "unset VERUN_ACCOUNT_SCRIPT ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR; exec claude"
+            )])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_wrap_runs_in_real_sh() {
+        let printed = run_wrapped(
+            "",
+            r#"printf '%s|%s' "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY-unset}""#,
+            &client_patch(),
+        );
+
+        // The dir arrives byte-identical and the inherited key is gone.
+        assert_eq!(printed, "/x/Client Accounts/o'brien|unset");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_wrap_beats_profile_exports() {
+        // The profile runs before the outer command and re-exports a var the
+        // account sets and one it removes.
+        let printed = run_wrapped(
+            "export CLAUDE_CONFIG_DIR=/wrong ANTHROPIC_API_KEY=from-profile; ",
+            r#"printf '%s|%s' "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY-unset}""#,
+            &client_patch(),
+        );
+
+        assert_eq!(printed, "/x/Client Accounts/o'brien|unset");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_wrap_applies_an_account_patch_over_a_profile() {
+        // The patch account_env builds removes CLAUDE_CONFIG_DIR and
+        // ANTHROPIC_BASE_URL and sets them too: they must end up set.
+        let account = account("a1", vec![plain("ANTHROPIC_BASE_URL", "https://proxy")]);
+        let patch = account_env(&Claude, &account, &MemorySecretStore::default()).unwrap();
+
+        let printed = run_wrapped(
+            "export CLAUDE_CONFIG_DIR=/wrong ANTHROPIC_BASE_URL=https://profile; ",
+            r#"printf '%s|%s|%s' "$CLAUDE_CONFIG_DIR" "$ANTHROPIC_BASE_URL" "${ANTHROPIC_API_KEY-unset}""#,
+            &patch,
+        );
+
+        assert_eq!(printed, "/acc/a1|https://proxy|unset");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_wrap_hides_the_script_from_the_command() {
+        // The script holds the secrets, so the command and what it starts must
+        // not inherit it. The inner sh reads its own inherited env.
+        let patch = EnvPatch::from_vars(pairs(&[("ANTHROPIC_API_KEY", "sk-ant-secret")]));
+
+        let printed = run_wrapped(
+            "",
+            r#"/bin/sh -c 'printf "%s|%s" "${VERUN_ACCOUNT_SCRIPT-unset}" "$ANTHROPIC_API_KEY"'"#,
+            &patch,
+        );
+
+        assert_eq!(printed, "unset|sk-ant-secret");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_wrap_delivers_awkward_values_byte_identical() {
+        let values = [
+            "/Users/me/Client Accounts/o'brien",
+            "/Users/müller/日本語/🙂",
+            "$HOME `id` $(id) \"quoted\" back\\slash",
+            "semi;colon && pipe | glob * ? [a] #hash ~ !bang",
+            "line one\nline two\n",
+            "  padded\twith tab  ",
+            "'",
+            "''a''",
+            "-n",
+            "",
+        ];
+        for value in values {
+            let patch = EnvPatch::from_vars(pairs(&[("ACCOUNT_VALUE", value)]));
+
+            let printed = run_wrapped("", r#"printf '%s' "$ACCOUNT_VALUE""#, &patch);
+
+            assert_eq!(printed, value, "value {value:?}");
+        }
     }
 }

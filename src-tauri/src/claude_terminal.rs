@@ -718,7 +718,7 @@ fn spawn_fresh_session_watcher_and_tail(
 
 /// Minimal POSIX single-quote wrapping. Single-quotes inside the input are
 /// replaced with `'\''` (close quote, escaped quote, open quote).
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars() {
