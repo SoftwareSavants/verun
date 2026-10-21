@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 // ---------------------------------------------------------------------------
@@ -275,7 +275,8 @@ fn is_within_claude_home(path: &str, claude_home: &Path) -> bool {
 }
 
 /// Check if a path is within a boundary directory.
-/// Canonicalizes both paths to resolve `..`, symlinks, etc.
+/// Canonicalizes both paths to resolve `..`, symlinks, etc. A path that can't
+/// be resolved is compared as given, by `is_lexically_within`.
 fn is_path_within(path: &str, boundary: &str) -> bool {
     let Ok(canonical_path) = std::fs::canonicalize(path) else {
         // If the path doesn't exist yet (e.g. Write to a new file),
@@ -301,8 +302,14 @@ fn is_path_within(path: &str, boundary: &str) -> bool {
 
 /// `is_path_within` for paths that can't be resolved on disk. It compares whole
 /// path components, not characters, so `/acc/a1x` is not inside `/acc/a1`.
+///
+/// A path with a `..` is never inside. Nothing resolved it, so where it lands
+/// is unknown (`/acc/a1/gone/../../a2` begins with `/acc/a1` and ends in
+/// `/acc/a2`), and a path that can't be placed can't be vouched for.
 fn is_lexically_within(path: &str, boundary: &str) -> bool {
-    Path::new(path).starts_with(boundary)
+    let path = Path::new(path);
+    let climbs = path.components().any(|part| part == Component::ParentDir);
+    !climbs && path.starts_with(boundary)
 }
 
 /// AST-based deny-pattern analysis for bash commands.
@@ -915,6 +922,160 @@ mod tests {
         assert!(!is_path_within("/tmp/acc/a1x/secret", "/tmp/acc/a1"));
         assert!(!is_path_within("/tmp/acc/a1x", "/tmp/acc/a1"));
         assert!(!is_path_within("/tmp/acc", "/tmp/acc/a1"));
+    }
+
+    // -- A `..` that nothing can resolve never counts as inside --
+    //
+    // The paths below don't exist (or run through a folder that doesn't), so
+    // `canonicalize` fails and only the comparison of the paths as given is
+    // left. It must not read `a1/gone/../../a2` as a path inside `a1`.
+
+    #[test]
+    fn path_within_does_not_trust_a_parent_dir_it_cannot_resolve() {
+        assert!(!is_path_within(
+            "/tmp/acc/a1/gone/../../a2/secret",
+            "/tmp/acc/a1"
+        ));
+        assert!(!is_path_within("/tmp/acc/a1/../a2/secret", "/tmp/acc/a1"));
+        assert!(!is_path_within(
+            "/tmp/acc/a1/../../etc/passwd",
+            "/tmp/acc/a1"
+        ));
+        // Without the `..` the same paths are as before.
+        assert!(is_path_within("/tmp/acc/a1/gone/secret", "/tmp/acc/a1"));
+    }
+
+    #[test]
+    fn read_cannot_leave_the_claude_home_through_a_parent_dir() {
+        let result = evaluate(
+            "Read",
+            &json!({ "file_path": "/tmp/acc/a1/gone/../../a2/secret" }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new("/tmp/acc/a1"),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn read_cannot_leave_the_repo_through_a_parent_dir() {
+        let result = evaluate(
+            "Read",
+            &json!({ "file_path": format!("{REPO}/gone/../../etc/passwd") }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn write_cannot_leave_the_worktree_through_a_parent_dir() {
+        let result = evaluate(
+            "Edit",
+            &json!({ "file_path": format!("{WORKTREE}/gone/../../other-task/src/lib.rs") }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- The same rules on real directories --
+    //
+    // These paths do resolve, which runs the other branches of
+    // `is_path_within`: the whole path is canonicalized when the file is
+    // there, its folder when it is not yet.
+
+    /// A Read of `path` by a session whose Claude home is `claude_home`. The
+    /// repo and worktree are fixtures that don't exist, so only the Claude
+    /// home rule can allow it.
+    fn read_with_home(path: &Path, claude_home: &Path) -> PolicyResult {
+        evaluate(
+            "Read",
+            &json!({ "file_path": path.to_string_lossy() }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            claude_home,
+        )
+    }
+
+    #[test]
+    fn real_claude_home_does_not_cover_a_sibling_dir_with_the_same_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a1 = tmp.path().join("acc/a1");
+        let a1x = tmp.path().join("acc/a1x");
+        std::fs::create_dir_all(a1.join("skills/x")).unwrap();
+        std::fs::create_dir_all(a1x.join("skills")).unwrap();
+        std::fs::write(a1.join("skills/x/SKILL.md"), "").unwrap();
+        std::fs::write(a1x.join("secret"), "").unwrap();
+
+        // The file is there: the whole path is resolved.
+        let inside = read_with_home(&a1.join("skills/x/SKILL.md"), &a1);
+        assert_eq!(inside.decision, PolicyDecision::AutoAllow);
+        assert!(inside.reason.contains("Claude home"), "{}", inside.reason);
+        let sibling = read_with_home(&a1x.join("secret"), &a1);
+        assert_eq!(sibling.decision, PolicyDecision::RequireApproval);
+
+        // The file is not there yet, its folder is: the folder is resolved.
+        let inside = read_with_home(&a1.join("skills/x/new.md"), &a1);
+        assert_eq!(inside.decision, PolicyDecision::AutoAllow);
+        assert!(inside.reason.contains("Claude home"), "{}", inside.reason);
+        let sibling = read_with_home(&a1x.join("skills/new.md"), &a1);
+        assert_eq!(sibling.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn parent_dir_cannot_leave_a_real_claude_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a1 = tmp.path().join("acc/a1");
+        let a2 = tmp.path().join("acc/a2");
+        std::fs::create_dir_all(a1.join("skills")).unwrap();
+        std::fs::create_dir_all(&a2).unwrap();
+        std::fs::write(a2.join("secret"), "").unwrap();
+
+        // `skills` is there, so the OS folds the `..` away and a2 shows.
+        let through_existing = a1.join("skills/../../a2/secret");
+        // `gone` is not, so nothing folds the `..` away.
+        let through_missing = a1.join("gone/../../a2/secret");
+        for path in [through_existing, through_missing] {
+            let result = read_with_home(&path, &a1);
+            assert_eq!(
+                result.decision,
+                PolicyDecision::RequireApproval,
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_decide_by_their_target_for_a_real_claude_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a1 = tmp.path().join("acc/a1");
+        let a2 = tmp.path().join("acc/a2");
+        std::fs::create_dir_all(a1.join("skills")).unwrap();
+        std::fs::create_dir_all(&a2).unwrap();
+        std::fs::write(a2.join("secret"), "").unwrap();
+        // A link spelled inside a1 that leads to a2, and one from outside
+        // that leads into a1.
+        std::os::unix::fs::symlink(&a2, a1.join("skills/linked")).unwrap();
+        std::os::unix::fs::symlink(&a1, tmp.path().join("alias")).unwrap();
+
+        // The file is there: it is a2/secret, wherever it is spelled.
+        let there = read_with_home(&a1.join("skills/linked/secret"), &a1);
+        assert_eq!(there.decision, PolicyDecision::RequireApproval);
+        // The file is not there yet, its folder is.
+        let not_yet = read_with_home(&a1.join("skills/linked/new"), &a1);
+        assert_eq!(not_yet.decision, PolicyDecision::RequireApproval);
+        // Spelled outside a1, it is a1/skills.
+        let alias = read_with_home(&tmp.path().join("alias/skills"), &a1);
+        assert_eq!(alias.decision, PolicyDecision::AutoAllow);
     }
 
     #[test]
