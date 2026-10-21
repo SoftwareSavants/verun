@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste, AccountSelection } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste, AccountSelection, AccountsSnapshot, NewAccountInput, UpdateAccountInput } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 
@@ -435,6 +435,25 @@ export const workspaceSearchCancel = (taskId: string) =>
 
 export const checkGitignored = (taskId: string, paths: string[]) =>
   invoke<string[]>('check_gitignored', { taskId, paths })
+
+// Accounts. Every mutation resolves to the fresh snapshot, which every window
+// also gets as the `accounts-changed` event.
+export const listAccounts = (): Promise<AccountsSnapshot> =>
+  DEMO
+    ? Promise.resolve({ accounts: [], defaults: [], projectAccounts: [] })
+    : invoke<AccountsSnapshot>('list_accounts')
+
+export const createAccount = (input: NewAccountInput) =>
+  invoke<AccountsSnapshot>('create_account', { input })
+
+export const updateAccount = (input: UpdateAccountInput) =>
+  invoke<AccountsSnapshot>('update_account', { input })
+
+export const removeAccount = (accountId: string, deleteDir: boolean) =>
+  invoke<AccountsSnapshot>('remove_account', { accountId, deleteDir })
+
+export const setProjectAccount = (projectId: string, agentType: AgentType, accountId: string | null) =>
+  invoke<AccountsSnapshot>('set_project_account', { projectId, agentType, accountId })
 
 // Utility
 export const listAgentSkills = (agentKind: AgentType, scanRoot?: string, accountId?: string | null) =>

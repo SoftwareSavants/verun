@@ -90,7 +90,6 @@ pub fn title_account(
 
 /// Why an account cannot be used or changed. It crosses IPC as the `to_ipc`
 /// string, and the UI turns each kind into a message with a way to fix it.
-#[allow(dead_code)] // consumed by the account service
 #[derive(Debug, Clone, PartialEq)]
 pub enum AccountError {
     /// The account was removed, so nothing may run on it.
@@ -108,6 +107,7 @@ pub enum AccountError {
         message: String,
     },
     /// A login or logout terminal is already open.
+    #[allow(dead_code)] // constructed by the login terminal
     Busy,
     /// Projects still use the account, so it cannot be removed.
     InUse {

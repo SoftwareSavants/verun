@@ -1,5 +1,8 @@
-use crate::accounts::service::resolve_new_session_account;
-use crate::accounts::AccountSelection;
+use crate::accounts::service::{
+    self as accounts_service, resolve_new_session_account, AccountsSnapshot, NewAccountInput,
+    UpdateAccountInput,
+};
+use crate::accounts::{AccountError, AccountSelection};
 use crate::claude_home::{self, ClaudeHome};
 use crate::claude_terminal::{self, ClaudeTerminalMap, OpenClaudeTerminalResult};
 use crate::db::{self, DbWriteTx, OutputLine, Project, Session, Step, Task};
@@ -2799,6 +2802,124 @@ pub async fn write_binary_file(request: tauri::ipc::Request<'_>) -> Result<(), S
     tokio::fs::write(&path, bytes)
         .await
         .map_err(|e| format!("Failed to write file: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+
+/// The user's home folder: what `~` means in an account's folder, and where the
+/// Default accounts keep their logins.
+fn account_user_home() -> Result<std::path::PathBuf, AccountError> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| AccountError::Invalid {
+            message: "Couldn't find your home folder.".into(),
+        })
+}
+
+/// Tells every window that the accounts changed, with the fresh snapshot, and
+/// hands the snapshot back for the command's result.
+async fn publish_accounts(
+    app: &AppHandle,
+    pool: &SqlitePool,
+    user_home: &std::path::Path,
+) -> Result<AccountsSnapshot, String> {
+    let snapshot = accounts_service::snapshot(pool, user_home).await?;
+    let _ = app.emit("accounts-changed", &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn list_accounts(pool: State<'_, SqlitePool>) -> Result<AccountsSnapshot, String> {
+    let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    accounts_service::snapshot(pool.inner(), &user_home).await
+}
+
+#[tauri::command]
+pub async fn create_account(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    secrets: State<'_, crate::accounts::Secrets>,
+    app_data: State<'_, crate::blob::AppDataDir>,
+    input: NewAccountInput,
+) -> Result<AccountsSnapshot, String> {
+    let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    accounts_service::create_account(
+        pool.inner(),
+        db_tx.inner(),
+        secrets.0.clone(),
+        &app_data.0,
+        &user_home,
+        input,
+        Uuid::new_v4().to_string(),
+        task::epoch_ms(),
+    )
+    .await
+    .map_err(|e| e.to_ipc())?;
+    publish_accounts(&app, pool.inner(), &user_home).await
+}
+
+#[tauri::command]
+pub async fn update_account(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    secrets: State<'_, crate::accounts::Secrets>,
+    input: UpdateAccountInput,
+) -> Result<AccountsSnapshot, String> {
+    let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    accounts_service::update_account(pool.inner(), db_tx.inner(), secrets.0.clone(), input)
+        .await
+        .map_err(|e| e.to_ipc())?;
+    publish_accounts(&app, pool.inner(), &user_home).await
+}
+
+#[tauri::command]
+pub async fn remove_account(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    secrets: State<'_, crate::accounts::Secrets>,
+    account_id: String,
+    delete_dir: bool,
+) -> Result<AccountsSnapshot, String> {
+    let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    accounts_service::remove_account(
+        pool.inner(),
+        db_tx.inner(),
+        secrets.0.clone(),
+        &account_id,
+        delete_dir,
+        task::epoch_ms(),
+    )
+    .await
+    .map_err(|e| e.to_ipc())?;
+    publish_accounts(&app, pool.inner(), &user_home).await
+}
+
+#[tauri::command]
+pub async fn set_project_account(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    project_id: String,
+    agent_type: String,
+    account_id: Option<String>,
+) -> Result<AccountsSnapshot, String> {
+    let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    accounts_service::set_project_account(
+        pool.inner(),
+        db_tx.inner(),
+        &project_id,
+        &agent_type,
+        account_id,
+    )
+    .await
+    .map_err(|e| e.to_ipc())?;
+    publish_accounts(&app, pool.inner(), &user_home).await
 }
 
 // ---------------------------------------------------------------------------

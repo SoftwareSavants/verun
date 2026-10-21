@@ -133,6 +133,82 @@ export interface AccountSupport {
   blockedReason: string | null;
 }
 
+export type SignInStatus = "signedIn" | "signedOut" | "apiKey" | "unknown";
+
+/** Who a harness is signed in as, read from the files its CLI keeps. */
+export interface AccountIdentity {
+  status: SignInStatus;
+  email: string | null;
+  orgName: string | null;
+  plan: string | null;
+  providers: string[];
+}
+
+/** One env var an account adds to its processes. A secret's value stays in the keychain, so it is `null` here. */
+export interface AccountEnvVar {
+  key: string;
+  value: string | null;
+  secret: boolean;
+}
+
+/** An added account, with who is signed in to it right now. */
+export interface Account {
+  id: string;
+  agentType: AgentType;
+  label: string;
+  color: string;
+  configDir: string;
+  /** Verun created `configDir`, so it may delete it with the account. */
+  managedDir: boolean;
+  env: AccountEnvVar[];
+  /** Set once the account is removed. It stays listed so its sessions keep their history. */
+  removedAt: number | null;
+  createdAt: number;
+  identity: AccountIdentity;
+}
+
+/** The Default account of a harness: the user's own CLI login. */
+export interface DefaultAccount {
+  agentType: AgentType;
+  identity: AccountIdentity;
+}
+
+/** A project's chosen account for one harness. No entry means Default. */
+export interface ProjectAccount {
+  projectId: string;
+  agentType: AgentType;
+  accountId: string;
+}
+
+export interface AccountsSnapshot {
+  accounts: Account[];
+  defaults: DefaultAccount[];
+  projectAccounts: ProjectAccount[];
+}
+
+/** A secret with `value: null` keeps the value already stored. */
+export interface AccountEnvInput {
+  key: string;
+  value: string | null;
+  secret: boolean;
+}
+
+export interface NewAccountInput {
+  agentType: AgentType;
+  label: string;
+  color: string;
+  /** A folder the user already logged in from. `null`: Verun makes one. */
+  existingDir: string | null;
+  env: AccountEnvInput[];
+}
+
+export interface UpdateAccountInput {
+  id: string;
+  label: string;
+  color: string;
+  env: AccountEnvInput[];
+}
+
 export interface AgentInfo {
   id: AgentType;
   name: string;

@@ -471,6 +471,12 @@ pub fn run() {
             ipc::read_clipboard_paste,
             ipc::copy_image_to_clipboard,
             ipc::write_binary_file,
+            // Accounts
+            ipc::list_accounts,
+            ipc::create_account,
+            ipc::update_account,
+            ipc::remove_account,
+            ipc::set_project_account,
             // Utility
             ipc::list_agent_skills,
             ipc::check_agent,

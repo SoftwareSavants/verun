@@ -109,6 +109,59 @@ describe('ipc', () => {
     })
   })
 
+  describe('accounts', () => {
+    const snapshot = { accounts: [], defaults: [], projectAccounts: [] }
+
+    test('account wrappers invoke the right commands', async () => {
+      vi.mocked(invoke).mockResolvedValue(snapshot)
+
+      await expect(ipc.listAccounts()).resolves.toEqual(snapshot)
+      expect(invoke).toHaveBeenLastCalledWith('list_accounts')
+
+      const input = {
+        agentType: 'claude' as const,
+        label: 'Acme',
+        color: '#d97757',
+        existingDir: null,
+        env: [{ key: 'ANTHROPIC_API_KEY', value: 'sk-ant-1', secret: true }],
+      }
+      await ipc.createAccount(input)
+      expect(invoke).toHaveBeenLastCalledWith('create_account', { input })
+
+      const edit = { id: 'a1', label: 'Acme 2', color: '#000000', env: [{ key: 'ANTHROPIC_API_KEY', value: null, secret: true }] }
+      await ipc.updateAccount(edit)
+      expect(invoke).toHaveBeenLastCalledWith('update_account', { input: edit })
+
+      await ipc.removeAccount('a1', true)
+      expect(invoke).toHaveBeenLastCalledWith('remove_account', { accountId: 'a1', deleteDir: true })
+
+      await ipc.setProjectAccount('p1', 'claude', null)
+      expect(invoke).toHaveBeenLastCalledWith('set_project_account', { projectId: 'p1', agentType: 'claude', accountId: null })
+
+      await ipc.setProjectAccount('p1', 'claude', 'a1')
+      expect(invoke).toHaveBeenLastCalledWith('set_project_account', { projectId: 'p1', agentType: 'claude', accountId: 'a1' })
+    })
+
+    test('a rejected account command surfaces its error', async () => {
+      vi.mocked(invoke).mockRejectedValueOnce('ACCOUNT_ERROR:{"kind":"inUse"}')
+      await expect(ipc.removeAccount('a1', false)).rejects.toBe('ACCOUNT_ERROR:{"kind":"inUse"}')
+    })
+
+    test('listAccounts is an empty snapshot in demo mode', async () => {
+      vi.stubEnv('VITE_DEMO_MODE', 'true')
+      vi.resetModules()
+      try {
+        const demo = await import('./ipc')
+        const { invoke: demoInvoke } = await import('@tauri-apps/api/core')
+        await expect(demo.listAccounts()).resolves.toEqual(snapshot)
+        expect(demoInvoke).not.toHaveBeenCalled()
+      } finally {
+        vi.unstubAllEnvs()
+        vi.resetModules()
+      }
+    })
+  })
+
   describe('listAgentSkills', () => {
     test('passes the scan root and the account', async () => {
       vi.mocked(invoke).mockResolvedValueOnce([])

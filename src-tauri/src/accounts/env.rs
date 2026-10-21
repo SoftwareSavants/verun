@@ -13,7 +13,7 @@
 
 use super::secrets::SecretStore;
 use super::AccountError;
-use crate::agent::{Agent, AgentKind};
+use crate::agent::{AccountProfile, Agent, AgentKind};
 use crate::claude_terminal::shell_quote;
 use crate::db::{Account, AccountEnvVar};
 use std::path::Path;
@@ -284,6 +284,18 @@ pub(crate) fn env_change(cmd: &tokio::process::Command, key: &str) -> EnvChange 
         })
 }
 
+/// The account support of `agent`, or `Invalid` for a harness that has none.
+pub(super) fn profile_of(agent: &dyn Agent) -> Result<AccountProfile, AccountError> {
+    agent
+        .account_profile()
+        .ok_or_else(|| AccountError::Invalid {
+            message: format!(
+                "{} does not support multiple accounts",
+                agent.display_name()
+            ),
+        })
+}
+
 /// The env of one added account. `agent` is the account's harness.
 ///
 /// `remove` is the harness's whole scrub list, so nothing Verun inherited can
@@ -300,14 +312,7 @@ pub fn account_env(
     account: &Account,
     secrets: &dyn SecretStore,
 ) -> Result<EnvPatch, AccountError> {
-    let Some(profile) = agent.account_profile() else {
-        return Err(AccountError::Invalid {
-            message: format!(
-                "{} does not support multiple accounts",
-                agent.display_name()
-            ),
-        });
-    };
+    let profile = profile_of(agent)?;
     let mut patch = EnvPatch {
         remove: profile
             .scrub_vars

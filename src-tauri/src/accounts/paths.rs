@@ -42,7 +42,6 @@ impl std::error::Error for AccountDirError {}
 /// segment before it. The filesystem is never consulted, so symlinks stay as
 /// typed (which also means `link/..` is the link's parent as written, not its
 /// target's).
-#[allow(dead_code)] // consumed by the account service
 pub fn normalize_account_dir(input: &str, user_home: &Path) -> Result<String, AccountDirError> {
     let input = input.trim();
     if input.is_empty() {
@@ -67,7 +66,6 @@ pub fn normalize_account_dir(input: &str, user_home: &Path) -> Result<String, Ac
 /// dirs of the live accounts of the same harness. With `require_existing` the
 /// dir must already be a folder; that stats the path, so async callers go
 /// through `spawn_blocking`. Managed dirs are created later and skip that check.
-#[allow(dead_code)] // consumed by the account service
 pub fn validate_account_dir(
     dir: &str,
     standard_home: Option<&Path>,
@@ -93,7 +91,6 @@ pub fn validate_account_dir(
 }
 
 /// The dir Verun creates for an account it manages: `<app data>/accounts/<id>`.
-#[allow(dead_code)] // consumed by the account service
 pub fn managed_account_dir(app_data_dir: &Path, account_id: &str) -> String {
     lexical_clean(&app_data_dir.join("accounts").join(account_id))
 }

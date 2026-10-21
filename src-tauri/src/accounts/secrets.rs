@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 /// The secret env vars of accounts, addressed by account id and env var name.
 /// A missing entry is not an error: `get` returns `None` and `delete` succeeds.
 /// Implementations may block, so async callers go through `spawn_blocking`.
-#[allow(dead_code)] // `set` and `delete` are consumed by the account service
 pub trait SecretStore: Send + Sync {
     fn get(&self, account_id: &str, key: &str) -> Result<Option<String>, String>;
     fn set(&self, account_id: &str, key: &str, value: &str) -> Result<(), String>;

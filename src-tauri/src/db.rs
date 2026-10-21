@@ -552,6 +552,18 @@ pub struct AccountEnvVar {
     pub secret: bool,
 }
 
+impl AccountEnvVar {
+    /// The var as a row may hold it. A secret's value belongs in the keychain,
+    /// so whatever a caller left in it is dropped.
+    fn for_storage(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            value: self.value.clone().filter(|_| !self.secret),
+            secret: self.secret,
+        }
+    }
+}
+
 /// An extra login for a coding-agent harness. The Default account (the user's
 /// own CLI login) is never a row: a session with no `account_id` runs on it.
 /// Removing an account only sets `removed_at`, so sessions bound to it keep
@@ -774,6 +786,7 @@ pub enum DbWrite {
     // Accounts. Each confirms through `done`, like `InsertTaskWithSession`,
     // so a caller can wait for the row before acting on it.
     /// Insert the account, or on an id clash replace only its label, color and env.
+    /// The value of a secret var is never stored, whatever the account carries.
     UpsertAccount {
         account: Account,
         done: tokio::sync::oneshot::Sender<Result<(), String>>,
@@ -1522,7 +1535,9 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
         // -- Accounts --
         DbWrite::UpsertAccount { account, done } => {
             let result = async {
-                let env = serde_json::to_string(&account.env).map_err(|e| e.to_string())?;
+                let env: Vec<AccountEnvVar> =
+                    account.env.iter().map(AccountEnvVar::for_storage).collect();
+                let env = serde_json::to_string(&env).map_err(|e| e.to_string())?;
                 sqlx::query(
                     "INSERT INTO accounts (id, agent_type, label, color, config_dir, managed_dir, env, removed_at, created_at) \
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
@@ -2010,7 +2025,6 @@ pub async fn list_due_wakeups(
 // Accounts
 
 /// Every account, removed ones included, oldest first.
-#[allow(dead_code)] // consumed by the account service
 pub async fn list_accounts(pool: &SqlitePool) -> Result<Vec<Account>, String> {
     sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts ORDER BY created_at ASC, id ASC")
         .fetch_all(pool)
@@ -2031,7 +2045,6 @@ pub async fn get_account(pool: &SqlitePool, id: &str) -> Result<Option<Account>,
         .transpose()
 }
 
-#[allow(dead_code)] // consumed by the account service
 pub async fn list_project_accounts(pool: &SqlitePool) -> Result<Vec<ProjectAccount>, String> {
     sqlx::query_as::<_, ProjectAccount>(
         "SELECT * FROM project_accounts ORDER BY project_id ASC, agent_type ASC",
@@ -2058,7 +2071,6 @@ pub async fn project_account_ids(
 }
 
 /// Names of the projects bound to the account, alphabetically.
-#[allow(dead_code)] // consumed by the account service
 pub async fn projects_using_account(
     pool: &SqlitePool,
     account_id: &str,
@@ -4327,6 +4339,46 @@ pub(crate) mod tests {
 
         assert_eq!(get_account(&pool, "a1").await.unwrap(), Some(account));
         assert_eq!(get_account(&pool, "missing").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn upsert_account_never_stores_the_value_of_a_secret() {
+        let pool = test_pool().await;
+        let mut account = make_account("a1", 1000);
+        account.env = vec![
+            env_var("ANTHROPIC_BASE_URL", Some("https://proxy"), false),
+            // A caller that forgot to strip the value, or never had to.
+            env_var("ANTHROPIC_API_KEY", Some("sk-ant-leak"), true),
+            env_var("OTHER_KEY", None, true),
+        ];
+
+        upsert_account_confirmed(&pool, account).await.unwrap();
+
+        let stored = get_account(&pool, "a1").await.unwrap().unwrap();
+        assert_eq!(
+            stored.env,
+            vec![
+                env_var("ANTHROPIC_BASE_URL", Some("https://proxy"), false),
+                env_var("ANTHROPIC_API_KEY", None, true),
+                env_var("OTHER_KEY", None, true),
+            ]
+        );
+        // Not just hidden on the way out: the column itself never held it.
+        let raw: String = sqlx::query_scalar("SELECT env FROM accounts WHERE id = 'a1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(!raw.contains("sk-ant-leak"), "{raw}");
+
+        // An edit goes through the same arm.
+        let mut edited = make_account("a1", 1000);
+        edited.env = vec![env_var("ANTHROPIC_API_KEY", Some("sk-ant-leak-2"), true)];
+        upsert_account_confirmed(&pool, edited).await.unwrap();
+        let raw: String = sqlx::query_scalar("SELECT env FROM accounts WHERE id = 'a1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(!raw.contains("sk-ant-leak"), "{raw}");
     }
 
     #[tokio::test]
