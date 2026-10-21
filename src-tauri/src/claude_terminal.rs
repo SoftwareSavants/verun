@@ -119,6 +119,8 @@ pub async fn open_claude_terminal(
     let is_fresh = resume_id_opt.is_none();
 
     // Claude writes the transcript under the home of the session's account.
+    // The terminal has to find it, so a Default session with no $HOME is an
+    // error here, as it was before accounts.
     let claude_home = claude_home::for_account(pool, account_id.as_deref()).await?;
 
     let repo_path = db::get_repo_path_for_task(pool, &task.id).await?;

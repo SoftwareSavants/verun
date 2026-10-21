@@ -2509,19 +2509,28 @@ fn spawn_turn_start_response_watcher(
     });
 }
 
-/// The Claude home a session of harness `kind` works against. Claude reads the
-/// home of its account. No other harness reads one, so they get the process
-/// default without a lookup, and a missing `$HOME` doesn't stop them.
+/// The Claude home a session of harness `kind` is spawned with, which
+/// `stream_and_capture` hands to the per-turn snapshot. `process_default` is
+/// `claude_home::process_default()`.
+///
+/// A spawn doesn't need a home to exist: only that best-effort snapshot reads
+/// it, and only for Claude. So a session on the Default account, and every
+/// session of another harness, keeps spawning when `$HOME` can't be resolved:
+/// it gets the standard layout under `/`, where the snapshot finds no
+/// transcript. The one thing that stops a spawn is a Claude session on an
+/// added account whose row is missing.
 async fn session_claude_home(
     pool: &SqlitePool,
     kind: AgentKind,
     account_id: Option<&str>,
+    process_default: Option<ClaudeHome>,
 ) -> Result<ClaudeHome, String> {
-    if kind == AgentKind::Claude {
-        return claude_home::for_account(pool, account_id).await;
+    let default_home = process_default
+        .unwrap_or_else(|| ClaudeHome::default_home(std::path::Path::new("/"), None));
+    if kind != AgentKind::Claude {
+        return Ok(default_home);
     }
-    Ok(claude_home::process_default()
-        .unwrap_or_else(|| ClaudeHome::default_home(std::path::Path::new("/"), None)))
+    claude_home::for_account_with_default(pool, account_id, Some(default_home)).await
 }
 
 /// Spawn a new CLI process for this session and start the stream monitor.
@@ -2573,12 +2582,13 @@ pub async fn spawn_session_process(
         attachments,
         prewarm,
     } = params;
-    // Resolved before anything is spawned, so a home that can't be found
+    // Resolved before anything is spawned, so an account that can't be found
     // leaves no process behind.
     let claude_home = session_claude_home(
         app.state::<SqlitePool>().inner(),
         agent.kind(),
         account_id.as_deref(),
+        claude_home::process_default(),
     )
     .await?;
     let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
@@ -3490,6 +3500,28 @@ fn fork_claude_transcript(
     .map_err(|e| e.to_string())
 }
 
+/// The Claude home a fork of `parent` writes its transcript in: the home of the
+/// parent's account. `None` for a harness that keeps no Claude transcript.
+/// `process_default` is `claude_home::process_default()`.
+///
+/// Unlike a spawn, a fork has to find the parent's transcript, so a Default
+/// session with no `$HOME` is an error here, as it was before accounts.
+async fn fork_claude_home(
+    pool: &SqlitePool,
+    parent: &Session,
+    process_default: Option<ClaudeHome>,
+) -> Result<Option<ClaudeHome>, String> {
+    let keeps_claude_transcript = AgentKind::parse(&parent.agent_type)
+        .implementation()
+        .uses_claude_jsonl();
+    if !keeps_claude_transcript {
+        return Ok(None);
+    }
+    claude_home::for_account_with_default(pool, parent.account_id.as_deref(), process_default)
+        .await
+        .map(Some)
+}
+
 /// Fork a session at a specific assistant message uuid into a NEW session
 /// inside the SAME task (the worktree is unchanged).
 ///
@@ -3519,16 +3551,14 @@ pub async fn fork_session_in_task(
         .await?
         .ok_or_else(|| format!("Task {} not found", parent.task_id))?;
 
-    let agent_impl = AgentKind::parse(&parent.agent_type).implementation();
-    // The fork's transcript goes in the home of the parent's account.
-    let claude_home =
-        session_claude_home(pool, agent_impl.kind(), parent.account_id.as_deref()).await?;
+    // Claude only: its transcript goes in the home of the parent's account.
+    let claude_home = fork_claude_home(pool, &parent, claude_home::process_default()).await?;
     let new_csid = Uuid::new_v4().to_string();
     let new_verun_sid = Uuid::new_v4().to_string();
     let now = epoch_ms();
 
     // Truncate the on-disk JSONL transcript (Claude only).
-    if agent_impl.uses_claude_jsonl() {
+    if let Some(claude_home) = claude_home {
         let worktree_path = task.worktree_path.clone();
         let parent_csid_for_blocking = parent_csid.clone();
         let new_csid_for_blocking = new_csid.clone();
@@ -3778,14 +3808,10 @@ pub async fn fork_session_to_new_task(
     validate_fork_marker_present(&parent_lines, &fork_after_message_uuid)?;
     let fork_usage = session_usage_up_to_marker(&parent_lines, &fork_after_message_uuid)?;
 
-    // The fork's transcript goes in the home of the parent's account. Resolve
-    // it before the worktree exists, for the same reason.
-    let claude_home = session_claude_home(
-        pool,
-        AgentKind::parse(&parent_session.agent_type),
-        parent_session.account_id.as_deref(),
-    )
-    .await?;
+    // Claude only: its transcript goes in the home of the parent's account.
+    // Resolve it before the worktree exists, for the same reason.
+    let claude_home =
+        fork_claude_home(pool, &parent_session, claude_home::process_default()).await?;
 
     // Create the new worktree (off the runtime).
     let repo_path = project.repo_path.clone();
@@ -3873,13 +3899,12 @@ pub async fn fork_session_to_new_task(
         is_git: true,
     };
 
-    let parent_agent = AgentKind::parse(&parent_session.agent_type).implementation();
     let new_csid = Uuid::new_v4().to_string();
     let new_verun_sid = Uuid::new_v4().to_string();
     let now = epoch_ms();
 
     // Truncate on-disk JSONL transcript (Claude only)
-    if parent_agent.uses_claude_jsonl() {
+    if let Some(claude_home) = claude_home {
         let parent_csid_for_blocking = parent_csid.clone();
         let new_csid_for_blocking = new_csid.clone();
         let fork_uuid_for_blocking = fork_after_message_uuid.clone();
@@ -4354,14 +4379,108 @@ mod tests {
             .await
             .unwrap();
 
+        let default = ClaudeHome::default_home(std::path::Path::new("/Users/me"), None);
+
+        // An added account: the dir its row stores. The default is not used.
         assert_eq!(
-            session_claude_home(&pool, AgentKind::Claude, Some("a1")).await,
+            session_claude_home(&pool, AgentKind::Claude, Some("a1"), Some(default.clone())).await,
             Ok(ClaudeHome::for_config_dir("/tmp/verun-accounts/a1"))
         );
+        // The Default account: the process default as it is.
+        assert_eq!(
+            session_claude_home(&pool, AgentKind::Claude, None, Some(default.clone())).await,
+            Ok(default.clone())
+        );
         // An account that can't be found is an error, not the Default home.
-        assert!(session_claude_home(&pool, AgentKind::Claude, Some("nope"))
+        assert!(
+            session_claude_home(&pool, AgentKind::Claude, Some("nope"), Some(default))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_copies_within_the_parents_account_home() {
+        let pool = test_pool().await;
+        upsert_account_confirmed(&pool, make_account("a1", 1))
             .await
-            .is_err());
+            .unwrap();
+        let mut parent = make_session("t-001");
+        parent.account_id = Some("a1".into());
+
+        assert_eq!(
+            fork_claude_home(&pool, &parent, None).await,
+            Ok(Some(ClaudeHome::for_config_dir("/tmp/verun-accounts/a1")))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_of_a_default_session_still_needs_a_home() {
+        // Unlike a spawn, a fork has to find the parent's transcript. A
+        // Default Claude session with no $HOME to look in is an error, as it
+        // was before accounts.
+        let pool = test_pool().await;
+        let parent = make_session("t-001");
+        let err = fork_claude_home(&pool, &parent, None).await.unwrap_err();
+        assert!(err.contains("HOME"), "got: {err}");
+
+        let default = ClaudeHome::default_home(std::path::Path::new("/Users/me"), None);
+        assert_eq!(
+            fork_claude_home(&pool, &parent, Some(default.clone())).await,
+            Ok(Some(default))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_needs_its_account_row() {
+        let pool = test_pool().await;
+        let mut parent = make_session("t-001");
+        parent.account_id = Some("nope".into());
+
+        let err = fork_claude_home(&pool, &parent, None).await.unwrap_err();
+        assert!(err.contains("nope"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn a_fork_of_another_harness_has_no_claude_transcript_to_copy() {
+        // Nothing to find, so nothing to look up and nothing to fail on.
+        let pool = test_pool().await;
+        let mut parent = make_session("t-001");
+        parent.agent_type = "codex".into();
+        parent.account_id = Some("codex-account".into());
+
+        assert_eq!(fork_claude_home(&pool, &parent, None).await, Ok(None));
+    }
+
+    #[tokio::test]
+    async fn default_sessions_spawn_without_a_home() {
+        // No account and no $HOME to find a home in: the spawn still goes
+        // ahead, on the standard layout under "/", where the per-turn snapshot
+        // finds no transcript. Claude is no exception.
+        let pool = test_pool().await;
+        for kind in [AgentKind::Claude, AgentKind::Codex] {
+            let home = session_claude_home(&pool, kind, None, None)
+                .await
+                .unwrap_or_else(|e| panic!("{kind:?} must still spawn: {e}"));
+            assert_eq!(home.root(), std::path::Path::new("/.claude"), "{kind:?}");
+            assert_eq!(
+                home,
+                ClaudeHome::default_home(std::path::Path::new("/"), None),
+                "{kind:?}"
+            );
+            assert!(!home.is_account_home(), "{kind:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_missing_account_row_stops_a_spawn() {
+        // The account is the one thing a spawn can't guess, so it stays an
+        // error even where the Default home would fall back.
+        let pool = test_pool().await;
+        let err = session_claude_home(&pool, AgentKind::Claude, Some("nope"), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("nope"), "got: {err}");
     }
 
     #[tokio::test]
@@ -4369,7 +4488,7 @@ mod tests {
         // No accounts exist, and no $HOME is needed: nothing but Claude reads
         // this home, so a Codex session must never fail over it.
         let pool = test_pool().await;
-        let home = session_claude_home(&pool, AgentKind::Codex, Some("codex-account"))
+        let home = session_claude_home(&pool, AgentKind::Codex, Some("codex-account"), None)
             .await
             .unwrap();
         assert!(!home.is_account_home());

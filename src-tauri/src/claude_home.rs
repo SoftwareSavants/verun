@@ -171,6 +171,8 @@ pub fn process_default() -> Option<ClaudeHome> {
 /// their transcripts.
 ///
 /// Fails when the account has no row, or, for `None`, when `$HOME` is unset.
+/// That is for callers that must find the files that are there. One that can
+/// do without them passes its own stand-in to `for_account_with_default`.
 pub async fn for_account(
     pool: &SqlitePool,
     account_id: Option<&str>,
@@ -178,9 +180,10 @@ pub async fn for_account(
     for_account_with_default(pool, account_id, process_default()).await
 }
 
-/// `for_account` with the process default passed in, so tests need not touch
-/// the process env.
-async fn for_account_with_default(
+/// `for_account` with the Default account's home passed in, as
+/// `process_default()` returns it; `None` there makes the Default account an
+/// error. Tests pass what they need and so skip the process env.
+pub(crate) async fn for_account_with_default(
     pool: &SqlitePool,
     account_id: Option<&str>,
     default_home: Option<ClaudeHome>,
