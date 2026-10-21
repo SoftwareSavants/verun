@@ -5,6 +5,7 @@ mod blob;
 mod clipboard;
 mod bts_scaffold;
 mod claude_control;
+mod claude_home;
 mod claude_jsonl;
 mod claude_terminal;
 mod claude_transcript_tail;

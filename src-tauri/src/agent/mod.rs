@@ -531,8 +531,8 @@ pub trait Agent: Send + Sync {
     }
 
     /// Whether this agent uses Claude Code's on-disk JSONL transcript
-    /// format at ~/.claude/projects/. Gates transcript manipulation
-    /// in fork operations.
+    /// format at `<claude home>/projects/` (`~/.claude`, or the dir of the
+    /// session's account). Gates transcript manipulation in fork operations.
     fn uses_claude_jsonl(&self) -> bool {
         false
     }

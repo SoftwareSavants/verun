@@ -5,9 +5,10 @@
 //! `claude --resume <id>` in a real PTY so they interact with the unmodified
 //! TUI. To keep our UI-backed views (history, fork, branch, search) intact we
 //! tail the on-disk JSONL that Claude writes at
-//! `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` and re-emit each
-//! parsed message as an `OutputItem` through the existing `session-output`
-//! event + `output_lines` DB table.
+//! `<claude home>/projects/<encoded-cwd>/<session-id>.jsonl` (`~/.claude`, or
+//! the dir of the session's account) and re-emit each parsed message as an
+//! `OutputItem` through the existing `session-output` event + `output_lines`
+//! DB table.
 //!
 //! Shape of a terminal session lifetime:
 //!   open_claude_terminal -> spawn PTY + tail JSONL from current EOF
@@ -27,7 +28,7 @@ use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::claude_jsonl;
+use crate::claude_home;
 use crate::claude_transcript_tail::{spawn_transcript_tail_with_claims, TranscriptTail};
 use crate::db::{self, DbWrite, DbWriteTx};
 use crate::pty::{self, ActivePtyMap};
@@ -114,18 +115,27 @@ pub async fn open_claude_terminal(
     let task = validated.task;
     let resume_id_opt = validated.resume_id;
     let model = validated.model;
+    let account_id = validated.account_id;
     let is_fresh = resume_id_opt.is_none();
+
+    // Claude writes the transcript under the home of the session's account.
+    let claude_home = claude_home::for_account(pool, account_id.as_deref()).await?;
 
     let repo_path = db::get_repo_path_for_task(pool, &task.id).await?;
     let env_vars = crate::worktree::verun_env_vars(task.port_offset, &repo_path);
 
     let cwd_path = std::path::PathBuf::from(&task.worktree_path);
 
+    // The folder slug follows symlinks in the cwd, which stats the disk.
+    let projects_dir = {
+        let (home, cwd) = (claude_home.clone(), cwd_path.clone());
+        tokio::task::spawn_blocking(move || home.projects_dir(&cwd))
+            .await
+            .map_err(|e| format!("projects_dir join: {e}"))?
+    };
     // For fresh sessions we don't know the UUID yet (Claude generates it
     // when the user sends the first turn). Snapshot the directory now so
     // the watcher can detect "the new one" against this baseline.
-    let projects_dir = claude_jsonl::projects_dir(&cwd_path)
-        .ok_or_else(|| "$HOME not set; cannot locate Claude projects dir".to_string())?;
     let baseline_ids: std::collections::HashSet<String> = if is_fresh {
         list_session_ids(&projects_dir).await
     } else {
@@ -134,8 +144,7 @@ pub async fn open_claude_terminal(
 
     let (jsonl_path, start_offset, command) = match &resume_id_opt {
         Some(rid) => {
-            let path = claude_jsonl::session_path(&cwd_path, rid)
-                .ok_or_else(|| "$HOME not set; cannot locate Claude transcript".to_string())?;
+            let path = projects_dir.join(format!("{rid}.jsonl"));
             // Skip whatever's already on disk (already in output_lines).
             let offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             let cmd = build_claude_shell_command(ClaudeSpawnMode::Resume, rid, model.as_deref());
@@ -210,7 +219,6 @@ pub async fn open_claude_terminal(
     let (tail, watcher) = if is_fresh {
         let w = spawn_fresh_session_watcher_and_tail(
             projects_dir.clone(),
-            cwd_path.clone(),
             baseline_ids,
             item_tx,
             FreshDiscoverySink {
@@ -289,6 +297,9 @@ pub(crate) struct ValidatedTerminalSession {
     /// Per-session model alias or full id (e.g. "sonnet" / "claude-sonnet-4-6").
     /// `None` falls back to the user's Claude default.
     pub model: Option<String>,
+    /// The session's account (`None`: Default). Decides which Claude home the
+    /// terminal reads and writes.
+    pub account_id: Option<String>,
 }
 
 /// Look up the session, ensure it's a Claude session, and return the task
@@ -318,6 +329,7 @@ pub(crate) async fn validate_session_for_terminal(
         task,
         resume_id: session.resume_session_id.clone(),
         model: session.model.clone(),
+        account_id: session.account_id.clone(),
     })
 }
 
@@ -609,7 +621,7 @@ pub(crate) enum ClaudeSpawnMode {
     /// Existing session - pass `--resume <id>`.
     Resume,
     /// Fresh session - spawn plain `claude`. Claude generates its own UUID
-    /// and writes a new `.jsonl` in `~/.claude/projects/<encoded-cwd>/`;
+    /// and writes a new `.jsonl` in `<claude home>/projects/<encoded-cwd>/`;
     /// the caller watches that directory to discover the id and persist it.
     Fresh,
 }
@@ -673,7 +685,6 @@ pub(crate) struct FreshDiscoverySink {
 /// inner tail when the parent terminal handle is dropped.
 fn spawn_fresh_session_watcher_and_tail(
     projects_dir: PathBuf,
-    cwd: PathBuf,
     baseline_ids: std::collections::HashSet<String>,
     sender: mpsc::UnboundedSender<OutputItem>,
     sink: FreshDiscoverySink,
@@ -703,9 +714,7 @@ fn spawn_fresh_session_watcher_and_tail(
             },
         );
 
-        let Some(path) = claude_jsonl::session_path(&cwd, &new_id) else {
-            return;
-        };
+        let path = projects_dir.join(format!("{new_id}.jsonl"));
         // The inner tail handle is dropped when this task exits (or is
         // aborted). Drop fires its stop channel, which cancels the tail
         // loop. So one abort on `_watcher` cleans everything up.
@@ -1133,6 +1142,8 @@ mod tests {
         let validated = validate_session_for_terminal(&pool, "s-001").await.unwrap();
         assert_eq!(validated.task.id, "t-001");
         assert_eq!(validated.resume_id, None);
+        // A session on the Default account carries no account.
+        assert_eq!(validated.account_id, None);
     }
 
     #[tokio::test]
@@ -1146,6 +1157,7 @@ mod tests {
             .unwrap();
         let mut s = make_session("t-001");
         s.resume_session_id = Some("resume-uuid-abc".into());
+        s.account_id = Some("a1".into());
         process_write_for_tests(&pool, DbWrite::CreateSession(s))
             .await
             .unwrap();
@@ -1153,6 +1165,8 @@ mod tests {
         let validated = validate_session_for_terminal(&pool, "s-001").await.unwrap();
         assert_eq!(validated.task.id, "t-001");
         assert_eq!(validated.resume_id, Some("resume-uuid-abc".into()));
+        // The terminal spawn resolves the session's Claude home from this.
+        assert_eq!(validated.account_id, Some("a1".into()));
     }
 
     #[tokio::test]
@@ -1180,7 +1194,7 @@ mod tests {
     fn build_claude_shell_command_spawns_plain_claude_for_fresh_sessions() {
         // Fresh sessions: spawn plain `claude` and let it create its own
         // UUID. The id arg is ignored in this mode (we discover the id by
-        // watching ~/.claude/projects/<encoded-cwd>/ for a new file).
+        // watching <claude home>/projects/<encoded-cwd>/ for a new file).
         let cmd = build_claude_shell_command(ClaudeSpawnMode::Fresh, "ignored", None);
         assert_eq!(cmd, "exec claude");
     }

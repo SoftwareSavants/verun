@@ -6491,6 +6491,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "tokio",
+ "unicode-normalization",
  "uuid",
  "vt100",
  "yash-syntax",

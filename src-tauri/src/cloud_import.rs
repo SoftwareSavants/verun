@@ -1,7 +1,7 @@
 //! Claude cloud handoff. Import in a disposable clone before publishing a task.
 
 use crate::{
-    claude_jsonl, claude_terminal,
+    claude_home, claude_jsonl, claude_terminal,
     db::{DbWrite, DbWriteTx, Project, Session, Task},
     pty::{self, ActivePtyMap},
     stream::OutputItem,
@@ -534,7 +534,10 @@ pub async fn finish(
     let import_id = id.to_string();
     let history = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let branch = git(&staging, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-        let dir = claude_jsonl::projects_dir(Path::new(&staging)).ok_or("HOME is not set")?;
+        // The import's Claude runs on the Default login, so it wrote its
+        // transcript in the process default home.
+        let claude_home = claude_home::process_default().ok_or("HOME is not set")?;
+        let dir = claude_home.projects_dir(Path::new(&staging));
         let mut found = Vec::new();
         for entry in std::fs::read_dir(dir).map_err(|_| "No imported conversation found")? {
             let path = entry.map_err(|e| e.to_string())?.path();
@@ -561,8 +564,7 @@ pub async fn finish(
             &task.branch,
             branch == "HEAD",
         )?;
-        let dest = claude_jsonl::session_path(Path::new(&task.worktree_path), &history.resume_id)
-            .ok_or("HOME is not set")?;
+        let dest = claude_home.session_path(Path::new(&task.worktree_path), &history.resume_id);
         std::fs::create_dir_all(dest.parent().ok_or("Invalid transcript path")?)
             .map_err(|e| e.to_string())?;
         let mut rewritten = String::new();

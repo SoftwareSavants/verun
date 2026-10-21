@@ -1,4 +1,5 @@
 use crate::agent::AgentKind;
+use crate::claude_home::{self, ClaudeHome};
 use crate::db::{self, DbWriteTx, Session, Task};
 #[cfg(unix)]
 use crate::mcp;
@@ -1996,7 +1997,6 @@ pub struct SpawnSessionParams {
     pub fast_mode: bool,
     pub agent_type: String,
     /// The session's account (`None`: Default).
-    #[allow(dead_code)] // consumed by the spawn env
     pub account_id: Option<String>,
     pub message: String,
     pub attachments: Vec<Attachment>,
@@ -2509,6 +2509,21 @@ fn spawn_turn_start_response_watcher(
     });
 }
 
+/// The Claude home a session of harness `kind` works against. Claude reads the
+/// home of its account. No other harness reads one, so they get the process
+/// default without a lookup, and a missing `$HOME` doesn't stop them.
+async fn session_claude_home(
+    pool: &SqlitePool,
+    kind: AgentKind,
+    account_id: Option<&str>,
+) -> Result<ClaudeHome, String> {
+    if kind == AgentKind::Claude {
+        return claude_home::for_account(pool, account_id).await;
+    }
+    Ok(claude_home::process_default()
+        .unwrap_or_else(|| ClaudeHome::default_home(std::path::Path::new("/"), None)))
+}
+
 /// Spawn a new CLI process for this session and start the stream monitor.
 ///
 /// Registers the child in `active` with `busy = !prewarm` (pre-warm leaves
@@ -2553,11 +2568,19 @@ pub async fn spawn_session_process(
         thinking_mode,
         fast_mode,
         agent_type,
-        account_id: _, // the spawn env doesn't use it yet
+        account_id,
         message,
         attachments,
         prewarm,
     } = params;
+    // Resolved before anything is spawned, so a home that can't be found
+    // leaves no process behind.
+    let claude_home = session_claude_home(
+        app.state::<SqlitePool>().inner(),
+        agent.kind(),
+        account_id.as_deref(),
+    )
+    .await?;
     let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
     let mcp_config_path = verun_mcp_config_path_for_task(&app_data, &task_id);
@@ -2765,6 +2788,7 @@ pub async fn spawn_session_process(
             monitor_repo,
             monitor_trust,
             monitor_agent,
+            claude_home,
         )
         .await;
 
@@ -3445,11 +3469,32 @@ fn forked_session(
     }
 }
 
+/// Writes the fork's Claude transcript: the parent's, cut after
+/// `fork_after_message_uuid` and renumbered `fork_csid`. Both files sit in
+/// `home`, the parent's, because a transcript never moves between account
+/// homes; they differ only in the folder of their worktree. Blocking file I/O.
+fn fork_claude_transcript(
+    home: &ClaudeHome,
+    parent_cwd: &std::path::Path,
+    parent_csid: &str,
+    fork_cwd: &std::path::Path,
+    fork_csid: &str,
+    fork_after_message_uuid: &str,
+) -> Result<(), String> {
+    crate::claude_jsonl::truncate_after_message(
+        &home.session_path(parent_cwd, parent_csid),
+        &home.session_path(fork_cwd, fork_csid),
+        fork_csid,
+        fork_after_message_uuid,
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// Fork a session at a specific assistant message uuid into a NEW session
 /// inside the SAME task (the worktree is unchanged).
 ///
 /// The new session has a fresh claude session id; we hand-craft a truncated
-/// JSONL transcript at `~/.claude/projects/<dir>/<new-uuid>.jsonl` so
+/// JSONL transcript at `<claude home>/projects/<dir>/<new-uuid>.jsonl` so
 /// `claude --resume <new-uuid>` picks up exactly the prefix the user chose.
 ///
 /// We also copy the parent's `output_lines` rows up to and including the
@@ -3475,6 +3520,9 @@ pub async fn fork_session_in_task(
         .ok_or_else(|| format!("Task {} not found", parent.task_id))?;
 
     let agent_impl = AgentKind::parse(&parent.agent_type).implementation();
+    // The fork's transcript goes in the home of the parent's account.
+    let claude_home =
+        session_claude_home(pool, agent_impl.kind(), parent.account_id.as_deref()).await?;
     let new_csid = Uuid::new_v4().to_string();
     let new_verun_sid = Uuid::new_v4().to_string();
     let now = epoch_ms();
@@ -3487,17 +3535,14 @@ pub async fn fork_session_in_task(
         let fork_uuid_for_blocking = fork_after_message_uuid.clone();
         tokio::task::spawn_blocking(move || {
             let wt = std::path::Path::new(&worktree_path);
-            let src = crate::claude_jsonl::session_path(wt, &parent_csid_for_blocking)
-                .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
-            let dest = crate::claude_jsonl::session_path(wt, &new_csid_for_blocking)
-                .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
-            crate::claude_jsonl::truncate_after_message(
-                &src,
-                &dest,
+            fork_claude_transcript(
+                &claude_home,
+                wt,
+                &parent_csid_for_blocking,
+                wt,
                 &new_csid_for_blocking,
                 &fork_uuid_for_blocking,
             )
-            .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
@@ -3733,6 +3778,15 @@ pub async fn fork_session_to_new_task(
     validate_fork_marker_present(&parent_lines, &fork_after_message_uuid)?;
     let fork_usage = session_usage_up_to_marker(&parent_lines, &fork_after_message_uuid)?;
 
+    // The fork's transcript goes in the home of the parent's account. Resolve
+    // it before the worktree exists, for the same reason.
+    let claude_home = session_claude_home(
+        pool,
+        AgentKind::parse(&parent_session.agent_type),
+        parent_session.account_id.as_deref(),
+    )
+    .await?;
+
     // Create the new worktree (off the runtime).
     let repo_path = project.repo_path.clone();
     let branch = generate_branch_name(&repo_path);
@@ -3832,19 +3886,14 @@ pub async fn fork_session_to_new_task(
         let new_wt_for_blocking = new_task.worktree_path.clone();
         let parent_wt_for_blocking = parent_task.worktree_path.clone();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
-            let parent_wt = std::path::Path::new(&parent_wt_for_blocking);
-            let new_wt = std::path::Path::new(&new_wt_for_blocking);
-            let src = crate::claude_jsonl::session_path(parent_wt, &parent_csid_for_blocking)
-                .ok_or_else(|| "no $HOME for src jsonl".to_string())?;
-            let dest = crate::claude_jsonl::session_path(new_wt, &new_csid_for_blocking)
-                .ok_or_else(|| "no $HOME for dest jsonl".to_string())?;
-            crate::claude_jsonl::truncate_after_message(
-                &src,
-                &dest,
+            fork_claude_transcript(
+                &claude_home,
+                std::path::Path::new(&parent_wt_for_blocking),
+                &parent_csid_for_blocking,
+                std::path::Path::new(&new_wt_for_blocking),
                 &new_csid_for_blocking,
                 &fork_uuid_for_blocking,
             )
-            .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
@@ -4136,7 +4185,8 @@ mod tests {
     // -- Session account on forks --
 
     use crate::db::tests::{
-        make_project, make_session, make_task, process_write_for_tests, test_pool,
+        make_account, make_project, make_session, make_task, process_write_for_tests, test_pool,
+        upsert_account_confirmed,
     };
 
     #[test]
@@ -4242,5 +4292,86 @@ mod tests {
 
         let default = new_session("t-001".into(), "claude".into(), None, None);
         assert_eq!(default.account_id, None);
+    }
+
+    // -- Claude home of a session --
+
+    #[test]
+    fn fork_transcript_stays_in_the_source_accounts_home() {
+        let account_dir = tempfile::tempdir().unwrap();
+        let home = ClaudeHome::for_config_dir(account_dir.path().to_str().unwrap());
+        let parent_wt = tempfile::tempdir().unwrap();
+        let fork_wt = tempfile::tempdir().unwrap();
+        let src = home.session_path(parent_wt.path(), "parent-csid");
+        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::fs::write(
+            &src,
+            concat!(
+                r#"{"type":"user","uuid":"u1","sessionId":"parent-csid"}"#,
+                "\n",
+                r#"{"type":"assistant","uuid":"a1","sessionId":"parent-csid"}"#,
+                "\n",
+                r#"{"type":"user","uuid":"u2","sessionId":"parent-csid"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        fork_claude_transcript(
+            &home,
+            parent_wt.path(),
+            "parent-csid",
+            fork_wt.path(),
+            "fork-csid",
+            "a1",
+        )
+        .unwrap();
+
+        // Same account dir, the fork worktree's own folder in it; cut after
+        // the fork point and renumbered.
+        let dest = home.session_path(fork_wt.path(), "fork-csid");
+        assert!(dest.starts_with(account_dir.path()), "got: {dest:?}");
+        let text = std::fs::read_to_string(&dest).unwrap();
+        assert_eq!(text.lines().count(), 2, "got: {text}");
+        assert!(text.lines().all(|l| l.contains("\"fork-csid\"")));
+    }
+
+    #[test]
+    fn fork_transcript_reports_a_missing_source() {
+        let account_dir = tempfile::tempdir().unwrap();
+        let home = ClaudeHome::for_config_dir(account_dir.path().to_str().unwrap());
+        let wt = tempfile::tempdir().unwrap();
+
+        let err =
+            fork_claude_transcript(&home, wt.path(), "gone", wt.path(), "new", "a1").unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn claude_sessions_run_against_their_accounts_home() {
+        let pool = test_pool().await;
+        upsert_account_confirmed(&pool, make_account("a1", 1))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            session_claude_home(&pool, AgentKind::Claude, Some("a1")).await,
+            Ok(ClaudeHome::for_config_dir("/tmp/verun-accounts/a1"))
+        );
+        // An account that can't be found is an error, not the Default home.
+        assert!(session_claude_home(&pool, AgentKind::Claude, Some("nope"))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn other_harnesses_never_look_up_an_account_for_a_claude_home() {
+        // No accounts exist, and no $HOME is needed: nothing but Claude reads
+        // this home, so a Codex session must never fail over it.
+        let pool = test_pool().await;
+        let home = session_claude_home(&pool, AgentKind::Codex, Some("codex-account"))
+            .await
+            .unwrap();
+        assert!(!home.is_account_home());
     }
 }

@@ -50,6 +50,7 @@ sha2 = "0.10"
 base64 = "0.22"
 tempfile = "3"
 vt100 = "0.15"
+unicode-normalization = "0.1"
 
 # macOS: native UNUserNotificationCenter (click routing + Notification Center clearing).
 # The plugin's build.rs invokes `swift build` with no --arch flag, so Swift compiles for the

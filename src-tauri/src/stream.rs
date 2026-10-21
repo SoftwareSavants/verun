@@ -1,4 +1,4 @@
-use crate::claude_jsonl;
+use crate::claude_home::ClaudeHome;
 use crate::db::{DbWrite, DbWriteTx};
 use crate::policy::{self, PolicyDecision, TrustLevel};
 use crate::snapshots;
@@ -1359,7 +1359,8 @@ pub struct StreamResult {
 }
 
 /// After a turn ends, snapshot the worktree and persist a `turn_snapshots`
-/// row keyed to the latest assistant message uuid in the on-disk JSONL.
+/// row keyed to the latest assistant message uuid in the on-disk JSONL, which
+/// Claude writes in `claude_home`.
 ///
 /// All failures are logged and swallowed — the snapshot machinery is
 /// best-effort and must never break the streaming hot path.
@@ -1367,6 +1368,7 @@ async fn snapshot_turn_best_effort(
     verun_session_id: &str,
     worktree_path: &str,
     resume_session_id: Option<&str>,
+    claude_home: &ClaudeHome,
     db_tx: &DbWriteTx,
     app: &AppHandle,
 ) {
@@ -1376,16 +1378,14 @@ async fn snapshot_turn_best_effort(
     };
     let worktree = worktree_path.to_string();
     let verun_sid = verun_session_id.to_string();
+    let claude_home = claude_home.clone();
     let db_tx = db_tx.clone();
     let app = app.clone();
 
     // Do all blocking I/O off the runtime thread.
     let result = tokio::task::spawn_blocking(move || {
         let wt_path = Path::new(&worktree);
-        let jsonl = match claude_jsonl::session_path(wt_path, &csid) {
-            Some(p) => p,
-            None => return Err("no $HOME for jsonl path".to_string()),
-        };
+        let jsonl = claude_home.session_path(wt_path, &csid);
         if !jsonl.exists() {
             return Err(format!("jsonl not found: {}", jsonl.display()));
         }
@@ -1538,6 +1538,9 @@ fn process_github_remote_invalidation(
 ///
 /// When a `control_request` (tool approval) is detected, we emit it to the
 /// frontend and block until the user responds via `respond_to_approval`.
+///
+/// `claude_home` is where Claude keeps the transcript of this session: the
+/// home of the session's account. Only Claude sessions read it.
 #[allow(clippy::too_many_arguments)]
 pub async fn stream_and_capture(
     app: AppHandle,
@@ -1554,6 +1557,7 @@ pub async fn stream_and_capture(
     repo_path: String,
     trust_level: Arc<AtomicU8>,
     agent: Box<dyn crate::agent::Agent>,
+    claude_home: ClaudeHome,
 ) -> StreamResult {
     let claims = (agent.kind() == crate::agent::AgentKind::Claude)
         .then(|| crate::transcript_source::for_session(&app, &session_id)).flatten();
@@ -1824,6 +1828,7 @@ pub async fn stream_and_capture(
                             let sid = session_id.clone();
                             let wt = worktree_path.clone();
                             let csid = resume_id_for_snapshot.clone();
+                            let home = claude_home.clone();
                             let dbtx = db_tx.clone();
                             let app2 = app.clone();
                             tokio::spawn(async move {
@@ -1831,6 +1836,7 @@ pub async fn stream_and_capture(
                                     &sid,
                                     &wt,
                                     csid.as_deref(),
+                                    &home,
                                     &dbtx,
                                     &app2,
                                 )
