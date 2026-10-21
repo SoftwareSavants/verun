@@ -410,12 +410,16 @@ fn secret_keys(env: &[AccountEnvVar]) -> Vec<String> {
         .collect()
 }
 
-/// Deletes the folder Verun made for `account`. A folder the user brought is
-/// never deleted, and neither is one that is not where Verun makes them
-/// (`<app data>/accounts/<id>`), whatever the row says: the row is the only
-/// thing between this and an `rm -rf` of any folder. Blocks, so async callers
-/// go through `spawn_blocking`.
-fn delete_managed_dir(account: &Account) {
+/// Deletes the folder Verun made for `account`, unless that could cost somebody
+/// else their files. A folder the user brought is never deleted. Neither is one
+/// that is not where Verun makes them (`<app data>/accounts/<id>`), whatever the
+/// row says: the row is the only thing between this and an `rm -rf` of any
+/// folder. And neither is one that a live account in `accounts` has its home in
+/// or under, whatever its harness: an account may be created in the folder of a
+/// removed one (only live accounts of the same harness count as taking a
+/// folder), and removing the removed one again asks for the folder once more.
+/// Blocks, so async callers go through `spawn_blocking`.
+fn delete_managed_dir(account: &Account, accounts: &[Account]) {
     if !account.managed_dir {
         return;
     }
@@ -424,6 +428,18 @@ fn delete_managed_dir(account: &Account) {
         eprintln!(
             "[verun][accounts] not deleting the folder of account {}: it is not under accounts/{}",
             account.id, account.id
+        );
+        return;
+    }
+    let user = accounts.iter().find(|other| {
+        other.id != account.id
+            && other.removed_at.is_none()
+            && Path::new(&other.config_dir).starts_with(dir)
+    });
+    if let Some(user) = user {
+        eprintln!(
+            "[verun][accounts] not deleting the folder of account {}: account {} uses it",
+            account.id, user.id
         );
         return;
     }
@@ -615,11 +631,11 @@ pub async fn create_account(
     }
     if !account.managed_dir {
         let taken: Vec<String> = others
-            .into_iter()
+            .iter()
             .filter(|other| {
                 other.removed_at.is_none() && AgentKind::parse(&other.agent_type) == kind
             })
-            .map(|other| other.config_dir)
+            .map(|other| other.config_dir.clone())
             .collect();
         let standard_home = agent.account_standard_home(user_home);
         let dir = account.config_dir.clone();
@@ -637,7 +653,7 @@ pub async fn create_account(
         let id = account.id.clone();
         let _ = blocking(move || {
             forget_secrets(secrets.as_ref(), &id, &keys);
-            delete_managed_dir(&made);
+            delete_managed_dir(&made, &others);
             Ok(())
         })
         .await;
@@ -694,7 +710,8 @@ pub async fn update_account(
 /// history. Refused while a project uses it.
 ///
 /// Its secrets are deleted from the keychain, and so is its folder when
-/// `delete_dir` is set and Verun made it (see `delete_managed_dir`). Both
+/// `delete_dir` is set, Verun made it and no live account uses it (see
+/// `delete_managed_dir`). Both
 /// happen after the account is marked, as best-effort cleanup: an account
 /// stays removable whatever state the keychain or the disk is in, and what a
 /// failure leaves behind is only logged. Removing an account that is already
@@ -718,6 +735,7 @@ pub async fn remove_account(
             projects,
         });
     }
+    let accounts = db::list_accounts(pool).await.map_err(database_error)?;
     if account.removed_at.is_none() {
         write_confirmed(db_tx, |done| DbWrite::MarkAccountRemoved {
             id: account.id.clone(),
@@ -729,7 +747,7 @@ pub async fn remove_account(
     let _ = blocking(move || {
         forget_secrets(secrets.as_ref(), &account.id, &secret_keys(&account.env));
         if delete_dir {
-            delete_managed_dir(&account);
+            delete_managed_dir(&account, &accounts);
         }
         Ok(())
     })
@@ -954,9 +972,11 @@ mod tests {
 
     /// A harness with the account support a test gives it, for the cases no
     /// real harness covers: no support at all, its own env vars, a required
-    /// secret and no existing folders. Its Default account has the status
-    /// given and the email of the home it is read from.
+    /// secret and no existing folders. It stands in for Claude unless `of`
+    /// says another harness. Its Default account has the status given and the
+    /// email of the home it is read from.
     struct StubHarness {
+        kind: AgentKind,
         profile: Option<AccountProfile>,
         default_status: SignInStatus,
     }
@@ -964,6 +984,7 @@ mod tests {
     impl StubHarness {
         fn new() -> Self {
             Self {
+                kind: AgentKind::Claude,
                 profile: Some(AccountProfile {
                     scrub_vars: &[],
                     fixed_env: &[("STUB_FIXED", "1")],
@@ -988,6 +1009,22 @@ mod tests {
             }
         }
 
+        /// The same, as the harness `kind`: its accounts are stored under it.
+        fn of(self, kind: AgentKind) -> Self {
+            Self { kind, ..self }
+        }
+
+        /// The same, taking a folder the user brings.
+        fn taking_existing_dirs(self) -> Self {
+            Self {
+                profile: self.profile.map(|profile| AccountProfile {
+                    allows_existing_dir: true,
+                    ..profile
+                }),
+                ..self
+            }
+        }
+
         fn signed(status: SignInStatus) -> Self {
             Self {
                 default_status: status,
@@ -998,7 +1035,7 @@ mod tests {
 
     impl Agent for StubHarness {
         fn kind(&self) -> AgentKind {
-            AgentKind::Claude
+            self.kind
         }
         fn display_name(&self) -> &'static str {
             "Stub CLI"
@@ -2048,6 +2085,118 @@ mod tests {
 
         assert!(dir.join("notes").exists());
         assert_eq!(lab.stored().await[0].removed_at, Some(2000));
+    }
+
+    #[tokio::test]
+    async fn remove_keeps_a_folder_another_account_has_moved_into() {
+        let lab = Lab::new().await;
+        lab.create("a1", new_claude("Acme")).await.unwrap();
+        // Removed with its folder kept, so the folder is free for a new account.
+        lab.remove("a1", false).await.unwrap();
+        let dir = lab.managed_dir("a1");
+        std::fs::write(dir.join(".claude.json"), SIGNED_IN).unwrap();
+        lab.create("b1", in_dir(new_claude("Other"), dir.to_str().unwrap()))
+            .await
+            .unwrap();
+
+        // Asked again, with the folder this time: it is b1's now.
+        lab.remove("a1", true).await.unwrap();
+
+        assert!(dir.join(".claude.json").exists(), "b1 is still signed in");
+        assert_eq!(lab.stored().await[1].removed_at, None);
+    }
+
+    #[tokio::test]
+    async fn remove_keeps_a_folder_a_live_account_of_another_harness_uses() {
+        let lab = Lab::new().await;
+        let account = lab.create("a1", new_claude("Acme")).await.unwrap();
+        let dir = lab.managed_dir("a1");
+        std::fs::write(dir.join("login"), "x").unwrap();
+        // The folders are compared within a harness when an account is
+        // created, so an account of another one can be in this folder. The
+        // stub stands in for a harness with account support that is not Claude.
+        let stub = StubHarness::new()
+            .of(AgentKind::Codex)
+            .taking_existing_dirs();
+        let input = in_dir(
+            with_env(
+                new_claude("Other"),
+                vec![secret_in("STUB_SECRET", Some("key-1"))],
+            ),
+            &account.config_dir,
+        );
+        let other = plan_new_account(
+            &stub,
+            lab.user_home.path(),
+            lab.app_data.path(),
+            &input,
+            "c1",
+            1500,
+        )
+        .map(|plan| plan.account)
+        .unwrap();
+        assert_eq!(other.agent_type, "codex");
+        assert_eq!(other.config_dir, account.config_dir);
+        upsert_account_confirmed(&lab.pool, other).await.unwrap();
+
+        lab.remove("a1", true).await.unwrap();
+
+        assert!(dir.join("login").exists(), "c1 is still there");
+        // The folder is not kept for good: once nobody live is in it, it goes.
+        lab.remove("c1", false).await.unwrap();
+        lab.remove("a1", true).await.unwrap();
+        assert!(!dir.exists());
+    }
+
+    #[tokio::test]
+    async fn remove_keeps_a_folder_with_a_live_account_inside_it() {
+        let lab = Lab::new().await;
+        lab.create("a1", new_claude("Acme")).await.unwrap();
+        let inner = lab.managed_dir("a1").join("profile");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::write(inner.join(".claude.json"), SIGNED_IN).unwrap();
+        lab.create("b1", in_dir(new_claude("Other"), inner.to_str().unwrap()))
+            .await
+            .unwrap();
+
+        lab.remove("a1", true).await.unwrap();
+
+        assert!(inner.join(".claude.json").exists(), "b1 is still signed in");
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_the_folder_once_only_removed_accounts_were_in_it() {
+        let lab = Lab::new().await;
+        lab.create("a1", new_claude("Acme")).await.unwrap();
+        lab.remove("a1", false).await.unwrap();
+        let dir = lab.managed_dir("a1");
+        lab.create("b1", in_dir(new_claude("Other"), dir.to_str().unwrap()))
+            .await
+            .unwrap();
+        lab.remove("b1", false).await.unwrap();
+
+        lab.remove("a1", true).await.unwrap();
+
+        assert!(!dir.exists());
+    }
+
+    #[tokio::test]
+    async fn create_does_not_undo_into_a_folder_a_live_account_uses() {
+        // Ids are random in the app, but this one is the caller's: the folder
+        // a failed create would clean up may be one another account brought.
+        let mut lab = Lab::new().await;
+        let taken = lab.managed_dir("z9");
+        std::fs::create_dir_all(&taken).unwrap();
+        std::fs::write(taken.join(".claude.json"), SIGNED_IN).unwrap();
+        lab.create("b1", in_dir(new_claude("Other"), taken.to_str().unwrap()))
+            .await
+            .unwrap();
+        lab.db_tx = dead_queue();
+
+        let result = lab.create("z9", new_claude("Acme")).await;
+
+        assert!(matches!(result, Err(AccountError::Invalid { .. })));
+        assert!(taken.join(".claude.json").exists(), "b1 is still signed in");
     }
 
     #[tokio::test]
