@@ -1,8 +1,10 @@
+use crate::accounts::login::{self as accounts_login, AccountTerminal, AccountTerminalAction};
 use crate::accounts::manage::{
-    self as accounts_manage, AccountsSnapshot, NewAccountInput, UpdateAccountInput,
+    self as accounts_manage, account_user_home, publish_accounts, AccountsSnapshot,
+    NewAccountInput, UpdateAccountInput,
 };
 use crate::accounts::service::resolve_new_session_account;
-use crate::accounts::{AccountError, AccountSelection};
+use crate::accounts::AccountSelection;
 use crate::claude_home::{self, ClaudeHome};
 use crate::claude_terminal::{self, ClaudeTerminalMap, OpenClaudeTerminalResult};
 use crate::db::{self, DbWriteTx, OutputLine, Project, Session, Step, Task};
@@ -2808,33 +2810,6 @@ pub async fn write_binary_file(request: tauri::ipc::Request<'_>) -> Result<(), S
 // Accounts
 // ---------------------------------------------------------------------------
 
-/// The user's home folder: what `~` means in an account's folder, and where the
-/// Default accounts keep their logins.
-fn account_user_home() -> Result<std::path::PathBuf, AccountError> {
-    std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| AccountError::Invalid {
-            message: "Couldn't find your home folder.".into(),
-        })
-}
-
-/// Tells every window that the accounts changed, with the fresh snapshot, and
-/// hands the snapshot back for the command's result. `turn` is the one the
-/// change took and still holds, so that snapshots go out in the order the
-/// changes were stored.
-async fn publish_accounts(
-    turn: &accounts_manage::Turn,
-    app: &AppHandle,
-    pool: &SqlitePool,
-    user_home: &std::path::Path,
-) -> Result<AccountsSnapshot, String> {
-    turn.publish(pool, user_home, |snapshot| {
-        let _ = app.emit("accounts-changed", snapshot);
-    })
-    .await
-}
-
 #[tauri::command]
 pub async fn list_accounts(pool: State<'_, SqlitePool>) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
@@ -2925,6 +2900,23 @@ pub async fn set_project_account(
     .await
     .map_err(|e| e.to_ipc())?;
     publish_accounts(&turn, &app, pool.inner(), &user_home).await
+}
+
+/// Opens a PTY that runs the harness's own login or logout command on the
+/// account. One at a time: a second start is refused while a terminal is open.
+/// When the terminal ends, every window gets the accounts as they are then
+/// (`accounts-changed`).
+#[tauri::command]
+pub async fn start_account_terminal(
+    app: AppHandle,
+    account_id: String,
+    action: AccountTerminalAction,
+    rows: u16,
+    cols: u16,
+) -> Result<AccountTerminal, String> {
+    accounts_login::start(&app, &account_id, action, rows, cols)
+        .await
+        .map_err(|e| e.to_ipc())
 }
 
 // ---------------------------------------------------------------------------

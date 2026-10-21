@@ -560,7 +560,7 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub(crate) struct ThreadSpy {
         secrets: MemorySecretStore,
-        reads: Mutex<Vec<std::thread::ThreadId>>,
+        pub(crate) reads: Mutex<Vec<std::thread::ThreadId>>,
         pub(crate) changes: Mutex<Vec<std::thread::ThreadId>>,
     }
 

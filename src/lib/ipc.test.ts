@@ -147,6 +147,24 @@ describe('ipc', () => {
       await expect(ipc.removeAccount('a1', false)).rejects.toBe('ACCOUNT_ERROR:{"kind":"inUse"}')
     })
 
+    test('startAccountTerminal opens a login or logout terminal', async () => {
+      vi.mocked(invoke).mockResolvedValue({ terminalId: 't1', hint: 'Sign in, then type /quit.' })
+
+      await expect(ipc.startAccountTerminal('a1', 'login', 24, 80)).resolves.toEqual({
+        terminalId: 't1',
+        hint: 'Sign in, then type /quit.',
+      })
+      expect(invoke).toHaveBeenLastCalledWith('start_account_terminal', { accountId: 'a1', action: 'login', rows: 24, cols: 80 })
+
+      await ipc.startAccountTerminal('a2', 'logout', 30, 100)
+      expect(invoke).toHaveBeenLastCalledWith('start_account_terminal', { accountId: 'a2', action: 'logout', rows: 30, cols: 100 })
+    })
+
+    test('a refused terminal start surfaces its error', async () => {
+      vi.mocked(invoke).mockRejectedValueOnce('ACCOUNT_ERROR:{"kind":"busy"}')
+      await expect(ipc.startAccountTerminal('a1', 'login', 24, 80)).rejects.toBe('ACCOUNT_ERROR:{"kind":"busy"}')
+    })
+
     test('listAccounts is an empty snapshot in demo mode', async () => {
       vi.stubEnv('VITE_DEMO_MODE', 'true')
       vi.resetModules()

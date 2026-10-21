@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 
 use super::env::profile_of;
@@ -62,6 +63,33 @@ impl Turn {
         emit(&snapshot);
         Ok(snapshot)
     }
+}
+
+/// The user's home folder: what `~` means in an account's folder, and where the
+/// Default accounts keep their logins.
+pub fn account_user_home() -> Result<PathBuf, AccountError> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| AccountError::Invalid {
+            message: "Couldn't find your home folder.".into(),
+        })
+}
+
+/// Tells every window that the accounts changed, with the fresh snapshot, and
+/// hands the snapshot back for the command's result. `turn` is the one the
+/// change took and still holds, so that snapshots go out in the order the
+/// changes were stored.
+pub async fn publish_accounts(
+    turn: &Turn,
+    app: &AppHandle,
+    pool: &SqlitePool,
+    user_home: &Path,
+) -> Result<AccountsSnapshot, String> {
+    turn.publish(pool, user_home, |snapshot| {
+        let _ = app.emit("accounts-changed", snapshot);
+    })
+    .await
 }
 
 /// An account as the frontend reads it: its row and who is signed in to it.

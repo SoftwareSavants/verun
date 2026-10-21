@@ -2,6 +2,7 @@
 
 pub mod env;
 pub mod identity;
+pub mod login;
 pub mod manage;
 pub mod paths;
 pub mod secrets;
@@ -108,7 +109,6 @@ pub enum AccountError {
         message: String,
     },
     /// A login or logout terminal is already open.
-    #[allow(dead_code)] // constructed by the login terminal
     Busy,
     /// Projects still use the account, so it cannot be removed.
     InUse {

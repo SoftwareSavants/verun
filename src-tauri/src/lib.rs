@@ -87,6 +87,7 @@ pub fn run() {
         .manage(task::new_setup_in_progress())
         .manage(task::new_hook_pty_map())
         .manage(pty::new_active_pty_map())
+        .manage(accounts::login::LoginGuard::default())
         .manage(claude_terminal::new_claude_terminal_map())
         .manage(cloud_import::CloudImportMap::default())
         .manage(watcher::new_file_watcher_map())
@@ -218,6 +219,9 @@ pub fn run() {
                     &app.config().identifier,
                 )),
             )));
+            // A login or logout terminal ending sends the windows the accounts
+            // as they are then.
+            accounts::login::install_exit_listener(app.handle());
 
             #[cfg(unix)]
             {
@@ -477,6 +481,7 @@ pub fn run() {
             ipc::update_account,
             ipc::remove_account,
             ipc::set_project_account,
+            ipc::start_account_terminal,
             // Utility
             ipc::list_agent_skills,
             ipc::check_agent,

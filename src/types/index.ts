@@ -209,6 +209,16 @@ export interface UpdateAccountInput {
   env: AccountEnvInput[];
 }
 
+/** What a terminal does for an account: run the harness's own login or logout command. */
+export type AccountTerminalAction = "login" | "logout";
+
+/** A login or logout terminal that is running. Its output goes through the usual PTY commands and events. */
+export interface AccountTerminal {
+  terminalId: string;
+  /** What the user does in the terminal when the command alone does not finish the job. */
+  hint: string | null;
+}
+
 export interface AgentInfo {
   id: AgentType;
   name: string;

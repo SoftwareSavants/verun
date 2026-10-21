@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste, AccountSelection, AccountsSnapshot, NewAccountInput, UpdateAccountInput } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste, AccountSelection, AccountsSnapshot, NewAccountInput, UpdateAccountInput, AccountTerminal, AccountTerminalAction } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 
@@ -454,6 +454,12 @@ export const removeAccount = (accountId: string, deleteDir: boolean) =>
 
 export const setProjectAccount = (projectId: string, agentType: AgentType, accountId: string | null) =>
   invoke<AccountsSnapshot>('set_project_account', { projectId, agentType, accountId })
+
+// Opens a PTY that runs the harness's own login or logout command on the
+// account. One at a time: a second start is refused with a `busy` account
+// error. The terminal ending sends the `accounts-changed` event.
+export const startAccountTerminal = (accountId: string, action: AccountTerminalAction, rows: number, cols: number) =>
+  invoke<AccountTerminal>('start_account_terminal', { accountId, action, rows, cols })
 
 // Utility
 export const listAgentSkills = (agentKind: AgentType, scanRoot?: string, accountId?: string | null) =>
