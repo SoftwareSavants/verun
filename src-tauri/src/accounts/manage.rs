@@ -2585,6 +2585,25 @@ mod tests {
 
     // -- snapshot --
 
+    /// The harnesses that have account support, so a Default account in the
+    /// snapshot, in the order the snapshot lists them.
+    fn harnesses_with_account_support() -> Vec<&'static str> {
+        AgentKind::all()
+            .iter()
+            .filter(|kind| kind.implementation().account_profile().is_some())
+            .map(|kind| kind.as_str())
+            .collect()
+    }
+
+    /// The harnesses the snapshot lists a Default account for.
+    fn default_harnesses(snapshot: &AccountsSnapshot) -> Vec<&str> {
+        snapshot
+            .defaults
+            .iter()
+            .map(|view| view.agent_type.as_str())
+            .collect()
+    }
+
     #[tokio::test]
     async fn snapshot_includes_identities_and_claude_default() {
         let lab = Lab::new().await;
@@ -2642,13 +2661,11 @@ mod tests {
             snapshot.accounts[2].account.env,
             vec![secret_var("ANTHROPIC_API_KEY")]
         );
-        // Claude has account support, so Default is listed for it.
-        let defaults: Vec<&str> = snapshot
-            .defaults
-            .iter()
-            .map(|view| view.agent_type.as_str())
-            .collect();
-        assert_eq!(defaults, ["claude"]);
+        // Default is listed for every harness with account support, Claude's
+        // included.
+        let defaults = default_harnesses(&snapshot);
+        assert_eq!(defaults, harnesses_with_account_support());
+        assert!(defaults.contains(&"claude"));
         assert_eq!(
             snapshot.project_accounts,
             vec![ProjectAccount {
@@ -2690,17 +2707,10 @@ mod tests {
 
         assert!(snapshot.accounts.is_empty());
         assert!(snapshot.project_accounts.is_empty());
-        let with_support: Vec<&str> = AgentKind::all()
-            .iter()
-            .filter(|kind| kind.implementation().account_profile().is_some())
-            .map(|kind| kind.as_str())
-            .collect();
-        let defaults: Vec<&str> = snapshot
-            .defaults
-            .iter()
-            .map(|view| view.agent_type.as_str())
-            .collect();
-        assert_eq!(defaults, with_support);
+        assert_eq!(
+            default_harnesses(&snapshot),
+            harnesses_with_account_support()
+        );
     }
 
     #[tokio::test]
