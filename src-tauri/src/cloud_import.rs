@@ -3,7 +3,7 @@
 use crate::{
     accounts::{
         self,
-        env::{shell_wrap, EnvPatch},
+        env::{pty_command_and_env, EnvPatch},
         secrets::SecretStore,
         service::{resolve_new_session_account, session_env_for},
         AccountError,
@@ -366,25 +366,9 @@ async fn import_account(
     Ok(ImportAccount { account_id, env })
 }
 
+/// The command the teleport PTY runs. It runs on the import's account env
+/// through `pty_command_and_env`, so it has to be plain POSIX sh.
 const TELEPORT_COMMAND: &str = "exec claude --safe-mode --teleport";
-
-/// The command the teleport PTY runs and the env it is spawned with, for the
-/// import's account env `account_env`.
-///
-/// An empty account env (a Default import in a project with no other harness
-/// bound) gives the command and the env back as they were before accounts. An
-/// added account's env can't just be set on the PTY's shell: it runs the command
-/// under `$SHELL -lic`, and the user's profile runs after the env is applied,
-/// so it could export `CLAUDE_CONFIG_DIR` or an API key over the account's.
-/// `shell_wrap` has `/bin/sh` apply the env once the profile is done and then
-/// run the command, so the command returned is only the exec of that sh and the
-/// script rides in `VERUN_ACCOUNT_SCRIPT`.
-///
-/// The script holds the account's secret values: never log the env.
-fn teleport_command_and_env(account_env: &EnvPatch) -> (String, EnvPatch) {
-    let (command, script_vars) = shell_wrap(TELEPORT_COMMAND, account_env);
-    (command, EnvPatch::from_vars(script_vars))
-}
 
 struct ImportedHistory {
     resume_id: String,
@@ -638,7 +622,7 @@ pub async fn begin(
         existing_directory: false,
         is_git: true,
     };
-    let (teleport, pty_env) = teleport_command_and_env(&env);
+    let (teleport, pty_env) = pty_command_and_env(TELEPORT_COMMAND, Vec::new(), &env);
     let spawn = tokio::task::spawn_blocking({
         let staging = staging.clone();
         let id = id.clone();
@@ -823,9 +807,8 @@ pub async fn cancel(map: &CloudImportMap, pty_map: &ActivePtyMap, id: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::env::{account_env, env_change, EnvChange, ACCOUNT_SCRIPT_VAR};
+    use crate::accounts::env::{a1_env, env_change, EnvChange, ACCOUNT_SCRIPT_VAR};
     use crate::accounts::secrets::MemorySecretStore;
-    use crate::agent::Claude;
     use crate::db::tests::{
         make_account, mark_account_removed_confirmed, set_project_account_confirmed, test_pool,
         upsert_account_confirmed,
@@ -1180,14 +1163,6 @@ mod tests {
 
     // -- claude auth status and the teleport --
 
-    /// What `import_account` gives for the Claude account `a1`: the scrub list
-    /// to remove and the account's dir to set.
-    fn a1_env() -> EnvPatch {
-        let mut account = make_account("a1", 1000);
-        account.config_dir = "/acc/a1".into();
-        account_env(&Claude, &account, &MemorySecretStore::default()).unwrap()
-    }
-
     #[test]
     fn auth_status_command_applies_account_env() {
         let cmd = auth_status_command(&a1_env());
@@ -1228,37 +1203,19 @@ mod tests {
     }
 
     #[test]
-    fn teleport_runs_unwrapped_on_the_default_account() {
-        // An empty env (Default, no other harness bound) is the command and the
-        // env the teleport had before accounts.
-        let (command, env) = teleport_command_and_env(&EnvPatch::default());
-
-        assert_eq!(command, "exec claude --safe-mode --teleport");
-        assert_eq!(env, EnvPatch::default());
-    }
-
-    #[test]
     fn teleport_runs_inside_the_accounts_script() {
-        let (command, env) = teleport_command_and_env(&a1_env());
+        // The wrapping is `pty_command_and_env`'s, tested in accounts::env. The
+        // teleport's part is its command, and that it brings no Verun vars of
+        // its own: the PTY gets the account's script and nothing else, and the
+        // script ends with the teleport.
+        let (_, env) = pty_command_and_env(TELEPORT_COMMAND, Vec::new(), &a1_env());
 
-        // The login shell is only asked to exec the sh that evals the script.
-        assert_eq!(command, r#"exec /bin/sh -c 'eval "$VERUN_ACCOUNT_SCRIPT"'"#);
-        // The PTY gets the script and nothing else: the scrub list travels
-        // inside it.
-        assert!(env.remove.is_empty());
-        assert_eq!(env.set.len(), 1);
-        let (key, script) = &env.set[0];
+        let [(key, script)] = &env.set[..] else {
+            panic!("the PTY gets {} vars, not only the script", env.set.len());
+        };
         assert_eq!(key, ACCOUNT_SCRIPT_VAR);
-        let unset = script.split(';').next().unwrap();
-        assert!(
-            unset
-                .split_whitespace()
-                .any(|word| word == "ANTHROPIC_API_KEY"),
-            "not unset: {unset}"
-        );
-        assert!(script.contains("export CLAUDE_CONFIG_DIR='/acc/a1'"));
-        // The assertion messages name vars and never print the script: it
-        // carries the account's values.
+        // The assertion messages never print the script: it carries the
+        // account's values.
         assert!(
             script.ends_with("; exec claude --safe-mode --teleport"),
             "the teleport is not last in the script"

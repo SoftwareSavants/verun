@@ -196,6 +196,32 @@ pub fn shell_wrap(command: &str, env: &EnvPatch) -> (String, Vec<(String, String
     (outer, vec![(ACCOUNT_SCRIPT_VAR.to_string(), script)])
 }
 
+/// The command a PTY runs and the env it is spawned with, for a command that
+/// runs on an account's env. `command` is the whole command, `verun_vars` are
+/// the vars Verun gives the spawn itself (the `VERUN_*` ones, or none) and `env`
+/// is the env of the account the command runs on.
+///
+/// An empty `env` (a Default account in a project with no other harness bound)
+/// gives `command` and `verun_vars` back as they were before accounts. An added
+/// account's env can't just be set on the PTY: the shell runs `command` under
+/// `$SHELL -lic`, and the user's profile runs after the env is applied, so it
+/// could export `CLAUDE_CONFIG_DIR` or an API key over the account's.
+/// `shell_wrap` has `/bin/sh` apply the env once the profile is done and then
+/// run `command`, so the command returned is only the exec of that sh and the
+/// script rides in `ACCOUNT_SCRIPT_VAR` beside `verun_vars`. The scrub list is
+/// unset inside the script, so the env returned removes nothing.
+///
+/// The script holds the account's secret values: never log the env.
+pub(crate) fn pty_command_and_env(
+    command: &str,
+    mut verun_vars: Vec<(String, String)>,
+    env: &EnvPatch,
+) -> (String, EnvPatch) {
+    let (command, script_vars) = shell_wrap(command, env);
+    verun_vars.extend(script_vars);
+    (command, EnvPatch::from_vars(verun_vars))
+}
+
 /// What `/bin/sh -c "{profile}{outer}"` prints, for the tests that run a
 /// wrapped command the way a spawn site does. `profile` is shell code that runs
 /// first in the same shell, standing in for what the user's profile exports
@@ -218,6 +244,21 @@ pub(crate) fn run_in_sh(profile: &str, outer: &str, env: &EnvPatch) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The env of the added Claude account `a1` (home `/acc/a1`, no env vars of its
+/// own): the scrub list to remove and the dir to set. For the tests of a spawn
+/// site, as the env of the account it runs on.
+#[cfg(test)]
+pub(crate) fn a1_env() -> EnvPatch {
+    let mut account = crate::db::tests::make_account("a1", 1000);
+    account.config_dir = "/acc/a1".into();
+    account_env(
+        &crate::agent::Claude,
+        &account,
+        &super::secrets::MemorySecretStore::default(),
+    )
+    .unwrap()
 }
 
 /// What a command does to one var of its child's env, for the tests that check
@@ -1327,6 +1368,102 @@ mod tests {
             let printed = run_wrapped("", r#"printf '%s' "$ACCOUNT_VALUE""#, &patch);
 
             assert_eq!(printed, value, "value {value:?}");
+        }
+    }
+
+    // -- pty_command_and_env --
+
+    /// Verun's own vars, as a spawn site passes them to the PTY.
+    fn verun_vars() -> Vec<(String, String)> {
+        pairs(&[("VERUN_PORT_0", "10000"), ("VERUN_REPO_PATH", "/tmp/myapp")])
+    }
+
+    #[test]
+    fn pty_command_is_unchanged_for_an_empty_env() {
+        // An empty account env (a Default account in a project with no other
+        // harness bound): the spawn runs the command and the env it ran with
+        // before accounts, byte for byte.
+        let (command, env) = pty_command_and_env(
+            "exec claude --resume 'r1'",
+            verun_vars(),
+            &EnvPatch::default(),
+        );
+
+        assert_eq!(command, "exec claude --resume 'r1'");
+        assert_eq!(env, EnvPatch::from_vars(verun_vars()));
+    }
+
+    #[test]
+    fn pty_command_wraps_for_account() {
+        // Whatever is on the command by the time it is wrapped (here a
+        // `--settings` suffix) runs inside the script along with the rest.
+        let base = r#"exec claude --resume 'r1' --settings '{"hooks":{}}'"#;
+
+        let (command, env) = pty_command_and_env(base, verun_vars(), &a1_env());
+
+        // The login shell is only asked to exec the sh that evals the script.
+        assert_eq!(command, r#"exec /bin/sh -c 'eval "$VERUN_ACCOUNT_SCRIPT"'"#);
+        let script = env
+            .set
+            .iter()
+            .find(|(key, _)| key == ACCOUNT_SCRIPT_VAR)
+            .map(|(_, script)| script.as_str())
+            .expect("the script var is set");
+        // The scrub list is unset, the account's dir exported, and then the
+        // whole command runs.
+        let unset = script.split(';').next().unwrap();
+        for var in Claude.account_profile().unwrap().scrub_vars {
+            // A whole name: `unset.contains(var)` would also take `XANTHROPIC_API_KEY`
+            // for `ANTHROPIC_API_KEY`.
+            assert!(
+                unset.split_whitespace().any(|word| word == *var),
+                "{var} is not unset: {unset}"
+            );
+        }
+        assert!(script.contains("export CLAUDE_CONFIG_DIR='/acc/a1'"));
+        // The assertion messages name vars and never print the script: it
+        // carries the account's values.
+        assert!(
+            script.ends_with(&format!("; {base}")),
+            "the command is not last in the script"
+        );
+        // Verun's vars still reach the shell, and the env itself removes
+        // nothing: the scrub list travels inside the script.
+        for var in verun_vars() {
+            assert!(env.set.contains(&var), "{} is missing", var.0);
+        }
+        assert!(env.remove.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pty_command_gives_the_command_the_account_env_and_verun_vars() {
+        // `exec /usr/bin/env` stands in for `exec claude`: it prints the env
+        // it inherited.
+        let (command, env) = pty_command_and_env("exec /usr/bin/env", verun_vars(), &a1_env());
+
+        // The login shell's env is Verun's own, with a login in it, plus the
+        // spawn env. Its profile runs before the command and exports a dir of
+        // its own.
+        let printed = run_in_sh("export CLAUDE_CONFIG_DIR=/from-profile; ", &command, &env);
+        let lines: Vec<&str> = printed.lines().collect();
+        assert!(
+            lines.contains(&"CLAUDE_CONFIG_DIR=/acc/a1"),
+            "env printed {lines:?}"
+        );
+        assert!(
+            lines.contains(&"VERUN_PORT_0=10000"),
+            "env printed {lines:?}"
+        );
+        assert!(
+            lines.contains(&"VERUN_REPO_PATH=/tmp/myapp"),
+            "env printed {lines:?}"
+        );
+        for gone in ["ANTHROPIC_API_KEY=", "VERUN_ACCOUNT_SCRIPT="] {
+            assert!(
+                !lines.iter().any(|line| line.starts_with(gone)),
+                "env printed {lines:?}"
+            );
         }
     }
 }
