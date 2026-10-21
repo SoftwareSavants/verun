@@ -639,6 +639,9 @@ pub fn new_hook_pty_map() -> HookPtyMap {
 
 /// Spawn a hook command via PTY so output streams to the frontend in real-time.
 /// Returns the terminal_id on success.
+///
+/// `project_env` is the project's account env (`hook_account_env`), applied
+/// over Verun's own vars so the hook runs on the project's logins.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_hook_pty(
     app: &AppHandle,
@@ -651,6 +654,7 @@ pub fn spawn_hook_pty(
     hook_type: HookType,
     port_offset: i64,
     repo_path: &str,
+    project_env: EnvPatch,
 ) -> Result<crate::pty::SpawnResult, String> {
     if hook_command.is_empty() {
         return Err(format!("No {} hook configured", hook_type.as_str()));
@@ -660,7 +664,7 @@ pub fn spawn_hook_pty(
         return Err("A hook is already running for this task".to_string());
     }
 
-    let env_vars = worktree::verun_env_vars(port_offset, repo_path);
+    let env = worktree::task_env(port_offset, repo_path, project_env);
 
     let display_name = match hook_type {
         HookType::Setup => "Setup",
@@ -674,7 +678,7 @@ pub fn spawn_hook_pty(
         24,
         80,
         Some(hook_command.to_string()),
-        env_vars,
+        env,
         true, // direct_command — PTY exits when hook exits
         Some(display_name.to_string()),
         false,
@@ -776,7 +780,9 @@ pub fn spawn_hook_pty(
 }
 
 /// Run a setup hook in the background via PTY, emitting events to the frontend.
-/// Shared by task creation and task restoration.
+/// Shared by task creation and task restoration. `project_env` is what
+/// `hook_account_env` found for `setup_hook`, resolved by the caller before it
+/// created anything.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_setup_hook(
     app: &AppHandle,
@@ -788,6 +794,7 @@ pub fn spawn_setup_hook(
     setup_hook: &str,
     port_offset: i64,
     repo_path: &str,
+    project_env: EnvPatch,
 ) {
     if setup_hook.is_empty() {
         return;
@@ -804,6 +811,7 @@ pub fn spawn_setup_hook(
         HookType::Setup,
         port_offset,
         repo_path,
+        project_env,
     ) {
         eprintln!("[verun] failed to spawn setup hook PTY: {e}");
         // Fall back: emit failed event so frontend isn't stuck
@@ -944,6 +952,15 @@ pub async fn create_task(
     setup_in_progress: &SetupInProgress,
     params: CreateTaskParams,
 ) -> Result<(Task, Session), String> {
+    // Before the lock and the worktree: if the project's accounts can't be read
+    // the call fails with nothing created, and the lock isn't held while the
+    // keychain answers. A task in an existing directory runs no setup hook.
+    let hook = if params.directory.is_some() {
+        ""
+    } else {
+        params.setup_hook.as_str()
+    };
+    let project_env = hook_account_env(app, &params.project_id, hook).await?;
     let _workspace_guard = crate::workspace::LIFECYCLE_LOCK.lock().await;
     let CreateTaskParams {
         project_id,
@@ -1072,11 +1089,15 @@ pub async fn create_task(
         if existing_directory { "" } else { &setup_hook },
         port_offset,
         &repo_path,
+        project_env,
     );
 
     Ok((task, session))
 }
 
+/// `project_env` is the account env the destroy hook runs with over Verun's
+/// own vars: `destroy_hook_account_env`, resolved by the caller before the
+/// workspace lock is taken.
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_task(
     app: &AppHandle,
@@ -1086,6 +1107,7 @@ pub async fn delete_task(
     repo_path: &str,
     task: &Task,
     destroy_hook: &str,
+    project_env: &EnvPatch,
     delete_branch: bool,
     skip_destroy_hook: bool,
 ) -> Result<(), String> {
@@ -1142,10 +1164,10 @@ pub async fn delete_task(
         destroy_hook.to_string()
     };
     let branch = task.branch.clone();
-    let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
+    let env = worktree::task_env(task.port_offset, repo_path, project_env.clone());
     let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
         if !hook.is_empty() {
-            if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
+            if let Err(e) = worktree::run_hook(&wtp, &hook, &env) {
                 eprintln!("[verun] destroy hook failed: {e}");
             }
         }
@@ -1176,6 +1198,9 @@ pub async fn delete_task(
     Ok(())
 }
 
+/// `project_env` is the account env the destroy hook runs with over Verun's
+/// own vars: `destroy_hook_account_env`, resolved by the caller before the
+/// workspace lock is taken.
 #[allow(clippy::too_many_arguments)]
 pub async fn archive_task(
     app: &AppHandle,
@@ -1184,6 +1209,7 @@ pub async fn archive_task(
     active: &ActiveMap,
     task: &Task,
     destroy_hook: &str,
+    project_env: &EnvPatch,
     repo_path: &str,
     skip_destroy_hook: bool,
 ) -> Result<(), String> {
@@ -1262,14 +1288,14 @@ pub async fn archive_task(
         destroy_hook.to_string()
     };
     let wtp = task.worktree_path.clone();
-    let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
+    let env = worktree::task_env(task.port_offset, repo_path, project_env.clone());
     let task_id = task.id.clone();
     let db_tx_bg = db_tx.clone();
     tokio::spawn(async move {
         let _workspace_guard = workspace_guard;
         let last_commit_message = tokio::task::spawn_blocking(move || {
             if !hook.is_empty() {
-                if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
+                if let Err(e) = worktree::run_hook(&wtp, &hook, &env) {
                     eprintln!("[verun] destroy hook failed: {e}");
                 }
             }
@@ -2017,6 +2043,57 @@ async fn session_account_env(
     )
     .await
     .map_err(|e| e.to_ipc())
+}
+
+/// The account env a project's task shells and start command run with, over
+/// Verun's own vars: see `accounts::service::project_env_for`. An account that
+/// can't be read (a secret the keychain won't give, a binding to an account
+/// that's gone) fails here, before anything is spawned, with the `AccountError`
+/// in its IPC form so the frontend can offer the fix. It never falls back to
+/// another login.
+pub async fn project_account_env(app: &AppHandle, project_id: &str) -> Result<EnvPatch, String> {
+    let secrets = app.state::<accounts::Secrets>().0.clone();
+    accounts::service::project_env_for(app.state::<SqlitePool>().inner(), secrets, project_id)
+        .await
+        .map_err(|e| e.to_ipc())
+}
+
+/// `project_account_env` for a hook, `hook` being its command: see
+/// `accounts::service::hook_env_for`. No hook means nothing to spawn, so no env
+/// is read and no account can fail it.
+pub async fn hook_account_env(
+    app: &AppHandle,
+    project_id: &str,
+    hook: &str,
+) -> Result<EnvPatch, String> {
+    let secrets = app.state::<accounts::Secrets>().0.clone();
+    accounts::service::hook_env_for(app.state::<SqlitePool>().inner(), secrets, project_id, hook)
+        .await
+        .map_err(|e| e.to_ipc())
+}
+
+/// The account env for the destroy hook of a task that is being deleted or
+/// archived: see `accounts::service::destroy_hook_env_for`. Unlike every other
+/// spawn it cannot fail, so an account problem never blocks removing a task.
+/// There is no hook to run, and so no env, when `skip_destroy_hook` is set.
+pub async fn destroy_hook_account_env(
+    app: &AppHandle,
+    project: &db::Project,
+    skip_destroy_hook: bool,
+) -> EnvPatch {
+    let hook = if skip_destroy_hook {
+        ""
+    } else {
+        project.destroy_hook.as_str()
+    };
+    let secrets = app.state::<accounts::Secrets>().0.clone();
+    accounts::service::destroy_hook_env_for(
+        app.state::<SqlitePool>().inner(),
+        secrets,
+        &project.id,
+        hook,
+    )
+    .await
 }
 
 /// The env a spawn uses: the one its caller already resolved, else what
@@ -3948,15 +4025,18 @@ async fn insert_task_row_tx(
 /// per-turn snapshot taken at the chosen message (true counterfactual) or
 /// from the parent's current worktree state (HEAD + any uncommitted edits).
 ///
-/// Returns the new task + session. The caller is responsible for spawning
-/// the project's setup hook on the new worktree (see ipc::fork_session_to_new_task).
+/// Returns the new task + session, and the account env of the project's setup
+/// hook (`hook_account_env`). The caller is responsible for spawning the hook
+/// on the new worktree with it (see ipc::fork_session_to_new_task). The env is
+/// resolved before the worktree exists, so an account that can't be read fails
+/// the fork with nothing created.
 pub async fn fork_session_to_new_task(
     app: &AppHandle,
     pool: &sqlx::sqlite::SqlitePool,
     source_session_id: String,
     fork_after_message_uuid: String,
     worktree_state: WorktreeForkState,
-) -> Result<(Task, Session), String> {
+) -> Result<(Task, Session, EnvPatch), String> {
     let parent_session = db::get_session(pool, &source_session_id)
         .await?
         .ok_or_else(|| format!("Session {source_session_id} not found"))?;
@@ -3999,6 +4079,8 @@ pub async fn fork_session_to_new_task(
     // Resolve it before the worktree exists, for the same reason.
     let claude_home =
         fork_claude_home(pool, &parent_session, claude_home::process_default()).await?;
+    // The project's accounts for its setup hook, for the same reason.
+    let setup_env = hook_account_env(app, &project.id, &project.setup_hook).await?;
 
     // Create the new worktree (off the runtime).
     let repo_path = project.repo_path.clone();
@@ -4144,7 +4226,7 @@ pub async fn fork_session_to_new_task(
     );
     let _ = app.emit("session-created", &new_session);
 
-    Ok((new_task, new_session))
+    Ok((new_task, new_session, setup_env))
 }
 
 /// Scan parent output_lines for a `verun_turn_snapshot` marker whose

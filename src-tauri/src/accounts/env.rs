@@ -50,7 +50,6 @@ impl std::fmt::Debug for EnvPatch {
 
 impl EnvPatch {
     /// A patch that only sets `vars`. A key given twice keeps its last value.
-    #[allow(dead_code)] // consumed by the account service
     pub fn from_vars(vars: Vec<(String, String)>) -> Self {
         let mut patch = Self::default();
         for (key, value) in vars {
@@ -94,6 +93,17 @@ impl EnvPatch {
 
     /// `apply_to_command` for a `std::process::Command`.
     pub fn apply_to_std_command(&self, cmd: &mut std::process::Command) {
+        for key in &self.remove {
+            cmd.env_remove(key);
+        }
+        for (key, value) in &self.set {
+            cmd.env(key, value);
+        }
+    }
+
+    /// `apply_to_command` for the `CommandBuilder` of a PTY. A builder keeps
+    /// one entry per var as well, so the order matters in the same way.
+    pub fn apply_to_pty(&self, cmd: &mut portable_pty::CommandBuilder) {
         for key in &self.remove {
             cmd.env_remove(key);
         }
@@ -931,6 +941,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn env_patch_applies_to_pty_builder() {
+        let patch = EnvPatch {
+            remove: strings(&["HOME"]),
+            set: pairs(&[("FOO", "bar")]),
+        };
+        let mut builder = portable_pty::CommandBuilder::new("sh");
+        // The builder starts from Verun's own env. Give it a HOME of its own
+        // so the test does not depend on the one it ran under.
+        builder.env("HOME", "/Users/me");
+
+        patch.apply_to_pty(&mut builder);
+
+        assert_eq!(builder.get_env("HOME"), None);
+        assert_eq!(builder.get_env("FOO"), Some(std::ffi::OsStr::new("bar")));
+    }
+
+    #[test]
+    fn apply_to_pty_removes_first_then_sets() {
+        let patch = EnvPatch {
+            remove: strings(&["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"]),
+            set: pairs(&[("CLAUDE_CONFIG_DIR", "/acc/a1")]),
+        };
+        let mut builder = portable_pty::CommandBuilder::new("sh");
+        builder.env("ANTHROPIC_API_KEY", "sk-inherited");
+        builder.env("CLAUDE_CONFIG_DIR", "/Users/me/.claude");
+        builder.env("VERUN_PORT_0", "3000");
+
+        patch.apply_to_pty(&mut builder);
+
+        // The key in both lists ends up set, the other one removed, and what
+        // the builder already had is left alone.
+        assert_eq!(builder.get_env("ANTHROPIC_API_KEY"), None);
+        assert_eq!(
+            builder.get_env("CLAUDE_CONFIG_DIR"),
+            Some(std::ffi::OsStr::new("/acc/a1"))
+        );
+        assert_eq!(
+            builder.get_env("VERUN_PORT_0"),
+            Some(std::ffi::OsStr::new("3000"))
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_child_sees_the_account_env_and_none_of_the_scrubbed_vars() {
@@ -1155,6 +1208,42 @@ mod tests {
         );
 
         assert_eq!(printed, "unset|sk-ant-secret");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_wrap_exports_cross_exec() {
+        // The command replaces the sh with `exec`, as terminal mode's does, so
+        // the exports have to reach a separate program and not only the
+        // builtins of the sh that ran them. `env` prints what it inherited.
+        let account = account("a1", vec![]);
+        let patch = account_env(&Claude, &account, &MemorySecretStore::default()).unwrap();
+
+        let printed = run_wrapped(
+            "export CLAUDE_CONFIG_DIR=/wrong; ",
+            "exec /usr/bin/env",
+            &patch,
+        );
+
+        let lines: Vec<&str> = printed.lines().collect();
+        assert!(
+            lines.contains(&"CLAUDE_CONFIG_DIR=/acc/a1"),
+            "env printed {lines:?}"
+        );
+        // `run_wrapped` inherited ANTHROPIC_API_KEY=leak, which the patch
+        // removes, and the script var must be gone by now.
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("ANTHROPIC_API_KEY=")),
+            "env printed {lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("VERUN_ACCOUNT_SCRIPT=")),
+            "env printed {lines:?}"
+        );
     }
 
     #[cfg(unix)]

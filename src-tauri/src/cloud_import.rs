@@ -1,6 +1,7 @@
 //! Claude cloud handoff. Import in a disposable clone before publishing a task.
 
 use crate::{
+    accounts::env::EnvPatch,
     claude_home, claude_jsonl, claude_terminal,
     db::{DbWrite, DbWriteTx, Project, Session, Task},
     pty::{self, ActivePtyMap},
@@ -457,7 +458,7 @@ pub async fn begin(
                 PICKER_ROWS,
                 PICKER_COLS,
                 Some("exec claude --safe-mode --teleport".into()),
-                vec![],
+                EnvPatch::default(),
                 true,
                 Some("Import from Claude cloud".into()),
                 false,

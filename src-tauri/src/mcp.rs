@@ -1489,7 +1489,9 @@ async fn perform_app_start(
     }
 
     let repo_path = db::get_repo_path_for_task(pool.inner(), task_id).await?;
-    let env_vars = crate::worktree::verun_env_vars(task.port_offset, &repo_path);
+    // The dev server runs on the project's accounts, like the task's shells.
+    let project_env = crate::task::project_account_env(app, &task.project_id).await?;
+    let env = crate::worktree::task_env(task.port_offset, &repo_path, project_env);
     let map = pty_map.inner().clone();
     let app_handle = app.clone();
     let worktree_path = task.worktree_path.clone();
@@ -1504,7 +1506,7 @@ async fn perform_app_start(
             24,
             120,
             Some(cmd_for_spawn),
-            env_vars,
+            env,
             true,
             Some("Dev Server".into()),
             true,

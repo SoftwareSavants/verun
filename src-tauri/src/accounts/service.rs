@@ -201,7 +201,6 @@ pub async fn session_env_for(
 ///
 /// The database is read here and the keychain reads run in `spawn_blocking`,
 /// like `session_env_for`.
-#[allow(dead_code)] // consumed by the task shells, hooks and start command
 pub async fn project_env_for(
     pool: &SqlitePool,
     secrets: Arc<dyn SecretStore>,
@@ -209,6 +208,48 @@ pub async fn project_env_for(
 ) -> Result<EnvPatch, AccountError> {
     let project_accounts = load_project_accounts(pool, project_id).await?;
     blocking(move || project_env(&project_accounts, secrets.as_ref())).await
+}
+
+/// The env of a hook of `project_id`, `hook` being its command: see
+/// `project_env_for`. An empty hook spawns nothing, so it needs no env and
+/// neither the database nor the keychain is touched: a project without a hook
+/// never fails over an account.
+pub async fn hook_env_for(
+    pool: &SqlitePool,
+    secrets: Arc<dyn SecretStore>,
+    project_id: &str,
+    hook: &str,
+) -> Result<EnvPatch, AccountError> {
+    if hook.is_empty() {
+        return Ok(EnvPatch::default());
+    }
+    project_env_for(pool, secrets, project_id).await
+}
+
+/// The env of the destroy hook (`hook`) of a task that is being deleted or
+/// archived: `hook_env_for`, except that it cannot fail. A task must stay
+/// removable whatever state its accounts are in (a locked keychain, a secret
+/// that was never stored), so an error is logged and the hook runs without the
+/// project's accounts, with Verun's own vars alone. Every other spawn fails
+/// instead of falling back to another login.
+///
+/// The warning names the account and the var, never a value: no error carries
+/// one.
+pub async fn destroy_hook_env_for(
+    pool: &SqlitePool,
+    secrets: Arc<dyn SecretStore>,
+    project_id: &str,
+    hook: &str,
+) -> EnvPatch {
+    match hook_env_for(pool, secrets, project_id, hook).await {
+        Ok(env) => env,
+        Err(e) => {
+            eprintln!(
+                "[verun][accounts] destroy hook of project {project_id} runs without its accounts: {e:?}"
+            );
+            EnvPatch::default()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -399,6 +440,21 @@ mod tests {
         }
         fn delete(&self, account_id: &str, key: &str) -> Result<(), String> {
             self.secrets.delete(account_id, key)
+        }
+    }
+
+    /// A keychain that refuses every read.
+    struct LockedKeychain;
+
+    impl SecretStore for LockedKeychain {
+        fn get(&self, _account_id: &str, _key: &str) -> Result<Option<String>, String> {
+            Err("keychain is locked".into())
+        }
+        fn set(&self, _account_id: &str, _key: &str, _value: &str) -> Result<(), String> {
+            Err("keychain is locked".into())
+        }
+        fn delete(&self, _account_id: &str, _key: &str) -> Result<(), String> {
+            Err("keychain is locked".into())
         }
     }
 
@@ -825,5 +881,124 @@ mod tests {
             !reads.contains(&std::thread::current().id()),
             "the keychain was read on the async caller's thread"
         );
+    }
+
+    // -- hook_env_for --
+
+    #[tokio::test]
+    async fn hook_env_for_a_hook_gets_the_projects_env() {
+        let pool = test_pool().await;
+        let dir = claude_dir(SIGNED_IN);
+        upsert_account_confirmed(&pool, acme("a1", &dir))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+
+        let patch = hook_env_for(&pool, no_secrets(), "p-001", "pnpm install")
+            .await
+            .unwrap();
+
+        assert!(sets(
+            &patch,
+            "CLAUDE_CONFIG_DIR",
+            &dir.path().to_string_lossy()
+        ));
+    }
+
+    #[tokio::test]
+    async fn hook_env_for_a_hook_fails_when_a_secret_cannot_be_read() {
+        // The hook would run on the wrong login, so it does not run.
+        let pool = test_pool().await;
+        let dir = claude_dir(SIGNED_IN);
+        let mut account = acme("a1", &dir);
+        account.env = vec![secret_var("ANTHROPIC_API_KEY")];
+        upsert_account_confirmed(&pool, account).await.unwrap();
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+
+        let result = hook_env_for(&pool, Arc::new(LockedKeychain), "p-001", "pnpm install").await;
+
+        assert!(
+            matches!(result, Err(AccountError::Secret { .. })),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_env_for_no_hook_needs_no_env() {
+        // Nothing is spawned, so neither the database nor the keychain is
+        // touched, and an account that cannot be read costs a project without a
+        // hook nothing. The pool has no tables, so any query would fail.
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let spy = Arc::new(ThreadSpy::default());
+
+        assert_eq!(
+            hook_env_for(&pool, spy.clone(), "p-001", "").await,
+            Ok(EnvPatch::default())
+        );
+        assert!(spy.reads.lock().unwrap().is_empty());
+    }
+
+    // -- destroy_hook_env_for --
+
+    #[tokio::test]
+    async fn destroy_hook_env_for_includes_the_bound_account() {
+        let pool = test_pool().await;
+        let dir = claude_dir(SIGNED_IN);
+        upsert_account_confirmed(&pool, acme("a1", &dir))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+
+        let patch = destroy_hook_env_for(&pool, no_secrets(), "p-001", "rm -rf node_modules").await;
+
+        assert!(sets(
+            &patch,
+            "CLAUDE_CONFIG_DIR",
+            &dir.path().to_string_lossy()
+        ));
+    }
+
+    #[tokio::test]
+    async fn destroy_hook_env_for_runs_without_the_accounts_when_the_keychain_fails() {
+        // A task must stay deletable, so unlike a shell or a setup hook the
+        // destroy hook goes on with Verun's own vars alone.
+        let pool = test_pool().await;
+        let dir = claude_dir(SIGNED_IN);
+        let mut account = acme("a1", &dir);
+        account.env = vec![secret_var("ANTHROPIC_API_KEY")];
+        upsert_account_confirmed(&pool, account).await.unwrap();
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            project_env_for(&pool, Arc::new(LockedKeychain), "p-001").await,
+            Err(AccountError::Secret { .. })
+        ));
+
+        let patch = destroy_hook_env_for(
+            &pool,
+            Arc::new(LockedKeychain),
+            "p-001",
+            "rm -rf node_modules",
+        )
+        .await;
+
+        assert_eq!(patch, EnvPatch::default());
+    }
+
+    #[tokio::test]
+    async fn destroy_hook_env_for_runs_without_the_accounts_when_the_database_fails() {
+        // No migrations ran, so every query fails.
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        let patch = destroy_hook_env_for(&pool, no_secrets(), "p-001", "rm -rf node_modules").await;
+
+        assert_eq!(patch, EnvPatch::default());
     }
 }

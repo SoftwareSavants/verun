@@ -28,6 +28,7 @@ use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
 
+use crate::accounts::env::EnvPatch;
 use crate::claude_home::{self, ClaudeHome};
 use crate::claude_transcript_tail::{spawn_transcript_tail_with_claims, TranscriptTail};
 use crate::db::{self, DbWrite, DbWriteTx};
@@ -192,7 +193,7 @@ pub async fn open_claude_terminal(
             rows,
             cols,
             Some(command),
-            env_vars,
+            EnvPatch::from_vars(env_vars),
             /* direct_command = */ true,
             Some(TERMINAL_DISPLAY_NAME.to_string()),
             /* is_start_command = */ false,

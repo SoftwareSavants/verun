@@ -1,3 +1,4 @@
+use crate::accounts::env::EnvPatch;
 use crate::{env_path, pty_output::OutputBuffer};
 use dashmap::DashMap;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -137,10 +138,58 @@ pub struct SpawnResult {
     pub shell_name: String,
 }
 
+/// The command a PTY starts: the user's `shell` in `cwd`, with `TERM` set and
+/// `env` applied on top of the env this process inherited. Also returns whether
+/// `initial_command` still has to be typed into the shell once it is up.
+///
+/// When `direct_command` is true and there is a command, the shell runs it
+/// directly — the PTY process IS the command, so when it exits (Ctrl+C, crash,
+/// etc.) the PTY exits too. Without one it falls back to an interactive shell.
+fn pty_command(
+    shell: &str,
+    cwd: &str,
+    initial_command: Option<&str>,
+    direct_command: bool,
+    env: &EnvPatch,
+) -> (CommandBuilder, bool) {
+    let mut cmd = CommandBuilder::new(shell);
+    let write_initial = match initial_command {
+        Some(command) if direct_command => {
+            #[cfg(not(target_os = "windows"))]
+            {
+                // -lic: login + interactive + command — sources .zshrc/.bashrc
+                // so nvm/fnm/etc set the correct Node version
+                cmd.args(["-lic", command]);
+            }
+            #[cfg(target_os = "windows")]
+            {
+                cmd.args(["-c", command]);
+            }
+            false // don't write to stdin — command is an arg
+        }
+        _ => {
+            // Login shell for $PATH, aliases, etc.
+            #[cfg(not(target_os = "windows"))]
+            cmd.arg("-l");
+            // A direct command took the arm above, so a command left here is
+            // for an interactive shell: it gets typed in.
+            initial_command.is_some()
+        }
+    };
+    cmd.cwd(cwd);
+    cmd.env("TERM", "xterm-256color");
+    env.apply_to_pty(&mut cmd);
+    (cmd, write_initial)
+}
+
 /// Spawn a new PTY running the user's shell in the given working directory.
 /// If `initial_command` is provided, it will be written to the PTY immediately after spawn.
 /// If `direct_command` is true, the command is run directly via `sh -c` instead of inside
 /// a login shell — the PTY exits when the command exits (good for dev servers / start commands).
+///
+/// `env` is applied on top of the env this process inherited: the vars it
+/// removes are dropped and the ones it sets are added. Callers with nothing to
+/// change pass `EnvPatch::default()`.
 ///
 /// `name_override` sets the display name shown in the terminal tab. When `None`,
 /// the shell's basename is used (e.g. "zsh"). `is_start_command` and `hook_type`
@@ -155,7 +204,7 @@ pub fn spawn_pty(
     rows: u16,
     cols: u16,
     initial_command: Option<String>,
-    env_vars: Vec<(String, String)>,
+    env: EnvPatch,
     direct_command: bool,
     name_override: Option<String>,
     is_start_command: bool,
@@ -184,50 +233,13 @@ pub fn spawn_pty(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "shell".to_string());
 
-    // When direct_command is true, run the command directly via the shell — the PTY
-    // process IS the command, so when it exits (Ctrl+C, crash, etc.) the PTY exits too.
-    let (cmd, write_initial) = if direct_command {
-        if let Some(ref command) = initial_command {
-            let mut c = CommandBuilder::new(&shell);
-            #[cfg(not(target_os = "windows"))]
-            {
-                // -lic: login + interactive + command — sources .zshrc/.bashrc
-                // so nvm/fnm/etc set the correct Node version
-                c.args(["-lic", command]);
-            }
-            #[cfg(target_os = "windows")]
-            {
-                c.args(["-c", command]);
-            }
-            c.cwd(&cwd);
-            c.env("TERM", "xterm-256color");
-            for (k, v) in &env_vars {
-                c.env(k, v);
-            }
-            (c, false) // don't write to stdin — command is an arg
-        } else {
-            // No command, fall back to interactive shell
-            let mut c = CommandBuilder::new(&shell);
-            #[cfg(not(target_os = "windows"))]
-            c.arg("-l");
-            c.cwd(&cwd);
-            c.env("TERM", "xterm-256color");
-            for (k, v) in &env_vars {
-                c.env(k, v);
-            }
-            (c, false)
-        }
-    } else {
-        let mut c = CommandBuilder::new(&shell);
-        #[cfg(not(target_os = "windows"))]
-        c.arg("-l"); // login shell for $PATH, aliases, etc.
-        c.cwd(&cwd);
-        c.env("TERM", "xterm-256color");
-        for (k, v) in &env_vars {
-            c.env(k, v);
-        }
-        (c, initial_command.is_some())
-    };
+    let (cmd, write_initial) = pty_command(
+        &shell,
+        &cwd,
+        initial_command.as_deref(),
+        direct_command,
+        &env,
+    );
 
     let child = pair
         .slave
@@ -652,6 +664,90 @@ mod tests {
         assert_eq!(s1, "Razzle");
         let s2 = decode_pty_chunk(&mut pending, &bytes[7..]);
         assert_eq!(s2, "…dazzling");
+    }
+
+    fn argv(cmd: &CommandBuilder) -> Vec<String> {
+        cmd.get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn direct_command_runs_in_a_login_interactive_shell() {
+        let (cmd, write_initial) = pty_command(
+            "/bin/zsh",
+            "/work",
+            Some("npm run dev"),
+            true,
+            &EnvPatch::default(),
+        );
+
+        // `-lic` sources the profile, so nvm and friends pick the right Node.
+        assert_eq!(argv(&cmd), ["/bin/zsh", "-lic", "npm run dev"]);
+        assert!(!write_initial, "the command is an argument, not typed in");
+        assert_eq!(cmd.get_cwd().and_then(|cwd| cwd.to_str()), Some("/work"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn interactive_shell_has_the_initial_command_typed_in() {
+        let (cmd, write_initial) =
+            pty_command("/bin/zsh", "/work", Some("ls"), false, &EnvPatch::default());
+
+        assert_eq!(argv(&cmd), ["/bin/zsh", "-l"]);
+        assert!(write_initial);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn without_a_command_the_shell_is_a_plain_login_shell() {
+        for direct_command in [true, false] {
+            let (cmd, write_initial) = pty_command(
+                "/bin/zsh",
+                "/work",
+                None,
+                direct_command,
+                &EnvPatch::default(),
+            );
+
+            assert_eq!(argv(&cmd), ["/bin/zsh", "-l"], "direct: {direct_command}");
+            assert!(!write_initial, "direct: {direct_command}");
+        }
+    }
+
+    #[test]
+    fn pty_command_sets_term_and_applies_the_env_patch() {
+        // Every process has a PATH, so the removal below has one to remove.
+        assert!(std::env::var_os("PATH").is_some());
+        let env = EnvPatch {
+            remove: vec!["PATH".to_string()],
+            set: vec![("VERUN_PORT_0".to_string(), "10000".to_string())],
+        };
+
+        // However the shell is started, it gets the same env.
+        for (initial_command, direct_command) in [
+            (Some("ls"), true),
+            (Some("ls"), false),
+            (None, true),
+            (None, false),
+        ] {
+            let (cmd, _) = pty_command("/bin/zsh", "/work", initial_command, direct_command, &env);
+
+            let case = format!("command: {initial_command:?}, direct: {direct_command}");
+            assert_eq!(
+                cmd.get_env("TERM"),
+                Some(std::ffi::OsStr::new("xterm-256color")),
+                "{case}"
+            );
+            assert_eq!(
+                cmd.get_env("VERUN_PORT_0"),
+                Some(std::ffi::OsStr::new("10000")),
+                "{case}"
+            );
+            assert_eq!(cmd.get_env("PATH"), None, "{case}");
+        }
     }
 }
 

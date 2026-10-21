@@ -245,6 +245,8 @@ pub async fn delete_project(
         .ok_or_else(|| format!("Project {id} not found"))?;
 
     let tasks = db::list_tasks_for_project(pool.inner(), &id).await?;
+    // The project's accounts, read once for the destroy hook of every task.
+    let project_env = task::destroy_hook_account_env(&app, &project, false).await;
     for t in &tasks {
         task::delete_task(
             &app,
@@ -254,6 +256,7 @@ pub async fn delete_project(
             &project.repo_path,
             t,
             &project.destroy_hook,
+            &project_env,
             true,
             false,
         )
@@ -474,6 +477,9 @@ pub async fn finish_cloud_import(
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or("Project not found")?;
+    // Before the import creates the task: an account that can't be read leaves
+    // nothing behind.
+    let project_env = task::hook_account_env(&app, &project.id, &project.setup_hook).await?;
     let (task, session) = crate::cloud_import::finish(
         &app,
         pool.inner(),
@@ -495,6 +501,7 @@ pub async fn finish_cloud_import(
         &project.setup_hook,
         task.port_offset,
         &project.repo_path,
+        project_env,
     );
     Ok(TaskWithSession { task, session })
 }
@@ -604,6 +611,7 @@ pub async fn run_hook(
         _ => return Err(format!("Invalid hook type: {hook_type}")),
     };
 
+    let project_env = task::hook_account_env(&app, &t.project_id, hook_command).await?;
     task::spawn_hook_pty(
         &app,
         pty_map.inner(),
@@ -615,6 +623,7 @@ pub async fn run_hook(
         ht,
         t.port_offset,
         &project.repo_path,
+        project_env,
     )
 }
 
@@ -669,6 +678,8 @@ pub async fn delete_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
+    let skip_destroy_hook = skip_destroy_hook.unwrap_or(false);
+    let project_env = task::destroy_hook_account_env(&app, &project, skip_destroy_hook).await;
     task::delete_task(
         &app,
         pool.inner(),
@@ -677,8 +688,9 @@ pub async fn delete_task(
         &project.repo_path,
         &t,
         &project.destroy_hook,
+        &project_env,
         delete_branch,
-        skip_destroy_hook.unwrap_or(false),
+        skip_destroy_hook,
     )
     .await
 }
@@ -700,6 +712,8 @@ pub async fn archive_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
+    let skip_destroy_hook = skip_destroy_hook.unwrap_or(false);
+    let project_env = task::destroy_hook_account_env(&app, &project, skip_destroy_hook).await;
     task::archive_task(
         &app,
         pool.inner(),
@@ -707,8 +721,9 @@ pub async fn archive_task(
         active.inner(),
         &t,
         &project.destroy_hook,
+        &project_env,
         &project.repo_path,
-        skip_destroy_hook.unwrap_or(false),
+        skip_destroy_hook,
     )
     .await
 }
@@ -759,6 +774,15 @@ pub async fn restore_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
+    let setup_hook = if t.existing_directory {
+        ""
+    } else {
+        project.setup_hook.as_str()
+    };
+    // Before the task is restored: an account that can't be read leaves it
+    // archived.
+    let project_env = task::hook_account_env(&app, &t.project_id, setup_hook).await?;
+
     db_tx
         .send(db::DbWrite::RestoreTask { id })
         .await
@@ -772,13 +796,10 @@ pub async fn restore_task(
         setup_in_progress.inner(),
         &t.id,
         &t.worktree_path,
-        if t.existing_directory {
-            ""
-        } else {
-            &project.setup_hook
-        },
+        setup_hook,
         t.port_offset,
         &project.repo_path,
+        project_env,
     );
 
     Ok(())
@@ -860,7 +881,7 @@ pub async fn fork_session_to_new_task(
     fork_after_message_uuid: String,
     worktree_state: task::WorktreeForkState,
 ) -> Result<TaskWithSession, String> {
-    let (new_task, new_session) = task::fork_session_to_new_task(
+    let (new_task, new_session, setup_env) = task::fork_session_to_new_task(
         &app,
         pool.inner(),
         session_id,
@@ -884,6 +905,7 @@ pub async fn fork_session_to_new_task(
             &project.setup_hook,
             new_task.port_offset,
             &project.repo_path,
+            setup_env,
         );
     }
 
@@ -2504,7 +2526,10 @@ pub async fn pty_spawn(
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
     let repo_path = db::get_repo_path_for_task(pool.inner(), &task_id).await?;
-    let env_vars = worktree::verun_env_vars(t.port_offset, &repo_path);
+    // Shells and the start command run on the project's accounts, so `claude`
+    // typed in a client's worktree uses the client's login.
+    let project_env = task::project_account_env(&app, &t.project_id).await?;
+    let env = worktree::task_env(t.port_offset, &repo_path, project_env);
     let map = pty_map.inner().clone();
     let direct = direct_command.unwrap_or(false);
     // Frontend sends is_start_command explicitly when spawning the project start
@@ -2525,7 +2550,7 @@ pub async fn pty_spawn(
                 rows,
                 cols,
                 initial_command,
-                env_vars,
+                env,
                 direct,
                 name_override,
                 start_cmd,
