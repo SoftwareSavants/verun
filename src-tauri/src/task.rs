@@ -3094,6 +3094,7 @@ pub async fn spawn_session_process(
     let monitor_trust = trust_level_atom.clone();
     let monitor_agent = AgentKind::parse(&agent_type).implementation();
     let monitor_busy = busy.clone();
+    let monitor_account_key = accounts::account_key(&agent_type, account_id.as_deref());
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let wt_for_hooks = monitor_wt.clone();
@@ -3113,6 +3114,7 @@ pub async fn spawn_session_process(
             monitor_trust,
             monitor_agent,
             claude_home,
+            monitor_account_key,
         )
         .await;
 

@@ -1,4 +1,3 @@
-import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus } from '../types'
@@ -28,7 +27,14 @@ export const [sessionTokens, setSessionTokens] = createStore<Record<string, { in
 /// Tracks sessions whose CLI is in the middle of a graceful shutdown after abort.
 /// Set on abort click, cleared when the backend emits `session-aborted`.
 export const [abortingSessions, setAbortingSessions] = createStore<Record<string, boolean>>({})
-export const [rateLimitInfo, setRateLimitInfo] = createSignal<RateLimitInfo | null>(null)
+/// Latest rate limits per account, keyed by `accountKey`. The backend tags each
+/// `rate-limit-info` event with its session's key, so accounts never share an entry.
+export const [rateLimitByAccount, setRateLimitByAccount] = createStore<Record<string, RateLimitInfo>>({})
+
+/** The latest rate limits reported for an account, or `null` before its first event. */
+export function rateLimitFor(key: string): RateLimitInfo | null {
+  return rateLimitByAccount[key] ?? null
+}
 
 function seedSessionAggregates(session: Session) {
   if (session.totalCost > 0) setSessionCosts(session.id, session.totalCost)
@@ -583,7 +589,7 @@ export async function initSessionListeners() {
   })
 
   await listen<RateLimitInfo>('rate-limit-info', (event) => {
-    setRateLimitInfo(event.payload)
+    setRateLimitByAccount(event.payload.accountKey, event.payload)
   })
 
   // Re-fetch any pending approvals that survived a frontend reload

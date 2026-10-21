@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, respondToElicitation, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
+import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, respondToElicitation, sessionCosts, sessionTokens, outputItems, tryDrainSteps, sessionById, updateSessionModel, rateLimitFor } from '../store/sessions'
 import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession, codexLivePlanForSession } from '../store/sessionContext'
 import { setSelectedSessionIdForTask, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, setupFailed, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
@@ -34,6 +34,7 @@ import { decideApprovalKeyAction } from '../lib/approvalKeyAction'
 import { ELICITATION_TOOL_NAME } from '../lib/mcpElicitation'
 import { McpElicitationCard } from './McpElicitationCard'
 import { McpServerStatusBar } from './McpServerStatusBar'
+import { accountKey } from '../lib/accounts'
 
 interface Props {
   sessionId: string | null
@@ -102,11 +103,15 @@ function UsageChip(chipProps: { sessionId: string | null }) {
     const sid = chipProps.sessionId
     return sid ? sessionTokens[sid] : undefined
   }
-  const isClaudeSession = () => {
+  const session = () => {
     const sid = chipProps.sessionId
-    return sid ? sessionById(sid)?.agentType === 'claude' : false
+    return sid ? sessionById(sid) : undefined
   }
-  const rl = () => isClaudeSession() ? rateLimitInfo() : null
+  // Only Claude reports rate limits, and each Claude account has its own.
+  const rl = () => {
+    const s = session()
+    return s?.agentType === 'claude' ? rateLimitFor(accountKey(s.agentType, s.accountId)) : null
+  }
 
   const hasAnything = () => cost() > 0 || tokens() || rl()
   const hasCache = () => {

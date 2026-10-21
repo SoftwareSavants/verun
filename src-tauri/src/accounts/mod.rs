@@ -49,6 +49,17 @@ pub fn resolve_session_account(
     }
 }
 
+/// The key under which the UI keeps per-account state, such as rate limits: an
+/// added account's id, or `default:<agent_type>` for the Default account
+/// (`None`), which each harness has its own of. `accountKey` in
+/// `src/lib/accounts.ts` builds the same strings.
+pub fn account_key(agent_type: &str, account_id: Option<&str>) -> String {
+    match account_id {
+        Some(id) => id.to_string(),
+        None => format!("default:{agent_type}"),
+    }
+}
+
 /// The Claude login that may name a session and its task. Naming sends the
 /// user's first message to Claude's API, whatever harness the session runs on,
 /// so it may only go to a login the session is allowed to use.
@@ -434,6 +445,14 @@ mod tests {
             resolve_session_account(Some(&AccountSelection::ProjectDefault), "codex", &project),
             None
         );
+    }
+
+    #[test]
+    fn account_key_default_and_added() {
+        assert_eq!(account_key("claude", None), "default:claude");
+        assert_eq!(account_key("claude", Some("a1")), "a1");
+        // Each harness has its own Default account.
+        assert_eq!(account_key("codex", None), "default:codex");
     }
 
     fn use_account(id: &str) -> TitleAccount {

@@ -350,6 +350,8 @@ export interface SessionStatusEvent {
 
 export interface RateLimitInfo {
   sessionId: string;
+  /** Rate limits belong to the account the session runs on; see `accountKey`. */
+  accountKey: string;
   resetsAt: number;
   overageResetsAt: number;
   rateLimitType: string;

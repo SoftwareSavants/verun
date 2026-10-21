@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, beforeEach, vi } from 'vitest'
-import { produce } from 'solid-js/store'
+import { createEffect, createRoot } from 'solid-js'
+import { produce, reconcile } from 'solid-js/store'
 
 // Capture every `listen(eventName, cb)` registration so tests can fire events
 // directly. Mock factory must be self-contained — vi.mock is hoisted above
@@ -28,12 +29,12 @@ vi.mock('../lib/notifications', () => ({
   notify: vi.fn(),
 }))
 
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, reopenSession, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, reopenSession, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, rateLimitFor, setRateLimitByAccount, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
 import * as ipc from '../lib/ipc'
 import { setTasks } from './tasks'
 import { notify } from '../lib/notifications'
 import { setPlanFilePathForSession, planFilePathForSession, sessionContexts, setSessionContexts } from './sessionContext'
-import type { Session, OutputItem, Task, ToolApprovalRequest } from '../types'
+import type { Session, OutputItem, Task, ToolApprovalRequest, RateLimitInfo } from '../types'
 
 const makeTask = (overrides: Partial<Task> = {}): Task => ({
   id: 't-001',
@@ -678,5 +679,62 @@ describe('notification name selection', () => {
 
     expect(notify).toHaveBeenCalledTimes(1)
     expect(vi.mocked(notify).mock.calls[0][0].body).toBe('Refactor auth: Bash')
+  })
+})
+
+// Rate limits belong to an account. With several accounts, one account's event
+// must not replace another's, which a single global signal did.
+describe('rate limits per account', () => {
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setRateLimitByAccount(reconcile({}))
+  })
+
+  const makeRateLimit = (overrides: Partial<RateLimitInfo> = {}): RateLimitInfo => ({
+    sessionId: 's-001',
+    accountKey: 'default:claude',
+    resetsAt: 0,
+    overageResetsAt: 0,
+    rateLimitType: 'five_hour',
+    overageStatus: 'allowed',
+    isUsingOverage: false,
+    ...overrides,
+  })
+
+  test('stores rate limit events per account', () => {
+    const fire = listenCallbacks.get('rate-limit-info')!
+    fire({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 1 }) })
+    fire({ payload: makeRateLimit({ accountKey: 'default:claude', resetsAt: 2 }) })
+    expect(rateLimitFor('a1')?.resetsAt).toBe(1)
+    expect(rateLimitFor('default:claude')?.resetsAt).toBe(2)
+  })
+
+  test('a newer event replaces its own account entry and leaves the others', () => {
+    const fire = listenCallbacks.get('rate-limit-info')!
+    fire({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 1 }) })
+    fire({ payload: makeRateLimit({ accountKey: 'default:claude', resetsAt: 2 }) })
+    fire({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 3, isUsingOverage: true }) })
+    expect(rateLimitFor('a1')).toMatchObject({ resetsAt: 3, isUsingOverage: true })
+    expect(rateLimitFor('default:claude')).toMatchObject({ resetsAt: 2, isUsingOverage: false })
+  })
+
+  test('an account with no event yet has no rate limit', () => {
+    expect(rateLimitFor('a1')).toBeNull()
+  })
+
+  // The usage chip reads the limits of an account that may not have reported
+  // yet, and has to show them as soon as its first event arrives.
+  test('a reader of an account with no entry yet sees its first event', () => {
+    const seen: Array<number | null> = []
+    const dispose = createRoot(dispose => {
+      createEffect(() => { seen.push(rateLimitFor('a1')?.resetsAt ?? null) })
+      return dispose
+    })
+    listenCallbacks.get('rate-limit-info')!({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 7 }) })
+    dispose()
+    expect(seen).toEqual([null, 7])
   })
 })
