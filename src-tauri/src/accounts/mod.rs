@@ -8,6 +8,7 @@ pub mod service;
 
 pub use secrets::Secrets;
 
+use crate::agent::AgentKind;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -43,6 +44,47 @@ pub fn resolve_session_account(
         Some(AccountSelection::Default) => None,
         Some(AccountSelection::Account { id }) => Some(id.clone()),
         Some(AccountSelection::ProjectDefault) | None => project_accounts.get(agent_type).cloned(),
+    }
+}
+
+/// The Claude login that may name a session and its task. Naming sends the
+/// user's first message to Claude's API, whatever harness the session runs on,
+/// so it may only go to a login the session is allowed to use.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TitleAccount {
+    /// Run the Haiku call on this Claude account (`None`: the Default Claude
+    /// login, the user's own).
+    Use(Option<String>),
+    /// No Claude login is safe for the message, so nothing is sent to one and
+    /// the title is a plain one cut from the message.
+    Skip,
+}
+
+/// The Claude login that names a session of `session_agent_type` which runs on
+/// `session_account_id` (`None`: Default), given the project's Claude account
+/// `project_claude_account_id` (`None`: Default).
+///
+/// - A Claude session uses its own account.
+/// - A session of another harness on Default uses the project's Claude account,
+///   which is Default as well when the project has none: what naming always did.
+/// - A session of another harness on an added account uses the project's Claude
+///   account only if that is an added account too. If it is Default, the only
+///   Claude login left is the user's own, and the message of a session on an
+///   added account must not reach it: `Skip`.
+///
+/// The project's account is not consulted for a Claude session.
+pub fn title_account(
+    session_agent_type: &str,
+    session_account_id: Option<&str>,
+    project_claude_account_id: Option<&str>,
+) -> TitleAccount {
+    if AgentKind::parse(session_agent_type) == AgentKind::Claude {
+        return TitleAccount::Use(session_account_id.map(str::to_string));
+    }
+    match (session_account_id, project_claude_account_id) {
+        (None, project) => TitleAccount::Use(project.map(str::to_string)),
+        (Some(_), Some(project)) => TitleAccount::Use(Some(project.to_string())),
+        (Some(_), None) => TitleAccount::Skip,
     }
 }
 
@@ -391,6 +433,74 @@ mod tests {
             resolve_session_account(Some(&AccountSelection::ProjectDefault), "codex", &project),
             None
         );
+    }
+
+    fn use_account(id: &str) -> TitleAccount {
+        TitleAccount::Use(Some(id.to_string()))
+    }
+
+    /// The harnesses that name their sessions through Claude's Haiku.
+    const OTHER_HARNESSES: [&str; 5] = ["codex", "cursor", "gemini", "grok", "opencode"];
+
+    #[test]
+    fn title_account_claude_session_uses_its_account() {
+        // Whatever Claude account the project has, a Claude session names
+        // itself on the one it runs on.
+        assert_eq!(
+            title_account("claude", Some("a1"), Some("a2")),
+            use_account("a1")
+        );
+        assert_eq!(title_account("claude", Some("a1"), None), use_account("a1"));
+        // A Default Claude session stays on Default: the project's Claude
+        // account is for the sessions of other harnesses.
+        assert_eq!(
+            title_account("claude", None, Some("a2")),
+            TitleAccount::Use(None)
+        );
+        assert_eq!(title_account("claude", None, None), TitleAccount::Use(None));
+    }
+
+    #[test]
+    fn title_account_default_non_claude_uses_project_claude() {
+        for harness in OTHER_HARNESSES {
+            // The Claude the project would run, which is Default as well when
+            // the project has no Claude account: what naming did before.
+            assert_eq!(
+                title_account(harness, None, Some("a2")),
+                use_account("a2"),
+                "{harness}"
+            );
+            assert_eq!(
+                title_account(harness, None, None),
+                TitleAccount::Use(None),
+                "{harness}"
+            );
+        }
+    }
+
+    #[test]
+    fn title_account_added_non_claude_uses_added_project_claude() {
+        for harness in OTHER_HARNESSES {
+            assert_eq!(
+                title_account(harness, Some("x1"), Some("a2")),
+                use_account("a2"),
+                "{harness}"
+            );
+        }
+    }
+
+    #[test]
+    fn title_account_added_non_claude_without_added_claude_skips() {
+        // The message belongs to the session's account. With no Claude account
+        // of the project's to take it, the only Claude left is Default's, and
+        // that must never see it.
+        for harness in OTHER_HARNESSES {
+            assert_eq!(
+                title_account(harness, Some("x1"), None),
+                TitleAccount::Skip,
+                "{harness}"
+            );
+        }
     }
 
     #[test]

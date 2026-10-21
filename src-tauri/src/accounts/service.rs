@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
-use super::env::{project_env, session_env, EnvPatch};
+use super::env::{account_env, project_env, session_env, EnvPatch};
 use super::identity::{with_api_key_overlay, SignInStatus};
 use super::secrets::SecretStore;
-use super::{resolve_session_account, AccountError, AccountSelection};
+use super::{resolve_session_account, title_account, AccountError, AccountSelection, TitleAccount};
 use crate::agent::{AccountHome, Agent, AgentKind};
 use crate::db::{self, Account};
 
@@ -250,6 +250,89 @@ pub async fn destroy_hook_env_for(
             EnvPatch::default()
         }
     }
+}
+
+/// The env of the Haiku call that names a session, on the Claude login
+/// `title` chose: `None` when there is no Claude login the message may go to
+/// (`Skip`), and the empty patch for Default's, which keeps the env Verun has.
+///
+/// An added account gets its own env and nothing of the project's: a title is
+/// one Claude call, so the project's other accounts have no part in it. The
+/// account must exist, be Claude's, and pass `check_usable`. One that does not
+/// (removed, signed out, a secret the keychain won't give, a row that is not
+/// Claude's) is `None` and never the Default login, since the message is the
+/// client's and a Default call would put it on the user's own subscription. The
+/// reason is logged, naming the account and never a value.
+///
+/// The database is read here; the sign-in check and the keychain reads run in
+/// `spawn_blocking`, like `session_env_for`.
+pub async fn title_env_for(
+    pool: &SqlitePool,
+    secrets: Arc<dyn SecretStore>,
+    title: &TitleAccount,
+) -> Option<EnvPatch> {
+    let account_id = match title {
+        TitleAccount::Skip => return None,
+        TitleAccount::Use(None) => return Some(EnvPatch::default()),
+        TitleAccount::Use(Some(account_id)) => account_id,
+    };
+    match claude_account_env(pool, secrets, account_id).await {
+        Ok(env) => Some(env),
+        Err(e) => {
+            eprintln!(
+                "[verun][accounts] title for a session on account {account_id} is a plain title: {e}"
+            );
+            None
+        }
+    }
+}
+
+/// The env of the added Claude account `account_id`, if a session may run on
+/// it.
+async fn claude_account_env(
+    pool: &SqlitePool,
+    secrets: Arc<dyn SecretStore>,
+    account_id: &str,
+) -> Result<EnvPatch, AccountError> {
+    let account = load_session_account(pool, account_id, AgentKind::Claude.as_str()).await?;
+    blocking(move || {
+        let claude = AgentKind::Claude.implementation();
+        check_usable(&account, claude.as_ref())?;
+        account_env(claude.as_ref(), &account, secrets.as_ref())
+    })
+    .await
+}
+
+/// `title_env_for` for the session of `agent_type` in `project_id` that runs on
+/// `account_id` (`None`: Default): the login is `title_account`'s choice, from
+/// the session and the project's Claude account.
+///
+/// A Claude session does not look at the project. For a session of another
+/// harness the project's Claude account decides, so when the project's accounts
+/// can't be read it is unknown whether the Default login is safe, and the
+/// answer is `None` (a plain title) rather than a guess.
+pub async fn session_title_env_for(
+    pool: &SqlitePool,
+    secrets: Arc<dyn SecretStore>,
+    project_id: &str,
+    agent_type: &str,
+    account_id: Option<&str>,
+) -> Option<EnvPatch> {
+    let project_claude = if AgentKind::parse(agent_type) == AgentKind::Claude {
+        None
+    } else {
+        match db::project_account_ids(pool, project_id).await {
+            Ok(mut bindings) => bindings.remove(AgentKind::Claude.as_str()),
+            Err(e) => {
+                eprintln!(
+                    "[verun][accounts] title for a session of project {project_id} is a plain title: {e}"
+                );
+                return None;
+            }
+        }
+    };
+    let title = title_account(agent_type, account_id, project_claude.as_deref());
+    title_env_for(pool, secrets, &title).await
 }
 
 #[cfg(test)]
@@ -1000,5 +1083,264 @@ mod tests {
         let patch = destroy_hook_env_for(&pool, no_secrets(), "p-001", "rm -rf node_modules").await;
 
         assert_eq!(patch, EnvPatch::default());
+    }
+
+    // -- title_env_for and session_title_env_for --
+
+    fn use_claude(id: &str) -> TitleAccount {
+        TitleAccount::Use(Some(id.into()))
+    }
+
+    /// The env a Claude call on `account` runs with, its own and nothing else.
+    fn claude_env_of(account: &Account) -> EnvPatch {
+        account_env(&Claude, account, &MemorySecretStore::default()).unwrap()
+    }
+
+    /// What the title tests run on.
+    struct TitleFixture {
+        pool: SqlitePool,
+        /// Signed-in Claude accounts.
+        a1: Account,
+        a2: Account,
+        /// The accounts' homes, kept so they live as long as the test does.
+        _homes: [TempDir; 3],
+    }
+
+    /// A pool with two signed-in Claude accounts, a1 and a2, a signed-in Claude
+    /// account a1-gone that was removed, and the Codex account c1. Project p-001
+    /// is bound to a1, p-002 has no accounts and p-003 is bound to a1-gone.
+    async fn title_fixture() -> TitleFixture {
+        let pool = test_pool().await;
+        let [d1, d2, d3] = [SIGNED_IN; 3].map(claude_dir);
+        let (a1, a2) = (acme("a1", &d1), acme("a2", &d2));
+        for account in [a1.clone(), a2.clone(), acme("a1-gone", &d3)] {
+            upsert_account_confirmed(&pool, account).await.unwrap();
+        }
+        mark_account_removed_confirmed(&pool, "a1-gone", 1700)
+            .await
+            .unwrap();
+        let mut codex = make_account("c1", 1000);
+        codex.agent_type = "codex".into();
+        upsert_account_confirmed(&pool, codex).await.unwrap();
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-003", "claude", Some("a1-gone"))
+            .await
+            .unwrap();
+        TitleFixture {
+            pool,
+            a1,
+            a2,
+            _homes: [d1, d2, d3],
+        }
+    }
+
+    #[tokio::test]
+    async fn title_env_for_the_default_login_adds_nothing() {
+        // Default has no row, so nothing is read for it.
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        assert_eq!(
+            title_env_for(&pool, no_secrets(), &TitleAccount::Use(None)).await,
+            Some(EnvPatch::default())
+        );
+    }
+
+    #[tokio::test]
+    async fn title_env_for_skip_is_no_env_at_all() {
+        let pool = test_pool().await;
+
+        assert_eq!(
+            title_env_for(&pool, no_secrets(), &TitleAccount::Skip).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn title_env_for_an_added_claude_account_is_its_own_env() {
+        let pool = test_pool().await;
+        let dir = claude_dir(SIGNED_IN);
+        let mut account = acme("a1", &dir);
+        account.env = vec![
+            secret_var("ANTHROPIC_API_KEY"),
+            plain_var("ANTHROPIC_BASE_URL", "https://proxy"),
+        ];
+        upsert_account_confirmed(&pool, account.clone())
+            .await
+            .unwrap();
+        let secrets = Arc::new(MemorySecretStore::default());
+        secrets
+            .set("a1", "ANTHROPIC_API_KEY", "sk-ant-one")
+            .unwrap();
+
+        let patch = title_env_for(&pool, secrets.clone(), &use_claude("a1"))
+            .await
+            .expect("a signed-in account can name a session");
+
+        // Exactly what a Claude session on the account is spawned with.
+        assert_eq!(
+            patch,
+            account_env(&Claude, &account, secrets.as_ref()).unwrap()
+        );
+        assert!(sets(
+            &patch,
+            "CLAUDE_CONFIG_DIR",
+            &dir.path().to_string_lossy()
+        ));
+        assert!(sets(&patch, "ANTHROPIC_API_KEY", "sk-ant-one"));
+        assert!(sets(&patch, "ANTHROPIC_BASE_URL", "https://proxy"));
+    }
+
+    #[tokio::test]
+    async fn title_env_for_an_account_that_cannot_run_is_none_never_default() {
+        let t = title_fixture().await;
+        let signed_out = claude_dir("{}");
+        upsert_account_confirmed(&t.pool, acme("signed-out", &signed_out))
+            .await
+            .unwrap();
+        // The fixture is sound: an account that can run gets its env.
+        assert!(title_env_for(&t.pool, no_secrets(), &use_claude("a1"))
+            .await
+            .is_some());
+
+        for (account, why) in [
+            (
+                "a1-gone",
+                "it was removed, though somebody is signed in to it",
+            ),
+            ("signed-out", "nobody is signed in to it"),
+            ("nope", "no account has this id"),
+            ("c1", "it belongs to another harness than Claude"),
+        ] {
+            assert_eq!(
+                title_env_for(&t.pool, no_secrets(), &use_claude(account)).await,
+                None,
+                "{account}: {why}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn title_env_for_an_account_with_an_unreadable_secret_is_none() {
+        let pool = test_pool().await;
+        let dir = claude_dir(SIGNED_IN);
+        let mut account = acme("a1", &dir);
+        account.env = vec![secret_var("ANTHROPIC_API_KEY")];
+        upsert_account_confirmed(&pool, account).await.unwrap();
+
+        // The key was never stored, and the keychain is locked.
+        for secrets in [
+            no_secrets(),
+            Arc::new(LockedKeychain) as Arc<dyn SecretStore>,
+        ] {
+            assert_eq!(title_env_for(&pool, secrets, &use_claude("a1")).await, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn title_env_for_reads_the_keychain_off_the_calling_thread() {
+        let pool = test_pool().await;
+        let dir = claude_dir(SIGNED_IN);
+        let mut account = acme("a1", &dir);
+        account.env = vec![secret_var("ANTHROPIC_API_KEY")];
+        upsert_account_confirmed(&pool, account).await.unwrap();
+        let spy = Arc::new(ThreadSpy::default());
+        spy.set("a1", "ANTHROPIC_API_KEY", "sk-ant-one").unwrap();
+
+        let patch = title_env_for(&pool, spy.clone(), &use_claude("a1")).await;
+
+        assert!(patch.is_some());
+        let reads = spy.reads.lock().unwrap();
+        assert!(!reads.is_empty(), "the secret was never read");
+        assert!(
+            !reads.contains(&std::thread::current().id()),
+            "the keychain was read on the async caller's thread"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_title_env_for_a_claude_session_names_itself_on_its_own_account() {
+        let t = title_fixture().await;
+        let pool = &t.pool;
+
+        // p-001 is bound to a1, and the session runs on a2.
+        assert_eq!(
+            session_title_env_for(pool, no_secrets(), "p-001", "claude", Some("a2")).await,
+            Some(claude_env_of(&t.a2))
+        );
+        assert_eq!(
+            session_title_env_for(pool, no_secrets(), "p-001", "claude", Some("a1")).await,
+            Some(claude_env_of(&t.a1))
+        );
+        // A Default Claude session stays on Default, the project's account
+        // notwithstanding: the project's account is for the other harnesses.
+        assert_eq!(
+            session_title_env_for(pool, no_secrets(), "p-001", "claude", None).await,
+            Some(EnvPatch::default())
+        );
+    }
+
+    #[tokio::test]
+    async fn session_title_env_for_a_default_non_claude_session_follows_the_projects_claude() {
+        let t = title_fixture().await;
+        let pool = &t.pool;
+
+        assert_eq!(
+            session_title_env_for(pool, no_secrets(), "p-001", "codex", None).await,
+            Some(claude_env_of(&t.a1))
+        );
+        // With no Claude account in the project it is Default, as it always was.
+        assert_eq!(
+            session_title_env_for(pool, no_secrets(), "p-002", "codex", None).await,
+            Some(EnvPatch::default())
+        );
+    }
+
+    #[tokio::test]
+    async fn session_title_env_for_an_added_non_claude_session_never_reaches_default() {
+        let t = title_fixture().await;
+        let pool = &t.pool;
+
+        // The project's added Claude account takes the message.
+        assert_eq!(
+            session_title_env_for(pool, no_secrets(), "p-001", "codex", Some("c1")).await,
+            Some(claude_env_of(&t.a1))
+        );
+        // No Claude account in the project: the message stays off Default's.
+        assert_eq!(
+            session_title_env_for(pool, no_secrets(), "p-002", "codex", Some("c1")).await,
+            None
+        );
+        // And a project account that was removed is not Default either, for a
+        // session on Default or on an added account.
+        for account in [None, Some("c1")] {
+            assert_eq!(
+                session_title_env_for(pool, no_secrets(), "p-003", "codex", account).await,
+                None,
+                "account: {account:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn session_title_env_for_unreadable_project_accounts_are_not_a_default_login() {
+        // No migrations ran, so every query fails.
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        // Whether the project has a Claude account is unknown, so the message
+        // of another harness's session is not sent to a login on a guess.
+        for account in [None, Some("c1")] {
+            assert_eq!(
+                session_title_env_for(&pool, no_secrets(), "p-001", "codex", account).await,
+                None,
+                "account: {account:?}"
+            );
+        }
+        // A Claude session never needed the project: its own account decides.
+        assert_eq!(
+            session_title_env_for(&pool, no_secrets(), "p-001", "claude", None).await,
+            Some(EnvPatch::default())
+        );
     }
 }

@@ -1621,6 +1621,9 @@ pub async fn send_message(
                     db_tx.clone(),
                     session_id.clone(),
                     task_id.clone(),
+                    project_id.clone(),
+                    agent_type.clone(),
+                    account_id.clone(),
                     message.clone(),
                     worktree_path.clone(),
                     is_first_turn,
@@ -1700,6 +1703,9 @@ pub async fn send_message(
                     db_tx.clone(),
                     session_id.clone(),
                     task_id.clone(),
+                    project_id.clone(),
+                    agent_type.clone(),
+                    account_id.clone(),
                     message.clone(),
                     worktree_path.clone(),
                     is_first_turn,
@@ -1887,14 +1893,20 @@ async fn persist_verun_user_message(
     }
 }
 
-/// Kick off the background Haiku call that names the session and task.
-/// No-op unless there's something to name.
+/// Kick off the background Haiku call that names the session and task, on the
+/// Claude login the session's message may go to (`session_title_env`: the
+/// session's own account, or for another harness the project's Claude account).
+/// When there is none, the title is a plain one cut from the message and the
+/// message is sent nowhere. No-op unless there's something to name.
 #[allow(clippy::too_many_arguments)]
 fn spawn_session_title_generation(
     app: AppHandle,
     db_tx: DbWriteTx,
     session_id: String,
     task_id: String,
+    project_id: String,
+    agent_type: String,
+    account_id: Option<String>,
     message: String,
     worktree_path: String,
     is_first_turn: bool,
@@ -1906,8 +1918,13 @@ fn spawn_session_title_generation(
         return;
     }
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        if let Some(title) = generate_session_title(&message, &worktree_path).await {
+        let env = session_title_env(&app, &project_id, &agent_type, account_id.as_deref()).await;
+        if env.is_some() {
+            // Only a model call starts a second claude process, so only it
+            // waits for the main session to claim CPU/network first.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+        if let Some(title) = session_title(&message, &worktree_path, env.as_ref()).await {
             if needs_session_name {
                 let _ = db_tx
                     .send(db::DbWrite::UpdateSessionName {
@@ -2191,6 +2208,9 @@ impl SpawnPath for AppSpawnPath {
             self.db_tx.clone(),
             self.params.session_id.clone(),
             self.params.task_id.clone(),
+            self.params.project_id.clone(),
+            self.params.agent_type.clone(),
+            self.params.account_id.clone(),
             self.params.message.clone(),
             self.params.worktree_path.clone(),
             self.is_first_turn,
@@ -3607,14 +3627,23 @@ fn title_generation_args(prompt: &str) -> Vec<String> {
 }
 
 /// Naming is detached from the terminal driver so CLI output never waits on it.
+/// A terminal session is a Claude session, so its title is named on its own
+/// account.
 pub(crate) fn name_terminal_task(app: AppHandle, pool: SqlitePool, session_id: String, prompt: String) {
     tokio::spawn(async move {
         let Ok(Some(session)) = db::get_session(&pool, &session_id).await else { return };
         let Ok(Some(task)) = db::get_task(&pool, &session.task_id).await else { return };
         if task.name.as_deref().is_some_and(|name| !name.trim().is_empty()) { return; }
+        let env = session_title_env(
+            &app,
+            &task.project_id,
+            &session.agent_type,
+            session.account_id.as_deref(),
+        )
+        .await;
         let Ok(Some(title)) = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            generate_session_title(&prompt, &task.worktree_path),
+            session_title(&prompt, &task.worktree_path, env.as_ref()),
         ).await else { return };
         if db::set_unnamed_task_title(&pool, &task.id, &title).await.unwrap_or(false) {
             let _ = app.emit("task-name", stream::TaskNameEvent { task_id: task.id, name: title });
@@ -3622,19 +3651,103 @@ pub(crate) fn name_terminal_task(app: AppHandle, pool: SqlitePool, session_id: S
     });
 }
 
+/// The env of the Claude call that names a session, or `None` when no Claude
+/// login is safe for its message: see `accounts::service::session_title_env_for`.
+/// It never falls back to the Default login on its own, so a session on a
+/// client's account can't have its first message sent to the user's own.
+async fn session_title_env(
+    app: &AppHandle,
+    project_id: &str,
+    agent_type: &str,
+    account_id: Option<&str>,
+) -> Option<EnvPatch> {
+    let secrets = app.state::<accounts::Secrets>().0.clone();
+    accounts::service::session_title_env_for(
+        app.state::<SqlitePool>().inner(),
+        secrets,
+        project_id,
+        agent_type,
+        account_id,
+    )
+    .await
+}
+
+/// The longest a plain title gets, before its ellipsis.
+const FALLBACK_TITLE_MAX_CHARS: usize = 50;
+
+/// A title cut from the message itself, for when no Claude login may see it:
+/// the first line that has anything on it, its whitespace collapsed, cut at a
+/// word boundary to at most `FALLBACK_TITLE_MAX_CHARS` chars and then an
+/// ellipsis. A line that fits is the title as it is. A first word longer than
+/// the limit has no boundary, so it is cut at the limit. `None` when there is
+/// nothing to name.
+pub(crate) fn fallback_title(message: &str) -> Option<String> {
+    let line = message
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|line| !line.is_empty())?;
+    let Some((cut, _)) = line.char_indices().nth(FALLBACK_TITLE_MAX_CHARS) else {
+        return Some(line);
+    };
+    let head = &line[..cut];
+    // The head ends on a word boundary if the next char is the space after it.
+    let words = if line[cut..].starts_with(' ') {
+        head
+    } else {
+        head.rsplit_once(' ').map_or(head, |(words, _)| words)
+    };
+    Some(format!("{}…", words.trim_end()))
+}
+
+/// The title for a first message: the model's, on the Claude login `env` is
+/// the env of, or the plain one from the message when `env` is `None` because
+/// no Claude login is safe to send it to. The model is not called in that case.
+async fn session_title(
+    first_message: &str,
+    worktree_path: &str,
+    env: Option<&EnvPatch>,
+) -> Option<String> {
+    match env {
+        Some(env) => generate_session_title(first_message, worktree_path, env).await,
+        None => fallback_title(first_message),
+    }
+}
+
+/// The Haiku call that names a session, run in the worktree on the Claude login
+/// `env` is the env of.
+///
+/// The env is applied in a fixed order, and a later call wins over an earlier
+/// one: the login's patch, then the two nested-CLI guards that hold whatever the
+/// account says (as in `build_agent_command`). The Default login has an empty
+/// patch and so inherits Verun's env as it is.
+fn title_generation_command(
+    prompt: &str,
+    worktree_path: &str,
+    env: &EnvPatch,
+) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(AgentKind::Claude.implementation().cli_binary());
+    cmd.args(title_generation_args(prompt)).kill_on_drop(true);
+    env.apply_to_command(&mut cmd);
+    cmd.env_remove("CLAUDECODE")
+        .env("CLAUDE_CODE_ENTRYPOINT", "verun")
+        .current_dir(worktree_path);
+    cmd
+}
+
 /// Generate a short title using a standalone Haiku call (fast, doesn't affect session).
 /// Uses the Claude CLI regardless of agent type since title generation is a Verun feature.
-async fn generate_session_title(first_message: &str, worktree_path: &str) -> Option<String> {
+/// `env` is the env of the Claude login that makes the call (`session_title_env`):
+/// the message goes to that login's account and no other.
+async fn generate_session_title(
+    first_message: &str,
+    worktree_path: &str,
+    env: &EnvPatch,
+) -> Option<String> {
     let prompt = format!(
         "Generate a 3-5 word title summarizing what the user wants. Reply with ONLY the title, nothing else. Never include passwords, tokens, credentials, or other secret values in the title. If the message is too vague or unclear to summarize (e.g. just a greeting), reply with exactly NONE.\n\nUser message: {}",
         first_message.chars().take(300).collect::<String>()
     );
-    let output = tokio::process::Command::new(AgentKind::Claude.implementation().cli_binary())
-        .args(title_generation_args(&prompt))
-        .kill_on_drop(true)
-        .env_remove("CLAUDECODE")
-        .env("CLAUDE_CODE_ENTRYPOINT", "verun")
-        .current_dir(worktree_path)
+    let output = title_generation_command(&prompt, worktree_path, env)
         .output()
         .await
         .ok()?;
@@ -4387,6 +4500,149 @@ mod tests {
         assert!(args.iter().any(|a| a == "test prompt"));
         assert!(args.iter().any(|a| a == "--no-session-persistence"));
         assert!(args.iter().any(|a| a == "haiku"));
+    }
+
+    #[test]
+    fn fallback_title_cuts_at_word_boundary() {
+        // "tokens" would end at 53 chars, so the title stops after "that" (46).
+        assert_eq!(
+            fallback_title(
+                "Refactor the authentication middleware so that tokens refresh before expiry"
+            ),
+            Some("Refactor the authentication middleware so that…".to_string())
+        );
+
+        // A word that ends exactly on the 50th char is kept whole.
+        let fifty = "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeee";
+        assert_eq!(fifty.chars().count(), 50);
+        assert_eq!(
+            fallback_title(&format!("{fifty} ffff")),
+            Some(format!("{fifty}…"))
+        );
+        // One char further in and that word is cut off.
+        assert_eq!(
+            fallback_title(&format!("{fifty}e ffff")),
+            Some("aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd…".to_string())
+        );
+
+        // A line that fits is its own title, with no ellipsis.
+        assert_eq!(fallback_title(fifty), Some(fifty.to_string()));
+        assert_eq!(
+            fallback_title("Fix the login bug"),
+            Some("Fix the login bug".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_title_cuts_a_single_long_word_at_the_limit() {
+        // A path or URL has no word boundary to cut at. Chars are counted,
+        // not bytes, so this does not split a multi-byte char either.
+        for word in ["x".repeat(80), "é".repeat(80), "日".repeat(80)] {
+            let title = fallback_title(&word).unwrap();
+            let kept: String = word.chars().take(50).collect();
+            assert_eq!(title, format!("{kept}…"));
+        }
+    }
+
+    #[test]
+    fn fallback_title_uses_first_line_and_none_when_empty() {
+        // The first line that has anything on it, with its whitespace collapsed.
+        assert_eq!(
+            fallback_title("\n \t\n  Fix   the\tbuild  \nthen deploy it\n"),
+            Some("Fix the build".to_string())
+        );
+        // Later lines never make it into the title, and nor does an ellipsis
+        // for them: the line itself was not cut.
+        assert_eq!(
+            fallback_title("Fix the build\nand then add a very long list of follow-up work items"),
+            Some("Fix the build".to_string())
+        );
+        // Nothing to name.
+        for blank in ["", " ", "\n\n", " \t \r\n  \n"] {
+            assert_eq!(fallback_title(blank), None, "{blank:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn session_title_without_a_safe_login_is_the_plain_title() {
+        // No Claude login to send the message to, so nothing is sent. The
+        // directory is not there: a model call that started anyway could not
+        // run in it, and would come back with no title at all.
+        let title = session_title(
+            "Fix the login bug\nsecond line",
+            "/nonexistent/worktree",
+            None,
+        )
+        .await;
+
+        assert_eq!(title, Some("Fix the login bug".to_string()));
+    }
+
+    #[test]
+    fn title_generation_command_runs_on_the_given_accounts_env() {
+        let mut account = make_account("a1", 1);
+        account.config_dir = "/acc/a1".into();
+        let patch = account_env(&Claude, &account, &MemorySecretStore::default()).unwrap();
+
+        let cmd = title_generation_command("name this", "/work/tree", &patch);
+
+        // The account's home is the one the call runs on, and what Verun
+        // inherited can't override it.
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CONFIG_DIR"),
+            EnvChange::Set("/acc/a1".into())
+        );
+        assert_eq!(env_change(&cmd, "ANTHROPIC_API_KEY"), EnvChange::Removed);
+        // The nested-CLI guards of every Claude call Verun starts.
+        assert_eq!(env_change(&cmd, "CLAUDECODE"), EnvChange::Removed);
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CODE_ENTRYPOINT"),
+            EnvChange::Set("verun".into())
+        );
+        // The rest of the command is the Haiku call, in the worktree.
+        assert_eq!(cmd.as_std().get_program(), "claude");
+        let args = title_generation_args("name this");
+        assert_eq!(
+            cmd.as_std().get_args().collect::<Vec<_>>(),
+            args.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            cmd.as_std().get_current_dir(),
+            Some(std::path::Path::new("/work/tree"))
+        );
+    }
+
+    #[test]
+    fn title_generation_command_on_default_touches_only_the_guards() {
+        let cmd = title_generation_command("name this", "/work/tree", &EnvPatch::default());
+
+        // The Default login inherits Verun's env as it is, as the call always did.
+        for key in ["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"] {
+            assert_eq!(env_change(&cmd, key), EnvChange::Untouched, "{key}");
+        }
+        let mut touched: Vec<String> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        touched.sort();
+        assert_eq!(touched, ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"]);
+    }
+
+    #[test]
+    fn title_generation_command_keeps_the_guards_over_the_account_env() {
+        let patch = EnvPatch::from_vars(vec![
+            ("CLAUDECODE".to_string(), "1".to_string()),
+            ("CLAUDE_CODE_ENTRYPOINT".to_string(), "cli".to_string()),
+        ]);
+
+        let cmd = title_generation_command("name this", "/work/tree", &patch);
+
+        assert_eq!(env_change(&cmd, "CLAUDECODE"), EnvChange::Removed);
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CODE_ENTRYPOINT"),
+            EnvChange::Set("verun".into())
+        );
     }
 
     #[test]
