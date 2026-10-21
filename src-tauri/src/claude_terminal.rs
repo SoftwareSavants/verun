@@ -28,7 +28,7 @@ use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::accounts::env::EnvPatch;
+use crate::accounts::env::{shell_wrap, EnvPatch};
 use crate::claude_home::{self, ClaudeHome};
 use crate::claude_transcript_tail::{spawn_transcript_tail_with_claims, TranscriptTail};
 use crate::db::{self, DbWrite, DbWriteTx};
@@ -88,6 +88,11 @@ pub struct OpenClaudeTerminalResult {
 /// Fails if the session is not a Claude session or has never produced a
 /// resumable id (i.e. the first turn never reached `system:init`). If a
 /// terminal is already open for this session, returns the existing one.
+///
+/// The PTY runs on the session's account: with the account's env (see
+/// `terminal_command_and_env`) and in the account's Claude home. A session on
+/// an account that can't be used fails with the `AccountError` (`to_ipc`)
+/// before anything is started.
 #[allow(clippy::too_many_arguments)]
 pub async fn open_claude_terminal(
     app: AppHandle,
@@ -118,6 +123,14 @@ pub async fn open_claude_terminal(
     let model = validated.model;
     let account_id = validated.account_id;
     let is_fresh = resume_id_opt.is_none();
+
+    // The session's account env comes first, before anything is started: an
+    // account that is signed out, removed or missing fails here and leaves no
+    // activity bridge, trusted worktree, PTY or watcher behind. It never falls
+    // back to another login.
+    let account_env =
+        crate::task::session_account_env(&app, &task.project_id, "claude", account_id.as_deref())
+            .await?;
 
     // Claude writes the transcript under the home of the session's account.
     // The terminal has to find it, so a Default session with no $HOME is an
@@ -172,6 +185,9 @@ pub async fn open_claude_terminal(
         }
         _ => command,
     };
+    // Last, so the whole command - `--settings` included - runs inside the
+    // account's script.
+    let (command, pty_env) = terminal_command_and_env(command, env_vars, &account_env);
     let worktree_path = task.worktree_path.clone();
     let pty_map_clone = pty_map.clone();
     let app_for_pty = app.clone();
@@ -193,7 +209,7 @@ pub async fn open_claude_terminal(
             rows,
             cols,
             Some(command),
-            EnvPatch::from_vars(env_vars),
+            pty_env,
             /* direct_command = */ true,
             Some(TERMINAL_DISPLAY_NAME.to_string()),
             /* is_start_command = */ false,
@@ -301,7 +317,7 @@ pub(crate) struct ValidatedTerminalSession {
     /// `None` falls back to the user's Claude default.
     pub model: Option<String>,
     /// The session's account (`None`: Default). Decides which Claude home the
-    /// terminal reads and writes.
+    /// terminal reads and writes and which env it runs with.
     pub account_id: Option<String>,
 }
 
@@ -669,6 +685,30 @@ pub(crate) fn build_claude_shell_command(
         cmd.push_str(&shell_quote(id));
     }
     cmd
+}
+
+/// The command the Claude PTY runs and the env it is spawned with. `base_cmd`
+/// is the whole command, `--settings` included; `account_env` is the env of the
+/// session's account (`session_env_for`).
+///
+/// A Default session has an empty account env, so the command and the env come
+/// back as they were before accounts. An added account's env can't just be set
+/// on the PTY's shell: it runs `base_cmd` under `$SHELL -lic`, and the user's
+/// profile runs after the env is applied, so it could export `CLAUDE_CONFIG_DIR`
+/// or an API key over the account's. `shell_wrap` has `/bin/sh` apply the env
+/// once the profile is done and then run `base_cmd`, so the command returned is
+/// only the exec of that sh and the script rides in `VERUN_ACCOUNT_SCRIPT`. The
+/// scrub list is unset inside the script, so the env returned removes nothing.
+///
+/// The script holds the account's secret values: never log the env.
+fn terminal_command_and_env(
+    base_cmd: String,
+    mut verun_vars: Vec<(String, String)>,
+    account_env: &EnvPatch,
+) -> (String, EnvPatch) {
+    let (command, script_vars) = shell_wrap(&base_cmd, account_env);
+    verun_vars.extend(script_vars);
+    (command, EnvPatch::from_vars(verun_vars))
 }
 
 /// Snapshot the set of session UUIDs Claude has already written for `cwd`.
@@ -1337,6 +1377,36 @@ mod tests {
         assert_eq!(validated.model, Some("opus".into()));
     }
 
+    #[tokio::test]
+    async fn validate_session_for_terminal_returns_account_id() {
+        // The account is the session's own, fixed when it was created, and it
+        // decides the env the terminal runs with: two sessions of one task
+        // each get theirs.
+        let pool = test_pool().await;
+        process_write_for_tests(&pool, DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write_for_tests(&pool, DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        let mut on_account = make_session("t-001");
+        on_account.account_id = Some("a1".into());
+        process_write_for_tests(&pool, DbWrite::CreateSession(on_account))
+            .await
+            .unwrap();
+        let mut on_default = make_session("t-001");
+        on_default.id = "s-002".into();
+        process_write_for_tests(&pool, DbWrite::CreateSession(on_default))
+            .await
+            .unwrap();
+
+        let account = validate_session_for_terminal(&pool, "s-001").await.unwrap();
+        let default = validate_session_for_terminal(&pool, "s-002").await.unwrap();
+
+        assert_eq!(account.account_id, Some("a1".into()));
+        assert_eq!(default.account_id, None);
+    }
+
     #[test]
     fn build_claude_shell_command_spawns_plain_claude_for_fresh_sessions() {
         // Fresh sessions: spawn plain `claude` and let it create its own
@@ -1378,6 +1448,130 @@ mod tests {
     fn build_claude_shell_command_quotes_weird_model_names() {
         let cmd = build_claude_shell_command(ClaudeSpawnMode::Fresh, "", Some("$(rm -rf /)"));
         assert_eq!(cmd, "exec claude --model '$(rm -rf /)'");
+    }
+
+    // ---------------------- terminal_command_and_env ----------------------
+
+    use crate::accounts::env::{account_env, ACCOUNT_SCRIPT_VAR};
+    use crate::accounts::secrets::MemorySecretStore;
+    use crate::agent::{Agent, Claude};
+    use crate::db::tests::make_account;
+
+    /// Verun's own vars, as `open_claude_terminal` passes them.
+    fn verun_vars() -> Vec<(String, String)> {
+        crate::worktree::verun_env_vars(0, "/tmp/myapp")
+    }
+
+    /// What `session_env_for` returns for a session on the Claude account `a1`:
+    /// the scrub list to remove and the account's dir to set.
+    fn a1_env() -> EnvPatch {
+        account_env(
+            &Claude,
+            &make_account("a1", 1000),
+            &MemorySecretStore::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn terminal_command_unchanged_for_default() {
+        // A Default session has an empty account env: terminal mode runs the
+        // command and the env it ran with before accounts, byte for byte.
+        let base = build_claude_shell_command(ClaudeSpawnMode::Resume, "r1", None);
+
+        let (command, env) = terminal_command_and_env(base, verun_vars(), &EnvPatch::default());
+
+        assert_eq!(command, "exec claude --resume 'r1'");
+        assert_eq!(env, EnvPatch::from_vars(verun_vars()));
+    }
+
+    #[test]
+    fn terminal_command_wraps_for_account() {
+        // `--settings` is on the command by the time it is wrapped, so it runs
+        // inside the script along with the rest.
+        let base = format!(
+            "{} --settings '{{\"hooks\":{{}}}}'",
+            build_claude_shell_command(ClaudeSpawnMode::Resume, "r1", None)
+        );
+
+        let (command, env) = terminal_command_and_env(base.clone(), verun_vars(), &a1_env());
+
+        // The login shell is only asked to exec the sh that evals the script.
+        assert_eq!(command, r#"exec /bin/sh -c 'eval "$VERUN_ACCOUNT_SCRIPT"'"#);
+        let script = env
+            .set
+            .iter()
+            .find(|(key, _)| key == ACCOUNT_SCRIPT_VAR)
+            .map(|(_, script)| script.as_str())
+            .expect("the script var is set");
+        // The scrub list is unset, the account's dir exported, and then the
+        // whole command runs.
+        let unset = script.split(';').next().unwrap();
+        for var in Claude.account_profile().unwrap().scrub_vars {
+            assert!(unset.contains(var), "{var} is not unset: {unset}");
+        }
+        assert!(script.contains("export CLAUDE_CONFIG_DIR='/tmp/verun-accounts/a1'"));
+        // The assertion messages name vars and never print the script: it
+        // carries the account's values.
+        assert!(
+            script.ends_with(&format!("; {base}")),
+            "the command is not last in the script"
+        );
+        // Verun's vars still reach the shell, and the env itself removes
+        // nothing: the scrub list travels inside the script.
+        for var in verun_vars() {
+            assert!(env.set.contains(&var), "{} is missing", var.0);
+        }
+        assert!(env.remove.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_command_gives_claude_the_account_env_and_verun_vars() {
+        // `exec /usr/bin/env` stands in for `exec claude`: it prints the env
+        // it inherited.
+        let (command, env) =
+            terminal_command_and_env("exec /usr/bin/env".to_string(), verun_vars(), &a1_env());
+
+        // The login shell's env is Verun's own, with a login in it, plus the
+        // spawn env. Its profile runs before the command and exports a dir of
+        // its own.
+        let mut shell = std::process::Command::new("/bin/sh");
+        shell
+            .args([
+                "-c",
+                &format!("export CLAUDE_CONFIG_DIR=/from-profile; {command}"),
+            ])
+            .env_clear()
+            .env("ANTHROPIC_API_KEY", "sk-inherited");
+        env.apply_to_std_command(&mut shell);
+        let output = shell.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let printed = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = printed.lines().collect();
+        assert!(
+            lines.contains(&"CLAUDE_CONFIG_DIR=/tmp/verun-accounts/a1"),
+            "env printed {lines:?}"
+        );
+        assert!(
+            lines.contains(&"VERUN_PORT_0=10000"),
+            "env printed {lines:?}"
+        );
+        assert!(
+            lines.contains(&"VERUN_REPO_PATH=/tmp/myapp"),
+            "env printed {lines:?}"
+        );
+        for gone in ["ANTHROPIC_API_KEY=", "VERUN_ACCOUNT_SCRIPT="] {
+            assert!(
+                !lines.iter().any(|line| line.starts_with(gone)),
+                "env printed {lines:?}"
+            );
+        }
     }
 
     #[tokio::test]

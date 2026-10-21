@@ -149,7 +149,6 @@ pub const ACCOUNT_SCRIPT_VAR: &str = "VERUN_ACCOUNT_SCRIPT";
 /// sh. It sees the profile's exports but not its aliases or functions. The
 /// keys of `env` go into the script as they are, so they must be valid shell
 /// names. The returned vars hold the secret values: never log them.
-#[allow(dead_code)] // consumed by the PTY spawn sites
 pub fn shell_wrap(command: &str, env: &EnvPatch) -> (String, Vec<(String, String)>) {
     if env.is_empty() {
         return (command.to_string(), Vec::new());

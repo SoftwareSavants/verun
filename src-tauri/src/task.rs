@@ -2027,7 +2027,7 @@ pub(crate) fn build_agent_command(
 /// signed out, removed or missing fails here, before anything is spawned, with
 /// the `AccountError` in its IPC form so the frontend can offer the fix. It
 /// never falls back to another login.
-async fn session_account_env(
+pub async fn session_account_env(
     app: &AppHandle,
     project_id: &str,
     agent_type: &str,
