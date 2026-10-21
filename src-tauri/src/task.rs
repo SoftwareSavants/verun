@@ -779,6 +779,18 @@ pub fn spawn_hook_pty(
     Ok(result)
 }
 
+/// The setup hook a task runs, given the project's: the same hook, except in an
+/// existing directory. That directory is the user's own and gets no setup.
+/// Task creation and restoration both ask this once, and use the answer for
+/// the hook's account env as well as for `spawn_setup_hook`.
+pub fn setup_hook_to_run(existing_directory: bool, setup_hook: &str) -> &str {
+    if existing_directory {
+        ""
+    } else {
+        setup_hook
+    }
+}
+
 /// Run a setup hook in the background via PTY, emitting events to the frontend.
 /// Shared by task creation and task restoration. `project_env` is what
 /// `hook_account_env` found for `setup_hook`, resolved by the caller before it
@@ -952,16 +964,6 @@ pub async fn create_task(
     setup_in_progress: &SetupInProgress,
     params: CreateTaskParams,
 ) -> Result<(Task, Session), String> {
-    // Before the lock and the worktree: if the project's accounts can't be read
-    // the call fails with nothing created, and the lock isn't held while the
-    // keychain answers. A task in an existing directory runs no setup hook.
-    let hook = if params.directory.is_some() {
-        ""
-    } else {
-        params.setup_hook.as_str()
-    };
-    let project_env = hook_account_env(app, &params.project_id, hook).await?;
-    let _workspace_guard = crate::workspace::LIFECYCLE_LOCK.lock().await;
     let CreateTaskParams {
         project_id,
         repo_path,
@@ -974,12 +976,18 @@ pub async fn create_task(
         source_window,
         directory,
     } = params;
+    let existing_directory = directory.is_some();
+    let hook = setup_hook_to_run(existing_directory, &setup_hook);
+    // Before the lock and the worktree: if the project's accounts can't be read
+    // the call fails with nothing created, and the lock isn't held while the
+    // keychain answers.
+    let project_env = hook_account_env(app, &project_id, hook).await?;
+    let _workspace_guard = crate::workspace::LIFECYCLE_LOCK.lock().await;
     let id = Uuid::new_v4().to_string();
     let mut branch = generate_branch_name(&repo_path);
     let now = epoch_ms();
 
     // Phase 1: Create worktree only (fast — git ops)
-    let existing_directory = directory.is_some();
     let mut is_git = true;
     let worktree_path = if let Some(path) = directory {
         let info = tokio::task::spawn_blocking(move || crate::workspace::inspect_directory(&path))
@@ -1086,13 +1094,40 @@ pub async fn create_task(
         setup_in_progress,
         &task.id,
         &worktree_path,
-        if existing_directory { "" } else { &setup_hook },
+        hook,
         port_offset,
         &repo_path,
         project_env,
     );
 
     Ok((task, session))
+}
+
+/// The destroy hook that removing a task runs, given the project's: the same
+/// hook, unless the user skipped it or the task's workspace is not cleaned up
+/// with it, which is all the hook is for. An existing directory is never
+/// cleaned up, and neither is a worktree another task still uses.
+fn destroy_hook_to_run(
+    destroy_hook: &str,
+    skip_destroy_hook: bool,
+    cleanup_workspace: bool,
+) -> &str {
+    if skip_destroy_hook || !cleanup_workspace {
+        ""
+    } else {
+        destroy_hook
+    }
+}
+
+/// Whether removing any of `tasks` can clean its workspace up, judged without
+/// the workspace lock. A task in an existing directory never does, and no task
+/// at all has nothing to clean. A worktree that another task shares is only
+/// found under the lock, so such a task still counts here: the destroy hook may
+/// then not run, but its env was worth reading.
+fn any_workspace_cleaned_up(tasks: &[Task]) -> bool {
+    tasks
+        .iter()
+        .any(|task| crate::workspace::allows_cleanup(task.existing_directory, 0))
 }
 
 /// `project_env` is the account env the destroy hook runs with over Verun's
@@ -1158,11 +1193,7 @@ pub async fn delete_task(
 
     let rp = repo_path.to_string();
     let wtp = task.worktree_path.clone();
-    let hook = if skip_destroy_hook || !cleanup_workspace {
-        String::new()
-    } else {
-        destroy_hook.to_string()
-    };
+    let hook = destroy_hook_to_run(destroy_hook, skip_destroy_hook, cleanup_workspace).to_string();
     let branch = task.branch.clone();
     let env = worktree::task_env(task.port_offset, repo_path, project_env.clone());
     let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -1282,11 +1313,7 @@ pub async fn archive_task(
 
     let rp = task.worktree_path.clone();
     let branch = "HEAD".to_string();
-    let hook = if skip_destroy_hook || !cleanup_workspace {
-        String::new()
-    } else {
-        destroy_hook.to_string()
-    };
+    let hook = destroy_hook_to_run(destroy_hook, skip_destroy_hook, cleanup_workspace).to_string();
     let wtp = task.worktree_path.clone();
     let env = worktree::task_env(task.port_offset, repo_path, project_env.clone());
     let task_id = task.id.clone();
@@ -2089,20 +2116,23 @@ pub async fn hook_account_env(
         .map_err(|e| e.to_ipc())
 }
 
-/// The account env for the destroy hook of a task that is being deleted or
+/// The account env for the destroy hook of `tasks`, which are being deleted or
 /// archived: see `accounts::service::destroy_hook_env_for`. Unlike every other
 /// spawn it cannot fail, so an account problem never blocks removing a task.
-/// There is no hook to run, and so no env, when `skip_destroy_hook` is set.
+/// There is no hook to run, and so no env, when `skip_destroy_hook` is set or
+/// no task's workspace is cleaned up (`any_workspace_cleaned_up`), and the
+/// accounts are not read at all.
 pub async fn destroy_hook_account_env(
     app: &AppHandle,
     project: &db::Project,
+    tasks: &[Task],
     skip_destroy_hook: bool,
 ) -> EnvPatch {
-    let hook = if skip_destroy_hook {
-        ""
-    } else {
-        project.destroy_hook.as_str()
-    };
+    let hook = destroy_hook_to_run(
+        &project.destroy_hook,
+        skip_destroy_hook,
+        any_workspace_cleaned_up(tasks),
+    );
     let secrets = app.state::<accounts::Secrets>().0.clone();
     accounts::service::destroy_hook_env_for(
         app.state::<SqlitePool>().inner(),
@@ -4482,6 +4512,40 @@ mod tests {
         let mut result = active_session_ids_for_task(active_ids, &task_b_session_ids);
         result.sort();
         assert_eq!(result, vec!["s3".to_string(), "s4".to_string()]);
+    }
+
+    #[test]
+    fn setup_hook_to_run_is_the_projects_except_in_an_existing_directory() {
+        assert_eq!(setup_hook_to_run(false, "pnpm install"), "pnpm install");
+        // The directory is the user's own: it gets no setup.
+        assert_eq!(setup_hook_to_run(true, "pnpm install"), "");
+        assert_eq!(setup_hook_to_run(false, ""), "");
+    }
+
+    #[test]
+    fn destroy_hook_to_run_needs_a_workspace_that_is_cleaned_up_and_no_skip() {
+        assert_eq!(
+            destroy_hook_to_run("rm -rf node_modules", false, true),
+            "rm -rf node_modules"
+        );
+        // Skipped by the user, or nothing to clean up: the hook has no job.
+        assert_eq!(destroy_hook_to_run("rm -rf node_modules", true, true), "");
+        assert_eq!(destroy_hook_to_run("rm -rf node_modules", false, false), "");
+        assert_eq!(destroy_hook_to_run("", false, true), "");
+    }
+
+    #[test]
+    fn any_workspace_cleaned_up_needs_a_task_that_owns_its_workspace() {
+        let owned = make_task("p-001");
+        let mut existing = make_task("p-001");
+        existing.existing_directory = true;
+
+        // Nothing is removed, so no destroy hook can run.
+        assert!(!any_workspace_cleaned_up(&[]));
+        // An existing directory is the user's: it is never cleaned up.
+        assert!(!any_workspace_cleaned_up(std::slice::from_ref(&existing)));
+        assert!(any_workspace_cleaned_up(std::slice::from_ref(&owned)));
+        assert!(any_workspace_cleaned_up(&[existing, owned]));
     }
 
     #[test]

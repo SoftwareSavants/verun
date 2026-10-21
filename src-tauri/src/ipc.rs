@@ -246,7 +246,7 @@ pub async fn delete_project(
 
     let tasks = db::list_tasks_for_project(pool.inner(), &id).await?;
     // The project's accounts, read once for the destroy hook of every task.
-    let project_env = task::destroy_hook_account_env(&app, &project, false).await;
+    let project_env = task::destroy_hook_account_env(&app, &project, &tasks, false).await;
     for t in &tasks {
         task::delete_task(
             &app,
@@ -679,7 +679,9 @@ pub async fn delete_task(
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
     let skip_destroy_hook = skip_destroy_hook.unwrap_or(false);
-    let project_env = task::destroy_hook_account_env(&app, &project, skip_destroy_hook).await;
+    let project_env =
+        task::destroy_hook_account_env(&app, &project, std::slice::from_ref(&t), skip_destroy_hook)
+            .await;
     task::delete_task(
         &app,
         pool.inner(),
@@ -713,7 +715,9 @@ pub async fn archive_task(
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
     let skip_destroy_hook = skip_destroy_hook.unwrap_or(false);
-    let project_env = task::destroy_hook_account_env(&app, &project, skip_destroy_hook).await;
+    let project_env =
+        task::destroy_hook_account_env(&app, &project, std::slice::from_ref(&t), skip_destroy_hook)
+            .await;
     task::archive_task(
         &app,
         pool.inner(),
@@ -774,11 +778,7 @@ pub async fn restore_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
-    let setup_hook = if t.existing_directory {
-        ""
-    } else {
-        project.setup_hook.as_str()
-    };
+    let setup_hook = task::setup_hook_to_run(t.existing_directory, &project.setup_hook);
     // Before the task is restored: an account that can't be read leaves it
     // archived.
     let project_env = task::hook_account_env(&app, &t.project_id, setup_hook).await?;

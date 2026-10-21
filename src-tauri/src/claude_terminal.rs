@@ -691,14 +691,15 @@ pub(crate) fn build_claude_shell_command(
 /// is the whole command, `--settings` included; `account_env` is the env of the
 /// session's account (`session_env_for`).
 ///
-/// A Default session has an empty account env, so the command and the env come
-/// back as they were before accounts. An added account's env can't just be set
-/// on the PTY's shell: it runs `base_cmd` under `$SHELL -lic`, and the user's
-/// profile runs after the env is applied, so it could export `CLAUDE_CONFIG_DIR`
-/// or an API key over the account's. `shell_wrap` has `/bin/sh` apply the env
-/// once the profile is done and then run `base_cmd`, so the command returned is
-/// only the exec of that sh and the script rides in `VERUN_ACCOUNT_SCRIPT`. The
-/// scrub list is unset inside the script, so the env returned removes nothing.
+/// An empty account env (a Default session in a project with no other harness
+/// bound) gives the command and the env back as they were before accounts. An
+/// added account's env can't just be set on the PTY's shell: it runs `base_cmd`
+/// under `$SHELL -lic`, and the user's profile runs after the env is applied,
+/// so it could export `CLAUDE_CONFIG_DIR` or an API key over the account's.
+/// `shell_wrap` has `/bin/sh` apply the env once the profile is done and then
+/// run `base_cmd`, so the command returned is only the exec of that sh and the
+/// script rides in `VERUN_ACCOUNT_SCRIPT`. The scrub list is unset inside the
+/// script, so the env returned removes nothing.
 ///
 /// The script holds the account's secret values: never log the env.
 fn terminal_command_and_env(
@@ -1452,6 +1453,8 @@ mod tests {
 
     // ---------------------- terminal_command_and_env ----------------------
 
+    #[cfg(unix)]
+    use crate::accounts::env::run_in_sh;
     use crate::accounts::env::{account_env, ACCOUNT_SCRIPT_VAR};
     use crate::accounts::secrets::MemorySecretStore;
     use crate::agent::{Agent, Claude};
@@ -1475,8 +1478,9 @@ mod tests {
 
     #[test]
     fn terminal_command_unchanged_for_default() {
-        // A Default session has an empty account env: terminal mode runs the
-        // command and the env it ran with before accounts, byte for byte.
+        // An empty account env (a Default session in a project with no other
+        // harness bound): terminal mode runs the command and the env it ran
+        // with before accounts, byte for byte.
         let base = build_claude_shell_command(ClaudeSpawnMode::Resume, "r1", None);
 
         let (command, env) = terminal_command_and_env(base, verun_vars(), &EnvPatch::default());
@@ -1508,7 +1512,12 @@ mod tests {
         // whole command runs.
         let unset = script.split(';').next().unwrap();
         for var in Claude.account_profile().unwrap().scrub_vars {
-            assert!(unset.contains(var), "{var} is not unset: {unset}");
+            // A whole name: `unset.contains(var)` would also take `XANTHROPIC_API_KEY`
+            // for `ANTHROPIC_API_KEY`.
+            assert!(
+                unset.split_whitespace().any(|word| word == *var),
+                "{var} is not unset: {unset}"
+            );
         }
         assert!(script.contains("export CLAUDE_CONFIG_DIR='/tmp/verun-accounts/a1'"));
         // The assertion messages name vars and never print the script: it
@@ -1536,23 +1545,7 @@ mod tests {
         // The login shell's env is Verun's own, with a login in it, plus the
         // spawn env. Its profile runs before the command and exports a dir of
         // its own.
-        let mut shell = std::process::Command::new("/bin/sh");
-        shell
-            .args([
-                "-c",
-                &format!("export CLAUDE_CONFIG_DIR=/from-profile; {command}"),
-            ])
-            .env_clear()
-            .env("ANTHROPIC_API_KEY", "sk-inherited");
-        env.apply_to_std_command(&mut shell);
-        let output = shell.output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let printed = String::from_utf8_lossy(&output.stdout);
+        let printed = run_in_sh("export CLAUDE_CONFIG_DIR=/from-profile; ", &command, &env);
         let lines: Vec<&str> = printed.lines().collect();
         assert!(
             lines.contains(&"CLAUDE_CONFIG_DIR=/tmp/verun-accounts/a1"),

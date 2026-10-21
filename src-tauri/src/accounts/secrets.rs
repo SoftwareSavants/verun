@@ -47,6 +47,26 @@ impl SecretStore for MemorySecretStore {
     }
 }
 
+/// A keychain that refuses every call, for the tests of what happens when the
+/// real one is locked.
+#[cfg(test)]
+pub(crate) struct LockedKeychain;
+
+#[cfg(test)]
+impl SecretStore for LockedKeychain {
+    fn get(&self, _account_id: &str, _key: &str) -> Result<Option<String>, String> {
+        Err("keychain is locked".into())
+    }
+
+    fn set(&self, _account_id: &str, _key: &str, _value: &str) -> Result<(), String> {
+        Err("keychain is locked".into())
+    }
+
+    fn delete(&self, _account_id: &str, _key: &str) -> Result<(), String> {
+        Err("keychain is locked".into())
+    }
+}
+
 /// A `SecretStore` backed by the OS credential store: the macOS login
 /// keychain, Windows Credential Manager or the Linux kernel keyring.
 ///

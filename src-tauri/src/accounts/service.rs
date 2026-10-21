@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use sqlx::SqlitePool;
 
@@ -226,12 +227,21 @@ pub async fn hook_env_for(
     project_env_for(pool, secrets, project_id).await
 }
 
+/// How long deleting or archiving a task waits for the project's accounts
+/// before it runs the destroy hook without them.
+const DESTROY_HOOK_ENV_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The env of the destroy hook (`hook`) of a task that is being deleted or
 /// archived: `hook_env_for`, except that it cannot fail. A task must stay
 /// removable whatever state its accounts are in (a locked keychain, a secret
 /// that was never stored), so an error is logged and the hook runs without the
 /// project's accounts, with Verun's own vars alone. Every other spawn fails
 /// instead of falling back to another login.
+///
+/// A keychain that never answers (a locked one waits on its unlock prompt for
+/// as long as the user leaves it) counts as an error too once
+/// `DESTROY_HOOK_ENV_TIMEOUT` has passed. The read it was stuck in is left to
+/// finish on its blocking thread, and its result is dropped.
 ///
 /// The warning names the account and the var, never a value: no error carries
 /// one.
@@ -241,15 +251,27 @@ pub async fn destroy_hook_env_for(
     project_id: &str,
     hook: &str,
 ) -> EnvPatch {
-    match hook_env_for(pool, secrets, project_id, hook).await {
-        Ok(env) => env,
-        Err(e) => {
-            eprintln!(
-                "[verun][accounts] destroy hook of project {project_id} runs without its accounts: {e:?}"
-            );
-            EnvPatch::default()
-        }
-    }
+    destroy_hook_env_within(DESTROY_HOOK_ENV_TIMEOUT, pool, secrets, project_id, hook).await
+}
+
+/// `destroy_hook_env_for` with the time it waits as a parameter.
+async fn destroy_hook_env_within(
+    timeout: Duration,
+    pool: &SqlitePool,
+    secrets: Arc<dyn SecretStore>,
+    project_id: &str,
+    hook: &str,
+) -> EnvPatch {
+    let failure =
+        match tokio::time::timeout(timeout, hook_env_for(pool, secrets, project_id, hook)).await {
+            Ok(Ok(env)) => return env,
+            Ok(Err(e)) => format!("{e:?}"),
+            Err(_) => format!("no answer within {timeout:?}"),
+        };
+    eprintln!(
+        "[verun][accounts] destroy hook of project {project_id} runs without its accounts: {failure}"
+    );
+    EnvPatch::default()
 }
 
 /// The env of the Haiku call that names a session, on the Claude login
@@ -338,7 +360,7 @@ pub async fn session_title_env_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::secrets::MemorySecretStore;
+    use crate::accounts::secrets::{LockedKeychain, MemorySecretStore};
     use crate::agent::Claude;
     use crate::db::tests::{
         make_account, mark_account_removed_confirmed, set_project_account_confirmed, test_pool,
@@ -523,21 +545,6 @@ mod tests {
         }
         fn delete(&self, account_id: &str, key: &str) -> Result<(), String> {
             self.secrets.delete(account_id, key)
-        }
-    }
-
-    /// A keychain that refuses every read.
-    struct LockedKeychain;
-
-    impl SecretStore for LockedKeychain {
-        fn get(&self, _account_id: &str, _key: &str) -> Result<Option<String>, String> {
-            Err("keychain is locked".into())
-        }
-        fn set(&self, _account_id: &str, _key: &str, _value: &str) -> Result<(), String> {
-            Err("keychain is locked".into())
-        }
-        fn delete(&self, _account_id: &str, _key: &str) -> Result<(), String> {
-            Err("keychain is locked".into())
         }
     }
 
@@ -1083,6 +1090,58 @@ mod tests {
         let patch = destroy_hook_env_for(&pool, no_secrets(), "p-001", "rm -rf node_modules").await;
 
         assert_eq!(patch, EnvPatch::default());
+    }
+
+    /// A keychain that does not answer until the test lets go of `release`.
+    struct StuckKeychain(Mutex<std::sync::mpsc::Receiver<()>>);
+
+    impl SecretStore for StuckKeychain {
+        fn get(&self, _account_id: &str, _key: &str) -> Result<Option<String>, String> {
+            // Returns once the sender is dropped.
+            let _ = self.0.lock().unwrap().recv();
+            Err("keychain was released".into())
+        }
+        fn set(&self, _account_id: &str, _key: &str, _value: &str) -> Result<(), String> {
+            Err("keychain was released".into())
+        }
+        fn delete(&self, _account_id: &str, _key: &str) -> Result<(), String> {
+            Err("keychain was released".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn destroy_hook_env_within_gives_up_on_a_keychain_that_never_answers() {
+        // A locked keychain can sit on its unlock prompt until the user answers
+        // it, and deleting a task must not wait for that.
+        let pool = test_pool().await;
+        let dir = claude_dir(SIGNED_IN);
+        let mut account = acme("a1", &dir);
+        account.env = vec![secret_var("ANTHROPIC_API_KEY")];
+        upsert_account_confirmed(&pool, account).await.unwrap();
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+        let (release, stuck) = std::sync::mpsc::channel();
+        let secrets = Arc::new(StuckKeychain(Mutex::new(stuck)));
+
+        // The outer limit only keeps a missing timeout from hanging the test.
+        let patch = tokio::time::timeout(
+            Duration::from_secs(10),
+            destroy_hook_env_within(
+                Duration::from_millis(50),
+                &pool,
+                secrets,
+                "p-001",
+                "rm -rf node_modules",
+            ),
+        )
+        .await
+        .expect("destroy_hook_env_within waited for the keychain");
+
+        // Verun's own vars alone, as for any other failure.
+        assert_eq!(patch, EnvPatch::default());
+        // Lets the blocked read finish, so the runtime can shut down.
+        drop(release);
     }
 
     // -- title_env_for and session_title_env_for --

@@ -93,22 +93,41 @@ impl EnvPatch {
 
     /// `apply_to_command` for a `std::process::Command`.
     pub fn apply_to_std_command(&self, cmd: &mut std::process::Command) {
-        for key in &self.remove {
-            cmd.env_remove(key);
-        }
-        for (key, value) in &self.set {
-            cmd.env(key, value);
-        }
+        self.apply_to(
+            cmd,
+            |cmd, key| {
+                cmd.env_remove(key);
+            },
+            |cmd, key, value| {
+                cmd.env(key, value);
+            },
+        );
     }
 
     /// `apply_to_command` for the `CommandBuilder` of a PTY. A builder keeps
     /// one entry per var as well, so the order matters in the same way.
     pub fn apply_to_pty(&self, cmd: &mut portable_pty::CommandBuilder) {
+        self.apply_to(
+            cmd,
+            |cmd, key| cmd.env_remove(key),
+            |cmd, key, value| cmd.env(key, value),
+        );
+    }
+
+    /// The order every `apply_to_*` follows, in one place: `remove` for each
+    /// var in `remove`, and then `set` for each var in `set`. `target` is what
+    /// the closures change, and they are given it again so that both can use it.
+    fn apply_to<T>(
+        &self,
+        target: &mut T,
+        remove: impl Fn(&mut T, &str),
+        set: impl Fn(&mut T, &str, &str),
+    ) {
         for key in &self.remove {
-            cmd.env_remove(key);
+            remove(target, key);
         }
         for (key, value) in &self.set {
-            cmd.env(key, value);
+            set(target, key, value);
         }
     }
 
@@ -175,6 +194,30 @@ pub fn shell_wrap(command: &str, env: &EnvPatch) -> (String, Vec<(String, String
     // is never an argument of any process.
     let outer = format!("exec /bin/sh -c 'eval \"${ACCOUNT_SCRIPT_VAR}\"'");
     (outer, vec![(ACCOUNT_SCRIPT_VAR.to_string(), script)])
+}
+
+/// What `/bin/sh -c "{profile}{outer}"` prints, for the tests that run a
+/// wrapped command the way a spawn site does. `profile` is shell code that runs
+/// first in the same shell, standing in for what the user's profile exports
+/// before `outer`, and `env` is applied to the sh as a spawn env is. The sh gets
+/// no other env than `ANTHROPIC_API_KEY=leak`, standing in for what Verun
+/// inherited, so the result depends neither on the developer's env nor on their
+/// profile. Panics when the sh fails.
+#[cfg(all(test, unix))]
+pub(crate) fn run_in_sh(profile: &str, outer: &str, env: &EnvPatch) -> String {
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.args(["-c", &format!("{profile}{outer}")])
+        .env_clear()
+        .env("ANTHROPIC_API_KEY", "leak");
+    env.apply_to_std_command(&mut cmd);
+    let output = cmd.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 /// The env of one added account. `agent` is the account's harness.
@@ -317,7 +360,7 @@ fn env_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::secrets::MemorySecretStore;
+    use crate::accounts::secrets::{LockedKeychain, MemorySecretStore};
     use crate::agent::{AccountProfile, Claude, InputMode, ModelOption, SessionArgs};
 
     // -- Fixtures --
@@ -413,21 +456,6 @@ mod tests {
             required_secret: None,
             in_project_env: true,
             min_cli_version: None,
-        }
-    }
-
-    /// A keychain that refuses every read.
-    struct LockedKeychain;
-
-    impl SecretStore for LockedKeychain {
-        fn get(&self, _account_id: &str, _key: &str) -> Result<Option<String>, String> {
-            Err("keychain is locked".into())
-        }
-        fn set(&self, _account_id: &str, _key: &str, _value: &str) -> Result<(), String> {
-            Err("keychain is locked".into())
-        }
-        fn delete(&self, _account_id: &str, _key: &str) -> Result<(), String> {
-            Err("keychain is locked".into())
         }
     }
 
@@ -1037,29 +1065,12 @@ mod tests {
     // -- shell_wrap --
 
     /// What `shell_wrap(inner, patch)` prints when run the way a spawn site
-    /// runs it: in a plain `/bin/sh` that inherited `ANTHROPIC_API_KEY=leak`,
-    /// with the script var set. `profile` is shell code that runs first in the
-    /// same shell, standing in for what the user's profile exports before the
-    /// outer command. The sh gets no other env, so the result depends neither
-    /// on the developer's env nor on their profile.
+    /// runs it: the outer command in a plain `/bin/sh` (see `run_in_sh`) with
+    /// the script var set.
     #[cfg(unix)]
     fn run_wrapped(profile: &str, inner: &str, patch: &EnvPatch) -> String {
         let (outer, vars) = shell_wrap(inner, patch);
-        let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.args(["-c", &format!("{profile}{outer}")])
-            .env_clear()
-            .env("ANTHROPIC_API_KEY", "leak");
-        for (key, value) in &vars {
-            cmd.env(key, value);
-        }
-        let output = cmd.output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).into_owned()
+        run_in_sh(profile, &outer, &EnvPatch::from_vars(vars))
     }
 
     /// The patch of the cases below: drop an inherited key, set a dir whose
