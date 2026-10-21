@@ -88,7 +88,6 @@ impl EnvPatch {
     /// in `set`. The order matters because a command keeps one entry per var
     /// and the last call wins, so a var in both lists is set only if it is
     /// removed first.
-    #[allow(dead_code)] // consumed by the account service
     pub fn apply_to_command(&self, cmd: &mut tokio::process::Command) {
         self.apply_to_std_command(cmd.as_std_mut());
     }
@@ -180,7 +179,6 @@ pub fn shell_wrap(command: &str, env: &EnvPatch) -> (String, Vec<(String, String
 ///
 /// Reading a secret may block on the OS keychain, so async callers run this
 /// inside `spawn_blocking`.
-#[allow(dead_code)] // consumed by the account service
 pub fn account_env(
     agent: &dyn Agent,
     account: &Account,
@@ -219,7 +217,6 @@ pub fn account_env(
 /// them. A harness on Default has no account and contributes nothing.
 ///
 /// May block on the keychain like `account_env`.
-#[allow(dead_code)] // consumed by the account service
 pub fn project_env(
     project_accounts: &[Account],
     secrets: &dyn SecretStore,
@@ -239,7 +236,6 @@ pub fn project_env(
 /// `session_account` is an account of `session_agent_type`'s harness, and it
 /// is applied whether or not that harness reaches the project's shells. May
 /// block on the keychain like `account_env`.
-#[allow(dead_code)] // consumed by the account service
 pub fn session_env(
     session_agent_type: &str,
     session_account: Option<&Account>,

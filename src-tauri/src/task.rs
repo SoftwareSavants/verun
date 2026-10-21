@@ -1,3 +1,4 @@
+use crate::accounts::{self, env::EnvPatch};
 use crate::agent::AgentKind;
 use crate::claude_home::{self, ClaudeHome};
 use crate::db::{self, DbWriteTx, Session, Task};
@@ -1980,6 +1981,60 @@ async fn write_to_stdin(
     Ok(())
 }
 
+/// The command that starts a chat session's CLI: piped stdin, stdout and
+/// stderr, run in the task's worktree.
+///
+/// The env is applied in a fixed order, and a later call wins over an earlier
+/// one: Verun's own vars, then the session's account patch, then two guards
+/// that hold whatever the account says. A Default session has an empty patch
+/// and so inherits Verun's env as it is.
+pub(crate) fn build_agent_command(
+    binary: &str,
+    args: &[String],
+    worktree_path: &str,
+    verun_vars: Vec<(String, String)>,
+    account_env: &EnvPatch,
+) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(binary);
+    cmd.args(args);
+    for (k, v) in &verun_vars {
+        cmd.env(k, v);
+    }
+    account_env.apply_to_command(&mut cmd);
+    // Match claude-agent-sdk-python: strip `CLAUDECODE` (issue #573) so the spawned
+    // CLI doesn't detect itself as nested, and tag the entrypoint for Anthropic telemetry.
+    cmd.env_remove("CLAUDECODE");
+    cmd.env("CLAUDE_CODE_ENTRYPOINT", "verun");
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .current_dir(worktree_path);
+    cmd
+}
+
+/// The account env a session's CLI is spawned with: see
+/// `accounts::service::session_env_for`. A session on an account that is
+/// signed out, removed or missing fails here, before anything is spawned, with
+/// the `AccountError` in its IPC form so the frontend can offer the fix. It
+/// never falls back to another login.
+async fn session_account_env(
+    app: &AppHandle,
+    project_id: &str,
+    agent_type: &str,
+    account_id: Option<&str>,
+) -> Result<EnvPatch, String> {
+    let secrets = app.state::<accounts::Secrets>().0.clone();
+    accounts::service::session_env_for(
+        app.state::<SqlitePool>().inner(),
+        secrets,
+        project_id,
+        agent_type,
+        account_id,
+    )
+    .await
+    .map_err(|e| e.to_ipc())
+}
+
 /// Params for [`spawn_session_process`]. `prewarm=true` skips writing any
 /// initial user message; the CLI just boots and waits for the first send.
 pub struct SpawnSessionParams {
@@ -2038,12 +2093,16 @@ async fn spawn_rpc_session(
         thinking_mode,
         fast_mode,
         agent_type,
-        account_id: _, // the spawn env doesn't use it yet
+        account_id,
         message,
         attachments,
         prewarm,
     } = params;
 
+    // Resolved before anything is spawned, so an account that can't be used
+    // leaves no process behind.
+    let account_env =
+        session_account_env(&app, &project_id, &agent_type, account_id.as_deref()).await?;
     let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
     let mcp_config_path = verun_mcp_config_path_for_task(&app_data, &task_id);
     let args_list = agent.build_session_args(&crate::agent::SessionArgs {
@@ -2069,17 +2128,13 @@ async fn spawn_rpc_session(
     );
     eprintln!("[verun][{}] cwd: {}", agent.display_name(), worktree_path);
 
-    let mut cmd = tokio::process::Command::new(agent.cli_binary());
-    cmd.args(&args_list);
-    for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
-        cmd.env(&k, &v);
-    }
-    cmd.env_remove("CLAUDECODE");
-    cmd.env("CLAUDE_CODE_ENTRYPOINT", "verun");
-    cmd.stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(&worktree_path);
+    let mut cmd = build_agent_command(
+        agent.cli_binary(),
+        &args_list,
+        &worktree_path,
+        worktree::verun_env_vars(port_offset, &repo_path),
+        &account_env,
+    );
 
     let mut child = cmd
         .spawn()
@@ -2582,8 +2637,11 @@ pub async fn spawn_session_process(
         attachments,
         prewarm,
     } = params;
-    // Resolved before anything is spawned, so an account that can't be found
-    // leaves no process behind.
+    // Resolved before anything is spawned, so an account that can't be used
+    // leaves no process behind. The env goes first: it reports a missing
+    // account in the form the UI acts on, which the home lookup does not.
+    let account_env =
+        session_account_env(&app, &project_id, &agent_type, account_id.as_deref()).await?;
     let claude_home = session_claude_home(
         app.state::<SqlitePool>().inner(),
         agent.kind(),
@@ -2627,19 +2685,13 @@ pub async fn spawn_session_process(
         agent.input_mode()
     );
 
-    let mut cmd = tokio::process::Command::new(agent.cli_binary());
-    cmd.args(&args_list);
-    for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
-        cmd.env(&k, &v);
-    }
-    // Match claude-agent-sdk-python: strip `CLAUDECODE` (issue #573) so the spawned
-    // CLI doesn't detect itself as nested, and tag the entrypoint for Anthropic telemetry.
-    cmd.env_remove("CLAUDECODE");
-    cmd.env("CLAUDE_CODE_ENTRYPOINT", "verun");
-    cmd.stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(&worktree_path);
+    let mut cmd = build_agent_command(
+        agent.cli_binary(),
+        &args_list,
+        &worktree_path,
+        worktree::verun_env_vars(port_offset, &repo_path),
+        &account_env,
+    );
 
     let mut child = cmd
         .spawn()
@@ -3999,6 +4051,9 @@ fn run_git_ignoring_env(cwd: &std::path::Path, args: &[&str]) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::env::account_env;
+    use crate::accounts::secrets::MemorySecretStore;
+    use crate::agent::Claude;
 
     #[test]
     fn branch_name_format() {
@@ -4492,5 +4547,154 @@ mod tests {
             .await
             .unwrap();
         assert!(!home.is_account_home());
+    }
+
+    // -- Env of a session's CLI --
+
+    /// What a command does to one var of its child's env.
+    #[derive(Debug, PartialEq)]
+    enum EnvChange {
+        /// The command never mentions it, so the child inherits it as it is.
+        Untouched,
+        Removed,
+        Set(String),
+    }
+
+    fn env_change(cmd: &tokio::process::Command, key: &str) -> EnvChange {
+        cmd.as_std()
+            .get_envs()
+            .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+            .map_or(EnvChange::Untouched, |(_, value)| match value {
+                Some(value) => EnvChange::Set(value.to_string_lossy().into_owned()),
+                None => EnvChange::Removed,
+            })
+    }
+
+    #[test]
+    fn agent_command_applies_account_env() {
+        let mut account = make_account("a1", 1);
+        account.config_dir = "/acc/a1".into();
+        let patch = account_env(&Claude, &account, &MemorySecretStore::default()).unwrap();
+
+        let cmd = build_agent_command(
+            "claude",
+            &["--print".to_string()],
+            "/work/tree",
+            worktree::verun_env_vars(3, "/repo"),
+            &patch,
+        );
+
+        // The account's home, and the Claude vars Verun inherited are gone.
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CONFIG_DIR"),
+            EnvChange::Set("/acc/a1".into())
+        );
+        assert_eq!(env_change(&cmd, "ANTHROPIC_API_KEY"), EnvChange::Removed);
+        // Verun's own vars and the nested-CLI guards are still applied.
+        assert_eq!(
+            env_change(&cmd, "VERUN_PORT_0"),
+            EnvChange::Set("10030".into())
+        );
+        assert_eq!(
+            env_change(&cmd, "VERUN_REPO_PATH"),
+            EnvChange::Set("/repo".into())
+        );
+        assert_eq!(env_change(&cmd, "CLAUDECODE"), EnvChange::Removed);
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CODE_ENTRYPOINT"),
+            EnvChange::Set("verun".into())
+        );
+        // The rest of the command is what was asked for.
+        assert_eq!(cmd.as_std().get_program(), "claude");
+        assert_eq!(cmd.as_std().get_args().collect::<Vec<_>>(), ["--print"]);
+        assert_eq!(
+            cmd.as_std().get_current_dir(),
+            Some(std::path::Path::new("/work/tree"))
+        );
+    }
+
+    #[test]
+    fn agent_command_default_session_env_untouched() {
+        let verun_vars = worktree::verun_env_vars(0, "/repo");
+        let cmd = build_agent_command(
+            "claude",
+            &[],
+            "/work/tree",
+            verun_vars.clone(),
+            &EnvPatch::default(),
+        );
+
+        // The Default account inherits Verun's env as it is.
+        for key in ["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"] {
+            assert_eq!(env_change(&cmd, key), EnvChange::Untouched, "{key}");
+        }
+        // Nothing is touched beyond what a spawn did before accounts: Verun's
+        // vars and the two nested-CLI guards.
+        let mut touched: Vec<String> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        touched.sort();
+        let mut expected: Vec<String> = verun_vars.into_iter().map(|(key, _)| key).collect();
+        expected.extend([
+            "CLAUDECODE".to_string(),
+            "CLAUDE_CODE_ENTRYPOINT".to_string(),
+        ]);
+        expected.sort();
+        assert_eq!(touched, expected);
+    }
+
+    #[test]
+    fn agent_command_keeps_the_nested_cli_guards_over_the_account_env() {
+        // An account's own vars are applied before the guards, so they cannot
+        // make the CLI think it is nested or hide that Verun started it.
+        let patch = EnvPatch::from_vars(vec![
+            ("CLAUDECODE".to_string(), "1".to_string()),
+            ("CLAUDE_CODE_ENTRYPOINT".to_string(), "cli".to_string()),
+        ]);
+
+        let cmd = build_agent_command("claude", &[], "/work/tree", vec![], &patch);
+
+        assert_eq!(env_change(&cmd, "CLAUDECODE"), EnvChange::Removed);
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CODE_ENTRYPOINT"),
+            EnvChange::Set("verun".into())
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_command_spawns_in_the_worktree_with_piped_stdio() {
+        let worktree = tempfile::tempdir().unwrap();
+        let patch = EnvPatch::from_vars(vec![(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            "/acc/a1".to_string(),
+        )]);
+        let script = r#"pwd; printf '%s|%s|%s|' "$CLAUDE_CONFIG_DIR" "$CLAUDE_CODE_ENTRYPOINT" "${CLAUDECODE-unset}"; read line; printf '%s' "$line""#;
+
+        let mut cmd = build_agent_command(
+            "sh",
+            &["-c".to_string(), script.to_string()],
+            worktree.path().to_str().unwrap(),
+            vec![],
+            &patch,
+        );
+        // If an assertion fails first, the shell must not stay behind waiting
+        // on a stdin nobody writes to.
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().unwrap();
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        stdin.write_all(b"hello\n").await.unwrap();
+        drop(stdin);
+        let output = child.wait_with_output().await.unwrap();
+
+        // Run in the worktree, with the account's env on the child, the
+        // guards over whatever this process inherited, and both ends piped.
+        let cwd = worktree.path().canonicalize().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{}\n/acc/a1|verun|unset|hello", cwd.display())
+        );
     }
 }

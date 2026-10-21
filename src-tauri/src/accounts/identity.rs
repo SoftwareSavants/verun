@@ -143,7 +143,6 @@ pub fn non_empty_str(value: &serde_json::Value, key: &str) -> Option<String> {
 /// API key in its env is usable, so it reports `ApiKey` instead. Only the keys
 /// of `env` are consulted: a secret's value lives in the keychain, not here. A
 /// real login (`SignedIn`) is left as it is.
-#[allow(dead_code)] // consumed by the account service
 pub fn with_api_key_overlay(
     identity: AccountIdentity,
     profile: &AccountProfile,
