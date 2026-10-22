@@ -686,7 +686,8 @@ describe('notification name selection', () => {
 
 // A session on a signed-out or removed account cannot send. The backend says so
 // with an account error, and the user gets a toast with a way to fix it instead
-// of the raw error from every place that sends.
+// of the raw error from every place that sends. The result says whether the
+// message went out, for callers that report success or clear something after it.
 describe('sendMessage with an account problem', () => {
   const signedOut = 'ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a1","label":"Acme","projects":[],"message":null}'
 
@@ -700,7 +701,8 @@ describe('sendMessage with an account problem', () => {
   test('sendMessage swallows account errors after the toast', async () => {
     vi.mocked(ipc.sendMessage).mockRejectedValue(signedOut)
 
-    await expect(sendMessage('s-acc', 'hi')).resolves.toBeUndefined()
+    // false: the message was not sent, and the user has been told why.
+    await expect(sendMessage('s-acc', 'hi')).resolves.toBe(false)
 
     // The session is not left running, and the toast tells the user what to do.
     expect(sessionById('s-acc')?.status).toBe('idle')
@@ -718,10 +720,10 @@ describe('sendMessage with an account problem', () => {
     expect(toasts()).toEqual([])
   })
 
-  test('a send that works leaves the session running and shows nothing', async () => {
+  test('a send that works resolves true, leaves the session running and shows nothing', async () => {
     vi.mocked(ipc.sendMessage).mockResolvedValue(undefined)
 
-    await sendMessage('s-acc', 'hi')
+    await expect(sendMessage('s-acc', 'hi')).resolves.toBe(true)
 
     expect(sessionById('s-acc')?.status).toBe('running')
     expect(toasts()).toEqual([])

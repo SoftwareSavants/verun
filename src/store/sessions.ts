@@ -98,7 +98,14 @@ export function updateSessionModel(sessionId: string, model: string | null) {
   ipc.updateSessionModel(sessionId, model)
 }
 
-export async function sendMessage(sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) {
+/**
+ * Sends `message` on the session. Resolves `true` once the backend has taken
+ * it, and `false` when the session's account stopped it (signed out, removed):
+ * the user has been shown the account toast with a way to fix it, so there is
+ * nothing to catch. A caller that reports success or clears something after the
+ * send has to check which. Any other error is thrown.
+ */
+export async function sendMessage(sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean): Promise<boolean> {
   const images = attachments?.filter(a => a.mimeType.startsWith('image/'))
 
   const item: OutputItem = {
@@ -119,11 +126,10 @@ export async function sendMessage(sessionId: string, message: string, attachment
   setSessions(s => s.id === sessionId, 'status', 'running')
   try {
     await ipc.sendMessage(sessionId, message, attachments, model, planMode, thinkingMode, fastMode)
+    return true
   } catch (e) {
     setSessions(s => s.id === sessionId, 'status', 'idle')
-    // A signed-out or removed account gets a toast with a way to fix it. That
-    // is all there is to report, so the caller has nothing to catch.
-    if (notifyAccountError(e)) return
+    if (notifyAccountError(e)) return false
     throw e
   }
 }

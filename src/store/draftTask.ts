@@ -39,8 +39,12 @@ export async function startDraftTask(input: DraftTaskInput) {
     return
   }
   try {
-    await sendMessage(session.id, input.message, undefined, input.model)
-    localStorage.removeItem(`verun:draft-msg:${session.id}`)
+    // false: the session's account stopped the send and sendMessage has said so
+    // with its toast. The agent did not start, so the prompt stays, as when it
+    // fails below.
+    if (await sendMessage(session.id, input.message, undefined, input.model)) {
+      localStorage.removeItem(`verun:draft-msg:${session.id}`)
+    }
   } catch (error) {
     // Creation succeeded: never create a duplicate task when sending fails.
     addToast(`Task created, but the agent could not start: ${String(error)}`, 'error')

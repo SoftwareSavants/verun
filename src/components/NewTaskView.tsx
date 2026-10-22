@@ -5,6 +5,7 @@ import { projectById } from '../store/projects'
 import { agents } from '../store/agents'
 import { startDraftTask } from '../store/draftTask'
 import * as ipc from '../lib/ipc'
+import { accountErrorMessage, notifyAccountError } from '../lib/accountErrors'
 import type { AgentType } from '../types'
 import { HarnessModelPicker } from './HarnessModelPicker'
 import { Select } from './Select'
@@ -66,7 +67,12 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
     try {
       await startDraftTask({ projectId: props.projectId, baseBranch: baseBranch(), agentType: agent(), model: selectedModel(), directory: directory(), message: message().trim() })
       props.onClose()
-    } catch (e) { setError(String(e)) }
+    } catch (e) {
+      // The account the task would run on can be unusable: that gets the account
+      // toast, and the draft says what is wrong instead of printing the raw error.
+      notifyAccountError(e)
+      setError(accountErrorMessage(e) ?? String(e))
+    }
     finally { setSending(false) }
   }
 

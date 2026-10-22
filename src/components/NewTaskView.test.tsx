@@ -14,8 +14,9 @@ vi.mock('../store/draftTask', () => ({ startDraftTask: mocks.start }))
 vi.mock('./AgentPicker', () => ({ AgentPicker: () => <span>Claude</span> }))
 vi.mock('./CloudSessionPicker', () => ({ CloudSessionPicker: () => null }))
 import { NewTaskView } from './NewTaskView'
+import { toasts, setToasts } from '../store/ui'
 afterEach(cleanup)
-beforeEach(() => { vi.clearAllMocks(); mocks.start.mockResolvedValue(undefined) })
+beforeEach(() => { vi.clearAllMocks(); setToasts([]); mocks.start.mockResolvedValue(undefined) })
 function select(label: string, option: string) {
   fireEvent.click(screen.getByRole('combobox', { name: label }))
   fireEvent.click(screen.getByRole('option', { name: option }))
@@ -51,6 +52,23 @@ test('a selected non-Git folder is shown and creation errors preserve the prompt
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await screen.findByRole('alert')
   expect((screen.getByRole('textbox', { name: 'Task prompt' }) as HTMLTextAreaElement).value).toBe('Organize notes')
+  expect(close).not.toHaveBeenCalled()
+})
+
+// The account the task would run on can be unusable (removed, a secret the
+// keychain won't give). The draft says so in words, with the account toast that
+// leads to the fix, instead of printing the backend's raw error string.
+test('an account problem from task creation is told in words with its toast, and the prompt stays', async () => {
+  mocks.start.mockRejectedValue('ACCOUNT_ERROR:{"kind":"removed","accountId":"a1","label":"Acme","projects":[],"message":null}')
+  const close = vi.fn()
+  render(() => <NewTaskView projectId="p" onClose={close} />)
+  fireEvent.input(screen.getByRole('textbox', { name: 'Task prompt' }), { target: { value: 'Fix the bug' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  expect((await screen.findByRole('alert')).textContent).toBe('Acme was removed. Start a new session on another account.')
+  expect(toasts().map(t => ({ title: t.title, actions: t.actions?.map(a => a.label) }))).toEqual([
+    { title: 'Account removed', actions: ['Choose account'] },
+  ])
+  expect((screen.getByRole('textbox', { name: 'Task prompt' }) as HTMLTextAreaElement).value).toBe('Fix the bug')
   expect(close).not.toHaveBeenCalled()
 })
 

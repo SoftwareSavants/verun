@@ -10,6 +10,7 @@ import { sessionsForTask, cleanupSessionStorage, clearSessionContextsForTask } f
 import { clearTaskContext } from './taskContext'
 import { clearTaskContextStorage } from './taskContextStorage'
 import { dropTaskSkills } from './commands'
+import { accountErrorMessage, notifyAccountError } from '../lib/accountErrors'
 
 // Dynamic-imported on first use: static import would pull lib/lsp.ts's
 // module-level `listen(...)` side effects into test evaluation for any file
@@ -48,6 +49,15 @@ function setTaskError(id: string, error: string) {
 }
 export function clearTaskError(id: string) {
   setTaskErrors(prev => { const next = { ...prev }; delete next[id]; return next })
+}
+/**
+ * What a failed task's row says about `err`. An account problem is told in
+ * words and also raised as its toast, with the way to fix it, so the row never
+ * shows the backend's raw error string. Any other error is `plain`.
+ */
+function failureText(err: unknown, plain: string): string {
+  notifyAccountError(err)
+  return accountErrorMessage(err) ?? plain
 }
 
 export async function loadTasks(projectId: string) {
@@ -125,7 +135,7 @@ export function startTaskCreation(projectId: string, baseBranch: string, agentTy
     })
   }).catch(err => {
     removeCreating(placeholderId)
-    setTaskError(placeholderId, String(err))
+    setTaskError(placeholderId, failureText(err, String(err)))
   })
 
   return placeholderId
@@ -204,7 +214,7 @@ async function runCloudTaskImport(id: string) {
       job.importId = null
     }
     phase('Import failed')
-    setTaskError(id, String(error).replace(/^Error: /, ''))
+    setTaskError(id, failureText(error, String(error).replace(/^Error: /, '')))
   } finally {
     job.running = false
     removeCreating(id)
@@ -239,7 +249,7 @@ export function retryTaskCreation(placeholderId: string, projectId: string, base
     })
   }).catch(err => {
     removeCreating(placeholderId)
-    setTaskError(placeholderId, String(err))
+    setTaskError(placeholderId, failureText(err, String(err)))
   })
 }
 

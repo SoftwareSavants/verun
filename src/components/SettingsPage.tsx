@@ -23,6 +23,7 @@ import { StorageSettings } from './StorageSettings'
 import { ColorPicker } from './ColorPicker'
 import { addToast } from '../store/ui'
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
+import { notifyAccountError } from '../lib/accountErrors'
 import { produce } from 'solid-js/store'
 
 type SettingsSection = 'general' | 'appearance' | string // project id
@@ -131,11 +132,13 @@ export const SettingsPage: Component = () => {
       const prompt = AUTODETECT_PROMPT
         .replace('{REPO_PATH}', p.repoPath)
         .replace('{PROJECT_NAME}', p.name)
-      await sendMessage(session.id, prompt)
-
-      addToast(`Created auto-detect task for ${p.name}`, 'success')
+      // false: the task's account stopped the send and sendMessage has shown
+      // why, so the analysis did not start.
+      if (await sendMessage(session.id, prompt)) {
+        addToast(`Created auto-detect task for ${p.name}`, 'success')
+      }
     } catch (e) {
-      addToast(String(e), 'error')
+      if (!notifyAccountError(e)) addToast(String(e), 'error')
     } finally {
       setSuggesting(false)
     }
