@@ -1034,7 +1034,7 @@ it('choosing Default clears the binding', ...) // setProjectAccount('p1', 'claud
 ### Task 21: Session pickers carry an account
 
 **Files:**
-- Modify: `src/lib/accounts.ts`; Create: `src/lib/accounts.test.ts`
+- Modify: `src/lib/accounts.ts`, `src/lib/accounts.test.ts` (both created in Task 17)
 - Modify: `src/components/NewSessionMenu.tsx`, `TaskPanel.tsx` (L344-350, L709-718), `ModelPicker.tsx`, `src/store/modelPicker.ts`, `src/lib/useTaskShortcuts.ts:101-118`, `ActionsPanel.tsx:342-370`, `HarnessModelPicker.tsx`, `NewTaskView.tsx`, `src/store/draftTask.ts`, `src/store/sessions.ts` (`createSession` L68-76), `MessageInput.tsx:985-990`, `ChatView.tsx:823-831`
 - Test: `ModelPicker.test.tsx`, `HarnessModelPicker.test.tsx`, `NewTaskView.test.tsx`, `TaskWindowShell.shortcuts.test.tsx`
 
@@ -1273,5 +1273,6 @@ it('marks removed accounts', ...)             // title === 'Acme (removed)'
   6. Log the account out, then send a message: the "Account signed out" toast offers Log in.
   7. A project left on Default behaves exactly as before, including `env | grep -i claude` in its shells.
   8. Open the same task in a detached window: the tab shows the account dot, and pickers list the account.
+  8b. With two Claude accounts in two projects, each session's usage chip shows its own account's reset time, and a project on Default shows Default's.
   9. Add a Codex account and start a Codex session on it.
 - [ ] **Step 4: Commit** `docs: multi-account support`
