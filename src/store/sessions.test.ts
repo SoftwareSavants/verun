@@ -23,15 +23,17 @@ vi.mock('../lib/ipc', () => ({
   clearSession: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
   reopenSession: vi.fn(),
+  sendMessage: vi.fn(),
 }))
 
 vi.mock('../lib/notifications', () => ({
   notify: vi.fn(),
 }))
 
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, reopenSession, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, rateLimitFor, setRateLimitByAccount, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, reopenSession, sendMessage, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, rateLimitFor, setRateLimitByAccount, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
 import * as ipc from '../lib/ipc'
 import { setTasks } from './tasks'
+import { toasts, setToasts } from './ui'
 import { notify } from '../lib/notifications'
 import { setPlanFilePathForSession, planFilePathForSession, sessionContexts, setSessionContexts } from './sessionContext'
 import type { Session, OutputItem, Task, ToolApprovalRequest, RateLimitInfo } from '../types'
@@ -682,6 +684,50 @@ describe('notification name selection', () => {
   })
 })
 
+// A session on a signed-out or removed account cannot send. The backend says so
+// with an account error, and the user gets a toast with a way to fix it instead
+// of the raw error from every place that sends.
+describe('sendMessage with an account problem', () => {
+  const signedOut = 'ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a1","label":"Acme","projects":[],"message":null}'
+
+  beforeEach(() => {
+    setSessions([makeSession({ id: 's-acc', status: 'idle', accountId: 'a1' })])
+    setOutputItems({})
+    setToasts([])
+    vi.mocked(ipc.sendMessage).mockReset()
+  })
+
+  test('sendMessage swallows account errors after the toast', async () => {
+    vi.mocked(ipc.sendMessage).mockRejectedValue(signedOut)
+
+    await expect(sendMessage('s-acc', 'hi')).resolves.toBeUndefined()
+
+    // The session is not left running, and the toast tells the user what to do.
+    expect(sessionById('s-acc')?.status).toBe('idle')
+    expect(toasts().map(t => ({ title: t.title, message: t.message, actions: t.actions?.map(a => a.label) }))).toEqual([
+      { title: 'Account signed out', message: 'Acme is signed out.', actions: ['Log in'] },
+    ])
+  })
+
+  test('sendMessage still throws every other error, with the session idle again', async () => {
+    vi.mocked(ipc.sendMessage).mockRejectedValue('Session is busy')
+
+    await expect(sendMessage('s-acc', 'hi')).rejects.toBe('Session is busy')
+
+    expect(sessionById('s-acc')?.status).toBe('idle')
+    expect(toasts()).toEqual([])
+  })
+
+  test('a send that works leaves the session running and shows nothing', async () => {
+    vi.mocked(ipc.sendMessage).mockResolvedValue(undefined)
+
+    await sendMessage('s-acc', 'hi')
+
+    expect(sessionById('s-acc')?.status).toBe('running')
+    expect(toasts()).toEqual([])
+  })
+})
+
 // Rate limits belong to an account. With several accounts, one account's event
 // must not replace another's, which a single global signal did.
 describe('rate limits per account', () => {
@@ -714,10 +760,13 @@ describe('rate limits per account', () => {
 
   test('a newer event replaces its own account entry and leaves the others', () => {
     const fire = listenCallbacks.get('rate-limit-info')!
-    fire({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 1 }) })
+    fire({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 1, overageStatus: 'rejected', overageResetsAt: 9 }) })
     fire({ payload: makeRateLimit({ accountKey: 'default:claude', resetsAt: 2 }) })
-    fire({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 3, isUsingOverage: true }) })
-    expect(rateLimitFor('a1')).toMatchObject({ resetsAt: 3, isUsingOverage: true })
+    // The newer report no longer has the overage fields, so they must be gone
+    // from the entry, not carried over from the older one (a merge keeps them).
+    const newer = { sessionId: 's-001', accountKey: 'a1', resetsAt: 3, rateLimitType: 'five_hour', isUsingOverage: true }
+    fire({ payload: newer })
+    expect(rateLimitFor('a1')).toEqual(newer)
     expect(rateLimitFor('default:claude')).toMatchObject({ resetsAt: 2, isUsingOverage: false })
   })
 

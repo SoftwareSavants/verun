@@ -4,11 +4,13 @@ import { render, cleanup } from '@solidjs/testing-library'
 // Issue #166 — detached task windows mounted TaskWindowShell but never
 // hydrated the projects + agents stores, so the new-session menu showed
 // "no agents installed" and the Start button showed "set up a start command"
-// even when both were configured. The fix: load both stores on mount.
+// even when both were configured. The fix: load both stores on mount. The
+// accounts store is one more of them: the session pickers and tab labels read it.
 
 const {
   loadProjectsMock,
   loadAgentsMock,
+  loadAccountsMock,
   loadTasksMock,
   initListenersMock,
   dismissSplashMock,
@@ -20,6 +22,7 @@ const {
 } = vi.hoisted(() => ({
   loadProjectsMock: vi.fn(() => Promise.resolve()),
   loadAgentsMock: vi.fn(() => Promise.resolve()),
+  loadAccountsMock: vi.fn(() => Promise.resolve()),
   loadTasksMock: vi.fn(() => Promise.resolve()),
   initListenersMock: vi.fn(() => Promise.resolve()),
   dismissSplashMock: vi.fn(),
@@ -72,6 +75,10 @@ vi.mock('../store/projects', () => ({
 
 vi.mock('../store/agents', () => ({
   loadAgents: loadAgentsMock,
+}))
+
+vi.mock('../store/accounts', () => ({
+  loadAccounts: loadAccountsMock,
 }))
 
 vi.mock('../store/ui', () => ({
@@ -151,6 +158,7 @@ describe('TaskWindowShell hydration (issue #166)', () => {
   beforeEach(() => {
     loadProjectsMock.mockClear()
     loadAgentsMock.mockClear()
+    loadAccountsMock.mockClear()
     loadTasksMock.mockClear()
     initListenersMock.mockClear()
     dismissSplashMock.mockClear()
@@ -165,6 +173,13 @@ describe('TaskWindowShell hydration (issue #166)', () => {
     await Promise.resolve()
     expect(loadProjectsMock).toHaveBeenCalledTimes(1)
     expect(loadAgentsMock).toHaveBeenCalledTimes(1)
+  })
+
+  test('loads accounts on mount so detached windows can name and pick them', async () => {
+    render(() => <TaskWindowShell />)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(loadAccountsMock).toHaveBeenCalledTimes(1)
   })
 
   test('still registers the IPC listeners and loads task data alongside the new hydration', async () => {

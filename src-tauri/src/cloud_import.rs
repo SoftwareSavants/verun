@@ -5,7 +5,7 @@ use crate::{
         self,
         env::{pty_command_and_env, EnvPatch},
         secrets::SecretStore,
-        service::{resolve_new_session_account, session_env_for},
+        service::{load_account, resolve_new_session_account, session_env_for},
         AccountError,
     },
     agent::AgentKind,
@@ -278,39 +278,65 @@ fn cloud_available(status: &serde_json::Value) -> bool {
 }
 
 /// Whether `claude --teleport` can list cloud sessions on the login `env`
-/// describes.
-pub async fn availability(env: &EnvPatch) -> Availability {
-    match auth_status(env).await {
-        Ok(status) if cloud_available(&status) => Availability {
-            available: true,
-            reason: None,
-        },
-        Ok(_) => Availability {
-            available: false,
-            reason: Some("Sign in with `claude auth login` using a Claude subscription.".into()),
-        },
-        Err(reason) => Availability {
-            available: false,
-            reason: Some(reason),
-        },
-    }
+/// describes. `Err` says why `claude` could not tell.
+async fn cloud_login(env: &EnvPatch) -> Result<bool, String> {
+    Ok(cloud_available(&auth_status(env).await?))
 }
 
-/// `availability` for the Claude account that an import in `project_id` runs
-/// on (see `import_account`). The UI shows it as a probe, so an account that
-/// can't be used (signed out, removed, missing, a secret the keychain won't
-/// give) is an answer, unavailable with the account's own message as the
-/// reason, and not an error. `claude` is not run then.
+/// The error for a login that `cloud_login` found unusable, when it is an added
+/// account's: `SignedOut`, which the UI answers with a way to log in to that
+/// account, where `claude auth login` would sign in the Default login instead.
+/// `None` for the Default login (`account_id` `None`), for which that command is
+/// the advice.
+async fn account_signed_out(pool: &SqlitePool, account_id: Option<&str>) -> Option<AccountError> {
+    let account_id = account_id?;
+    Some(match load_account(pool, account_id).await {
+        Ok(account) => AccountError::SignedOut {
+            account_id: account.id,
+            label: account.label,
+        },
+        // The account's row went away since its env was built: that is the news.
+        Err(error) => error,
+    })
+}
+
+/// Whether `claude --teleport` can list cloud sessions for the Claude account
+/// that an import in `project_id` runs on (see `import_account`). The UI shows
+/// it as a probe, so an account that can't be used (signed out, removed,
+/// missing, a secret the keychain won't give) is an answer, unavailable with
+/// the account's own message as the reason, and not an error. `claude` is not
+/// run then.
 pub async fn project_availability(
     pool: &SqlitePool,
     secrets: Arc<dyn SecretStore>,
     project_id: &str,
 ) -> Availability {
-    match import_account(pool, secrets, project_id).await {
-        Ok(account) => availability(&account.env).await,
-        Err(e) => Availability {
+    let account = match import_account(pool, secrets, project_id).await {
+        Ok(account) => account,
+        Err(e) => {
+            return Availability {
+                available: false,
+                reason: Some(e.to_string()),
+            }
+        }
+    };
+    match cloud_login(&account.env).await {
+        Ok(true) => Availability {
+            available: true,
+            reason: None,
+        },
+        Ok(false) => Availability {
             available: false,
-            reason: Some(e.to_string()),
+            reason: Some(
+                match account_signed_out(pool, account.account_id.as_deref()).await {
+                    Some(error) => error.to_string(),
+                    None => "Sign in with `claude auth login` using a Claude subscription.".into(),
+                },
+            ),
+        },
+        Err(reason) => Availability {
+            available: false,
+            reason: Some(reason),
         },
     }
 }
@@ -570,9 +596,11 @@ pub async fn begin(
     // `finish` has to find it. A Default import with no $HOME can't, and fails
     // here instead of after the whole import.
     let claude_home = claude_home::for_account(&pool, account_id.as_deref()).await?;
-    let status = auth_status(&env).await?;
-    if !cloud_available(&status) {
-        return Err("Sign in with `claude auth login` to import cloud sessions. A Claude subscription is required.".into());
+    if !cloud_login(&env).await? {
+        return Err(match account_signed_out(&pool, account_id.as_deref()).await {
+            Some(error) => error.to_ipc(),
+            None => "Sign in with `claude auth login` to import cloud sessions. A Claude subscription is required.".into(),
+        });
     }
     let id = Uuid::new_v4().to_string();
     let repo = project.repo_path.clone();
@@ -1156,6 +1184,52 @@ mod tests {
                 "bound: {bound}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn an_added_account_that_is_not_signed_in_is_reported_as_that_account() {
+        let (pool, _homes) = pool_with_accounts().await;
+
+        // a3 has a login on disk, so the import got as far as asking `claude`,
+        // and `claude auth status` is what said it can't list cloud sessions.
+        let error = account_signed_out(&pool, Some("a3")).await.unwrap();
+
+        assert_eq!(
+            error,
+            AccountError::SignedOut {
+                account_id: "a3".into(),
+                label: "Acme".into()
+            }
+        );
+        // `begin` fails with this, for the UI to turn into a toast that leads
+        // to logging in to the account.
+        assert_eq!(
+            error.to_ipc(),
+            r#"ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a3","label":"Acme","projects":[],"message":null}"#
+        );
+        // The probe gives this as its reason.
+        assert_eq!(error.to_string(), r#"Account "Acme" is signed out"#);
+    }
+
+    #[tokio::test]
+    async fn the_default_login_keeps_the_cli_sign_in_advice() {
+        let (pool, _homes) = pool_with_accounts().await;
+
+        // `claude auth login` signs in the Default login, which is the one
+        // this is about. For an added account it would sign in the wrong one.
+        assert_eq!(account_signed_out(&pool, None).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_account_whose_row_is_gone_is_reported_missing() {
+        let (pool, _homes) = pool_with_accounts().await;
+
+        assert_eq!(
+            account_signed_out(&pool, Some("nope")).await,
+            Some(AccountError::Missing {
+                account_id: "nope".into()
+            })
+        );
     }
 
     // -- claude auth status and the teleport --

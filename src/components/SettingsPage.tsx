@@ -7,7 +7,7 @@ import {
   resolveMode, resolvePalette,
   type ThemeMode, type Density, type ThemePreset, type PaletteOverrides,
 } from '../lib/theme'
-import { setShowSettings, setSelectedTaskId, setSelectedSessionIdForTask, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist, sidebarWidth } from '../store/ui'
+import { setShowSettings, settingsSectionRequest, setSettingsSectionRequest, setSelectedTaskId, setSelectedSessionIdForTask, defaultWrapLines, setDefaultWrapLinesAndPersist, defaultHideWhitespace, setDefaultHideWhitespaceAndPersist, sidebarWidth } from '../store/ui'
 import { ClaudeDefaultViewPicker } from './ClaudeDefaultViewPicker'
 import { notificationsEnabled, setNotificationsEnabledAndPersist } from '../lib/notifications'
 import { projects, updateHooks, updateStoreHooks, updateBaseBranch } from '../store/projects'
@@ -106,6 +106,14 @@ export const SettingsPage: Component = () => {
   createEffect(on(settingsSaveRequested, (count) => {
     if (count > 0) saveHooks()
   }, { defer: true }))
+
+  // Another part of the app asked for a section (see `openSettings`). Runs on
+  // mount too: the request is made before the page exists when Settings was closed.
+  createEffect(on(settingsSectionRequest, (section) => {
+    if (section === null) return
+    selectSettingsSection(section)
+    setSettingsSectionRequest(null)
+  }))
 
   const runAutoDetect = async () => {
     const p = selectedProject()

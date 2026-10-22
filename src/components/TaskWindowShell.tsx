@@ -8,6 +8,7 @@ import { refreshTaskGit } from '../store/git'
 import { loadTasks } from '../store/tasks'
 import { loadProjects } from '../store/projects'
 import { loadAgents } from '../store/agents'
+import { loadAccounts } from '../store/accounts'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setShowQuickOpen } from '../store/ui'
 import { hydrateTerminalsForTask } from '../store/terminals'
 import { useTaskShortcuts } from '../lib/useTaskShortcuts'
@@ -59,7 +60,8 @@ export const TaskWindowShell: Component = () => {
     // Register listeners and load task data in parallel for fast startup.
     // Detached windows must hydrate the projects + agents stores too, because
     // the new-session menu reads from `agents` and the start-command button
-    // reads from `projects[].startCommand`.
+    // reads from `projects[].startCommand`. The accounts store is the same:
+    // the pickers and session tabs read it.
     const taskDataPromise = ctx.taskId
       ? ipc.getTask(ctx.taskId).then(async (task) => {
           if (task) {
@@ -71,7 +73,7 @@ export const TaskWindowShell: Component = () => {
       : ctx.projectId
         ? loadTasks(ctx.projectId)
         : Promise.resolve()
-    const storeHydratePromise = Promise.all([loadProjects(), loadAgents()])
+    const storeHydratePromise = Promise.all([loadProjects(), loadAgents(), loadAccounts()])
 
     await Promise.all([initListeners(), taskDataPromise, storeHydratePromise])
 

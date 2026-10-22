@@ -1,8 +1,10 @@
 import { initActivityListeners } from '../store/activity'
 import { createSignal } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { loadProjects, initProjectListeners } from '../store/projects'
 import { loadAgents, initAgentListeners } from '../store/agents'
+import { loadAccounts, initAccountListeners } from '../store/accounts'
 import { initSessionListeners, initSessionWindowFocusRefresh, syncSessionStatuses } from '../store/sessions'
 import { initTerminalListeners } from '../store/terminals'
 import { initGitListeners, initWindowFocusRefresh } from '../store/git'
@@ -15,11 +17,11 @@ import { initProblemsListener } from '../store/problems'
 import { loadTasks, taskById } from '../store/tasks'
 import { loadSessions } from '../store/sessions'
 import { refreshTaskGit } from '../store/git'
-import { addToast, setSelectedTaskId, setSelectedProjectId, setPendingSessionNav } from '../store/ui'
+import { addToast, setSelectedTaskId, setSelectedProjectId, setPendingSessionNav, openSettings, OPEN_SETTINGS_EVENT } from '../store/ui'
 import { onNotificationClicked } from '@choochmeque/tauri-plugin-notifications-api'
-import { clearDeliveredNotifications } from './notifications'
+import { clearDeliveredNotifications, consumePendingNav } from './notifications'
 import { handleNotificationClick } from './notificationClick'
-import { windowContext } from './windowContext'
+import { windowContext, isMainWindow } from './windowContext'
 import * as ipc from './ipc'
 
 /**
@@ -52,6 +54,7 @@ export async function initListeners() {
     initProjectListeners(),
     initSetupListeners(),
     initAgentListeners(),
+    initAccountListeners(),
     initResourceMonitor(),
   ])
   initWindowFocusRefresh()
@@ -97,11 +100,21 @@ export async function initListeners() {
       for (const p of projects) loadTasks(p.id)
     })
   })
+
+  // Only the main window has a Settings page. A task window that needs it (an
+  // account toast's "Log in") asks with this event; see `openSettings`.
+  if (isMainWindow) {
+    listen<{ section: string | null }>(OPEN_SETTINGS_EVENT, (event) => {
+      openSettings(event.payload.section ?? undefined)
+      const win = getCurrentWindow()
+      void win.show().then(() => win.setFocus())
+    })
+  }
 }
 
 /** Load initial data from the database */
 export async function loadInitialData() {
-  await Promise.all([loadProjects(), syncSessionStatuses(), loadAgents()])
+  await Promise.all([loadProjects(), syncSessionStatuses(), loadAgents(), loadAccounts()])
 }
 
 /** Dismiss the splash screen and reveal the app */

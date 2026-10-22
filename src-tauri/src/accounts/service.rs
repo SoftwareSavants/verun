@@ -43,10 +43,7 @@ where
 }
 
 /// The row of `account_id`, removed or not.
-pub(super) async fn load_account(
-    pool: &SqlitePool,
-    account_id: &str,
-) -> Result<Account, AccountError> {
+pub async fn load_account(pool: &SqlitePool, account_id: &str) -> Result<Account, AccountError> {
     db::get_account(pool, account_id)
         .await
         .map_err(database_error)?

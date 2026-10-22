@@ -48,6 +48,7 @@ vi.mock('./ShellTerminal', () => ({
 }))
 
 import { SessionTerminal } from './SessionTerminal'
+import { toasts, setToasts } from '../store/ui'
 
 async function flush() {
   await Promise.resolve()
@@ -63,6 +64,7 @@ beforeEach(() => {
   ptyExitedHandlers.length = 0
   dropHandlers.length = 0
   ptyOutputHandlers.length = 0
+  setToasts([])
   ipcMocks.claudeTerminalOpen.mockReset()
   ipcMocks.claudeTerminalClose.mockReset()
   ipcMocks.ptyWrite.mockReset()
@@ -131,6 +133,50 @@ describe('SessionTerminal', () => {
     const { findByText } = render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
     await findByText(/boom/)
+  })
+
+  // A signed-out or removed account is not a terminal fault: the user gets the
+  // account toast with a way to fix it, and Reconnect to try again afterwards.
+  describe('when the session\'s account cannot be used', () => {
+    const signedOut = 'ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a1","label":"Acme","projects":[],"message":null}'
+
+    test('shows the account toast instead of the raw error, and offers Reconnect', async () => {
+      ipcMocks.claudeTerminalOpen.mockRejectedValue(signedOut)
+      const { findByText, queryByText, queryByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
+      await flush()
+
+      expect(toasts().map(t => ({ title: t.title, message: t.message, actions: t.actions?.map(a => a.label) }))).toEqual([
+        { title: 'Account signed out', message: 'Acme is signed out.', actions: ['Log in'] },
+      ])
+      expect(queryByText(/ACCOUNT_ERROR/)).toBeNull()
+      expect(queryByTestId('shell-terminal')).toBeNull()
+      // Not left on "Starting Claude Code..." with nothing that can end it.
+      expect(queryByText(/starting claude code/i)).toBeNull()
+      await findByText(/reconnect/i)
+    })
+
+    test('Reconnect opens the terminal once the account works', async () => {
+      ipcMocks.claudeTerminalOpen
+        .mockRejectedValueOnce(signedOut)
+        .mockResolvedValueOnce({ terminalId: 'term-1', sessionId: 's-1' })
+      const { findByText, findByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
+      await flush()
+
+      fireEvent.click(await findByText(/reconnect/i))
+      await flush()
+
+      expect(ipcMocks.claudeTerminalOpen).toHaveBeenCalledTimes(2)
+      expect((await findByTestId('shell-terminal')).getAttribute('data-terminal-id')).toBe('term-1')
+    })
+
+    test('other errors still show their text and no toast', async () => {
+      ipcMocks.claudeTerminalOpen.mockRejectedValue('Session has no resumable id yet')
+      const { findByText } = render(() => <SessionTerminal sessionId="s-1" />)
+      await flush()
+
+      await findByText(/no resumable id/i)
+      expect(toasts()).toEqual([])
+    })
   })
 
   test('reconnecting after an exit clears the previous error state', async () => {

@@ -1,4 +1,4 @@
-import { createStore, produce } from 'solid-js/store'
+import { createStore, produce, reconcile } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus } from '../types'
 import { setSessionMcpServers } from './mcpServers'
@@ -8,6 +8,7 @@ import { markTaskUnread, markTaskAttention, clearTaskAttention, markSessionUnrea
 import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
 import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
+import { notifyAccountError } from '../lib/accountErrors'
 import { deserializeAttachments } from '../lib/binary'
 import {
   appendCodexLivePlanDelta,
@@ -120,6 +121,9 @@ export async function sendMessage(sessionId: string, message: string, attachment
     await ipc.sendMessage(sessionId, message, attachments, model, planMode, thinkingMode, fastMode)
   } catch (e) {
     setSessions(s => s.id === sessionId, 'status', 'idle')
+    // A signed-out or removed account gets a toast with a way to fix it. That
+    // is all there is to report, so the caller has nothing to catch.
+    if (notifyAccountError(e)) return
     throw e
   }
 }
@@ -589,7 +593,10 @@ export async function initSessionListeners() {
   })
 
   await listen<RateLimitInfo>('rate-limit-info', (event) => {
-    setRateLimitByAccount(event.payload.accountKey, event.payload)
+    // The newest report is the whole picture for its account, so it replaces
+    // the entry. A plain set would merge it into the older one and keep fields
+    // the newer report no longer has.
+    setRateLimitByAccount(event.payload.accountKey, reconcile(event.payload))
   })
 
   // Re-fetch any pending approvals that survived a frontend reload
