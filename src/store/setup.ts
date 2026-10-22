@@ -64,8 +64,11 @@ export async function initSetupListeners() {
       const queued = queuedMessages[taskId]
       if (queued) {
         clearQueuedMessage(taskId)
-        import('./sessions').then(({ sendMessage }) => {
-          sendMessage(queued.sessionId, queued.message, queued.attachments, queued.model, queued.planMode, queued.thinkingMode, queued.fastMode)
+        import('./sessions').then(async ({ sendMessage }) => {
+          const sent = await sendMessage(queued.sessionId, queued.message, queued.attachments, queued.model, queued.planMode, queued.thinkingMode, queued.fastMode)
+          // false: the session's account stopped the send and sendMessage has
+          // said so. The prompt waits in the queue for the user to edit and send.
+          if (!sent) queueMessage(taskId, queued)
         })
       }
     } else if (status === 'failed') {

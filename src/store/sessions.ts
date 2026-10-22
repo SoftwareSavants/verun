@@ -1,11 +1,11 @@
-import { createStore, produce, reconcile } from 'solid-js/store'
+import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus } from '../types'
+import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step } from '../types'
 import { setSessionMcpServers } from './mcpServers'
 import { ELICITATION_TOOL_NAME, parseElicitation } from '../lib/mcpElicitation'
 import { setTasks, taskById } from './tasks'
 import { markTaskUnread, markTaskAttention, clearTaskAttention, markSessionUnread } from './ui'
-import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
+import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps, restoreStep } from './steps'
 import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
 import { notifyAccountError } from '../lib/accountErrors'
@@ -102,8 +102,9 @@ export function updateSessionModel(sessionId: string, model: string | null) {
  * Sends `message` on the session. Resolves `true` once the backend has taken
  * it, and `false` when the session's account stopped it (signed out, removed):
  * the user has been shown the account toast with a way to fix it, so there is
- * nothing to catch. A caller that reports success or clears something after the
- * send has to check which. Any other error is thrown.
+ * nothing to catch, and the message is out of the chat again. A caller that
+ * reports success, or clears something it sends from, has to check which, and
+ * give that back on `false`. Any other error is thrown.
  */
 export async function sendMessage(sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean): Promise<boolean> {
   const images = attachments?.filter(a => a.mimeType.startsWith('image/'))
@@ -129,9 +130,45 @@ export async function sendMessage(sessionId: string, message: string, attachment
     return true
   } catch (e) {
     setSessions(s => s.id === sessionId, 'status', 'idle')
-    if (notifyAccountError(e)) return false
+    if (notifyAccountError(e)) {
+      // Nothing was sent and the backend saved nothing of it, so the chat must
+      // not go on showing the message.
+      removeOutputItem(sessionId, item)
+      return false
+    }
     throw e
   }
+}
+
+/** Takes `item` out of the session's output, wherever it is now. */
+function removeOutputItem(sessionId: string, item: OutputItem) {
+  setOutputItems(produce(store => {
+    const items = store[sessionId]
+    if (!items) return
+    // The newest items are last, and a message was appended a moment ago.
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (unwrap(items[i]) === item) {
+        items.splice(i, 1)
+        return
+      }
+    }
+  }))
+}
+
+/**
+ * Sends a step that was just taken off the queue (`dequeueArmedStep`,
+ * `extractStep`). When the session's account stops the send, the step goes back
+ * on the queue where it was, and the queue is paused: nothing is lost, and
+ * nothing retries by itself. It is sent, or armed again, once the account works.
+ */
+export async function sendStep(step: Step): Promise<boolean> {
+  const attachments = step.attachmentsJson ? deserializeAttachments(step.attachmentsJson) : undefined
+  const sent = await sendMessage(step.sessionId, step.message, attachments, step.model ?? undefined, step.planMode ?? undefined, step.thinkingMode ?? undefined, step.fastMode ?? undefined)
+  if (!sent) {
+    restoreStep({ ...step, armed: false })
+    disarmAllSteps(step.sessionId)
+  }
+  return sent
 }
 
 export async function abortMessage(sessionId: string) {
@@ -390,10 +427,7 @@ export function tryDrainSteps(sessionId: string) {
   const session = sessions.find(s => s.id === sessionId)
   if (session?.status === 'idle') {
     const next = dequeueArmedStep(sessionId)
-    if (next) {
-      const attachments = next.attachmentsJson ? deserializeAttachments(next.attachmentsJson) : undefined
-      sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
-    }
+    if (next) sendStep(next)
   }
 }
 
@@ -482,10 +516,7 @@ export async function initSessionListeners() {
     // `session-aborted` listener below.
     if (status === 'idle' && !abortingSessions[sessionId]) {
       const next = dequeueArmedStep(sessionId)
-      if (next) {
-        const attachments = next.attachmentsJson ? deserializeAttachments(next.attachmentsJson) : undefined
-        sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
-      }
+      if (next) sendStep(next)
     }
     // Disarm all steps on error (keep them, just stop auto-send)
     if (status === 'error') {
@@ -557,10 +588,7 @@ export async function initSessionListeners() {
     const session = sessions.find(s => s.id === sid)
     if (session?.status === 'idle') {
       const next = dequeueArmedStep(sid)
-      if (next) {
-        const attachments = next.attachmentsJson ? deserializeAttachments(next.attachmentsJson) : undefined
-        sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
-      }
+      if (next) sendStep(next)
     }
   })
 

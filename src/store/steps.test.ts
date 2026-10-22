@@ -10,7 +10,7 @@ vi.mock('../lib/ipc', () => ({
   disarmAllSteps: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { getSteps, addStep, removeStep, updateStep, reorderSteps, disarmAllSteps, dequeueArmedStep, extractStep, clearSteps } from './steps'
+import { getSteps, addStep, removeStep, updateStep, reorderSteps, disarmAllSteps, dequeueArmedStep, extractStep, restoreStep, clearSteps } from './steps'
 import * as ipc from '../lib/ipc'
 
 describe('steps store', () => {
@@ -198,6 +198,57 @@ describe('steps store', () => {
   test('extractStep returns undefined for missing id', () => {
     addStep({ sessionId: 's-001', message: 'A', armed: false })
     expect(extractStep('s-001', 'nonexistent')).toBeUndefined()
+  })
+
+  // A step comes off the queue to be sent. If the send does not go out it has to
+  // go back where it was, in the store and the database.
+  test('restoreStep puts a step taken off the queue back where it was', () => {
+    addStep({ sessionId: 's-001', message: 'A', armed: true })
+    addStep({ sessionId: 's-001', message: 'B', armed: false, model: 'opus', planMode: true })
+    addStep({ sessionId: 's-001', message: 'C', armed: false })
+    const middle = getSteps('s-001')[1]
+    const taken = extractStep('s-001', middle.id)!
+    expect(getSteps('s-001').map(s => s.message)).toEqual(['A', 'C'])
+    vi.mocked(ipc.addStep).mockClear()
+
+    restoreStep(taken)
+
+    expect(getSteps('s-001').map(s => s.message)).toEqual(['A', 'B', 'C'])
+    expect(getSteps('s-001')[1]).toMatchObject({ id: middle.id, model: 'opus', planMode: true, sortOrder: middle.sortOrder })
+    expect(ipc.addStep).toHaveBeenCalledWith(middle.id, 's-001', 'B', null, false, 'opus', true, null, null, middle.sortOrder)
+  })
+
+  test('restoreStep puts the first armed step back at the front', () => {
+    addStep({ sessionId: 's-001', message: 'A', armed: true })
+    addStep({ sessionId: 's-001', message: 'B', armed: true })
+    const taken = dequeueArmedStep('s-001')!
+    expect(taken.message).toBe('A')
+
+    restoreStep(taken)
+
+    expect(getSteps('s-001').map(s => s.message)).toEqual(['A', 'B'])
+  })
+
+  test('restoreStep puts the last step back at the end, and into an emptied queue', () => {
+    addStep({ sessionId: 's-001', message: 'A', armed: false })
+    const only = extractStep('s-001', getSteps('s-001')[0].id)!
+    expect(getSteps('s-001')).toEqual([])
+
+    restoreStep(only)
+    restoreStep({ ...only, id: 'later', message: 'B', sortOrder: only.sortOrder + 1 })
+
+    expect(getSteps('s-001').map(s => s.message)).toEqual(['A', 'B'])
+  })
+
+  test('restoreStep does not add a step that is already queued', () => {
+    addStep({ sessionId: 's-001', message: 'A', armed: false })
+    const step = getSteps('s-001')[0]
+    vi.mocked(ipc.addStep).mockClear()
+
+    restoreStep({ ...step })
+
+    expect(getSteps('s-001').length).toBe(1)
+    expect(ipc.addStep).not.toHaveBeenCalled()
   })
 
   test('clearSteps removes all steps for session', () => {

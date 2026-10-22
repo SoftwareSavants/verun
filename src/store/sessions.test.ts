@@ -691,9 +691,13 @@ describe('notification name selection', () => {
 describe('sendMessage with an account problem', () => {
   const signedOut = 'ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a1","label":"Acme","projects":[],"message":null}'
 
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
   beforeEach(() => {
     setSessions([makeSession({ id: 's-acc', status: 'idle', accountId: 'a1' })])
-    setOutputItems({})
+    setOutputItems(produce(store => { delete store['s-acc'] }))
     setToasts([])
     vi.mocked(ipc.sendMessage).mockReset()
   })
@@ -727,6 +731,49 @@ describe('sendMessage with an account problem', () => {
 
     expect(sessionById('s-acc')?.status).toBe('running')
     expect(toasts()).toEqual([])
+  })
+
+  // The chat shows a message the moment it is sent. One the account stopped was
+  // never sent, and the backend saved nothing of it, so the chat must not keep it.
+  test('a send the account stopped takes its message back out of the chat', async () => {
+    setOutputItems('s-acc', [{ kind: 'text', text: 'earlier' }])
+    vi.mocked(ipc.sendMessage).mockRejectedValue(signedOut)
+
+    await sendMessage('s-acc', 'hi')
+
+    expect(outputItems['s-acc']).toEqual([{ kind: 'text', text: 'earlier' }])
+  })
+
+  test('a message that was sent stays in the chat', async () => {
+    vi.mocked(ipc.sendMessage).mockResolvedValue(undefined)
+
+    await sendMessage('s-acc', 'hi')
+
+    expect(outputItems['s-acc']).toMatchObject([{ kind: 'userMessage', text: 'hi' }])
+  })
+
+  test('it takes out its own message only: an identical one sent earlier and output that arrived meanwhile stay', async () => {
+    const earlier = { kind: 'userMessage' as const, text: 'hi', timestamp: 1 }
+    setOutputItems('s-acc', [earlier])
+    let rejectSend!: (error: unknown) => void
+    vi.mocked(ipc.sendMessage).mockReturnValue(new Promise((_, reject) => { rejectSend = reject }))
+
+    const sending = sendMessage('s-acc', 'hi')
+    // In flight, the message is in the chat after the earlier one.
+    expect(outputItems['s-acc']).toHaveLength(2)
+    listenCallbacks.get('session-output')!({ payload: { sessionId: 's-acc', items: [{ kind: 'text', text: 'late' }] } })
+    rejectSend(signedOut)
+    await expect(sending).resolves.toBe(false)
+
+    expect(outputItems['s-acc']).toEqual([earlier, { kind: 'text', text: 'late' }])
+  })
+
+  test('another error leaves the message where it was: the backend may have saved it', async () => {
+    vi.mocked(ipc.sendMessage).mockRejectedValue('Session is busy')
+
+    await expect(sendMessage('s-acc', 'hi')).rejects.toBe('Session is busy')
+
+    expect(outputItems['s-acc']).toMatchObject([{ kind: 'userMessage', text: 'hi' }])
   })
 })
 

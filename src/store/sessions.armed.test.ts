@@ -33,12 +33,15 @@ vi.mock('./tasks', () => ({
   setTasks: vi.fn(),
   taskById: vi.fn(() => ({ name: 'test-task' })),
 }))
-vi.mock('./ui', () => ({
+const ui = vi.hoisted(() => ({
   markTaskUnread: vi.fn(),
   markTaskAttention: vi.fn(),
   clearTaskAttention: vi.fn(),
   markSessionUnread: vi.fn(),
+  addToast: vi.fn(),
+  openSettings: vi.fn(),
 }))
+vi.mock('./ui', () => ui)
 
 import {
   setSessions,
@@ -46,7 +49,8 @@ import {
   setAbortingSessions,
   initSessionListeners,
 } from './sessions'
-import { addStep, clearSteps } from './steps'
+import { sendStep } from './sessions'
+import { addStep, clearSteps, getSteps, extractStep } from './steps'
 import * as ipc from '../lib/ipc'
 import type { Session, AttachmentRef } from '../types'
 
@@ -133,5 +137,103 @@ describe('armed step drain with attachments', () => {
     expect(passed).toBeDefined()
     expect(passed![0].hash).toBe('h-doc-1')
     expect(passed![0].size).toBe(3)
+  })
+})
+
+// A step comes off the queue to be sent. When the session's account stops the
+// send (sendMessage resolves false after its toast), the step is not lost: it
+// goes back where it was, and the queue is paused so nothing retries by itself.
+describe('a queued step the account stops', () => {
+  const signedOut = 'ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a1","label":"Acme","projects":[],"message":null}'
+  const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+  const queue = () => getSteps(SID).map(step => ({ message: step.message, armed: step.armed }))
+
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setSessions([makeSession({ status: 'running' })])
+    setOutputItems(produce(store => { delete store[SID] }))
+    setAbortingSessions(produce(store => { delete store[SID] }))
+    clearSteps(SID)
+    vi.clearAllMocks()
+    vi.mocked(ipc.sendMessage).mockReset()
+    vi.mocked(ipc.sendMessage).mockResolvedValue(undefined)
+  })
+
+  test('an armed step the session drains goes back on the queue, paused with the rest of it', async () => {
+    addStep({ sessionId: SID, message: 'first', armed: true })
+    addStep({ sessionId: SID, message: 'second', armed: true })
+    vi.mocked(ipc.sendMessage).mockRejectedValueOnce(signedOut)
+
+    fire('session-status', { sessionId: SID, status: 'idle' })
+    await settle()
+
+    expect(queue()).toEqual([{ message: 'first', armed: false }, { message: 'second', armed: false }])
+    expect(ipc.disarmAllSteps).toHaveBeenCalledWith(SID)
+    expect(ipc.addStep).toHaveBeenCalledWith(expect.any(String), SID, 'first', null, false, null, null, null, null, 0)
+    // The toast is the only thing the user is told, and only once.
+    expect(ui.addToast).toHaveBeenCalledTimes(1)
+  })
+
+  test('a paused queue is not drained by the next idle', async () => {
+    addStep({ sessionId: SID, message: 'first', armed: true })
+    vi.mocked(ipc.sendMessage).mockRejectedValueOnce(signedOut)
+    fire('session-status', { sessionId: SID, status: 'idle' })
+    await settle()
+    vi.mocked(ipc.sendMessage).mockClear()
+
+    fire('session-status', { sessionId: SID, status: 'idle' })
+    await settle()
+
+    expect(ipc.sendMessage).not.toHaveBeenCalled()
+    expect(queue()).toEqual([{ message: 'first', armed: false }])
+  })
+
+  test('a step drained after an abort goes back too', async () => {
+    setSessions([makeSession({ status: 'idle' })])
+    setAbortingSessions(produce(store => { store[SID] = true }))
+    addStep({ sessionId: SID, message: 'steered', armed: true })
+    vi.mocked(ipc.sendMessage).mockRejectedValueOnce(signedOut)
+
+    fire('session-aborted', SID)
+    await settle()
+
+    expect(queue()).toEqual([{ message: 'steered', armed: false }])
+  })
+
+  test('a step sent by hand goes back where it was when the account stops it', async () => {
+    addStep({ sessionId: SID, message: 'first', armed: false })
+    addStep({ sessionId: SID, message: 'second', armed: false })
+    const second = extractStep(SID, getSteps(SID)[1].id)!
+    vi.mocked(ipc.sendMessage).mockRejectedValueOnce(signedOut)
+
+    await expect(sendStep(second)).resolves.toBe(false)
+
+    expect(queue()).toEqual([{ message: 'first', armed: false }, { message: 'second', armed: false }])
+  })
+
+  test('a step that was sent stays off the queue and the rest is left as it was', async () => {
+    addStep({ sessionId: SID, message: 'first', armed: true })
+    addStep({ sessionId: SID, message: 'second', armed: true })
+
+    fire('session-status', { sessionId: SID, status: 'idle' })
+    await settle()
+
+    expect(ipc.sendMessage).toHaveBeenCalledTimes(1)
+    expect(queue()).toEqual([{ message: 'second', armed: true }])
+    expect(ipc.disarmAllSteps).not.toHaveBeenCalled()
+    expect(ui.addToast).not.toHaveBeenCalled()
+  })
+
+  test('any other failure leaves the step off the queue, as it did', async () => {
+    addStep({ sessionId: SID, message: 'first', armed: false })
+    const step = extractStep(SID, getSteps(SID)[0].id)!
+    vi.mocked(ipc.sendMessage).mockRejectedValueOnce('Session is busy')
+
+    await expect(sendStep(step)).rejects.toBe('Session is busy')
+
+    expect(queue()).toEqual([])
   })
 })
