@@ -597,6 +597,9 @@ export const quitApp = () =>
 export const openTaskWindow = (taskId: string, taskName?: string) =>
   invoke<void>('open_task_window', { taskId, taskName })
 
+export const focusCurrentWindow = () =>
+  invoke<void>('focus_current_window')
+
 export const openNewTaskWindow = (projectId: string) =>
   invoke<void>('open_new_task_window', { projectId })
 

@@ -494,6 +494,7 @@ pub fn run() {
             ipc::disarm_all_steps,
             // Window management
             ipc::open_task_window,
+            ipc::focus_current_window,
             ipc::open_new_task_window,
             ipc::force_close_task_window,
             // Better-T-Stack scaffolding

@@ -6,6 +6,7 @@ import {
   isPermissionGranted,
   requestPermission,
 } from '@choochmeque/tauri-plugin-notifications-api'
+import { isTaskOwnedByThisWindow } from './windowContext'
 
 // User preference - persisted to localStorage, default enabled
 const PREF_KEY = 'verun:notificationsEnabled'
@@ -76,9 +77,12 @@ function shouldSuppress(taskId: string): boolean {
 let lastNotifyTime = 0
 const MIN_INTERVAL = 1000
 
-// Map notification IDs to task/session for click navigation
+// Map notification IDs to task/session for click navigation. Every window
+// (main + detached task windows) runs this module with its own map, and click
+// events are broadcast to all of them — so start each window at a random
+// offset in the i32 range to keep IDs from colliding across windows.
 const pendingNavMap = new Map<number, { taskId: string; sessionId: string }>()
-let nextNotifId = 1
+let nextNotifId = 1_000_000 + Math.floor(Math.random() * 1_000_000_000)
 
 export function consumePendingNav(id: number): { taskId: string; sessionId: string } | undefined {
   const nav = pendingNavMap.get(id)
@@ -99,6 +103,8 @@ export interface NotifyOpts {
 
 export async function notify(opts: NotifyOpts): Promise<void> {
   if (!notificationsEnabled()) return
+  // Session events reach every window; only the window showing the task notifies.
+  if (!isTaskOwnedByThisWindow(opts.taskId)) return
   if (shouldSuppress(opts.taskId)) return
   const now = Date.now()
   if (now - lastNotifyTime < MIN_INTERVAL) return

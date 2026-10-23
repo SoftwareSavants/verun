@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Clicking a desktop notification now focuses the right window and session instead of every open window switching tasks (each window sent its own notification with colliding IDs)
+
 ## 0.14.5 - 2026-10-16
 
 - Terminal-to-chat transitions no longer ingest the same Claude user, assistant, and tool messages from both streaming and transcript sources (#277)

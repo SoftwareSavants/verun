@@ -3507,6 +3507,18 @@ pub async fn open_task_window(
     Ok(())
 }
 
+/// Bring the calling window to the front (used when a notification is clicked).
+#[tauri::command]
+pub async fn focus_current_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    // unminimize + show first — set_focus alone is unreliable on macOS
+    // when the window is minimized or behind another app.
+    let _ = window.unminimize();
+    let _ = window.show();
+    window
+        .set_focus()
+        .map_err(|e| format!("Failed to focus window: {e}"))
+}
+
 #[tauri::command]
 pub async fn open_new_task_window(app: AppHandle, project_id: String) -> Result<(), String> {
     let id = Uuid::new_v4().to_string();
