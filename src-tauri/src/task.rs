@@ -2032,6 +2032,7 @@ async fn spawn_rpc_session(
         repo_path: &repo_path,
         message: &message,
         verun_mcp_config_path: mcp_config_path.as_deref(),
+        chrome_enabled: false,
     });
 
     eprintln!(
@@ -2534,6 +2535,10 @@ pub async fn spawn_session_process(
     let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
     let mcp_config_path = verun_mcp_config_path_for_task(&app_data, &task_id);
+    let chrome_enabled = agent.kind() == AgentKind::Claude
+        && tokio::task::spawn_blocking(crate::agent::claude::chrome_default_enabled)
+            .await
+            .unwrap_or(false);
     let session_args = crate::agent::SessionArgs {
         resume_session_id: resume_id,
         model: model.as_deref(),
@@ -2545,6 +2550,7 @@ pub async fn spawn_session_process(
         repo_path: &repo_path,
         message: &message,
         verun_mcp_config_path: mcp_config_path.as_deref(),
+        chrome_enabled,
     };
 
     let args_list = agent.build_session_args(&session_args);

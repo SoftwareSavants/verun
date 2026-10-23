@@ -91,6 +91,10 @@ impl Agent for Claude {
             v.extend(["--mcp-config".into(), path.to_string_lossy().into_owned()]);
         }
 
+        if args.chrome_enabled {
+            v.push("--chrome".into());
+        }
+
         if args.plan_mode {
             v.extend(["--permission-mode".into(), "plan".into()]);
         }
@@ -251,6 +255,31 @@ impl Agent for Claude {
     }
 }
 
+/// Path of the CLI's global config: `$CLAUDE_CONFIG_DIR/.claude.json` when
+/// set, else `~/.claude.json`.
+fn claude_global_config_path(home: &Path, config_dir: Option<&Path>) -> std::path::PathBuf {
+    config_dir.unwrap_or(home).join(".claude.json")
+}
+
+/// Whether the user turned on Claude in Chrome's "Enabled by default"
+/// (`claudeInChromeDefaultEnabled`). The CLI only honours it in interactive
+/// TUI sessions, so stream-json spawns must pass `--chrome` themselves.
+pub fn chrome_default_enabled() -> bool {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return false;
+    };
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from);
+    chrome_default_enabled_at(&claude_global_config_path(&home, config_dir.as_deref()))
+}
+
+fn chrome_default_enabled_at(config_path: &Path) -> bool {
+    std::fs::read(config_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v.get("claudeInChromeDefaultEnabled")?.as_bool())
+        .unwrap_or(false)
+}
+
 /// Reads `<user_home>/.claude/plugins/installed_plugins.json` and scans each
 /// active plugin's `skills/` and `commands/` directories. Mirrors how the CLI
 /// itself resolves plugin content — catalog entries under `marketplaces/`
@@ -288,6 +317,34 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn chrome_default_enabled_reads_global_config_flag() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".claude.json");
+        fs::write(&path, r#"{"claudeInChromeDefaultEnabled":true}"#).unwrap();
+        assert!(chrome_default_enabled_at(&path));
+        fs::write(&path, r#"{"claudeInChromeDefaultEnabled":false}"#).unwrap();
+        assert!(!chrome_default_enabled_at(&path));
+        fs::write(&path, r#"{}"#).unwrap();
+        assert!(!chrome_default_enabled_at(&path));
+        fs::write(&path, "not json").unwrap();
+        assert!(!chrome_default_enabled_at(&path));
+        assert!(!chrome_default_enabled_at(&dir.path().join("missing.json")));
+    }
+
+    #[test]
+    fn claude_global_config_path_honors_config_dir() {
+        let home = Path::new("/Users/me");
+        assert_eq!(
+            claude_global_config_path(home, None),
+            home.join(".claude.json")
+        );
+        assert_eq!(
+            claude_global_config_path(home, Some(Path::new("/custom"))),
+            Path::new("/custom/.claude.json")
+        );
+    }
 
     fn write_skill(dir: &Path, name: &str, body: &str) {
         let skill_dir = dir.join(name);

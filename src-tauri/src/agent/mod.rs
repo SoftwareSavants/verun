@@ -90,7 +90,7 @@
 //! - Don't add state to the agent struct. Impls are instantiated on demand
 //!   via [`AgentKind::implementation`] and are expected to be zero-sized.
 
-mod claude;
+pub(crate) mod claude;
 mod codex;
 pub mod codex_developer_instructions;
 pub mod rpc;
@@ -267,6 +267,10 @@ pub struct SessionArgs<'a> {
     /// support `--mcp-config` (currently Claude Code) pass it on the CLI so
     /// the project's `.mcp.json` is never modified.
     pub verun_mcp_config_path: Option<&'a std::path::Path>,
+    /// Connect Claude in Chrome at startup. The CLI ignores the user's
+    /// "Enabled by default" setting in non-interactive (stream-json) mode,
+    /// so we mirror it ourselves via `--chrome`.
+    pub chrome_enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -719,6 +723,7 @@ mod tests {
             repo_path: "",
             message: "",
             verun_mcp_config_path: None,
+            chrome_enabled: false,
         }
     }
 
@@ -825,6 +830,21 @@ mod tests {
         let agent = Claude;
         let args = agent.build_session_args(&default_args());
         assert!(!args.iter().any(|a| a == "--mcp-config"));
+    }
+
+    #[test]
+    fn claude_build_args_emits_chrome_flag_when_enabled() {
+        let args = Claude.build_session_args(&SessionArgs {
+            chrome_enabled: true,
+            ..default_args()
+        });
+        assert!(args.iter().any(|a| a == "--chrome"));
+    }
+
+    #[test]
+    fn claude_build_args_omits_chrome_flag_by_default() {
+        let args = Claude.build_session_args(&default_args());
+        assert!(!args.iter().any(|a| a == "--chrome"));
     }
 
     #[test]

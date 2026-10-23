@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Claude in Chrome tools now load in UI sessions when "Enabled by default" is on (Verun passes `--chrome`, since the CLI ignores that setting in stream-json mode)
+
 ## 0.14.5 - 2026-10-16
 
 - Terminal-to-chat transitions no longer ingest the same Claude user, assistant, and tool messages from both streaming and transcript sources (#277)
