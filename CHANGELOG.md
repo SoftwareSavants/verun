@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Cmd+V in terminals pastes screenshots/copied images and Finder files as quoted paths, so image paste into Claude Code works reliably
+- Dropping or pasting documents into the chat composer inserts them as @-mentions; dropped images attach again (native drops never reached the DOM handler)
+
 - Clicking a desktop notification now focuses the right window and session instead of every open window switching tasks (each window sent its own notification with colliding IDs)
 
 ## 0.14.5 - 2026-10-16

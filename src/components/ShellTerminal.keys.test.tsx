@@ -3,7 +3,9 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 const ipcMocks = vi.hoisted(() => ({
   ptyWrite: vi.fn(() => Promise.resolve()),
   readClipboard: vi.fn(() => Promise.resolve('')),
+  readClipboardPaste: vi.fn(() => Promise.resolve({ kind: 'text', text: '' } as unknown)),
 }))
+vi.mock('../lib/platform', () => ({ isMac: true, modPressed: (e: KeyboardEvent) => e.metaKey }))
 vi.mock('../lib/ipc', () => ipcMocks)
 // xterm.css import inside ShellTerminal.tsx has no meaning in jsdom.
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
@@ -56,5 +58,30 @@ describe('Shift+Enter in terminals', () => {
     expect(handler).toBeDefined()
     expect(handler!(keydown({ key: 'Enter', shiftKey: true }))).toBe(false)
     expect(handler!(keydown({ key: 'Enter' }))).toBe(true)
+  })
+})
+
+describe('Cmd+V in terminals', () => {
+  const flush = () => new Promise(r => setTimeout(r, 0))
+
+  test.each([
+    [{ kind: 'image', path: '/tmp/verun-paste/a.png' }, "'/tmp/verun-paste/a.png' "],
+    [{ kind: 'files', paths: ['/Users/me/My Doc.pdf'] }, "'/Users/me/My Doc.pdf' "],
+    [{ kind: 'text', text: 'echo hi' }, 'echo hi'],
+    // Empty paste still goes through so TUIs can run their own clipboard fallback
+    [{ kind: 'text', text: '' }, ''],
+  ])('pastes %o as %j', async (clip, expected) => {
+    ipcMocks.readClipboardPaste.mockResolvedValueOnce(clip)
+    const container = document.createElement('div')
+    const paste = vi.fn()
+    const term = { getSelection: () => '', paste } as unknown as XTerm
+    setupCaptureKeyHandler(container, term, 'term-1')
+
+    const e = keydown({ key: 'v', metaKey: true })
+    container.dispatchEvent(e)
+    await flush()
+
+    expect(e.defaultPrevented).toBe(true)
+    expect(paste).toHaveBeenCalledWith(expected)
   })
 })

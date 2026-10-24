@@ -14,6 +14,8 @@ import { primeSkills, type Command, type SkillContext } from '../store/commands'
 import { projectById } from '../store/projects'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { clsx } from 'clsx'
 import type { AttachmentRef, TrustLevel, AgentType } from '../types'
 import { agents } from '../store/agents'
@@ -25,6 +27,7 @@ import { openSideQuestion } from '../store/sideQuestion'
 import { serializeAttachments, deserializeAttachments, uploadAttachments } from '../lib/binary'
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 import { decidePlanAction } from '../lib/planAction'
+import { isImagePath, mentionPathForFile } from '../lib/composerFiles'
 import { decideQuestionKeyAction, QUESTION_SKIP_MESSAGE } from '../lib/questionKeyAction'
 
 interface Props {
@@ -877,6 +880,53 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
 
+  /** Insert @-mention badges at the caret (or at the end if the input isn't focused). */
+  const insertMentions = (filePaths: string[]) => {
+    if (!inputRef || filePaths.length === 0) return
+    const frag = document.createDocumentFragment()
+    for (const p of filePaths) {
+      frag.appendChild(wrapBadge(createMentionBadge(p)))
+      frag.appendChild(document.createTextNode(' '))
+    }
+    const tail = frag.lastChild!
+    const sel = window.getSelection()
+    const range = sel && sel.rangeCount > 0 && inputRef.contains(sel.getRangeAt(0).startContainer)
+      ? sel.getRangeAt(0)
+      : null
+    if (range) {
+      range.deleteContents()
+      range.insertNode(frag)
+    } else {
+      inputRef.appendChild(frag)
+    }
+    const after = document.createRange()
+    after.setStartAfter(tail)
+    after.collapse(true)
+    sel?.removeAllRanges()
+    sel?.addRange(after)
+    setMessageRaw(serializeInput())
+    autoResizeInput()
+    inputRef.focus()
+  }
+
+  /** Native file paths (drop / Finder paste): images attach, everything else becomes an @-mention. */
+  const addFilePaths = async (paths: string[]) => {
+    const images = paths.filter(isImagePath)
+    const others = paths.filter(p => !isImagePath(p))
+    const worktree = taskById(selectedTaskId() ?? '')?.worktreePath
+    insertMentions(others.map(p => mentionPathForFile(p, worktree)))
+    const refs = await Promise.all(images.map(async (p): Promise<AttachmentRef | null> => {
+      try {
+        const ref = await ipc.uploadAttachmentFromPath(p)
+        return { hash: ref.hash, mimeType: ref.mime, name: p.split('/').pop() ?? p, size: ref.size }
+      } catch {
+        return null
+      }
+    }))
+    const valid = refs.filter((a): a is AttachmentRef => a !== null)
+    if (valid.length > 0) setAttachments(prev => [...prev, ...valid])
+  }
+
   const removeAttachment = (index: number) => {
     setAttachments(prev => prev.filter((_, i) => i !== index))
   }
@@ -1450,11 +1500,27 @@ export const MessageInput: Component<Props> = (props) => {
     const items = e.clipboardData?.items
     if (!items) return
     const files: File[] = []
+    let hasOtherFile = false
     for (const item of Array.from(items)) {
-      if (item.kind === 'file' && SUPPORTED_IMAGE_TYPES.has(item.type)) {
+      if (item.kind !== 'file') continue
+      if (SUPPORTED_IMAGE_TYPES.has(item.type)) {
         const file = item.getAsFile()
         if (file) files.push(file)
+      } else {
+        hasOtherFile = true
       }
+    }
+    // Documents copied in Finder: the webview only exposes their bytes, so
+    // ask Rust for the real paths and mention them.
+    if (hasOtherFile) {
+      e.preventDefault()
+      const clip = await ipc.readClipboardPaste().catch(() => null)
+      if (clip?.kind === 'files') {
+        await addFilePaths(clip.paths)
+        return
+      }
+      if (files.length > 0) await addFiles(files)
+      return
     }
     if (files.length > 0) {
       e.preventDefault()
@@ -1484,6 +1550,35 @@ export const MessageInput: Component<Props> = (props) => {
       if (inputRef) inputRef.scrollTop = inputRef.scrollHeight
     }
   }
+
+  // File drops arrive as native Tauri events (with paths) — the webview never
+  // sees them as DOM drops. Only the visible composer under the cursor reacts.
+  let composerRoot: HTMLDivElement | undefined
+  const isOverComposer = (position?: { x: number; y: number }) => {
+    if (!composerRoot?.getClientRects().length) return false
+    if (!position) return true
+    const scale = window.devicePixelRatio || 1
+    const x = position.x / scale
+    const y = position.y / scale
+    const rect = composerRoot.getBoundingClientRect()
+    return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
+  }
+  onMount(() => {
+    const target = { target: { kind: 'Webview' as const, label: getCurrentWebview().label } }
+    const unlisteners: Promise<UnlistenFn>[] = [
+      listen<{ paths: string[]; position?: { x: number; y: number } }>('tauri://drag-over', (ev) => {
+        setDragOver(isOverComposer(ev.payload.position))
+      }, target),
+      listen('tauri://drag-leave', () => setDragOver(false), target),
+      listen<{ paths: string[]; position?: { x: number; y: number } }>('tauri://drag-drop', (ev) => {
+        setDragOver(false)
+        const paths = ev.payload.paths ?? []
+        if (paths.length === 0 || !isOverComposer(ev.payload.position)) return
+        void addFilePaths(paths)
+      }, target),
+    ]
+    onCleanup(() => { for (const u of unlisteners) u.then(fn => fn()).catch(() => {}) })
+  })
 
   const handleDragOver = (e: DragEvent) => { e.preventDefault(); setDragOver(true) }
   const handleDragLeave = (e: DragEvent) => { e.preventDefault(); setDragOver(false) }
@@ -1663,6 +1758,7 @@ export const MessageInput: Component<Props> = (props) => {
 
   return (
     <div
+      ref={composerRoot}
       class="px-4 pb-3 min-w-0"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
