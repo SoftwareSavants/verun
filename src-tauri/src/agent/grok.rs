@@ -374,6 +374,7 @@ impl Agent for Grok {
             session_id: session_id.to_string(),
             tool_name,
             tool_input,
+            prompt: None,
         }
     }
 

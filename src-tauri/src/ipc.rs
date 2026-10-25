@@ -1128,6 +1128,47 @@ pub async fn get_session_context_usage(
     task::get_session_context_usage(active.inner(), pending_ctrl.inner(), &session_id).await
 }
 
+#[tauri::command]
+pub async fn get_mcp_status(
+    active: State<'_, ActiveMap>,
+    pending_ctrl: State<'_, PendingControlResponses>,
+    session_id: String,
+) -> Result<Vec<crate::claude_control::McpServerStatus>, String> {
+    task::get_mcp_status(active.inner(), pending_ctrl.inner(), &session_id).await
+}
+
+/// Start sign-in for an MCP server and open its authorization page in the
+/// browser. The CLI completes the flow and reconnects the server.
+#[tauri::command]
+pub async fn authenticate_mcp_server(
+    app: AppHandle,
+    active: State<'_, ActiveMap>,
+    pending_ctrl: State<'_, PendingControlResponses>,
+    session_id: String,
+    server_name: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let url =
+        task::authenticate_mcp_server(active.inner(), pending_ctrl.inner(), &session_id, &server_name)
+            .await?;
+    if let Some(url) = url {
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|e| format!("open auth url: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reconnect_mcp_server(
+    active: State<'_, ActiveMap>,
+    pending_ctrl: State<'_, PendingControlResponses>,
+    session_id: String,
+    server_name: String,
+) -> Result<(), String> {
+    task::reconnect_mcp_server(active.inner(), pending_ctrl.inner(), &session_id, &server_name).await
+}
+
 /// Ask Claude an ephemeral side question (`/btw`) while a turn is mid-stream.
 /// Q/A are not persisted and never enter the conversation transcript.
 /// Returns `Ok(None)` when the CLI couldn't answer (e.g. before the first

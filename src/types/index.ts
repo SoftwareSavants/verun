@@ -245,11 +245,31 @@ export interface RateLimitInfo {
   isUsingOverage: boolean;
 }
 
+// Extra fields the Claude CLI attaches to some approvals.
+export interface ApprovalPrompt {
+  /** The card itself is how the user responds; never auto-approved. */
+  requiresUserInteraction: boolean;
+  /** Deny is the safe default; Enter must not approve. */
+  defaultToNo: boolean;
+  title?: string;
+  displayName?: string;
+  description?: string;
+  mcpServer?: string;
+}
+
 export interface ToolApprovalRequest {
   requestId: string;
   sessionId: string;
   toolName: string;
   toolInput: Record<string, unknown>;
+  prompt?: ApprovalPrompt;
+}
+
+export interface McpServerStatus {
+  name: string;
+  /** connected | failed | needs-auth | pending | disabled */
+  status: string;
+  error?: string;
 }
 
 // Policy types

@@ -191,6 +191,14 @@ pub struct SessionResumeIdEvent {
     pub resume_session_id: String,
 }
 
+/// MCP server statuses reported in Claude's `system/init`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServersEvent {
+    pub session_id: String,
+    pub servers: Vec<crate::claude_control::McpServerStatus>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskNameEvent {
@@ -248,6 +256,8 @@ pub struct ToolApprovalEvent {
     pub session_id: String,
     pub tool_name: String,
     pub tool_input: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<crate::claude_control::ApprovalPrompt>,
 }
 
 /// Emitted to frontend with subscription rate limit info
@@ -1640,6 +1650,17 @@ pub async fn stream_and_capture(
                             }
                         }
 
+                        if msg_type == "system"
+                            && v.get("subtype").and_then(|s| s.as_str()) == Some("init")
+                        {
+                            if let Some(servers) = crate::claude_control::parse_mcp_servers(&v) {
+                                let _ = app.emit(
+                                    "mcp-servers",
+                                    McpServersEvent { session_id: session_id.clone(), servers },
+                                );
+                            }
+                        }
+
                         // Extract the resume session id via the agent's own logic
                         if resume_id_for_snapshot.is_none() {
                             if let Some(sid) = agent.extract_resume_id(&v) {
@@ -2023,6 +2044,7 @@ pub async fn stream_and_capture_rpc(
                             session_id: session_id.clone(),
                             tool_name: entry.tool_name.clone(),
                             tool_input: entry.tool_input.clone(),
+                            prompt: None,
                         });
 
                         let (tx, rx) = tokio::sync::oneshot::channel::<ApprovalResponse>();
@@ -2126,7 +2148,10 @@ async fn handle_control_request(
     }
 
     let request = v.get("request")?;
-    if request.get("subtype").and_then(|s| s.as_str()) != Some("can_use_tool") {
+    // MCP elicitations ride the approval queue as a pseudo tool so they get
+    // the same pending/reload/attention handling as AskUserQuestion.
+    let elicitation = crate::claude_control::is_elicitation(request);
+    if !elicitation && request.get("subtype").and_then(|s| s.as_str()) != Some("can_use_tool") {
         return Some(ControlRequestResult {
             handled: false,
             tool_start: None,
@@ -2138,15 +2163,23 @@ async fn handle_control_request(
         .and_then(|r| r.as_str())
         .unwrap_or("")
         .to_string();
-    let tool_name = request
-        .get("tool_name")
-        .and_then(|t| t.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let tool_input = request
-        .get("input")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
+    let (tool_name, tool_input, prompt) = if elicitation {
+        (
+            crate::claude_control::ELICITATION_TOOL_NAME.to_string(),
+            crate::claude_control::elicitation_tool_input(request),
+            None,
+        )
+    } else {
+        (
+            request
+                .get("tool_name")
+                .and_then(|t| t.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            request.get("input").cloned().unwrap_or(serde_json::Value::Null),
+            crate::claude_control::parse_approval_prompt(request),
+        )
+    };
 
     // Build a ToolStart item so the frontend knows which tool is running
     let input_str = if tool_input.is_null()
@@ -2156,19 +2189,29 @@ async fn handle_control_request(
     } else {
         serde_json::to_string_pretty(&tool_input).unwrap_or_default()
     };
-    let tool_start = OutputItem::ToolStart {
+    let tool_start = (!elicitation).then(|| OutputItem::ToolStart {
         tool: tool_name.clone(),
         input: input_str,
-    };
+    });
 
     // Evaluate policy — load trust level fresh so mid-run IPC edits apply.
-    let result = policy::evaluate(
-        &tool_name,
-        &tool_input,
-        worktree_path,
-        repo_path,
-        TrustLevel::from_atomic(trust_level),
-    );
+    let result = if elicitation {
+        policy::PolicyResult {
+            decision: PolicyDecision::RequireApproval,
+            reason: "MCP server asked for user input".into(),
+        }
+    } else {
+        crate::claude_control::apply_prompt_policy(
+            policy::evaluate(
+                &tool_name,
+                &tool_input,
+                worktree_path,
+                repo_path,
+                TrustLevel::from_atomic(trust_level),
+            ),
+            prompt.as_ref(),
+        )
+    };
     let input_summary = policy::summarize_input(&tool_name, &tool_input);
 
     // Fire-and-forget audit log entry
@@ -2222,7 +2265,7 @@ async fn handle_control_request(
 
             Some(ControlRequestResult {
                 handled: true,
-                tool_start: Some(tool_start),
+                tool_start,
             })
         }
         PolicyDecision::RequireApproval => {
@@ -2236,6 +2279,7 @@ async fn handle_control_request(
                     session_id: session_id.to_string(),
                     tool_name: tool_name.clone(),
                     tool_input: tool_input.clone(),
+                    prompt: prompt.clone(),
                 },
             );
 
@@ -2248,18 +2292,27 @@ async fn handle_control_request(
                     session_id: session_id.to_string(),
                     tool_name,
                     tool_input: tool_input.clone(),
+                    prompt,
                 },
             );
 
-            let (behavior, updated_input, deny_message) = match rx.await {
-                Ok(resp) => (resp.behavior, resp.updated_input, resp.message),
-                Err(_) => ("deny".to_string(), None, None),
-            };
+            let answer = rx.await.ok();
 
             pending_approvals.remove(&request_id);
             pending_meta.remove(&request_id);
 
-            let response_inner = if behavior == "allow" {
+            let (behavior, updated_input, deny_message) = match &answer {
+                Some(resp) => (
+                    resp.behavior.clone(),
+                    resp.updated_input.clone(),
+                    resp.message.clone(),
+                ),
+                None => ("deny".to_string(), None, None),
+            };
+
+            let response_inner = if elicitation {
+                crate::claude_control::encode_elicitation_response(answer.as_ref())
+            } else if behavior == "allow" {
                 let input = updated_input.unwrap_or(tool_input);
                 serde_json::json!({
                     "behavior": "allow",
@@ -2294,7 +2347,7 @@ async fn handle_control_request(
 
             Some(ControlRequestResult {
                 handled: true,
-                tool_start: Some(tool_start),
+                tool_start,
             })
         }
     }
@@ -2557,6 +2610,7 @@ pub fn build_codex_approval_entry(
         session_id: session_id.to_string(),
         tool_name,
         tool_input,
+        prompt: None,
     }
 }
 

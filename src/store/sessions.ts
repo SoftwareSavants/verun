@@ -1,7 +1,9 @@
 import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo } from '../types'
+import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus } from '../types'
+import { setSessionMcpServers } from './mcpServers'
+import { ELICITATION_TOOL_NAME, parseElicitation } from '../lib/mcpElicitation'
 import { setTasks, taskById } from './tasks'
 import { markTaskUnread, markTaskAttention, clearTaskAttention, markSessionUnread } from './ui'
 import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
@@ -157,6 +159,13 @@ export async function denyToolUse(requestId: string, sessionId: string, message?
 
 export async function answerQuestion(requestId: string, sessionId: string, answers: Record<string, string>, originalInput: Record<string, unknown>) {
   await ipc.respondToApproval(requestId, 'allow', { ...originalInput, answers })
+  removeApproval(requestId, sessionId)
+}
+
+// Answer an MCP server's question (McpElicitation pseudo approval).
+export async function respondToElicitation(requestId: string, sessionId: string, action: 'accept' | 'decline' | 'cancel', content?: Record<string, unknown>) {
+  const behavior = action === 'accept' ? 'allow' : action === 'decline' ? 'deny' : 'cancel'
+  await ipc.respondToApproval(requestId, behavior, content)
   removeApproval(requestId, sessionId)
 }
 
@@ -496,15 +505,22 @@ export async function initSessionListeners() {
       markTaskAttention(session.taskId)
       const displayName = session.name || taskById(session.taskId)?.name || 'Task'
       const isQuestion = req.toolName === 'AskUserQuestion'
+      const isElicitation = req.toolName === ELICITATION_TOOL_NAME
       notify({
-        title: isQuestion ? 'Question from task' : 'Approval needed',
+        title: isQuestion || isElicitation ? 'Question from task' : 'Approval needed',
         body: isQuestion
           ? `${displayName}: ${(req.toolInput?.question as string)?.slice(0, 100) || 'has a question'}`
-          : `${displayName}: ${req.toolName}`,
+          : isElicitation
+            ? `${displayName}: ${parseElicitation(req.toolInput).message.slice(0, 100) || 'an MCP server needs input'}`
+            : `${displayName}: ${req.prompt?.title ?? req.toolName}`,
         taskId: session.taskId,
         sessionId: req.sessionId,
       })
     }
+  })
+
+  await listen<{ sessionId: string; servers: McpServerStatus[] }>('mcp-servers', (event) => {
+    setSessionMcpServers(event.payload.sessionId, event.payload.servers)
   })
 
   await listen<{ sessionId: string; name: string }>('session-name', (event) => {

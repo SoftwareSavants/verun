@@ -845,6 +845,8 @@ pub struct PendingApprovalEntry {
     pub session_id: String,
     pub tool_name: String,
     pub tool_input: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<crate::claude_control::ApprovalPrompt>,
 }
 
 /// request_id → oneshot sender waiting for user's approval decision
@@ -2032,6 +2034,7 @@ async fn spawn_rpc_session(
         repo_path: &repo_path,
         message: &message,
         verun_mcp_config_path: mcp_config_path.as_deref(),
+        chrome_enabled: false,
     });
 
     eprintln!(
@@ -2534,6 +2537,10 @@ pub async fn spawn_session_process(
     let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
     let mcp_config_path = verun_mcp_config_path_for_task(&app_data, &task_id);
+    let chrome_enabled = agent.kind() == AgentKind::Claude
+        && tokio::task::spawn_blocking(crate::agent::claude::chrome_default_enabled)
+            .await
+            .unwrap_or(false);
     let session_args = crate::agent::SessionArgs {
         resume_session_id: resume_id,
         model: model.as_deref(),
@@ -2545,6 +2552,7 @@ pub async fn spawn_session_process(
         repo_path: &repo_path,
         message: &message,
         verun_mcp_config_path: mcp_config_path.as_deref(),
+        chrome_enabled,
     };
 
     let args_list = agent.build_session_args(&session_args);
@@ -3071,20 +3079,88 @@ pub async fn get_session_context_usage(
     pending: &PendingControlResponses,
     session_id: &str,
 ) -> Result<serde_json::Value, String> {
+    await_control_request(
+        active,
+        pending,
+        session_id,
+        serde_json::json!({ "subtype": "get_context_usage" }),
+        Duration::from_secs(10),
+    )
+    .await
+}
+
+/// Current status of every MCP server in a live Claude session.
+pub async fn get_mcp_status(
+    active: &ActiveMap,
+    pending: &PendingControlResponses,
+    session_id: &str,
+) -> Result<Vec<crate::claude_control::McpServerStatus>, String> {
+    let v = await_control_request(
+        active,
+        pending,
+        session_id,
+        serde_json::json!({ "subtype": "mcp_status" }),
+        Duration::from_secs(10),
+    )
+    .await?;
+    crate::claude_control::parse_mcp_servers(&v)
+        .ok_or_else(|| "mcp_status reply missing mcpServers".to_string())
+}
+
+/// Start the OAuth flow for an MCP server. The CLI listens for the redirect
+/// on localhost and reconnects the server itself; we only get the URL to
+/// open. `None` when the server needed no user action.
+pub async fn authenticate_mcp_server(
+    active: &ActiveMap,
+    pending: &PendingControlResponses,
+    session_id: &str,
+    server_name: &str,
+) -> Result<Option<String>, String> {
+    let v = await_control_request(
+        active,
+        pending,
+        session_id,
+        serde_json::json!({ "subtype": "mcp_authenticate", "serverName": server_name }),
+        Duration::from_secs(30),
+    )
+    .await?;
+    Ok(crate::claude_control::mcp_auth_url(&v))
+}
+
+pub async fn reconnect_mcp_server(
+    active: &ActiveMap,
+    pending: &PendingControlResponses,
+    session_id: &str,
+    server_name: &str,
+) -> Result<(), String> {
+    await_control_request(
+        active,
+        pending,
+        session_id,
+        serde_json::json!({ "subtype": "mcp_reconnect", "serverName": server_name }),
+        Duration::from_secs(60),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Send a control_request and wait for the matching control_response.
+async fn await_control_request(
+    active: &ActiveMap,
+    pending: &PendingControlResponses,
+    session_id: &str,
+    body: serde_json::Value,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
     let stdin = active
         .get(session_id)
         .map(|proc| proc.stdin.clone())
         .ok_or_else(|| "No active session".to_string())?;
 
-    let (request_id, rx) = send_control_request(
-        &stdin,
-        Some(pending),
-        serde_json::json!({ "subtype": "get_context_usage" }),
-    )
-    .await?;
+    let (request_id, rx) = send_control_request(&stdin, Some(pending), body).await?;
     let rx = rx.expect("pending map provided");
 
-    let result = tokio::time::timeout(Duration::from_secs(10), rx).await;
+    let result = tokio::time::timeout(timeout, rx).await;
 
     // Always clean up the pending entry on timeout so we don't leak.
     if result.is_err() {

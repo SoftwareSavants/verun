@@ -3,6 +3,7 @@ pub mod agent;
 mod blob;
 mod clipboard;
 mod bts_scaffold;
+mod claude_control;
 mod claude_jsonl;
 mod claude_terminal;
 mod claude_transcript_tail;
@@ -372,6 +373,9 @@ pub fn run() {
             ipc::abort_message,
             ipc::interrupt_session,
             ipc::get_session_context_usage,
+            ipc::get_mcp_status,
+            ipc::authenticate_mcp_server,
+            ipc::reconnect_mcp_server,
             ipc::ask_side_question,
             ipc::get_active_sessions,
             ipc::respond_to_approval,
