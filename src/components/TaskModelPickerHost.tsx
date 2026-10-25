@@ -13,12 +13,13 @@ export const TaskModelPickerHost: Component = () => {
       open={!!modelPickerRequest()}
       title={modelPickerRequest()?.title}
       placeholder={modelPickerRequest()?.placeholder}
+      projectId={modelPickerRequest()?.projectId}
       defaultAgent={modelPickerRequest()?.defaultAgent}
       defaultModel={modelPickerRequest()?.defaultModel}
       onClose={closeModelPicker}
-      onPick={(agentType, model) => {
+      onPick={(agentType, model, account) => {
         const req = modelPickerRequest()
-        if (req) return req.onPick(agentType, model)
+        if (req) return req.onPick(agentType, model, account)
       }}
     />
   )

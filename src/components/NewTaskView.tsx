@@ -6,7 +6,8 @@ import { agents } from '../store/agents'
 import { startDraftTask } from '../store/draftTask'
 import * as ipc from '../lib/ipc'
 import { failureText } from '../lib/accountErrors'
-import type { AgentType } from '../types'
+import { PROJECT_DEFAULT } from '../lib/accounts'
+import type { AccountSelection, AgentType } from '../types'
 import { HarnessModelPicker } from './HarnessModelPicker'
 import { Select } from './Select'
 import { CloudSessionPicker } from './CloudSessionPicker'
@@ -17,6 +18,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
   const [agent, setAgent] = createSignal<AgentType>('claude')
   const [model, setModel] = createSignal<string>()
   const selectedModel = () => model() ?? agents.find(a => a.id === agent())?.models?.[0]?.id
+  const [account, setAccount] = createSignal<AccountSelection>(PROJECT_DEFAULT)
   const [baseBranch, setBaseBranch] = createSignal('main')
   const [branches, setBranches] = createSignal<string[]>([])
   const [workspace, setWorkspace] = createSignal('worktree')
@@ -36,6 +38,8 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
     const p = project()
     setAgent(p?.defaultAgentType ?? 'claude')
     setModel(undefined)
+    // Accounts belong to a project's harnesses: the previous project's pick is not this one's.
+    setAccount(PROJECT_DEFAULT)
     setBaseBranch(p?.baseBranch ?? 'main')
     setBranches([])
     // Each project runs on its own Claude account, so the previous project's cloud access is not this one's.
@@ -65,7 +69,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
     setSending(true)
     setError('')
     try {
-      await startDraftTask({ projectId: props.projectId, baseBranch: baseBranch(), agentType: agent(), model: selectedModel(), directory: directory(), message: message().trim() })
+      await startDraftTask({ projectId: props.projectId, baseBranch: baseBranch(), agentType: agent(), model: selectedModel(), directory: directory(), account: account(), message: message().trim() })
       props.onClose()
     } catch (e) {
       // The account the task would run on can be unusable: that gets the account
@@ -101,7 +105,8 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
               onInput={e => setMessage(e.currentTarget.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void send() } }} />
             <div class="flex items-center justify-between px-3 pb-3 gap-3">
-              <HarnessModelPicker agent={agent()} model={selectedModel()} disabled={sending()} onPick={(nextAgent, nextModel) => { setAgent(nextAgent); setModel(nextModel) }} />
+              <HarnessModelPicker agent={agent()} model={selectedModel()} account={account()} projectId={props.projectId} disabled={sending()}
+                onPick={(nextAgent, nextModel, nextAccount) => { setAgent(nextAgent); setModel(nextModel); setAccount(nextAccount ?? PROJECT_DEFAULT) }} />
               <button aria-label="Send" title="Send (Enter)" disabled={!message().trim() || sending() || choosing() || unavailable()} onClick={send}
                 class="w-8 h-8 rounded-lg flex items-center justify-center bg-accent text-surface-0 disabled:opacity-35 transition-opacity">
                 <Show when={sending()} fallback={<ArrowUp size={16} />}><Loader2 size={16} class="animate-spin" /></Show>

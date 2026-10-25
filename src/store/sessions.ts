@@ -1,6 +1,6 @@
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step } from '../types'
+import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection } from '../types'
 import { setSessionMcpServers } from './mcpServers'
 import { ELICITATION_TOOL_NAME, parseElicitation } from '../lib/mcpElicitation'
 import { setTasks, taskById } from './tasks'
@@ -74,8 +74,9 @@ export async function loadSessions(taskId: string) {
   for (const s of list) seedSessionAggregates(s)
 }
 
-export async function createSession(taskId: string, agentType: string, model?: string): Promise<Session> {
-  const session = await ipc.createSession(taskId, agentType, model)
+/** `account` is the one the session runs on; the project's account for the harness when left out. */
+export async function createSession(taskId: string, agentType: string, model?: string, account?: AccountSelection): Promise<Session> {
+  const session = await ipc.createSession(taskId, agentType, model, account)
   // Dedup vs the session-created broadcast: Rust emits to all windows including
   // the source, and the broadcast can land before this await resolves.
   setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))

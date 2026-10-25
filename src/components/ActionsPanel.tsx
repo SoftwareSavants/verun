@@ -348,14 +348,15 @@ const ActionsJobRow: Component<{ taskId: string; run: WorkflowRun; job: Workflow
     openModelPicker({
       title: 'Fix in new session',
       placeholder: 'Select agent and model for fix session...',
+      projectId: t.projectId,
       defaultAgent: current?.agentType ?? t.agentType,
       defaultModel: current?.model ?? undefined,
-      onPick: async (agentType, model) => {
+      onPick: async (agentType, model, account) => {
         setBusy('fix')
         if (!logsCached) addToast('Fetching failure context...', 'info', { id: toastId, persistent: true, loading: true })
         try {
           const [created, prompt] = await Promise.all([
-            ipc.createSession(props.taskId, agentType, model),
+            ipc.createSession(props.taskId, agentType, model, account),
             buildPrompt(),
           ])
           setSelectedSessionIdForTask(props.taskId, created.id)

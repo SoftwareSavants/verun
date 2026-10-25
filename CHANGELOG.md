@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Confirm dialogs no longer confirm when Enter is pressed on a focused Cancel or other button
+- A new session that fails to start (new-session menu, Cmd+T, /new-session, Retry in new session) shows an error toast instead of failing silently
 
 ## 0.14.6 - 2026-10-25
 

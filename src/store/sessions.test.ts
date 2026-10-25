@@ -589,6 +589,26 @@ describe('createSession dedup vs cross-window broadcast', () => {
   })
 })
 
+// The picker's account choice reaches the backend, which binds the session to it.
+describe('createSession account', () => {
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    vi.mocked(ipc.createSession).mockReset()
+    vi.mocked(ipc.createSession).mockResolvedValue(makeSession({ id: 's-acct', taskId: 't-001' }))
+  })
+
+  test('passes the account selection to the backend', async () => {
+    await createSession('t-001', 'claude', 'opus', { kind: 'account', id: 'a1' })
+    expect(ipc.createSession).toHaveBeenCalledWith('t-001', 'claude', 'opus', { kind: 'account', id: 'a1' })
+  })
+
+  test('says nothing about the account when none is chosen', async () => {
+    await createSession('t-001', 'claude', 'opus')
+    expect(ipc.createSession).toHaveBeenCalledWith('t-001', 'claude', 'opus', undefined)
+  })
+})
+
 describe('reopenSession', () => {
   beforeAll(async () => {
     await initSessionListeners()

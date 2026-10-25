@@ -1,6 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { render, cleanup, fireEvent } from '@solidjs/testing-library'
-import type { WorkflowRun } from '../types'
+import type { AccountSelection, WorkflowRun } from '../types'
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
@@ -353,9 +353,9 @@ describe('<ActionsPanel /> fixing a failed job with Claude', () => {
   }
 
   /** The model picker's callback, for the "new session" path. */
-  async function pickModel() {
+  async function pickModel(account?: AccountSelection) {
     const request = vi.mocked(openModelPicker).mock.calls[0][0]
-    await request.onPick('claude', 'opus')
+    await request.onPick('claude', 'opus', account)
     await flush()
   }
 
@@ -405,6 +405,35 @@ describe('<ActionsPanel /> fixing a failed job with Claude', () => {
 
     expect(sendMessage).toHaveBeenCalledWith('new-session', expect.stringContaining('Type Check'))
     expect(toastsOfType('success')).toEqual([SENT_NEW])
+  })
+
+  test('the picker is for the project of the task', async () => {
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+
+    expect(openModelPicker).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'p1' }))
+  })
+
+  test('the session is created on the account picked', async () => {
+    vi.mocked(sendMessage).mockResolvedValue(true)
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+    await pickModel({ kind: 'account', id: 'a1' })
+
+    expect(ipcMocks.createSession).toHaveBeenCalledWith('t1', 'claude', 'opus', { kind: 'account', id: 'a1' })
+    expect(sendMessage).toHaveBeenCalledWith('new-session', expect.stringContaining('Type Check'))
+  })
+
+  test('without an account picked the project decides', async () => {
+    vi.mocked(sendMessage).mockResolvedValue(true)
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+    await pickModel()
+
+    expect(ipcMocks.createSession).toHaveBeenCalledWith('t1', 'claude', 'opus', undefined)
   })
 
   test('a new-session fix blocked by an account problem does not say it was started', async () => {

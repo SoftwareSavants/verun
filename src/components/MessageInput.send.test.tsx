@@ -10,6 +10,10 @@ import { render, cleanup, fireEvent, screen } from '@solidjs/testing-library'
 const mocks = vi.hoisted(() => ({
   sendMessage: vi.fn(),
   sendStep: vi.fn(),
+  createSession: vi.fn(),
+  setMainView: vi.fn(),
+  /** What the store has for the composer's session `s1`; `undefined` when it has none. */
+  session: undefined as { id: string; taskId: string; agentType: string; accountId: string | null; model: string | null } | undefined,
   planText: '# Plan\n\nDo the thing',
   setup: { running: false, failed: false, queued: {} as Record<string, unknown> },
 }))
@@ -32,7 +36,7 @@ vi.mock('../store/sessions', () => ({
   sendStep: mocks.sendStep,
   abortMessage: vi.fn(),
   steerSession: vi.fn(),
-  createSession: vi.fn(),
+  createSession: mocks.createSession,
   clearOutputItems: vi.fn(),
   pendingApprovals: {},
   approveToolUse: vi.fn(),
@@ -43,14 +47,14 @@ vi.mock('../store/sessions', () => ({
   rateLimitFor: () => null,
   outputItems: {},
   tryDrainSteps: vi.fn(),
-  sessionById: () => ({ id: 's1', taskId: 't1', agentType: 'claude', accountId: null, model: null }),
+  sessionById: () => mocks.session,
   updateSessionModel: vi.fn(),
 }))
 vi.mock('../store/tasks', () => ({ taskById: () => undefined }))
 vi.mock('../store/projects', () => ({ projectById: () => undefined }))
 vi.mock('../store/agents', () => ({ agents: [] }))
 vi.mock('../store/commands', () => ({ primeSkills: vi.fn() }))
-vi.mock('../store/editorView', () => ({ openFile: vi.fn(), setMainView: vi.fn() }))
+vi.mock('../store/editorView', () => ({ openFile: vi.fn(), setMainView: mocks.setMainView }))
 vi.mock('../store/sideQuestion', () => ({ openSideQuestion: vi.fn() }))
 vi.mock('../store/setup', () => ({
   isSetupRunning: () => mocks.setup.running,
@@ -68,7 +72,8 @@ vi.mock('./BlobImage', () => ({ BlobImage: () => null }))
 import { MessageInput } from './MessageInput'
 import { setPlanFilePathForSession, planFilePathForSession, setPlanModeForSession, planModeForSession } from '../store/sessionContext'
 import { addStep, clearSteps, getSteps } from '../store/steps'
-import { setSelectedTaskId } from '../store/ui'
+import { selectedSessionForTask } from '../store/taskContext'
+import { setSelectedTaskId, setToasts, toasts } from '../store/ui'
 
 const PLAN_PATH = '/tmp/plan.md'
 
@@ -116,6 +121,9 @@ beforeEach(() => {
   localStorage.clear()
   mocks.sendMessage.mockReset()
   mocks.sendStep.mockReset()
+  mocks.createSession.mockReset()
+  mocks.setMainView.mockReset()
+  mocks.session = { id: 's1', taskId: 't1', agentType: 'claude', accountId: null, model: null }
   mocks.planText = '# Plan\n\nDo the thing'
   mocks.setup.running = false
   mocks.setup.failed = false
@@ -408,5 +416,74 @@ describe('MessageInput queued prompt note', () => {
     render(() => <MessageInput sessionId="s1" isRunning={false} />)
 
     expect(screen.getByText('Setup failed. Prompt saved; retry setup or edit it.')).toBeTruthy()
+  })
+})
+
+// /new-session starts a session like the one it is typed in: the same harness
+// and the same account, explicitly, so a project that moves to another account
+// later does not move it. Without a session to copy the project decides.
+describe('MessageInput /new-session', () => {
+  async function run(container: HTMLElement) {
+    // The trailing space closes the command palette, which would take the Enter.
+    type(editor(container), '/new-session ')
+    enter(container)
+    await flush()
+  }
+
+  beforeEach(() => {
+    setSelectedTaskId('t1')
+    setToasts([])
+    mocks.createSession.mockResolvedValue({ id: 's-new' })
+  })
+
+  test('starts the new session on the account of this one', async () => {
+    mocks.session = { id: 's1', taskId: 't1', agentType: 'codex', accountId: 'a1', model: 'gpt-5' }
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+
+    await run(container)
+
+    expect(mocks.createSession).toHaveBeenCalledOnce()
+    expect(mocks.createSession).toHaveBeenCalledWith('t1', 'codex', undefined, { kind: 'account', id: 'a1' })
+  })
+
+  test('a session on Default starts the new one on Default, whatever the project uses', async () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+
+    await run(container)
+
+    expect(mocks.createSession).toHaveBeenCalledWith('t1', 'claude', undefined, { kind: 'default' })
+  })
+
+  test('without a session to copy the project decides', async () => {
+    mocks.session = undefined
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+
+    await run(container)
+
+    expect(mocks.createSession).toHaveBeenCalledWith('t1', 'claude', undefined, undefined)
+  })
+
+  test('shows the new session', async () => {
+    mocks.createSession.mockResolvedValue({ id: 's-shown' })
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+
+    await run(container)
+
+    expect(selectedSessionForTask('t1')).toBe('s-shown')
+    expect(mocks.setMainView).toHaveBeenCalledWith('t1', 'session')
+    expect(toasts()).toEqual([])
+  })
+
+  test('an account that cannot be used is shown as its toast, and no session is shown', async () => {
+    mocks.session = { id: 's1', taskId: 't1', agentType: 'claude', accountId: 'a1', model: null }
+    mocks.createSession.mockRejectedValue('ACCOUNT_ERROR:{"kind":"removed","accountId":"a1","label":"Acme","projects":[],"message":null}')
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+
+    await run(container)
+
+    expect(toasts().map((t) => ({ title: t.title, message: t.message }))).toEqual([
+      { title: 'Account removed', message: 'Acme was removed. Start a new session on another account.' },
+    ])
+    expect(mocks.setMainView).not.toHaveBeenCalled()
   })
 })

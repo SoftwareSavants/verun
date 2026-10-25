@@ -1,14 +1,14 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
 import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, respondToElicitation, sessionCosts, sessionTokens, outputItems, tryDrainSteps, sessionById, updateSessionModel, rateLimitFor, sendStep } from '../store/sessions'
 import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession, codexLivePlanForSession } from '../store/sessionContext'
-import { setSelectedSessionIdForTask, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
+import { selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, setupFailed, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
-import { openFile, setMainView } from '../store/editorView'
+import { openFile } from '../store/editorView'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import { primeSkills, type Command, type SkillContext } from '../store/commands'
 import { projectById } from '../store/projects'
@@ -34,7 +34,8 @@ import { decideApprovalKeyAction } from '../lib/approvalKeyAction'
 import { ELICITATION_TOOL_NAME } from '../lib/mcpElicitation'
 import { McpElicitationCard } from './McpElicitationCard'
 import { McpServerStatusBar } from './McpServerStatusBar'
-import { accountKey } from '../lib/accounts'
+import { accountKey, inheritedSelection } from '../lib/accounts'
+import { openNewSession } from '../lib/newSession'
 
 interface Props {
   sessionId: string | null
@@ -1101,10 +1102,10 @@ export const MessageInput: Component<Props> = (props) => {
       case 'new-session': {
         const tid = selectedTaskId()
         if (tid) {
-          const currentAgent = sessionById(props.sessionId ?? '')?.agentType ?? 'claude' as AgentType
-          const session = await createSession(tid, currentAgent)
-          setSelectedSessionIdForTask(tid, session.id)
-          setMainView(tid, 'session')
+          // The new session runs where this one does: the same harness, and the
+          // same account, whatever the project uses by now.
+          const current = sessionById(props.sessionId ?? '')
+          await openNewSession(tid, current?.agentType ?? 'claude', undefined, current ? inheritedSelection(current.accountId) : undefined)
         }
         break
       }

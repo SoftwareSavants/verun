@@ -22,7 +22,6 @@ import {
   prevTab,
   activeTabPath,
   mainView,
-  setMainView,
 } from '../store/editorView'
 import {
   spawnTerminal,
@@ -36,8 +35,9 @@ import {
 } from '../store/terminals'
 import { seedSearchQuery } from '../store/workspaceSearch'
 import { openModelPicker } from '../store/modelPicker'
-import { createSession, sessionsForTask } from '../store/sessions'
+import { sessionsForTask } from '../store/sessions'
 import { selectedSessionForTask } from '../store/taskContext'
+import { openNewSession } from './newSession'
 
 export interface TaskShortcutsOptions {
   /**
@@ -97,7 +97,7 @@ export function useTaskShortcuts(opts: TaskShortcutsOptions = {}) {
     // Cmd+T — open model picker to start a new session on the current task.
     // Defaults to the *selected session*'s agent (falling back to the first
     // session, then the task's original agentType) so switching sessions
-    // re-anchors the picker.
+    // re-anchors the picker. Accounts are the project's: its own comes first.
     if (modPressed(e) && !e.shiftKey && !e.altKey && e.key === 't' && tid) {
       e.preventDefault()
       const task = taskById(tid)
@@ -107,12 +107,11 @@ export function useTaskShortcuts(opts: TaskShortcutsOptions = {}) {
       openModelPicker({
         title: 'New session',
         placeholder: 'Select agent and model for new session...',
+        projectId: task?.projectId,
         defaultAgent: current?.agentType ?? task?.agentType,
         defaultModel: current?.model ?? undefined,
-        onPick: async (agentType, model) => {
-          const session = await createSession(tid, agentType, model)
-          setSelectedSessionIdForTask(tid, session.id)
-          setMainView(tid, 'session')
+        onPick: async (agentType, model, account) => {
+          await openNewSession(tid, agentType, model, account)
         },
       })
     }

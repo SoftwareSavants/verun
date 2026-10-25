@@ -1,5 +1,5 @@
 import { produce } from 'solid-js/store'
-import type { AgentType } from '../types'
+import type { AccountSelection, AgentType } from '../types'
 import * as ipc from '../lib/ipc'
 import { setTasks } from './tasks'
 import { setSessions, setOutputItems, sendMessage, updateSessionModel } from './sessions'
@@ -12,12 +12,14 @@ export interface DraftTaskInput {
   agentType: AgentType
   model?: string
   directory?: string
+  /** The account the task's first session runs on. The project's when left out. */
+  account?: AccountSelection
   message: string
 }
 
 export async function startDraftTask(input: DraftTaskInput) {
   const previousSelection = selectedTaskId()
-  const { task, session } = await ipc.createTask(input.projectId, input.baseBranch, input.agentType, input.directory)
+  const { task, session } = await ipc.createTask(input.projectId, input.baseBranch, input.agentType, input.directory, input.account)
   setTasks(prev => [task, ...prev.filter(t => t.id !== task.id)])
   setSessions(produce(s => { if (!s.some(row => row.id === session.id)) s.push(session) }))
   setOutputItems(session.id, [])

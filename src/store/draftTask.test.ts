@@ -14,9 +14,17 @@ beforeEach(() => {
 })
 test('first message targets the new session in the chosen folder', async () => {
   await startDraftTask(input)
-  expect(m.create).toHaveBeenCalledWith('p', 'main', 'claude', '/notes')
+  expect(m.create).toHaveBeenCalledWith('p', 'main', 'claude', '/notes', undefined)
   expect(m.select).toHaveBeenCalledWith('task')
   expect(m.send).toHaveBeenCalledWith('session', 'Organize notes', undefined, undefined)
+})
+test('the account picked for the task goes to task creation', async () => {
+  await startDraftTask({ ...input, account: { kind: 'account', id: 'a1' } })
+  expect(m.create).toHaveBeenCalledWith('p', 'main', 'claude', '/notes', { kind: 'account', id: 'a1' })
+})
+test('so does the project default, when that is what was chosen', async () => {
+  await startDraftTask({ ...input, account: { kind: 'projectDefault' } })
+  expect(m.create).toHaveBeenCalledWith('p', 'main', 'claude', '/notes', { kind: 'projectDefault' })
 })
 test('waits for setup before delivering the first message', async () => {
   m.running.mockReturnValue(true)

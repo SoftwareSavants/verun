@@ -1,15 +1,17 @@
 import { Component, For, Show, createSignal, createEffect, createMemo, onCleanup } from 'solid-js'
 import { Portal } from 'solid-js/web'
-import type { AgentType, ModelOption, Session } from '../types'
+import type { AccountSelection, AgentType, ModelOption, Session } from '../types'
 import { AGENT_DISPLAY_NAMES } from '../types'
 import { agents } from '../store/agents'
 import { clsx } from 'clsx'
 import { Plus, ChevronRight, Loader2, Search, History } from 'lucide-solid'
 import { registerDismissable } from '../lib/dismissable'
 import { agentIcon, meetsVersionReq } from '../lib/agents'
+import { agentRows } from '../lib/accounts'
 import { formatDurationShort } from '../lib/format'
 import * as ipc from '../lib/ipc'
 import SvgIcon from './SvgIcon'
+import { AgentRowName } from './AgentRowName'
 import { ModelRow } from './ModelRow'
 import { UpdateRequiredDialog } from './UpdateRequiredDialog'
 
@@ -20,7 +22,10 @@ interface Props {
   disabled?: boolean
   defaultAgent?: AgentType
   taskId?: string
-  onCreate: (agentType: AgentType, model?: string) => Promise<void>
+  /** The project of the task: its account for each harness is the one listed first. */
+  projectId?: string
+  /** `account` is the choice of the row picked; a harness without accounts has none. */
+  onCreate: (agentType: AgentType, model?: string, account?: AccountSelection) => Promise<void>
   onReopen?: (sessionId: string) => Promise<void>
 }
 
@@ -28,6 +33,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false)
   const [creating, setCreating] = createSignal(false)
   const [menuRect, setMenuRect] = createSignal<{ left: number; top: number } | null>(null)
+  // The row the pointer is on: an `AgentRow.key`, or `__recent__`.
   const [hoveredAgent, setHoveredAgent] = createSignal<string | null>(null)
   const [submenuRect, setSubmenuRect] = createSignal<{ left: number; top: number } | null>(null)
   const [recentSessions, setRecentSessions] = createSignal<Session[]>([])
@@ -43,6 +49,11 @@ export const NewSessionMenu: Component<Props> = (props) => {
       return a.name.localeCompare(b.name)
     })
   }
+
+  // A harness with accounts is a row for each, with its own models. Those rows
+  // are longer (`Claude Code · Acme`), so the menu grows to fit them, up to a point.
+  const rows = createMemo(() => agentRows(installedAgents(), props.projectId))
+  const hasAccounts = () => rows().some(r => r.choice)
 
   const openMenu = () => {
     if (buttonRef) {
@@ -92,23 +103,23 @@ export const NewSessionMenu: Component<Props> = (props) => {
     onCleanup(unregister)
   })
 
-  const handleAgentHover = (agentId: string, rowEl: HTMLButtonElement | null) => {
-    if (hoveredAgent() !== agentId) {
+  const handleAgentHover = (key: string, rowEl: HTMLButtonElement | null) => {
+    if (hoveredAgent() !== key) {
       setModelQuery('')
       setRecentQuery('')
     }
-    setHoveredAgent(agentId)
+    setHoveredAgent(key)
     if (rowEl) {
       const r = rowEl.getBoundingClientRect()
       setSubmenuRect({ left: r.right - 4, top: r.top - 4 })
     }
   }
 
-  const handleSelect = async (agentType: AgentType, model?: string) => {
+  const handleSelect = async (agentType: AgentType, model?: string, account?: AccountSelection) => {
     closeMenu()
     setCreating(true)
     try {
-      await props.onCreate(agentType, model)
+      await props.onCreate(agentType, model, account)
     } finally {
       setCreating(false)
     }
@@ -127,10 +138,11 @@ export const NewSessionMenu: Component<Props> = (props) => {
     return list.filter(s => sessionLabel(s).toLowerCase().includes(q))
   })
 
-  const hoveredAgentInfo = () => {
-    const id = hoveredAgent()
-    return id ? agents.find(a => a.id === id) : null
+  const hoveredRow = () => {
+    const key = hoveredAgent()
+    return key ? rows().find(r => r.key === key) : undefined
   }
+  const hoveredAgentInfo = () => hoveredRow()?.agent
 
   const hoveredModels = () => hoveredAgentInfo()?.models ?? []
   const showModelSearch = () => hoveredModels().length > MODEL_SEARCH_THRESHOLD
@@ -145,13 +157,13 @@ export const NewSessionMenu: Component<Props> = (props) => {
   })
 
   const handleModelClick = (model: ModelOption) => {
-    const info = hoveredAgentInfo()!
-    if (model.minVersion && !meetsVersionReq(info.cliVersion, model.minVersion)) {
+    const row = hoveredRow()!
+    if (model.minVersion && !meetsVersionReq(row.agent.cliVersion, model.minVersion)) {
       closeMenu()
       setUpdateModel(model)
       return
     }
-    handleSelect(info.id as AgentType, model.id)
+    handleSelect(row.agent.id, model.id, row.choice?.selection)
   }
 
   return (
@@ -178,7 +190,9 @@ export const NewSessionMenu: Component<Props> = (props) => {
           />
 
           <div
-            class="fixed z-[101] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1 w-52"
+            data-new-session-menu
+            class="fixed z-[101] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1"
+            classList={{ 'w-52': !hasAccounts(), 'min-w-52 w-max max-w-80': hasAccounts() }}
             style={{
               left: `${menuRect()?.left ?? 0}px`,
               top: `${menuRect()?.top ?? 0}px`,
@@ -216,31 +230,37 @@ export const NewSessionMenu: Component<Props> = (props) => {
                 <div class="px-3 py-2 text-xs text-text-dim">No agents installed</div>
               }
             >
-              <For each={installedAgents()}>
-                {(agent) => {
+              <For each={rows()}>
+                {(row) => {
                   let rowRef: HTMLButtonElement | undefined
-                  const hasModels = () => agent.models.length > 0
-                  const isHovered = () => hoveredAgent() === agent.id
-                  const icon = () => agentIcon(agent.id)
+                  const hasModels = () => row.agent.models.length > 0
+                  const isHovered = () => hoveredAgent() === row.key
+                  const icon = () => agentIcon(row.agent.id)
 
                   return (
                     <button
                       ref={rowRef}
+                      title={row.choice ? row.name : undefined}
                       class={clsx(
                         'w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors',
                         isHovered()
                           ? 'text-text-primary bg-surface-3'
                           : 'text-text-secondary hover:text-text-primary hover:bg-surface-3'
                       )}
-                      onMouseEnter={() => handleAgentHover(agent.id, rowRef ?? null)}
+                      onMouseEnter={() => handleAgentHover(row.key, rowRef ?? null)}
                       onClick={() => {
                         if (!hasModels()) {
-                          handleSelect(agent.id as AgentType)
+                          handleSelect(row.agent.id, undefined, row.choice?.selection)
                         }
                       }}
                     >
                       <SvgIcon svg={icon()} size={13} />
-                      <span class="flex-1 font-medium">{agent.name}</span>
+                      <span class="flex-1 min-w-0">
+                        <AgentRowName row={row} class="font-medium" />
+                        <Show when={row.detail}>
+                          <span class="block truncate text-[10px] text-text-dim">{row.detail}</span>
+                        </Show>
+                      </span>
                       <Show when={hasModels()}>
                         <ChevronRight size={11} class="text-text-dim shrink-0" />
                       </Show>

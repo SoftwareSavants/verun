@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, cleanup } from '@solidjs/testing-library'
 
 const { agentsList, sessionsState, setSessionsState } = vi.hoisted(() => {
@@ -67,6 +67,8 @@ vi.mock('../lib/agents', () => ({
 }))
 
 import { ModelPicker } from './ModelPicker'
+import { applySnapshot } from '../store/accounts'
+import { makeAccount, makeIdentity, makeSnapshot } from '../test/accountFixtures'
 
 describe('<ModelPicker />', () => {
   beforeEach(() => {
@@ -320,5 +322,177 @@ describe('<ModelPicker />', () => {
     const headers = Array.from(baseElement.querySelectorAll('.sticky'))
     // Codex group should be first now
     expect(headers[0].textContent).toContain('Codex')
+  })
+})
+
+// A harness with added accounts lists each one as its own group under its name,
+// and picking a model in it says which account the session is for. A harness
+// without accounts is the same list as above, picked without an account.
+describe('<ModelPicker /> with accounts', () => {
+  const acme = makeAccount()
+  const beta = makeAccount({ id: 'a2', label: 'Beta', color: '#16a34a' })
+  const work = makeAccount({ id: 'c1', agentType: 'codex', label: 'Work', color: '#ea580c' })
+
+  beforeEach(() => {
+    setSessionsState([])
+    cleanup()
+  })
+  afterEach(() => applySnapshot(makeSnapshot()))
+
+  const modelRows = (base: HTMLElement) => Array.from(base.querySelectorAll('button[data-pick-row]:not([data-show-more])'))
+  const headers = (base: HTMLElement) => Array.from(base.querySelectorAll('.sticky')).map((h) => h.textContent ?? '')
+  const root = (base: HTMLElement) => base.querySelector('[data-picker-root]') as HTMLElement
+
+  test('account rows appear and pick passes the selection', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme] }))
+    const onPick = vi.fn()
+    const { baseElement } = render(() => <ModelPicker open={true} onClose={() => {}} onPick={onPick} />)
+
+    const names = headers(baseElement)
+    expect(names).toHaveLength(3)
+    expect(names[0]).toContain('Claude · Default')
+    expect(names[1]).toContain('Claude · Acme')
+    expect(names[2]).toContain('Codex')
+    expect(names[2]).not.toContain('·')
+
+    // Default shows 4 models, then Acme's 4: the first of them is Acme's Sonnet.
+    fireEvent.click(modelRows(baseElement)[4])
+
+    expect(onPick).toHaveBeenCalledOnce()
+    expect(onPick).toHaveBeenCalledWith('claude', 'sonnet', { kind: 'account', id: 'a1' })
+  })
+
+  test('the Default row picks Default, whatever the project uses', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme], projectAccounts: [{ projectId: 'p1', agentType: 'claude', accountId: 'a1' }] }))
+    const onPick = vi.fn()
+    const { baseElement } = render(() => <ModelPicker open={true} projectId="p1" onClose={() => {}} onPick={onPick} />)
+
+    // Acme leads (the project uses it), then Default.
+    fireEvent.click(modelRows(baseElement)[4])
+
+    expect(onPick).toHaveBeenCalledWith('claude', 'sonnet', { kind: 'default' })
+  })
+
+  test('a harness without accounts picks without one', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme] }))
+    const onPick = vi.fn()
+    const { baseElement } = render(() => <ModelPicker open={true} onClose={() => {}} onPick={onPick} />)
+
+    const rows = modelRows(baseElement)
+    fireEvent.click(rows[rows.length - 1])
+
+    expect(onPick).toHaveBeenCalledWith('codex', 'gpt-5', undefined)
+  })
+
+  test('accounts of one harness leave the others alone', () => {
+    applySnapshot(makeSnapshot({ accounts: [work] }))
+    const { baseElement } = render(() => <ModelPicker open={true} onClose={() => {}} onPick={() => {}} />)
+
+    const names = headers(baseElement)
+    expect(names).toHaveLength(3)
+    expect(names[0]).toContain('Claude')
+    expect(names[0]).not.toContain('·')
+    expect(names[1]).toContain('Codex · Default')
+    expect(names[2]).toContain('Codex · Work')
+  })
+
+  test('the project account leads and is the first row, so Enter picks it', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme, beta], projectAccounts: [{ projectId: 'p1', agentType: 'claude', accountId: 'a2' }] }))
+    const onPick = vi.fn()
+    const { baseElement } = render(() => <ModelPicker open={true} projectId="p1" defaultAgent="claude" onClose={() => {}} onPick={onPick} />)
+
+    const names = headers(baseElement)
+    expect(names.map((n) => n.replace(/(Current)?\d+$/, ''))).toEqual(['Claude · Beta', 'Claude · Default', 'Claude · Acme', 'Codex'])
+
+    fireEvent.keyDown(root(baseElement), { key: 'Enter' })
+
+    expect(onPick).toHaveBeenCalledWith('claude', 'sonnet', { kind: 'account', id: 'a2' })
+  })
+
+  test('without a project Default leads', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme, beta], projectAccounts: [{ projectId: 'p1', agentType: 'claude', accountId: 'a2' }] }))
+    const onPick = vi.fn()
+    const { baseElement } = render(() => <ModelPicker open={true} onClose={() => {}} onPick={onPick} />)
+
+    fireEvent.keyDown(root(baseElement), { key: 'Enter' })
+
+    expect(onPick).toHaveBeenCalledWith('claude', 'sonnet', { kind: 'default' })
+  })
+
+  test('every group of the current harness is tagged current', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme] }))
+    const { baseElement } = render(() => <ModelPicker open={true} defaultAgent="claude" onClose={() => {}} onPick={() => {}} />)
+
+    const tagged = headers(baseElement).map((h) => h.toLowerCase().includes('current'))
+    expect(tagged).toEqual([true, true, false])
+  })
+
+  test('each account group collapses on its own', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme] }))
+    const { baseElement } = render(() => <ModelPicker open={true} onClose={() => {}} onPick={() => {}} />)
+    // Claude has 5 models: 4 show per group, one hidden behind "Show 1 more".
+    expect(modelRows(baseElement)).toHaveLength(4 + 4 + 1)
+    expect(baseElement.querySelectorAll('button[data-show-more]')).toHaveLength(2)
+
+    fireEvent.click(baseElement.querySelectorAll('button[data-show-more]')[0])
+
+    expect(modelRows(baseElement)).toHaveLength(5 + 4 + 1)
+    expect(baseElement.querySelectorAll('button[data-show-more]')).toHaveLength(1)
+  })
+
+  test('Enter on "Show N more" expands the group it is in', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme] }))
+    const onPick = vi.fn()
+    const { baseElement } = render(() => <ModelPicker open={true} onClose={() => {}} onPick={onPick} />)
+
+    // Down to Acme's "Show 1 more" (4 Default models, its own row, then Acme's 4 models).
+    for (let i = 0; i < 9; i++) fireEvent.keyDown(root(baseElement), { key: 'ArrowDown' })
+    fireEvent.keyDown(root(baseElement), { key: 'Enter' })
+    expect(modelRows(baseElement)).toHaveLength(4 + 5 + 1)
+
+    // The cursor stays where it was: now on Acme's fifth model.
+    fireEvent.keyDown(root(baseElement), { key: 'Enter' })
+    expect(onPick).toHaveBeenCalledWith('claude', 'opus-4-5', { kind: 'account', id: 'a1' })
+  })
+
+  test('search finds an account by its label', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme, beta] }))
+    const { baseElement } = render(() => <ModelPicker open={true} onClose={() => {}} onPick={() => {}} />)
+
+    fireEvent.input(baseElement.querySelector('input') as HTMLInputElement, { target: { value: 'beta' } })
+
+    const names = headers(baseElement)
+    expect(names).toHaveLength(1)
+    expect(names[0]).toContain('Claude · Beta')
+  })
+
+  test('an account shows its color, Default does not', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme] }))
+    const { baseElement } = render(() => <ModelPicker open={true} onClose={() => {}} onPick={() => {}} />)
+
+    const [defaultHeader, acmeHeader] = Array.from(baseElement.querySelectorAll('.sticky'))
+    expect(defaultHeader.querySelector('[data-testid="account-color"]')).toBeNull()
+    expect((acmeHeader.querySelector('[data-testid="account-color"]') as HTMLElement).style.backgroundColor).toBe('rgb(124, 58, 237)')
+  })
+
+  test('the Default row says who the harness is signed in as', () => {
+    applySnapshot(makeSnapshot({
+      accounts: [acme],
+      defaults: [{ agentType: 'claude', identity: makeIdentity({ status: 'signedIn', email: 'me@home.dev' }) }],
+    }))
+    const { baseElement } = render(() => <ModelPicker open={true} onClose={() => {}} onPick={() => {}} />)
+
+    const [defaultHeader, acmeHeader] = Array.from(baseElement.querySelectorAll('.sticky'))
+    expect(defaultHeader.textContent).toContain('me@home.dev')
+    expect(acmeHeader.textContent).not.toContain('me@home.dev')
+  })
+
+  test('follows the accounts store while open', () => {
+    const { baseElement } = render(() => <ModelPicker open={true} onClose={() => {}} onPick={() => {}} />)
+    expect(headers(baseElement)).toHaveLength(2)
+
+    applySnapshot(makeSnapshot({ accounts: [acme] }))
+
+    expect(headers(baseElement)).toHaveLength(3)
   })
 })
