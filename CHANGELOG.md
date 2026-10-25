@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Confirm dialogs no longer confirm when Enter is pressed on a focused Cancel or other button
+
 ## 0.14.6 - 2026-10-25
 
 - Tools the Claude CLI marks as needing a person are never auto-approved, even in Full auto, and their approval card shows the CLI's title/description with Deny as the keyboard default (#279)

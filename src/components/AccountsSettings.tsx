@@ -9,7 +9,7 @@ import { agents } from '../store/agents'
 import { defaultIdentity, liveAccountsFor } from '../store/accounts'
 import { addToast } from '../store/ui'
 import { agentIcon, meetsVersionReq } from '../lib/agents'
-import { notifyAccountError } from '../lib/accountErrors'
+import { toastError } from '../lib/accountErrors'
 import { useDismissable } from '../lib/dismissable'
 import * as ipc from '../lib/ipc'
 import type { Account, AccountIdentity, AccountSupport, AccountTerminalAction, AgentInfo, AgentType } from '../types'
@@ -74,7 +74,7 @@ export const AccountsSettings: Component = () => {
       await ipc.removeAccount(id, withDir)
       addToast(`Removed ${label}`, 'success')
     } catch (e) {
-      if (!notifyAccountError(e)) addToast(String(e), 'error')
+      toastError(e)
     }
   }
 
@@ -137,27 +137,24 @@ export const AccountsSettings: Component = () => {
         onConfirm={() => void remove()}
         onCancel={() => setRemoving(null)}
       >
-        {/* The dialog confirms on any Enter. Here Enter is for the switch and the button. */}
-        <div onKeyDown={(e) => { if (e.key === 'Enter') e.stopPropagation() }}>
-          <Show when={canLogOutFirst()}>
-            <div class="flex items-center justify-between gap-3 mb-4">
-              <span class="text-sm text-text-muted">Log out first to clear its saved login.</span>
-              <button
-                type="button"
-                class="shrink-0 px-2.5 py-1 rounded-lg text-xs bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary transition-colors"
-                onClick={logOutFirst}
-              >
-                Log out first
-              </button>
-            </div>
-          </Show>
-          <Show when={removing()?.managedDir}>
-            <label class="flex items-center justify-between gap-3 mb-4 text-sm text-text-secondary">
-              Also delete its folder
-              <Toggle checked={deleteDir()} onChange={setDeleteDir} />
-            </label>
-          </Show>
-        </div>
+        <Show when={canLogOutFirst()}>
+          <div class="flex items-center justify-between gap-3 mb-4">
+            <span class="text-sm text-text-muted">Log out first to clear its saved login.</span>
+            <button
+              type="button"
+              class="shrink-0 px-2.5 py-1 rounded-lg text-xs bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary transition-colors"
+              onClick={logOutFirst}
+            >
+              Log out first
+            </button>
+          </div>
+        </Show>
+        <Show when={removing()?.managedDir}>
+          <label class="flex items-center justify-between gap-3 mb-4 text-sm text-text-secondary">
+            Also delete its folder
+            <Toggle checked={deleteDir()} onChange={setDeleteDir} />
+          </label>
+        </Show>
       </ConfirmDialog>
     </>
   )

@@ -1,5 +1,13 @@
 import { Component, JSX, Show, createEffect, onCleanup } from 'solid-js'
 
+/**
+ * Enter on a focused button presses that button, so the dialog's own Enter is
+ * not for it. The one exception is the button that confirms, which DialogFooter
+ * marks with `data-dialog-confirm`.
+ */
+const onOtherButton = (target: EventTarget | null) =>
+  target instanceof Element && target.closest('button:not([data-dialog-confirm])') !== null
+
 interface Props {
   open: boolean
   onClose: () => void
@@ -20,6 +28,8 @@ export const Dialog: Component<Props> = (props) => {
       if (e.key === 'Enter' && props.onConfirm) {
         // Native selects use Enter to commit their choice, not the dialog.
         if (e.target instanceof HTMLSelectElement) return
+        // So do buttons: a Cancel the user tabbed to must not read as "confirm".
+        if (onOtherButton(e.target)) return
         e.preventDefault()
         props.onConfirm()
       }

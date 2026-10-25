@@ -9,7 +9,7 @@ import { Select } from './Select'
 import { Toggle } from './Toggle'
 import { agents } from '../store/agents'
 import { addToast } from '../store/ui'
-import { notifyAccountError } from '../lib/accountErrors'
+import { toastError } from '../lib/accountErrors'
 import { useDismissable } from '../lib/dismissable'
 import * as ipc from '../lib/ipc'
 import { AGENT_DISPLAY_NAMES, type Account, type AccountEnvInput, type AgentType } from '../types'
@@ -144,7 +144,7 @@ const AccountForm: Component<Props> = (props) => {
       }
       props.onClose()
     } catch (e) {
-      if (!notifyAccountError(e)) addToast(String(e), 'error')
+      toastError(e)
     } finally {
       setSaving(false)
     }

@@ -26,7 +26,7 @@ import { ColorPicker } from './ColorPicker'
 import { loadAccounts } from '../store/accounts'
 import { addToast } from '../store/ui'
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
-import { notifyAccountError } from '../lib/accountErrors'
+import { toastError } from '../lib/accountErrors'
 import { produce } from 'solid-js/store'
 
 type SettingsSection = 'general' | 'appearance' | 'accounts' | string // project id
@@ -156,7 +156,7 @@ export const SettingsPage: Component = () => {
         addToast(`Created auto-detect task for ${p.name}`, 'success')
       }
     } catch (e) {
-      if (!notifyAccountError(e)) addToast(String(e), 'error')
+      toastError(e)
     } finally {
       setSuggesting(false)
     }

@@ -8,7 +8,7 @@ import { createTask } from '../store/tasks'
 import { sendMessage, setSessions, setOutputItems } from '../store/sessions'
 import { addToast, setSelectedProjectId, setSelectedTaskId, setSelectedSessionIdForTask, setShowSettings } from '../store/ui'
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
-import { notifyAccountError } from '../lib/accountErrors'
+import { toastError } from '../lib/accountErrors'
 import { produce } from 'solid-js/store'
 import * as ipc from '../lib/ipc'
 import type { Project } from '../types'
@@ -88,7 +88,7 @@ export const AddProjectDialog: Component<Props> = (props) => {
         addToast('Hooks will be saved automatically when analysis completes', 'success')
       }
     } catch (e) {
-      if (!notifyAccountError(e)) addToast(String(e), 'error')
+      toastError(e)
     } finally {
       // The dialog stays mounted and is shown again for the next project, so
       // Detect is usable again once the send is over, whichever way it went.

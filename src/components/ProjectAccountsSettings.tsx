@@ -2,7 +2,7 @@ import { Component, For, Show, createUniqueId } from 'solid-js'
 import { Select } from './Select'
 import { accountById, defaultIdentity, liveAccountsFor, projectAccountId } from '../store/accounts'
 import { addToast } from '../store/ui'
-import { notifyAccountError } from '../lib/accountErrors'
+import { toastError } from '../lib/accountErrors'
 import * as ipc from '../lib/ipc'
 import { AGENT_DISPLAY_NAMES, type AgentType } from '../types'
 
@@ -61,7 +61,7 @@ const HarnessRow: Component<RowProps> = (props) => {
       await ipc.setProjectAccount(props.projectId, props.agentType, accountId)
       addToast(`${name()} account set to ${who}`, 'success')
     } catch (e) {
-      if (!notifyAccountError(e)) addToast(String(e), 'error')
+      toastError(e)
     }
   }
 

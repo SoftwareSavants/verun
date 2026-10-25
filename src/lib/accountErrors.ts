@@ -131,6 +131,17 @@ export function notifyAccountError(err: unknown): boolean {
 }
 
 /**
+ * Tells the user that `err` went wrong, for a catch block with nothing to add:
+ * an account problem as its toast with the way to fix it, any other error as an
+ * error toast saying what it is.
+ *
+ *     try { await ipc.removeAccount(...) } catch (e) { toastError(e) }
+ */
+export function toastError(err: unknown): void {
+  if (!notifyAccountError(err)) addToast(String(err), 'error')
+}
+
+/**
  * What to say about a failure in a place that keeps it on screen (a task's
  * row, the new-task draft, a menu). An account problem is told in words and
  * also raised as its toast, with the way to fix it, so the raw `ACCOUNT_ERROR:`

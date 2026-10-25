@@ -3,7 +3,7 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 const ui = vi.hoisted(() => ({ addToast: vi.fn(), openSettings: vi.fn() }))
 vi.mock('../store/ui', () => ui)
 
-import { parseAccountError, accountErrorMessage, notifyAccountError, failureText, type AccountErrorPayload } from './accountErrors'
+import { parseAccountError, accountErrorMessage, notifyAccountError, failureText, toastError, type AccountErrorPayload } from './accountErrors'
 
 /** What `AccountError::to_ipc` sends: `ACCOUNT_ERROR:` and then the JSON. */
 const ipcError = (fields: Pick<AccountErrorPayload, 'kind'> & Partial<AccountErrorPayload>) =>
@@ -324,5 +324,38 @@ describe('failureText', () => {
 
   test('an account problem ignores the text it is given', () => {
     expect(failureText(ipcError({ kind: 'removed', label: 'Acme' }), 'plain')).toBe('Acme was removed. Start a new session on another account.')
+  })
+})
+
+// For a catch block that has nothing to add: the failure becomes a toast, whatever it is.
+describe('toastError', () => {
+  test('shows an account problem as its toast, with the way to fix it', () => {
+    toastError(ipcError({ kind: 'signedOut', accountId: 'a1', label: 'Acme' }))
+
+    expect(ui.addToast).toHaveBeenCalledOnce()
+    const { message, type, options } = lastToast()
+    expect(type).toBe('error')
+    expect(options.title).toBe('Account signed out')
+    expect(message).toBe('Acme is signed out.')
+    expect(options.actions?.map(a => a.label)).toEqual(['Log in'])
+  })
+
+  test('shows any other error as an error toast saying what it is', () => {
+    toastError('database is locked')
+    expect(ui.addToast).toHaveBeenLastCalledWith('database is locked', 'error')
+
+    toastError(new Error('offline'))
+    expect(ui.addToast).toHaveBeenLastCalledWith('Error: offline', 'error')
+
+    toastError(undefined)
+    expect(ui.addToast).toHaveBeenLastCalledWith('undefined', 'error')
+    expect(ui.addToast).toHaveBeenCalledTimes(3)
+  })
+
+  test('shows one toast, not an account toast and an error toast', () => {
+    toastError(ipcError({ kind: 'busy' }))
+
+    expect(ui.addToast).toHaveBeenCalledOnce()
+    expect(lastToast().options.title).toBe('Login already open')
   })
 })
