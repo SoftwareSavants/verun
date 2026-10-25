@@ -6,7 +6,8 @@ import { render, cleanup, fireEvent, screen, waitFor } from '@solidjs/testing-li
 // account problem (sendMessage resolves false after showing its own toast), and
 // an account problem creating the task gets the account toast, not the raw error.
 const mocks = vi.hoisted(() => ({ createTask: vi.fn(), sendMessage: vi.fn() }))
-vi.mock('../lib/ipc', () => ({}))
+// Settings reads the accounts when it opens.
+vi.mock('../lib/ipc', () => ({ listAccounts: vi.fn(() => Promise.resolve({ accounts: [], defaults: [], projectAccounts: [] })) }))
 vi.mock('../store/tasks', () => ({ createTask: mocks.createTask, activeTasksForProject: () => [] }))
 vi.mock('../store/sessions', () => ({ sendMessage: mocks.sendMessage, setSessions: vi.fn(), setOutputItems: vi.fn() }))
 vi.mock('../lib/notifications', () => ({ notificationsEnabled: () => false, setNotificationsEnabledAndPersist: vi.fn() }))

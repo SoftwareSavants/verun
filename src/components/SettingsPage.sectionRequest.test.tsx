@@ -6,7 +6,8 @@ import { render, cleanup, screen } from '@solidjs/testing-library'
 // page takes the request, selects the section and clears the request so the same
 // section can be asked for again. A project's id stands in for the section here:
 // it is a real section today, and the page names it in its header.
-vi.mock('../lib/ipc', () => ({}))
+// Settings reads the accounts when it opens.
+vi.mock('../lib/ipc', () => ({ listAccounts: vi.fn(() => Promise.resolve({ accounts: [], defaults: [], projectAccounts: [] })) }))
 vi.mock('../store/tasks', () => ({ createTask: vi.fn(), activeTasksForProject: () => [] }))
 vi.mock('../store/sessions', () => ({ sendMessage: vi.fn(), setSessions: vi.fn(), setOutputItems: vi.fn() }))
 vi.mock('../lib/notifications', () => ({ notificationsEnabled: () => false, setNotificationsEnabledAndPersist: vi.fn() }))

@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, on, For, Show, type JSX } from 'solid-js'
+import { Component, createSignal, createEffect, on, onMount, For, Show, type JSX } from 'solid-js'
 import { ChevronDown, ChevronRight, X, Check, Settings, FolderGit2, Loader2, Sparkles, Download, Upload, GitBranch, Palette, ArrowUp, RotateCcw, ListChecks, Users } from 'lucide-solid'
 import {
   appearance, setAppearance,
@@ -21,7 +21,9 @@ import { CodeTextarea } from './CodeTextarea'
 import { QuantityStepper } from './QuantityStepper'
 import { StorageSettings } from './StorageSettings'
 import { AccountsSettings } from './AccountsSettings'
+import { ProjectAccountsSettings } from './ProjectAccountsSettings'
 import { ColorPicker } from './ColorPicker'
+import { loadAccounts } from '../store/accounts'
 import { addToast } from '../store/ui'
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
 import { notifyAccountError } from '../lib/accountErrors'
@@ -114,6 +116,10 @@ export const SettingsPage: Component = () => {
       setSaving(false)
     }
   }
+
+  // Opening Settings re-reads every identity, so a login the user did in a
+  // terminal of their own shows in Accounts and in the selects of each project.
+  onMount(() => { void loadAccounts() })
 
   // Trigger save from keyboard shortcut (CMD+S)
   createEffect(on(settingsSaveRequested, (count) => {
@@ -418,6 +424,8 @@ export const SettingsPage: Component = () => {
                 </div>
               </div>
             </div>
+
+            <ProjectAccountsSettings projectId={selectedProject()!.id} />
 
             <div class="mb-8">
               <div class="flex items-center justify-between mb-4">

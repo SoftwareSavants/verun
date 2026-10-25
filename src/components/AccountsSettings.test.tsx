@@ -119,12 +119,10 @@ async function flush() {
   await new Promise((r) => setTimeout(r, 0))
 }
 
-/** Puts the harnesses and accounts in the stores and has the mount-time read return the same. */
+/** Puts the harnesses and accounts in the stores and shows the section. */
 function show(snapshot: Partial<AccountsSnapshot> = {}, agents: AgentInfo[] = [makeAgent('claude', 'Claude Code')]) {
-  const full: AccountsSnapshot = { accounts: [], defaults: [claudeDefault], projectAccounts: [], ...snapshot }
   setAgents(reconcile(agents))
-  applySnapshot(full)
-  mocks.listAccounts.mockResolvedValue(full)
+  applySnapshot({ accounts: [], defaults: [claudeDefault], projectAccounts: [], ...snapshot })
   return render(() => <AccountsSettings />)
 }
 
@@ -221,11 +219,13 @@ describe('AccountsSettings list', () => {
     expect(within(row).queryAllByRole('button')).toHaveLength(0)
   })
 
-  test('reads the accounts on mount, so every identity is fresh', async () => {
+  // Settings re-reads the accounts when it opens (SettingsPage, which also feeds
+  // the selects of each project), so this section does not read them again.
+  test('leaves reading the accounts to the page it is in', async () => {
     show({ accounts: [makeAccount()] })
     await flush()
 
-    expect(mocks.listAccounts).toHaveBeenCalledOnce()
+    expect(mocks.listAccounts).not.toHaveBeenCalled()
   })
 
   test('follows the store: a changed identity shows without a reload', async () => {

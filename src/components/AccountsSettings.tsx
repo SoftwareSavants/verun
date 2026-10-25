@@ -1,4 +1,4 @@
-import { Component, For, Show, createSignal, createUniqueId, onMount } from 'solid-js'
+import { Component, For, Show, createSignal, createUniqueId } from 'solid-js'
 import { Plus } from 'lucide-solid'
 import SvgIcon from './SvgIcon'
 import { AccountDialog } from './AccountDialog'
@@ -6,7 +6,7 @@ import { AccountTerminalDialog } from './AccountTerminalDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Toggle } from './Toggle'
 import { agents } from '../store/agents'
-import { defaultIdentity, liveAccountsFor, loadAccounts } from '../store/accounts'
+import { defaultIdentity, liveAccountsFor } from '../store/accounts'
 import { addToast } from '../store/ui'
 import { agentIcon, meetsVersionReq } from '../lib/agents'
 import { notifyAccountError } from '../lib/accountErrors'
@@ -52,10 +52,6 @@ export const AccountsSettings: Component = () => {
   const [terminal, setTerminal] = createSignal<{ account: Account; action: AccountTerminalAction } | null>(null)
   const [removing, setRemoving] = createSignal<Account | null>(null)
   const [deleteDir, setDeleteDir] = createSignal(false)
-
-  // Showing the page re-reads every identity, so a login the user did in a
-  // terminal of their own shows up.
-  onMount(() => { void loadAccounts() })
 
   // Escape closes the question, not Settings behind it.
   useDismissable(() => removing() !== null, () => setRemoving(null))
