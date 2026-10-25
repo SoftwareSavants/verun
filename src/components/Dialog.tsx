@@ -1,13 +1,5 @@
 import { Component, JSX, Show, createEffect, onCleanup } from 'solid-js'
 
-/**
- * Enter on a focused button presses that button, so the dialog's own Enter is
- * not for it. The one exception is the button that confirms, which DialogFooter
- * marks with `data-dialog-confirm`.
- */
-const onOtherButton = (target: EventTarget | null) =>
-  target instanceof Element && target.closest('button:not([data-dialog-confirm])') !== null
-
 interface Props {
   open: boolean
   onClose: () => void
@@ -20,6 +12,20 @@ interface Props {
 
 export const Dialog: Component<Props> = (props) => {
   let mouseDownOnBackdrop = false
+  let panel: HTMLDivElement | undefined
+
+  /**
+   * Enter on a focused button presses that button, so the dialog's own Enter is
+   * not for it. That is so for the dialog's own buttons only: one elsewhere is
+   * none of its business (the button that opened the dialog stays focused in
+   * webviews that focus a button on click, and a dialog can sit inside a
+   * button). The one of its own buttons that does not keep Enter is the one that
+   * confirms, which DialogFooter marks with `data-dialog-confirm`.
+   */
+  const buttonOwnsEnter = (target: EventTarget | null) => {
+    const button = target instanceof Element ? target.closest('button') : null
+    return button !== null && panel?.contains(button) === true && !button.hasAttribute('data-dialog-confirm')
+  }
 
   createEffect(() => {
     if (!props.open) return
@@ -28,8 +34,8 @@ export const Dialog: Component<Props> = (props) => {
       if (e.key === 'Enter' && props.onConfirm) {
         // Native selects use Enter to commit their choice, not the dialog.
         if (e.target instanceof HTMLSelectElement) return
-        // So do buttons: a Cancel the user tabbed to must not read as "confirm".
-        if (onOtherButton(e.target)) return
+        // So do its buttons: a Cancel the user tabbed to must not read as "confirm".
+        if (buttonOwnsEnter(e.target)) return
         e.preventDefault()
         props.onConfirm()
       }
@@ -49,6 +55,7 @@ export const Dialog: Component<Props> = (props) => {
         }}
       >
         <div
+          ref={panel}
           class={`bg-surface-2 border border-border rounded-xl shadow-2xl animate-in overflow-y-auto ${props.class ?? 'p-5'}`}
           style={{ width: props.width || '20rem', 'max-height': 'calc(100vh - 6rem)' }}
         >

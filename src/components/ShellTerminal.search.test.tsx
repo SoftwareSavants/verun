@@ -58,7 +58,8 @@ beforeAll(() => {
 
 afterAll(() => vi.unstubAllGlobals())
 
-// The terminal store keeps an xterm for every id it has seen, so each test gets its own.
+// The terminal store keeps an xterm for every id it has seen, so each test gets an id of its own.
+let terminalCount = 0
 const mounted: string[] = []
 
 afterEach(() => {
@@ -70,8 +71,10 @@ const FIND = 'Find in terminal...'
 
 /** Shows a terminal and opens its find box with the shortcut (Cmd+F, which jsdom reads as Ctrl+F). */
 function openFindBox(): HTMLInputElement {
-  const terminalId = `search-test-${mounted.length}`
+  const terminalId = `search-test-${terminalCount++}`
   mounted.push(terminalId)
+  // A terminal that is new to the store, not one that is joined again.
+  expect(getXtermEntry(terminalId)).toBeUndefined()
   const view = render(() => <ShellTerminal terminalId={terminalId} />)
   fireEvent.keyDown(view.container.firstElementChild as HTMLElement, { key: 'f', ctrlKey: true, metaKey: true })
   return screen.getByPlaceholderText(FIND) as HTMLInputElement

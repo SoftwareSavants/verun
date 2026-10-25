@@ -14,7 +14,7 @@ export const DialogFooter: Component<Props> = (props) => {
   return (
     <div class="flex justify-end gap-2">
       <button class="btn-ghost" onClick={props.onCancel}>Cancel</button>
-      {/* data-dialog-confirm: the button Dialog's Enter stands for. Enter on any other button presses that button. */}
+      {/* data-dialog-confirm: the button Dialog's Enter stands for. Enter on any other button in the dialog presses that button. */}
       <button
         data-dialog-confirm
         class={props.confirmClass || 'btn-primary'}
