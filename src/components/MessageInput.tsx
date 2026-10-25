@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
+import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, respondToElicitation, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
 import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession, codexLivePlanForSession } from '../store/sessionContext'
 import { setSelectedSessionIdForTask, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, setupFailed, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
@@ -26,6 +26,10 @@ import { serializeAttachments, deserializeAttachments, uploadAttachments } from 
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 import { decidePlanAction } from '../lib/planAction'
 import { decideQuestionKeyAction, QUESTION_SKIP_MESSAGE } from '../lib/questionKeyAction'
+import { decideApprovalKeyAction } from '../lib/approvalKeyAction'
+import { ELICITATION_TOOL_NAME } from '../lib/mcpElicitation'
+import { McpElicitationCard } from './McpElicitationCard'
+import { McpServerStatusBar } from './McpServerStatusBar'
 
 interface Props {
   sessionId: string | null
@@ -684,6 +688,7 @@ export const MessageInput: Component<Props> = (props) => {
   }
 
   const isExitPlanMode = () => currentApproval()?.toolName === 'ExitPlanMode'
+  const isElicitation = () => currentApproval()?.toolName === ELICITATION_TOOL_NAME
   const [planFileContent, setPlanFileContent] = createSignal<string | null>(null)
   const [planFilePathSignal, setPlanFilePathSignal] = createSignal<string | null>(null)
 
@@ -1520,6 +1525,15 @@ export const MessageInput: Component<Props> = (props) => {
       if (!approval) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
 
+      // MCP elicitation: the card owns its inputs; Escape dismisses.
+      if (isElicitation()) {
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          respondToElicitation(approval.requestId, approval.sessionId, 'cancel')
+        }
+        return
+      }
+
       // AskUserQuestion: number keys select options, Escape to skip.
       // When any input is focused (e.g. custom-answer field), printable keys
       // must reach the input — only Escape still skips. See decideQuestionKeyAction.
@@ -1569,17 +1583,17 @@ export const MessageInput: Component<Props> = (props) => {
       const active = document.activeElement
       const isInputFocused = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')
 
-      // Tool approval: Enter = Allow, Escape = Deny, y/n only when not typing
-      if (e.key === 'Enter' && !isInputFocused) {
+      // Tool approval: Enter = Allow, Escape = Deny, y/n only when not typing.
+      // Default-to-no approvals can only be allowed by clicking.
+      const keyAction = decideApprovalKeyAction({
+        key: e.key,
+        isInputFocused: !!isInputFocused,
+        defaultToNo: !!approval.prompt?.defaultToNo,
+      })
+      if (keyAction === 'allow') {
         e.preventDefault()
         approveToolUse(approval.requestId, approval.sessionId)
-      } else if (e.key === 'y' && !isInputFocused) {
-        e.preventDefault()
-        approveToolUse(approval.requestId, approval.sessionId)
-      } else if (e.key === 'Escape') {
-        e.preventDefault()
-        denyToolUse(approval.requestId, approval.sessionId)
-      } else if (e.key === 'n' && !isInputFocused) {
+      } else if (keyAction === 'deny') {
         e.preventDefault()
         denyToolUse(approval.requestId, approval.sessionId)
       }
@@ -1668,6 +1682,21 @@ export const MessageInput: Component<Props> = (props) => {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      <Show when={props.sessionId}>
+        {(sid) => <McpServerStatusBar sessionId={sid()} />}
+      </Show>
+
+      {/* MCP server asking for input */}
+      <Show when={isElicitation() && currentApproval()} keyed>
+        {(approval) => (
+          <McpElicitationCard
+            approval={approval}
+            pendingCount={pendingCount()}
+            onRespond={(action, content) => respondToElicitation(approval.requestId, approval.sessionId, action, content)}
+          />
+        )}
+      </Show>
+
       {/* AskUserQuestion UI */}
       <Show when={isQuestion() && currentApproval()}>
         {(_approval) => {
@@ -1954,7 +1983,7 @@ export const MessageInput: Component<Props> = (props) => {
       </Show>
 
       {/* Tool approval overlay */}
-      <Show when={!isQuestion() && !isExitPlanMode() && currentApproval()}>
+      <Show when={!isQuestion() && !isExitPlanMode() && !isElicitation() && currentApproval()}>
         {(approval) => (
           <div class="bg-surface-1 border border-amber-500/30 rounded-xl p-3 mb-0">
             <div class="flex items-center justify-between mb-2">
@@ -1968,7 +1997,13 @@ export const MessageInput: Component<Props> = (props) => {
                 </Show>
               </div>
             </div>
-            <div class="text-sm font-medium text-text-primary mb-1">{approval().toolName}</div>
+            <div class="text-sm font-medium text-text-primary mb-1">{approval().prompt?.title ?? approval().prompt?.displayName ?? approval().toolName}</div>
+            <Show when={approval().prompt?.description}>
+              <div class="text-xs text-text-muted mb-1 whitespace-pre-wrap break-words">{approval().prompt?.description}</div>
+            </Show>
+            <Show when={approval().prompt?.requiresUserInteraction}>
+              <div class="text-[11px] text-amber-500 mb-1">Needs your decision — never auto-approved</div>
+            </Show>
             <Show when={formatToolInput(approval().toolInput)}>
               {(detail) => (
                 <pre class="text-[11px] text-text-muted font-mono bg-surface-2 rounded-lg p-2 mb-2 max-h-32 overflow-auto whitespace-pre-wrap break-all">
@@ -1981,13 +2016,13 @@ export const MessageInput: Component<Props> = (props) => {
                 class="flex-1 py-1.5 rounded-lg bg-status-running/15 text-status-running text-xs font-medium hover:bg-status-running/25 transition-colors"
                 onClick={() => approveToolUse(approval().requestId, approval().sessionId)}
               >
-                Allow <span class="text-text-dim ml-1">(Enter)</span>
+                Allow <Show when={!approval().prompt?.defaultToNo}><span class="text-text-dim ml-1">(Enter)</span></Show>
               </button>
               <button
                 class="flex-1 py-1.5 rounded-lg bg-status-error/15 text-status-error text-xs font-medium hover:bg-status-error/25 transition-colors"
                 onClick={() => denyToolUse(approval().requestId, approval().sessionId)}
               >
-                Deny <span class="text-text-dim ml-1">(Esc)</span>
+                Deny <span class="text-text-dim ml-1">{approval().prompt?.defaultToNo ? '(Enter/Esc)' : '(Esc)'}</span>
               </button>
             </div>
           </div>

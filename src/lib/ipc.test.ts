@@ -111,4 +111,16 @@ describe('ipc', () => {
       expect(result).toEqual(sample)
     })
   })
+
+  describe('mcp server controls', () => {
+    test('wrap the mcp commands', async () => {
+      vi.mocked(invoke).mockResolvedValue(undefined)
+      await ipc.getMcpStatus('s1')
+      expect(invoke).toHaveBeenCalledWith('get_mcp_status', { sessionId: 's1' })
+      await ipc.authenticateMcpServer('s1', 'linear')
+      expect(invoke).toHaveBeenCalledWith('authenticate_mcp_server', { sessionId: 's1', serverName: 'linear' })
+      await ipc.reconnectMcpServer('s1', 'linear')
+      expect(invoke).toHaveBeenCalledWith('reconnect_mcp_server', { sessionId: 's1', serverName: 'linear' })
+    })
+  })
 })

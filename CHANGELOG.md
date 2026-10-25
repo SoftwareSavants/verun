@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Tools the Claude CLI marks as needing a person are never auto-approved, even in Full auto, and their approval card shows the CLI's title/description with Deny as the keyboard default
+- MCP server questions (elicitations) show as an in-chat form or link instead of silently stalling the tool call
+- MCP servers that failed or need sign-in are shown above the composer with Sign in / Reconnect actions
 - Claude in Chrome tools now load in UI sessions when "Enabled by default" is on (Verun passes `--chrome`, since the CLI ignores that setting in stream-json mode)
 
 ## 0.14.5 - 2026-10-16

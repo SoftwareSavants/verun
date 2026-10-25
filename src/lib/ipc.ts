@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 
@@ -132,6 +132,17 @@ export const interruptSession = (sessionId: string) =>
 export const getSessionContextUsage = (sessionId: string) =>
   invoke<unknown>('get_session_context_usage', { sessionId })
 
+export const getMcpStatus = (sessionId: string) =>
+  invoke<McpServerStatus[]>('get_mcp_status', { sessionId })
+
+// Opens the server's sign-in page in the browser; the CLI finishes the flow
+// and reconnects the server on its own.
+export const authenticateMcpServer = (sessionId: string, serverName: string) =>
+  invoke<void>('authenticate_mcp_server', { sessionId, serverName })
+
+export const reconnectMcpServer = (sessionId: string, serverName: string) =>
+  invoke<void>('reconnect_mcp_server', { sessionId, serverName })
+
 // Ephemeral side question (`/btw`). Resolves to `null` when the CLI cannot
 // answer (e.g. on a freshly resumed session before the first turn completes).
 export const askSideQuestion = (sessionId: string, question: string) =>
@@ -140,7 +151,8 @@ export const askSideQuestion = (sessionId: string, question: string) =>
 export const getActiveSessions = (): Promise<string[]> =>
   DEMO ? Promise.resolve([]) : invoke<string[]>('get_active_sessions')
 
-export const respondToApproval = (requestId: string, behavior: 'allow' | 'deny', updatedInput?: Record<string, unknown>, message?: string) =>
+// 'cancel' is only meaningful for MCP elicitations (McpElicitation).
+export const respondToApproval = (requestId: string, behavior: 'allow' | 'deny' | 'cancel', updatedInput?: Record<string, unknown>, message?: string) =>
   invoke<void>('respond_to_approval', { requestId, behavior, updatedInput, message })
 
 export const getPendingApprovals = (): Promise<ToolApprovalRequest[]> =>
