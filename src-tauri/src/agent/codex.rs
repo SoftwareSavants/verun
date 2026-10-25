@@ -1,4 +1,4 @@
-use super::account_files::{account_home_dir, write_if_absent};
+use super::account_files::account_home_dir;
 use super::codex_developer_instructions::{
     CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 };
@@ -13,6 +13,7 @@ use crate::accounts::identity::{
 use crate::policy::TrustLevel;
 use serde_json::{json, Value};
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// The env var that moves all of Codex's state: config, sessions and the
@@ -484,6 +485,22 @@ fn standard_home(user_home: &Path) -> PathBuf {
     user_home.join(".codex")
 }
 
+/// Writes `contents` to `path` unless something is there already, and leaves
+/// what is there alone. The file is created only if it does not exist, in one
+/// step, so one that appears after a look at the path is not overwritten
+/// either.
+fn write_if_absent(path: &Path, contents: &str) -> std::io::Result<()> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => file.write_all(contents.as_bytes()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Who `codex` is signed in as at `home`. The login is `auth.json`, which
 /// logout deletes, so a home without the file has nobody signed in. A file that
 /// is there but cannot be read, or is not shaped the way Codex writes it, says
@@ -673,6 +690,56 @@ mod tests {
             Codex.prepare_account_dir(tmp.path()).unwrap();
             assert_eq!(fs::read_to_string(&config).unwrap(), contents);
         }
+    }
+
+    #[test]
+    fn write_if_absent_writes_a_file_that_is_not_there() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        write_if_absent(&path, "a = 1\n").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a = 1\n");
+    }
+
+    #[test]
+    fn write_if_absent_leaves_what_is_there_alone() {
+        // Whoever wrote it, and an empty file is as much there as any.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        for contents in ["", "b = 2\n"] {
+            fs::write(&path, contents).unwrap();
+
+            write_if_absent(&path, "a = 1\n").unwrap();
+
+            assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_if_absent_does_not_write_through_a_symlink() {
+        // A link that points nowhere is still something that is there, and the
+        // file it names is not created.
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target.toml");
+        let link = tmp.path().join("config.toml");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_if_absent(&link, "a = 1\n").unwrap();
+
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn write_if_absent_reports_a_write_that_cannot_happen() {
+        // No folder to put the file in: that is not "already there".
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("missing").join("config.toml");
+
+        let error = write_if_absent(&path, "a = 1\n").unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 
     /// An `id_token` whose claims are `claims`.

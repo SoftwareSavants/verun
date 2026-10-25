@@ -39,8 +39,7 @@
 //!    `account_standard_home`, `prepare_account_dir`, `read_account_identity`,
 //!    `account_blocked_reason`. Describe how the CLI runs as an added account
 //!    next to the user's own login; the `accounts` module acts on them. What the
-//!    harnesses share for them (the inherited home var, seeding a home Verun
-//!    makes) is in `account_files`.
+//!    harnesses share for them (the inherited home var) is in `account_files`.
 //!
 //! ## Turn model
 //!

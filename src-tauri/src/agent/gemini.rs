@@ -1,4 +1,4 @@
-use super::account_files::{account_home_dir, write_if_absent};
+use super::account_files::account_home_dir;
 use super::{AccountHome, AccountProfile, Agent, AgentKind, InputMode, SessionArgs};
 use crate::accounts::identity::{
     read_json_with_retry, unknown_identity, unread_file_identity, AccountIdentity, SignInStatus,
@@ -10,12 +10,6 @@ use std::path::{Path, PathBuf};
 /// The env var that stands in for `HOME` as far as Gemini goes: it keeps its
 /// files in `<dir>/.gemini`. Gemini CLI 0.25.0 is the first to read it.
 const GEMINI_CLI_HOME_VAR: &str = "GEMINI_CLI_HOME";
-
-/// What Verun puts in the `.gemini/settings.json` of a home it makes. Gemini
-/// has no login command, but with Google sign-in chosen as the way to sign in,
-/// the bare `gemini` starts it on its own, and that is what the login terminal
-/// runs.
-const MANAGED_HOME_SETTINGS: &str = r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#;
 
 /// Gemini CLI - Google's AI coding agent.
 ///
@@ -132,16 +126,18 @@ impl Agent for Gemini {
             fixed_env: &[],
             // The one way to give an account a key of its own: a key typed
             // into Gemini's own dialog goes into a keychain entry that every
-            // home shares.
+            // home shares. With no sign-in method chosen in settings.json (see
+            // prepare_account_dir), Gemini takes such a key from the env, so an
+            // account that has one works without a login.
             api_key_vars: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-            // Gemini has no login or logout command. The bare CLI starts the
-            // Google sign-in by itself (see MANAGED_HOME_SETTINGS) and signs
-            // out with `/auth signout`, so both terminals run it and the hints
-            // say what to type.
+            // Gemini has no login or logout command. The bare CLI asks how to
+            // sign in (Login with Google opens the browser) and signs out with
+            // `/auth signout`, so both terminals run it and the hints say what
+            // to type.
             login_args: Some(&[]),
             logout_args: Some(&[]),
             login_hint: Some(
-                "Gemini starts Google sign-in on its own. When it is done, type /quit.",
+                "In Gemini, choose Login with Google and finish in your browser. When it is done, type /quit.",
             ),
             logout_hint: Some("Type /auth signout, then /quit."),
             allows_existing_dir: true,
@@ -164,10 +160,15 @@ impl Agent for Gemini {
         Some(standard_home(user_home))
     }
 
+    /// Makes `<dir>/.gemini` and puts nothing in it. There is no settings.json
+    /// to seed: Gemini's non-interactive runs take the sign-in method that
+    /// settings.json names (`security.auth.selectedType`) before they look at
+    /// the env, so a method chosen here would shut out an account that signs in
+    /// with `GEMINI_API_KEY`. With none chosen, Gemini asks in the login
+    /// terminal (Login with Google), or finds a key in the env, and records the
+    /// choice itself.
     fn prepare_account_dir(&self, dir: &Path) -> std::io::Result<()> {
-        let gemini_dir = dir.join(".gemini");
-        std::fs::create_dir_all(&gemini_dir)?;
-        write_if_absent(&gemini_dir.join("settings.json"), MANAGED_HOME_SETTINGS)
+        std::fs::create_dir_all(dir.join(".gemini"))
     }
 
     fn read_account_identity(&self, home: AccountHome<'_>) -> AccountIdentity {
@@ -248,7 +249,7 @@ mod tests {
                 login_args: Some(&[]),
                 logout_args: Some(&[]),
                 login_hint: Some(
-                    "Gemini starts Google sign-in on its own. When it is done, type /quit."
+                    "In Gemini, choose Login with Google and finish in your browser. When it is done, type /quit."
                 ),
                 logout_hint: Some("Type /auth signout, then /quit."),
                 allows_existing_dir: true,
@@ -287,26 +288,30 @@ mod tests {
         );
     }
 
-    const OAUTH_SETTINGS: &str = r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#;
-
     #[test]
-    fn gemini_prepare_dir_seeds_oauth_settings_once() {
+    fn gemini_prepare_dir_makes_the_gemini_dir_and_writes_no_settings() {
+        // How to sign in is the user's choice, made in Gemini. A settings.json
+        // from Verun would make it for them, and Gemini's non-interactive runs
+        // go by it before they look at the env.
         let tmp = TempDir::new().unwrap();
-        // The whole path is made, `.gemini` included.
+        // The whole path is made, `.gemini` included, and it is empty.
         let dir = tmp.path().join("accounts").join("g1");
         Gemini.prepare_account_dir(&dir).unwrap();
-        let settings = dir.join(".gemini").join("settings.json");
-        assert_eq!(fs::read_to_string(&settings).unwrap(), OAUTH_SETTINGS);
+        let gemini_dir = dir.join(".gemini");
+        assert!(gemini_dir.is_dir());
+        assert!(!gemini_dir.join("settings.json").exists());
+        assert_eq!(fs::read_dir(&gemini_dir).unwrap().count(), 0);
 
-        // Preparing it again leaves what is there alone, edits included.
-        fs::write(&settings, r#"{"theme":"Dracula"}"#).unwrap();
+        // Preparing it again leaves what is there alone and still writes none.
         fs::write(dir.join("marker"), "").unwrap();
+        fs::write(gemini_dir.join("oauth_creds.json"), "{}").unwrap();
         Gemini.prepare_account_dir(&dir).unwrap();
-        assert_eq!(
-            fs::read_to_string(&settings).unwrap(),
-            r#"{"theme":"Dracula"}"#
-        );
         assert!(dir.join("marker").exists());
+        assert_eq!(
+            fs::read_to_string(gemini_dir.join("oauth_creds.json")).unwrap(),
+            "{}"
+        );
+        assert!(!gemini_dir.join("settings.json").exists());
     }
 
     #[test]
@@ -322,25 +327,6 @@ mod tests {
             Gemini.prepare_account_dir(tmp.path()).unwrap();
             assert_eq!(fs::read_to_string(&settings).unwrap(), contents);
         }
-    }
-
-    #[test]
-    fn gemini_prepare_dir_seeds_settings_beside_what_gemini_already_wrote() {
-        let tmp = TempDir::new().unwrap();
-        let gemini_dir = tmp.path().join(".gemini");
-        fs::create_dir(&gemini_dir).unwrap();
-        fs::write(gemini_dir.join("oauth_creds.json"), "{}").unwrap();
-
-        Gemini.prepare_account_dir(tmp.path()).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(gemini_dir.join("settings.json")).unwrap(),
-            OAUTH_SETTINGS
-        );
-        assert_eq!(
-            fs::read_to_string(gemini_dir.join("oauth_creds.json")).unwrap(),
-            "{}"
-        );
     }
 
     /// Writes `json` as the `google_accounts.json` of the Gemini home `dir`.
