@@ -5,7 +5,7 @@ import { Component, Show, onMount, onCleanup, createSignal, createEffect } from 
 import { listen } from '@tauri-apps/api/event'
 import { Sidebar } from './Sidebar'
 import { TaskPanel } from './TaskPanel'
-import { SettingsPage, selectSettingsSection, setSettingsSaveRequested } from './SettingsPage'
+import { SettingsPage, selectSettingsSection, settingsSectionForShortcut, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
 import { NewTaskView } from './NewTaskView'
 import { AddProjectDialog } from './AddProjectDialog'
@@ -109,14 +109,9 @@ export const Layout: Component = () => {
         const idx = parseInt(e.key) - 1
         if (showSettings()) {
           // In settings: CMD+Number switches between sections
-          // 1 = General, 2 = Appearance, 3+ = projects by order
-          if (idx === 0) {
-            selectSettingsSection('general')
-          } else if (idx === 1) {
-            selectSettingsSection('appearance')
-          } else if (idx - 2 < projects.length) {
-            selectSettingsSection(projects[idx - 2].id)
-          }
+          // 1 = General, 2 = Appearance, 3 = Accounts, 4+ = projects by order
+          const section = settingsSectionForShortcut(idx + 1, projects.map(p => p.id))
+          if (section) selectSettingsSection(section)
         } else {
           // Match sidebar ordering: iterate projects, then tasks within each project
           const ordered = visibleProjects(projects).flatMap(p => activeTasksForProject(p.id))

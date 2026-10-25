@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, on, For, Show, type JSX } from 'solid-js'
-import { ChevronDown, ChevronRight, X, Check, Settings, FolderGit2, Loader2, Sparkles, Download, Upload, GitBranch, Palette, ArrowUp, RotateCcw, ListChecks } from 'lucide-solid'
+import { ChevronDown, ChevronRight, X, Check, Settings, FolderGit2, Loader2, Sparkles, Download, Upload, GitBranch, Palette, ArrowUp, RotateCcw, ListChecks, Users } from 'lucide-solid'
 import {
   appearance, setAppearance,
   THEME_PRESETS, findThemePreset,
@@ -20,13 +20,25 @@ import { Toggle } from './Toggle'
 import { CodeTextarea } from './CodeTextarea'
 import { QuantityStepper } from './QuantityStepper'
 import { StorageSettings } from './StorageSettings'
+import { AccountsSettings } from './AccountsSettings'
 import { ColorPicker } from './ColorPicker'
 import { addToast } from '../store/ui'
 import { AUTODETECT_PROMPT } from '../lib/autodetect-prompt'
 import { notifyAccountError } from '../lib/accountErrors'
 import { produce } from 'solid-js/store'
 
-type SettingsSection = 'general' | 'appearance' | string // project id
+type SettingsSection = 'general' | 'appearance' | 'accounts' | string // project id
+
+// The sections before the projects, in nav order. Cmd+1, Cmd+2, Cmd+3 open them.
+const BUILT_IN_SECTIONS = ['general', 'appearance', 'accounts']
+
+/**
+ * The section Cmd+`digit` opens in Settings: the built-in ones first, then the
+ * projects in nav order. `null` when there is no such section.
+ */
+export function settingsSectionForShortcut(digit: number, projectIds: string[]): string | null {
+  return [...BUILT_IN_SECTIONS, ...projectIds][digit - 1] ?? null
+}
 
 // Module-level signals so Layout can drive section switching and save via keyboard shortcuts
 const [activeSection, setActiveSection] = createSignal<SettingsSection>('general')
@@ -84,7 +96,7 @@ export const SettingsPage: Component = () => {
 
   const selectedProject = () => {
     const section = activeSection()
-    if (section === 'general') return null
+    if (BUILT_IN_SECTIONS.includes(section)) return null
     return projects.find(p => p.id === section) ?? null
   }
 
@@ -206,6 +218,19 @@ export const SettingsPage: Component = () => {
           <span>Appearance</span>
         </button>
 
+        {/* Accounts */}
+        <button
+          class={`flex items-center gap-2.5 mx-2 mt-0.5 px-3 py-2 rounded-md text-sm transition-colors ${
+            activeSection() === 'accounts'
+              ? 'bg-surface-3 text-text-secondary'
+              : 'text-text-muted hover:text-text-secondary hover:bg-surface-2'
+          }`}
+          onClick={() => setActiveSection('accounts')}
+        >
+          <Users size={15} />
+          <span>Accounts</span>
+        </button>
+
         {/* Projects header */}
         <Show when={projects.length > 0}>
           <div class="px-3 pt-4 pb-2">
@@ -241,7 +266,7 @@ export const SettingsPage: Component = () => {
           {/* Header with close button */}
           <div class="flex items-center justify-between mb-6">
             <h1 class="text-lg font-semibold text-text-primary">
-              {activeSection() === 'general' ? 'General' : activeSection() === 'appearance' ? 'Appearance' : selectedProject()?.name ?? 'Settings'}
+              {activeSection() === 'general' ? 'General' : activeSection() === 'appearance' ? 'Appearance' : activeSection() === 'accounts' ? 'Accounts' : selectedProject()?.name ?? 'Settings'}
             </h1>
             <button
               class="p-1.5 rounded-lg text-text-dim hover:text-text-secondary border border-border hover:border-border-active transition-colors"
@@ -320,8 +345,13 @@ export const SettingsPage: Component = () => {
             />
           </Show>
 
+          {/* Accounts section */}
+          <Show when={activeSection() === 'accounts'}>
+            <AccountsSettings />
+          </Show>
+
           {/* Per-project settings */}
-          <Show when={activeSection() !== 'general' && activeSection() !== 'appearance' && selectedProject()}>
+          <Show when={selectedProject()}>
             {/* Repository section */}
             <div class="mb-8">
               <h2 class="section-title mb-4">Repository</h2>
