@@ -13,6 +13,7 @@ const {
   setMainViewMock,
   modelPickerRequestMock,
   addToastMock,
+  sessionsForTaskMock,
 } = vi.hoisted(() => ({
   openModelPickerMock: vi.fn(),
   createSessionMock: vi.fn(() => Promise.resolve({ id: 'new-session-id' })),
@@ -20,6 +21,8 @@ const {
   setMainViewMock: vi.fn(),
   modelPickerRequestMock: vi.fn(() => null),
   addToastMock: vi.fn(),
+  // The sessions of the task; `beforeEach` gives it one, on the added account a1.
+  sessionsForTaskMock: vi.fn((): unknown[] => []),
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -112,7 +115,7 @@ vi.mock('../store/modelPicker', () => ({
 
 vi.mock('../store/sessions', () => ({
   createSession: createSessionMock,
-  sessionsForTask: () => [{ id: 's-1', agentType: 'claude', model: 'opus-4-5' }],
+  sessionsForTask: sessionsForTaskMock,
 }))
 
 vi.mock('../store/taskContext', () => ({
@@ -154,6 +157,7 @@ describe('TaskWindowShell keyboard shortcuts (issue #243)', () => {
     setMainViewMock.mockClear()
     addToastMock.mockClear()
     modelPickerRequestMock.mockReturnValue(null)
+    sessionsForTaskMock.mockReturnValue([{ id: 's-1', agentType: 'claude', model: 'opus-4-5', accountId: 'a1' }])
     cleanup()
   })
 
@@ -172,12 +176,44 @@ describe('TaskWindowShell keyboard shortcuts (issue #243)', () => {
     expect(arg.projectId).toBe('p-001')
   })
 
-  // Opens the picker with Cmd+T and returns what it was asked to do on a pick.
-  async function openPicker() {
+  // Presses Cmd+T in the window of the task and returns what the picker was asked for.
+  async function pressCmdT() {
     render(() => <TaskWindowShell />)
     await Promise.resolve()
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 't', metaKey: true, bubbles: true, cancelable: true }))
-    return openModelPickerMock.mock.calls[0][0].onPick as (agentType: string, model?: string, account?: unknown) => Promise<void>
+    return openModelPickerMock.mock.calls[0][0]
+  }
+
+  // The picker marks "Current" on the group of the session it was opened from:
+  // its account too, once the harness has accounts.
+  test('Cmd+T tells the picker which account the current session runs on', async () => {
+    const request = await pressCmdT()
+
+    expect(request.defaultAgent).toBe('claude')
+    expect(request.defaultModel).toBe('opus-4-5')
+    expect(request.defaultAccountId).toBe('a1')
+  })
+
+  test('a current session on Default is the null account, not an unknown one', async () => {
+    sessionsForTaskMock.mockReturnValue([{ id: 's-1', agentType: 'claude', model: null, accountId: null }])
+
+    const request = await pressCmdT()
+
+    expect(request.defaultAccountId).toBeNull()
+  })
+
+  test('a task without sessions names no account, and its own harness is the default', async () => {
+    sessionsForTaskMock.mockReturnValue([])
+
+    const request = await pressCmdT()
+
+    expect(request.defaultAgent).toBe('claude')
+    expect(request.defaultAccountId).toBeUndefined()
+  })
+
+  // Opens the picker with Cmd+T and returns what it was asked to do on a pick.
+  async function openPicker() {
+    return (await pressCmdT()).onPick as (agentType: string, model?: string, account?: unknown) => Promise<void>
   }
 
   test('a pick starts the session on the account picked, and shows it', async () => {

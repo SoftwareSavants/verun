@@ -318,7 +318,11 @@ export const NewSessionMenu: Component<Props> = (props) => {
 
           <Show when={hoveredAgentInfo() && hoveredAgentInfo()!.models.length > 0}>
             <div
-              class="fixed z-[102] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1 w-44 max-h-80 flex flex-col"
+              data-model-submenu
+              class="fixed z-[102] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1 max-h-80 flex flex-col"
+              // The header names the account, so the models of an account grow to fit it (up
+              // to a point), as the menu does; those of a harness without accounts keep w-44.
+              classList={{ 'w-44': !hoveredRow()?.choice, 'min-w-44 w-max max-w-80': !!hoveredRow()?.choice }}
               style={{
                 left: `${submenuRect()?.left ?? 0}px`,
                 top: `${submenuRect()?.top ?? 0}px`,
@@ -326,6 +330,19 @@ export const NewSessionMenu: Component<Props> = (props) => {
               onMouseDown={(e) => e.preventDefault()}
               onMouseEnter={() => {}}
             >
+              {/* The rows of a harness's accounts open the same models, and the pointer crosses
+                  them on its way here: this says which account the session will start on. */}
+              <Show when={hoveredRow()?.choice ? hoveredRow() : undefined}>
+                {(row) => (
+                  <div
+                    data-submenu-header
+                    title={row().name}
+                    class="px-3 py-1.5 mb-1 shrink-0 text-[11px] font-semibold text-text-primary border-b-1 border-b-solid border-b-outline/8"
+                  >
+                    <AgentRowName row={row()} />
+                  </div>
+                )}
+              </Show>
               <Show when={showModelSearch()}>
                 <div class="px-2 py-1 shrink-0">
                   <div class="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-1 ring-1 ring-outline/6">

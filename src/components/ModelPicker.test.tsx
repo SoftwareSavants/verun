@@ -419,12 +419,85 @@ describe('<ModelPicker /> with accounts', () => {
     expect(onPick).toHaveBeenCalledWith('claude', 'sonnet', { kind: 'default' })
   })
 
-  test('every group of the current harness is tagged current', () => {
-    applySnapshot(makeSnapshot({ accounts: [acme] }))
-    const { baseElement } = render(() => <ModelPicker open={true} defaultAgent="claude" onClose={() => {}} onPick={() => {}} />)
+  // "Current" marks where the picker was opened from: the harness of the session
+  // and, once the harness has accounts, its account (`defaultAccountId`: an
+  // account's id, or null for Default), so only that group says so.
+  describe('the current tag', () => {
+    beforeEach(() => applySnapshot(makeSnapshot({ accounts: [acme, beta] })))
 
-    const tagged = headers(baseElement).map((h) => h.toLowerCase().includes('current'))
-    expect(tagged).toEqual([true, true, false])
+    // Groups, for a project that uses no account: Claude · Default, Claude · Acme, Claude · Beta, Codex.
+    const taggedGroups = (base: HTMLElement) => headers(base).map((h) => h.toLowerCase().includes('current'))
+    const open = (props: { defaultAccountId?: string | null; defaultModel?: string; defaultAgent?: 'claude' | 'codex' } = {}) =>
+      render(() => <ModelPicker open={true} defaultAgent="claude" onClose={() => {}} onPick={() => {}} {...props} />).baseElement
+
+    test('goes to the group of the account the current session runs on', () => {
+      expect(taggedGroups(open({ defaultAccountId: 'a1' }))).toEqual([false, true, false, false])
+    })
+
+    test('goes to the Default group for a session on Default', () => {
+      expect(taggedGroups(open({ defaultAccountId: null }))).toEqual([true, false, false, false])
+    })
+
+    test('goes to every group of the harness when the caller does not say which account', () => {
+      expect(taggedGroups(open())).toEqual([true, true, true, false])
+    })
+
+    test('goes to no group of the harness when the account of the session is not offered any more', () => {
+      expect(taggedGroups(open({ defaultAccountId: 'gone' }))).toEqual([false, false, false, false])
+    })
+
+    test('goes to the harness as before when it has no accounts, whatever account is named', () => {
+      applySnapshot(makeSnapshot({ accounts: [work] }))
+
+      // Claude is one group; Codex has Default and Work.
+      expect(taggedGroups(open({ defaultAccountId: null }))).toEqual([true, false, false])
+      cleanup()
+      expect(taggedGroups(open({ defaultAccountId: 'c1' }))).toEqual([true, false, false])
+    })
+
+    test('does not follow the account to another harness', () => {
+      // A Codex session on Work: the Codex Work group is the one, nothing of Claude.
+      applySnapshot(makeSnapshot({ accounts: [acme, work] }))
+
+      expect(taggedGroups(open({ defaultAgent: 'codex', defaultAccountId: 'c1' }))).toEqual([false, true, false, false])
+    })
+
+    test('marks the current model in the group of the current account only', () => {
+      const base = open({ defaultModel: 'opus', defaultAccountId: 'a2' })
+
+      const tagged = modelRows(base).filter((r) => r.textContent?.toLowerCase().includes('current'))
+      expect(tagged).toHaveLength(1)
+      expect(tagged[0].textContent).toContain('Opus')
+      // The header is the first child of the group that holds the row.
+      expect(tagged[0].parentElement!.firstElementChild!.textContent).toContain('Claude · Beta')
+    })
+
+    test('does not reach the Default group of another harness that has a model of the same id', () => {
+      // Harnesses can offer a model by the same id (Cursor and Gemini both have "auto"), and
+      // each has a Default group, which is the same key but for the harness.
+      const codexModels = agentsList[1].models as Array<{ id: string; label: string; description: string }>
+      codexModels.push({ id: 'opus', label: 'Opus on Codex', description: '' })
+      try {
+        applySnapshot(makeSnapshot({ accounts: [acme, work] }))
+
+        const tagged = modelRows(open({ defaultAccountId: null, defaultModel: 'opus' })).filter((r) => r.textContent?.toLowerCase().includes('current'))
+
+        expect(tagged.map((r) => r.parentElement!.firstElementChild!.textContent)).toEqual([expect.stringContaining('Claude · Default')])
+      } finally {
+        codexModels.pop()
+      }
+    })
+
+    test('marks the current model in every group of the harness when the caller does not say which account', () => {
+      const base = open({ defaultModel: 'opus' })
+
+      const tagged = modelRows(base).filter((r) => r.textContent?.toLowerCase().includes('current'))
+      expect(tagged.map((r) => r.parentElement!.firstElementChild!.textContent)).toEqual([
+        expect.stringContaining('Claude · Default'),
+        expect.stringContaining('Claude · Acme'),
+        expect.stringContaining('Claude · Beta'),
+      ])
+    })
   })
 
   test('each account group collapses on its own', () => {

@@ -110,6 +110,7 @@ export function useTaskShortcuts(opts: TaskShortcutsOptions = {}) {
         projectId: task?.projectId,
         defaultAgent: current?.agentType ?? task?.agentType,
         defaultModel: current?.model ?? undefined,
+        defaultAccountId: current?.accountId,
         onPick: async (agentType, model, account) => {
           await openNewSession(tid, agentType, model, account)
         },

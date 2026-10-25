@@ -16,6 +16,7 @@ export const TaskModelPickerHost: Component = () => {
       projectId={modelPickerRequest()?.projectId}
       defaultAgent={modelPickerRequest()?.defaultAgent}
       defaultModel={modelPickerRequest()?.defaultModel}
+      defaultAccountId={modelPickerRequest()?.defaultAccountId}
       onClose={closeModelPicker}
       onPick={(agentType, model, account) => {
         const req = modelPickerRequest()

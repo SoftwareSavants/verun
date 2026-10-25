@@ -83,7 +83,7 @@ vi.mock('../store/githubDebug', () => githubDebugMocks)
 
 import { ActionsPanel } from './ActionsPanel'
 import { clearActionsState, stopPolling } from '../store/actions'
-import { sendMessage } from '../store/sessions'
+import { sendMessage, sessionsForTask } from '../store/sessions'
 import { selectedSessionForTask } from '../store/taskContext'
 import { addToast } from '../store/ui'
 import { openModelPicker } from '../store/modelPicker'
@@ -366,6 +366,7 @@ describe('<ActionsPanel /> fixing a failed job with Claude', () => {
     vi.mocked(addToast).mockClear()
     vi.mocked(sendMessage).mockReset()
     vi.mocked(openModelPicker).mockClear()
+    vi.mocked(sessionsForTask).mockReturnValue([])
     vi.mocked(selectedSessionForTask).mockReturnValue('s1')
     ipcMocks.getGithubActions.mockReset()
     ipcMocks.getGithubWorkflowJobs.mockReset()
@@ -413,6 +414,34 @@ describe('<ActionsPanel /> fixing a failed job with Claude', () => {
     await chooseFix(view, 'Fix in new session')
 
     expect(openModelPicker).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'p1' }))
+  })
+
+  // The picker marks "Current" on the group of the session it was opened from,
+  // its account too once the harness has accounts.
+  test('the picker is told which account the current session runs on', async () => {
+    vi.mocked(sessionsForTask).mockReturnValue([{ id: 's1', agentType: 'codex', model: 'gpt-5', accountId: 'c1' } as never])
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+
+    expect(openModelPicker).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'codex', defaultModel: 'gpt-5', defaultAccountId: 'c1' }))
+  })
+
+  test('a current session on Default is the null account', async () => {
+    vi.mocked(sessionsForTask).mockReturnValue([{ id: 's1', agentType: 'claude', model: null, accountId: null } as never])
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+
+    expect(vi.mocked(openModelPicker).mock.calls[0][0].defaultAccountId).toBeNull()
+  })
+
+  test('without a session no account is named', async () => {
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+
+    expect(vi.mocked(openModelPicker).mock.calls[0][0].defaultAccountId).toBeUndefined()
   })
 
   test('the session is created on the account picked', async () => {

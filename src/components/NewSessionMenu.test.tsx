@@ -47,6 +47,10 @@ const row = (name: string | RegExp) => within(menu()).getByRole('button', { name
 /** Hovers an agent row, which opens its models next to the menu. */
 const hover = (name: string | RegExp) => fireEvent.mouseEnter(row(name))
 const model = (name: string | RegExp) => screen.getByRole('button', { name })
+/** What the open models say they are for: the account of the row hovered, for a harness with accounts. */
+const submenuHeader = () => document.querySelector('[data-submenu-header]') as HTMLElement | null
+/** The open models of the row hovered. */
+const submenu = () => document.querySelector('[data-model-submenu]') as HTMLElement
 
 beforeEach(() => {
   onCreate.mockReset()
@@ -72,6 +76,16 @@ describe('<NewSessionMenu />', () => {
     fireEvent.click(row('Cursor'))
 
     expect(onCreate).toHaveBeenCalledWith('cursor', undefined, undefined)
+  })
+
+  test('without accounts the models are not headed by anything, and keep their width', () => {
+    show()
+
+    hover('Claude Code')
+
+    expect(model(/Opus/)).toBeTruthy()
+    expect(submenuHeader()).toBeNull()
+    expect(submenu().classList.contains('w-44')).toBe(true)
   })
 
   test('the default agent comes first', () => {
@@ -131,6 +145,82 @@ describe('<NewSessionMenu />', () => {
       expect(screen.queryByRole('button', { name: /Opus/ })).toBeNull()
       fireEvent.click(model(/GPT/))
       expect(onCreate).toHaveBeenCalledWith('codex', 'gpt', undefined)
+    })
+
+    // The rows of one harness open the same models, so what a click starts is only
+    // told by the row it was opened from. The models name it, and a pointer crossing
+    // rows on its way to them cannot start a session on one it did not notice.
+    test('the models are headed by the account of the row they belong to', () => {
+      show()
+
+      hover('Claude Code · Default')
+      expect(submenuHeader()?.textContent).toBe('Claude Code · Default')
+      hover('Claude Code · Acme')
+
+      expect(submenuHeader()?.textContent).toBe('Claude Code · Acme')
+    })
+
+    test('a pointer that crosses rows on its way ends on the last one, which the header names and the click starts the session on', () => {
+      show()
+
+      hover('Claude Code · Acme')
+      hover('Claude Code · Beta')
+
+      expect(submenuHeader()?.textContent).toBe('Claude Code · Beta')
+      fireEvent.click(model(/Opus/))
+      expect(onCreate).toHaveBeenCalledOnce()
+      expect(onCreate).toHaveBeenCalledWith('claude', 'opus', { kind: 'account', id: 'a2' })
+    })
+
+    test('the header has the color of the account, and Default has none', () => {
+      show()
+
+      hover('Claude Code · Acme')
+      expect(within(submenuHeader()!).getByTestId('account-color').style.backgroundColor).toBe('rgb(124, 58, 237)')
+      hover('Claude Code · Default')
+
+      expect(within(submenuHeader()!).queryByTestId('account-color')).toBeNull()
+    })
+
+    test('the header has the full name as a tooltip, since a long label is cut short', () => {
+      show()
+
+      hover('Claude Code · Acme')
+
+      expect(submenuHeader()!.getAttribute('title')).toBe('Claude Code · Acme')
+    })
+
+    // The name is the point of the header: two labels that start alike must not be
+    // cut to the same words, so the models grow to fit it, as the menu does.
+    test('the models of an account grow to fit its name, those of a harness without accounts do not', () => {
+      show()
+
+      hover('Claude Code · Acme')
+      expect(submenu().classList.contains('w-44')).toBe(false)
+      expect(submenu().classList.contains('w-max')).toBe(true)
+      hover('Codex')
+
+      expect(submenu().classList.contains('w-44')).toBe(true)
+      expect(submenu().classList.contains('w-max')).toBe(false)
+    })
+
+    test('a harness without accounts has models and no header, also right after a row that has one', () => {
+      show()
+
+      hover('Claude Code · Acme')
+      expect(submenuHeader()).not.toBeNull()
+      hover('Codex')
+
+      expect(model(/GPT/)).toBeTruthy()
+      expect(submenuHeader()).toBeNull()
+    })
+
+    test('an agent without models has no models to head', () => {
+      show()
+
+      hover('Cursor · Key')
+
+      expect(submenuHeader()).toBeNull()
     })
 
     test('an agent without models starts its session on the account of the row clicked', () => {

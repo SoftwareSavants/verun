@@ -351,6 +351,7 @@ const ActionsJobRow: Component<{ taskId: string; run: WorkflowRun; job: Workflow
       projectId: t.projectId,
       defaultAgent: current?.agentType ?? t.agentType,
       defaultModel: current?.model ?? undefined,
+      defaultAccountId: current?.accountId,
       onPick: async (agentType, model, account) => {
         setBusy('fix')
         if (!logsCached) addToast('Fetching failure context...', 'info', { id: toastId, persistent: true, loading: true })

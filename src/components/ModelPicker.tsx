@@ -6,7 +6,7 @@ import type { AccountSelection, AgentType, ModelOption, AgentInfo } from '../typ
 import { agents } from '../store/agents'
 import { sessions } from '../store/sessions'
 import { agentIcon, meetsVersionReq } from '../lib/agents'
-import { agentRows, type AgentRow } from '../lib/accounts'
+import { accountKey, agentRows, type AgentRow } from '../lib/accounts'
 import { registerDismissable } from '../lib/dismissable'
 import SvgIcon from './SvgIcon'
 import { AgentRowName } from './AgentRowName'
@@ -28,6 +28,12 @@ interface Props {
   projectId?: string
   defaultAgent?: AgentType
   defaultModel?: string
+  /**
+   * The account the session the picker was opened from runs on: an account's id,
+   * or `null` for Default. Once its harness has accounts, "Current" goes to the
+   * group of that account only. Left out, it goes to every group of the harness.
+   */
+  defaultAccountId?: string | null
   title?: string
   placeholder?: string
   onClose: () => void
@@ -55,6 +61,13 @@ export const ModelPicker: Component<Props> = (props) => {
   })
 
   const entries = createMemo(() => agentRows(installed(), props.projectId))
+
+  // Whether `entry` is the account of the session the picker was opened from. Only a
+  // harness with accounts has groups to tell apart, and only when the caller says which.
+  const isCurrentAccount = (entry: AgentRow) =>
+    !entry.choice
+    || props.defaultAccountId === undefined
+    || (entry.agent.id === props.defaultAgent && entry.choice.key === accountKey(entry.agent.id, props.defaultAccountId))
 
   // Sort models: pinned default first, then by LRU desc, then by original
   // declaration order as a stable fallback so sorts are deterministic.
@@ -233,7 +246,7 @@ export const ModelPicker: Component<Props> = (props) => {
                         <Show when={group.entry.detail}>
                           <span class="text-[10px] text-text-dim truncate">{group.entry.detail}</span>
                         </Show>
-                        <Show when={group.entry.agent.id === props.defaultAgent}>
+                        <Show when={group.entry.agent.id === props.defaultAgent && isCurrentAccount(group.entry)}>
                           <span class="text-[9px] px-1 py-px rounded bg-accent/12 text-accent leading-tight uppercase tracking-wide">Current</span>
                         </Show>
                         <span class="flex-1" />
@@ -286,7 +299,7 @@ export const ModelPicker: Component<Props> = (props) => {
                                 <Show when={row.model?.description}>
                                   <span class="text-[10px] text-text-dim truncate">{row.model!.description}</span>
                                 </Show>
-                                <Show when={row.model && row.model.id === props.defaultModel}>
+                                <Show when={row.model && row.model.id === props.defaultModel && isCurrentAccount(row)}>
                                   <span class="text-[9px] px-1 py-px rounded bg-accent/12 text-accent leading-tight uppercase tracking-wide shrink-0">Current</span>
                                 </Show>
                               </div>

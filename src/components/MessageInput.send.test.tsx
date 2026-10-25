@@ -472,6 +472,7 @@ describe('MessageInput /new-session', () => {
     expect(selectedSessionForTask('t1')).toBe('s-shown')
     expect(mocks.setMainView).toHaveBeenCalledWith('t1', 'session')
     expect(toasts()).toEqual([])
+    expect(editor(container).textContent).toBe('')
   })
 
   test('an account that cannot be used is shown as its toast, and no session is shown', async () => {
@@ -485,5 +486,8 @@ describe('MessageInput /new-session', () => {
       { title: 'Account removed', message: 'Acme was removed. Start a new session on another account.' },
     ])
     expect(mocks.setMainView).not.toHaveBeenCalled()
+    // A command is one-shot: the composer is emptied whether or not the session started,
+    // and the toast says why it did not.
+    expect(editor(container).textContent).toBe('')
   })
 })

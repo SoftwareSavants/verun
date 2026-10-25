@@ -11,6 +11,7 @@ const picker = vi.hoisted(() => ({ props: null as null | {
   projectId?: string
   defaultAgent?: string
   defaultModel?: string
+  defaultAccountId?: string | null
   onClose: () => void
   onPick: (agentType: string, model?: string, account?: unknown) => unknown
 } }))
@@ -49,6 +50,7 @@ describe('<TaskModelPickerHost />', () => {
       projectId: 'p1',
       defaultAgent: 'codex',
       defaultModel: 'gpt-5',
+      defaultAccountId: 'c1',
       onPick: () => {},
     })
 
@@ -59,7 +61,18 @@ describe('<TaskModelPickerHost />', () => {
       projectId: 'p1',
       defaultAgent: 'codex',
       defaultModel: 'gpt-5',
+      defaultAccountId: 'c1',
     })
+  })
+
+  test('hands over the Default account as null, which is not the same as no account', () => {
+    render(() => <TaskModelPickerHost />)
+
+    openModelPicker({ defaultAgent: 'claude', defaultAccountId: null, onPick: () => {} })
+    expect(picker.props!.defaultAccountId).toBeNull()
+
+    openModelPicker({ defaultAgent: 'claude', onPick: () => {} })
+    expect(picker.props!.defaultAccountId).toBeUndefined()
   })
 
   test('gives the pick, with its account, back to whoever asked', async () => {
