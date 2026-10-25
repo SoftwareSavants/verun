@@ -28,6 +28,7 @@ import { serializeAttachments, deserializeAttachments, uploadAttachments } from 
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 import { decidePlanAction } from '../lib/planAction'
 import { isImagePath, mentionPathForFile } from '../lib/composerFiles'
+import { formatMention, parseMentions } from '../lib/mentions'
 import { decideQuestionKeyAction, QUESTION_SKIP_MESSAGE } from '../lib/questionKeyAction'
 
 interface Props {
@@ -248,7 +249,7 @@ export const MessageInput: Component<Props> = (props) => {
         text += (node.textContent ?? '').replace(/\u200B/g, '')
       } else if (node instanceof HTMLElement) {
         if (node.dataset.mention) {
-          text += `@${node.dataset.mention}`
+          text += formatMention(node.dataset.mention)
         } else if (node.tagName === 'BR') {
           text += '\n'
         } else {
@@ -269,18 +270,10 @@ export const MessageInput: Component<Props> = (props) => {
     if (!inputRef) return
     // Parse text into mixed text nodes + badge elements
     inputRef.innerHTML = ''
-    const mentionRe = /@([^\s]+)/g
-    let lastIndex = 0
-    for (const match of text.matchAll(mentionRe)) {
-      const start = match.index!
-      if (start > lastIndex) {
-        inputRef.appendChild(document.createTextNode(text.slice(lastIndex, start)))
-      }
-      inputRef.appendChild(wrapBadge(createMentionBadge(match[1])))
-      lastIndex = start + match[0].length
-    }
-    if (lastIndex < text.length) {
-      inputRef.appendChild(document.createTextNode(text.slice(lastIndex)))
+    for (const seg of parseMentions(text)) {
+      inputRef.appendChild(seg.type === 'mention'
+        ? wrapBadge(createMentionBadge(seg.value))
+        : document.createTextNode(seg.value))
     }
     autoResizeInput()
   }
@@ -328,7 +321,7 @@ export const MessageInput: Component<Props> = (props) => {
         offset += (node.textContent ?? '').replace(/\u200B/g, '').length
       } else if (node instanceof HTMLElement) {
         if (node.dataset.mention) {
-          offset += node.dataset.mention.length + 1 // @path
+          offset += formatMention(node.dataset.mention).length
         } else if (node.tagName === 'BR') {
           offset += 1
         } else {
