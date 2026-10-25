@@ -385,7 +385,7 @@ pub async fn session_title_env_for(
 pub(crate) mod tests {
     use super::*;
     use crate::accounts::secrets::{LockedKeychain, MemorySecretStore};
-    use crate::agent::Claude;
+    use crate::agent::{Claude, Codex};
     use crate::db::tests::{
         make_account, mark_account_removed_confirmed, set_project_account_confirmed, test_pool,
         upsert_account_confirmed,
@@ -526,6 +526,23 @@ pub(crate) mod tests {
         account.label = "Acme".into();
         account.config_dir = dir.path().to_string_lossy().into_owned();
         account
+    }
+
+    /// A Codex home whose `auth.json` holds `json`, or has none.
+    fn codex_dir(json: Option<&str>) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        if let Some(json) = json {
+            std::fs::write(dir.path().join("auth.json"), json).unwrap();
+        }
+        dir
+    }
+
+    /// A live Codex account called Acme with its home in `dir`.
+    fn codex_acme(id: &str, dir: &TempDir) -> Account {
+        Account {
+            agent_type: "codex".into(),
+            ..acme(id, dir)
+        }
     }
 
     pub(crate) fn secret_var(key: &str) -> AccountEnvVar {
@@ -736,6 +753,48 @@ pub(crate) mod tests {
         assert_eq!(check_usable(&account, &Claude), Ok(()));
     }
 
+    #[test]
+    fn check_usable_refuses_a_codex_account_whose_key_is_only_in_its_env() {
+        // `codex app-server` takes no key from the env, so a CODEX_API_KEY is
+        // no login: an account is signed in by its login file alone.
+        let dir = codex_dir(None);
+        let mut account = codex_acme("c1", &dir);
+        for var in [
+            secret_var("CODEX_API_KEY"),
+            plain_var("CODEX_API_KEY", "sk-test-123"),
+        ] {
+            account.env = vec![var];
+
+            assert_eq!(
+                account_identity(&Codex, &account),
+                AccountIdentity::with_status(SignInStatus::SignedOut)
+            );
+            assert_eq!(
+                check_usable(&account, &Codex),
+                Err(AccountError::SignedOut {
+                    account_id: "c1".into(),
+                    label: "Acme".into()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn check_usable_allows_a_codex_account_with_a_key_login_on_disk() {
+        // What `codex login --with-api-key` writes: that file is what reports
+        // an API key.
+        let dir = codex_dir(Some(
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test-123"}"#,
+        ));
+        let account = codex_acme("c1", &dir);
+
+        assert_eq!(
+            account_identity(&Codex, &account),
+            AccountIdentity::with_status(SignInStatus::ApiKey)
+        );
+        assert_eq!(check_usable(&account, &Codex), Ok(()));
+    }
+
     // -- session_env_for --
 
     #[tokio::test]
@@ -833,6 +892,28 @@ pub(crate) mod tests {
             .unwrap();
 
         assert!(sets(&patch, "ANTHROPIC_API_KEY", "sk-ant-one"));
+    }
+
+    #[tokio::test]
+    async fn session_env_for_refuses_a_codex_session_whose_key_is_only_in_its_env() {
+        let pool = test_pool().await;
+        let dir = codex_dir(None);
+        let mut account = codex_acme("c1", &dir);
+        account.env = vec![secret_var("CODEX_API_KEY")];
+        upsert_account_confirmed(&pool, account).await.unwrap();
+        // The key is in the keychain and the env could be built, but nobody is
+        // signed in to the home: the session is refused here, not started on an
+        // app-server that cannot authenticate.
+        let secrets = Arc::new(MemorySecretStore::default());
+        secrets.set("c1", "CODEX_API_KEY", "sk-test-123").unwrap();
+
+        assert_eq!(
+            session_env_for(&pool, secrets, "p-001", "codex", Some("c1")).await,
+            Err(AccountError::SignedOut {
+                account_id: "c1".into(),
+                label: "Acme".into()
+            })
+        );
     }
 
     #[tokio::test]

@@ -432,7 +432,13 @@ impl Agent for Codex {
                 "OPENAI_IDENTITY_TOKEN_FILE",
             ],
             fixed_env: &[],
-            api_key_vars: &["CODEX_API_KEY"],
+            // None: `codex app-server`, which Verun spawns, does not sign in
+            // from a key in the env (`account/read` reports no account), so
+            // such a key is no login. An API-key account signs in with
+            // `codex login --with-api-key`, which writes auth.json, and that
+            // file is what reads as ApiKey. An inherited key is still scrubbed
+            // above, so it cannot reach an added account.
+            api_key_vars: &[],
             login_args: Some(&["login"]),
             logout_args: Some(&["logout"]),
             login_hint: None,
@@ -588,7 +594,8 @@ mod tests {
                     "OPENAI_IDENTITY_TOKEN_FILE",
                 ],
                 fixed_env: &[],
-                api_key_vars: &["CODEX_API_KEY"],
+                // Codex's app-server signs in from its login file only.
+                api_key_vars: &[],
                 login_args: Some(&["login"]),
                 logout_args: Some(&["logout"]),
                 login_hint: None,
