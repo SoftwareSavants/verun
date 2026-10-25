@@ -1286,6 +1286,80 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn title_env_for_a_claude_account_leaves_out_the_codex_account_bound_with_it() {
+        // The project is bound to a Claude and a Codex account, and the Codex
+        // one has env vars, a secret among them. Naming a session is one
+        // Claude call: it runs on the Claude account's env, and nothing of the
+        // other harness's reaches it.
+        let pool = test_pool().await;
+        let dir = claude_dir(SIGNED_IN);
+        let claude = acme("a1", &dir);
+        upsert_account_confirmed(&pool, claude.clone())
+            .await
+            .unwrap();
+        let mut codex = make_account("c1", 1000);
+        codex.agent_type = "codex".into();
+        codex.env = vec![
+            plain_var("OPENAI_BASE_URL", "https://codex-proxy"),
+            secret_var("CODEX_API_KEY"),
+        ];
+        upsert_account_confirmed(&pool, codex).await.unwrap();
+        for (agent_type, account_id) in [("claude", "a1"), ("codex", "c1")] {
+            set_project_account_confirmed(&pool, "p-001", agent_type, Some(account_id))
+                .await
+                .unwrap();
+        }
+        let secrets = Arc::new(MemorySecretStore::default());
+        secrets
+            .set("c1", "CODEX_API_KEY", "sk-codex-secret")
+            .unwrap();
+
+        // The fixture is sound: the project's own env does carry the Codex
+        // account, so there is something for the title to leave out.
+        let project = project_env_for(&pool, secrets.clone(), "p-001")
+            .await
+            .unwrap();
+        assert!(sets(&project, "CODEX_HOME", "/tmp/verun-accounts/c1"));
+        assert!(sets(&project, "OPENAI_BASE_URL", "https://codex-proxy"));
+        assert!(sets(&project, "CODEX_API_KEY", "sk-codex-secret"));
+
+        let own = claude_env_of(&claude);
+        // The same Claude call whichever session asks for it: a Claude session
+        // on the account, and Codex sessions, which the project's Claude
+        // account names, on Default and on the project's Codex account.
+        for (agent_type, account_id) in [
+            ("claude", Some("a1")),
+            ("codex", None),
+            ("codex", Some("c1")),
+        ] {
+            assert_eq!(
+                session_title_env_for(&pool, secrets.clone(), "p-001", agent_type, account_id)
+                    .await,
+                Some(own.clone()),
+                "{agent_type} on {account_id:?}"
+            );
+        }
+        assert_eq!(
+            title_env_for(&pool, secrets, &use_claude("a1")).await,
+            Some(own.clone())
+        );
+        // Spelled out: no Codex var by name, and none of its values.
+        let names = own.remove.iter().chain(own.set.iter().map(|(key, _)| key));
+        for name in names {
+            assert!(
+                !name.starts_with("CODEX_") && name != "OPENAI_BASE_URL",
+                "{name} is a Codex var"
+            );
+        }
+        for (name, value) in &own.set {
+            assert!(
+                value != "sk-codex-secret" && value != "https://codex-proxy",
+                "{name} holds a value of the Codex account"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn title_env_for_an_account_that_cannot_run_is_none_never_default() {
         let t = title_fixture().await;
         let signed_out = claude_dir("{}");

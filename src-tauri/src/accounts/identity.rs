@@ -20,7 +20,9 @@ pub enum SignInStatus {
     /// signed-out account is refused, so a reader says this only when the
     /// files show it.
     SignedOut,
-    /// No login of its own, but the account's env supplies an API key.
+    /// Signed in with an API key instead of an account: the account's env
+    /// supplies one and it has no login of its own, or the CLI's own login is a
+    /// key (Codex's `apikey` mode).
     ApiKey,
     /// Nothing on disk says either way: a file that cannot be read, or that
     /// is not shaped the way the CLI writes it. It never blocks an account, so
@@ -62,7 +64,6 @@ const JSON_READ_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// JSON object. The signature is not checked, because the token is only read
 /// from the CLI's own file to learn who is signed in, never to authorize
 /// anything.
-#[allow(dead_code)] // consumed by the Codex and Grok identity readers
 pub fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
     let segments: Vec<&str> = token.split('.').collect();
     let [_header, payload, _signature] = segments[..] else {

@@ -4,8 +4,11 @@
 //! An added account runs with its own home and env vars, and nothing Verun
 //! inherited may override them. `account_env` turns one account into a patch,
 //! and `project_env` and `session_env` combine the patches of the accounts a
-//! spawn follows. The spawn sites apply the result. Default sessions have no
-//! account and get an empty patch, so they keep the env they have today.
+//! spawn follows. The spawn sites apply the result. A session on Default has no
+//! account of its own, so its own harness keeps the env it has today; it still
+//! gets the project's accounts for the other harnesses, because the CLIs the
+//! agent runs itself follow the project (a Default Claude session in a project
+//! bound to a Codex account runs `codex` on that account).
 //!
 //! A spawn through the user's login shell cannot just apply the patch to the
 //! shell: the profile runs after it and can undo it. `shell_wrap` applies the
@@ -430,7 +433,7 @@ fn env_value(
 mod tests {
     use super::*;
     use crate::accounts::secrets::{LockedKeychain, MemorySecretStore};
-    use crate::agent::{AccountProfile, Claude, InputMode, ModelOption, SessionArgs};
+    use crate::agent::{AccountProfile, Claude, Codex, InputMode, ModelOption, SessionArgs};
 
     // -- Fixtures --
 
@@ -445,6 +448,15 @@ mod tests {
             env,
             removed_at: None,
             created_at: 0,
+        }
+    }
+
+    /// The Codex account `id`, at `/acc/<id>` like the Claude ones, for the
+    /// cases that need a second harness next to Claude.
+    fn codex_account(id: &str, env: Vec<AccountEnvVar>) -> Account {
+        Account {
+            agent_type: "codex".into(),
+            ..account(id, env)
         }
     }
 
@@ -823,15 +835,14 @@ mod tests {
 
     #[test]
     fn session_env_session_scrub_beats_other_account_custom_var() {
-        // Only Claude has a profile so far, so two Claude accounts stand in for
-        // two harnesses: `other` defines a var that the session account's
-        // scrub list names. It is merged first, as session_env merges the
-        // project's other accounts before the session's own.
+        // `other` is a Codex account that defines a var the Claude session
+        // account's scrub list names. It is merged first, as session_env
+        // merges the project's other accounts before the session's own.
         let secrets = MemorySecretStore::default();
-        let other = account("a1", vec![plain("ANTHROPIC_API_KEY", "sk-other")]);
+        let other = codex_account("c1", vec![plain("ANTHROPIC_API_KEY", "sk-other")]);
         let own = account("a2", vec![]);
 
-        let mut patch = account_env(&Claude, &other, &secrets).unwrap();
+        let mut patch = account_env(&Codex, &other, &secrets).unwrap();
         assert!(sets(&patch, "ANTHROPIC_API_KEY", "sk-other"));
         patch.merge(account_env(&Claude, &own, &secrets).unwrap());
 
@@ -839,24 +850,117 @@ mod tests {
         assert!(!patch.set.iter().any(|(key, _)| key == "ANTHROPIC_API_KEY"));
         assert!(removes(&patch, "ANTHROPIC_API_KEY"));
         assert!(sets(&patch, "CLAUDE_CONFIG_DIR", "/acc/a2"));
+        // Nothing of Claude's undoes the other harness's own home.
+        assert!(sets(&patch, "CODEX_HOME", "/acc/c1"));
     }
 
     #[test]
-    fn session_env_merges_the_session_account_after_the_other_accounts() {
-        // The same case through session_env. Claude accounts stand in again, and
-        // the session reports another harness so the project's Claude account
-        // counts as an other harness's.
+    fn session_env_includes_project_codex_account_for_claude_session() {
+        // The project is bound to a Claude and a Codex account, and the
+        // Claude session runs on another Claude account than the project's.
+        // Its own account is applied, and the `codex` the agent runs itself
+        // follows the project's Codex account.
         let secrets = MemorySecretStore::default();
-        let other = account("a1", vec![plain("ANTHROPIC_API_KEY", "sk-other")]);
+        let project = [
+            account("a1", vec![]),
+            codex_account("c1", vec![plain("OPENAI_BASE_URL", "https://codex-proxy")]),
+        ];
         let own = account("a2", vec![]);
 
-        let patch = session_env("codex", Some(&own), &[other], &secrets).unwrap();
+        let patch = session_env("claude", Some(&own), &project, &secrets).unwrap();
+
+        assert!(sets(&patch, "CLAUDE_CONFIG_DIR", "/acc/a2"));
+        assert!(sets(&patch, "CODEX_HOME", "/acc/c1"));
+        assert!(sets(&patch, "OPENAI_BASE_URL", "https://codex-proxy"));
+        // What Verun inherited can sign neither CLI in.
+        assert!(removes(&patch, "ANTHROPIC_API_KEY"));
+        assert!(removes(&patch, "CODEX_API_KEY"));
+        assert!(removes(&patch, "CODEX_ACCESS_TOKEN"));
+    }
+
+    #[test]
+    fn session_env_session_account_wins_over_the_other_accounts_overlapping_vars() {
+        // Both accounts of the project set a proxy, and the Codex one defines a
+        // key that Claude's scrub list names. Each session runs on its own
+        // account's values; the other harness's account keeps its home and
+        // loses only what the session's account overrides.
+        let secrets = MemorySecretStore::default();
+        let claude = account("a1", vec![plain("HTTPS_PROXY", "http://claude-proxy")]);
+        let codex = codex_account(
+            "c1",
+            vec![
+                plain("HTTPS_PROXY", "http://codex-proxy"),
+                plain("ANTHROPIC_API_KEY", "sk-from-codex"),
+            ],
+        );
+        let project = [claude.clone(), codex.clone()];
+
+        let claude_session = session_env("claude", Some(&claude), &project, &secrets).unwrap();
+
+        assert!(sets(&claude_session, "HTTPS_PROXY", "http://claude-proxy"));
+        // Claude's scrub list removes the key the Codex account defined.
+        assert!(removes(&claude_session, "ANTHROPIC_API_KEY"));
+        assert!(sets(&claude_session, "CLAUDE_CONFIG_DIR", "/acc/a1"));
+        assert!(sets(&claude_session, "CODEX_HOME", "/acc/c1"));
+
+        let codex_session = session_env("codex", Some(&codex), &project, &secrets).unwrap();
+
+        assert!(sets(&codex_session, "HTTPS_PROXY", "http://codex-proxy"));
+        // The Codex account's own var is its own, whatever Claude's account removes.
+        assert!(sets(&codex_session, "ANTHROPIC_API_KEY", "sk-from-codex"));
+        assert!(sets(&codex_session, "CODEX_HOME", "/acc/c1"));
+        assert!(sets(&codex_session, "CLAUDE_CONFIG_DIR", "/acc/a1"));
+    }
+
+    #[test]
+    fn session_env_codex_session_includes_its_own_codex_home() {
+        // The session's account is applied whether or not the project binds
+        // it: it was picked when the session started.
+        let secrets = MemorySecretStore::default();
+        let own = codex_account("c1", vec![]);
+
+        let alone = session_env("codex", Some(&own), &[], &secrets).unwrap();
 
         assert_eq!(
-            effect(&patch),
-            effect(&account_env(&Claude, &own, &secrets).unwrap())
+            effect(&alone),
+            effect(&account_env(&Codex, &own, &secrets).unwrap())
         );
-        assert!(removes(&patch, "ANTHROPIC_API_KEY"));
+        assert!(sets(&alone, "CODEX_HOME", "/acc/c1"));
+        assert!(removes(&alone, "CODEX_API_KEY"));
+
+        // The project's Claude account reaches the CLIs the Codex agent runs
+        // itself, beside the session's own.
+        let project = [account("a1", vec![])];
+        let with_claude = session_env("codex", Some(&own), &project, &secrets).unwrap();
+
+        assert!(sets(&with_claude, "CODEX_HOME", "/acc/c1"));
+        assert!(sets(&with_claude, "CLAUDE_CONFIG_DIR", "/acc/a1"));
+    }
+
+    #[test]
+    fn session_env_default_claude_session_follows_the_projects_codex_account() {
+        // A Default Claude session keeps the env it inherited for Claude, and
+        // the `codex` it runs itself uses the project's Codex account. A
+        // Default Codex session is the reverse: its own harness keeps the env
+        // it inherited, and the project's Codex account is not used.
+        let secrets = MemorySecretStore::default();
+        let c1 = codex_account("c1", vec![plain("OPENAI_BASE_URL", "https://codex-proxy")]);
+
+        let claude_session =
+            session_env("claude", None, std::slice::from_ref(&c1), &secrets).unwrap();
+
+        assert_eq!(
+            effect(&claude_session),
+            effect(&account_env(&Codex, &c1, &secrets).unwrap())
+        );
+        assert!(sets(&claude_session, "CODEX_HOME", "/acc/c1"));
+        assert!(!effect(&claude_session)
+            .iter()
+            .any(|(key, _)| key.starts_with("CLAUDE") || key.starts_with("ANTHROPIC")));
+
+        let codex_session = session_env("codex", None, &[c1], &secrets).unwrap();
+
+        assert_eq!(codex_session, EnvPatch::default());
     }
 
     #[test]

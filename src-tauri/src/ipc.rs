@@ -4226,21 +4226,28 @@ mod tests {
 
     #[test]
     fn account_support_info_only_for_supporting_harnesses() {
+        // Claude and Codex both have login and logout commands, take a folder
+        // the user already logged in from, and need nothing explained.
+        let plain_support = AccountSupportInfo {
+            login: true,
+            logout: true,
+            existing_dir: true,
+            required_secret: None,
+            login_hint: None,
+            logout_hint: None,
+            min_cli_version: None,
+            blocked_reason: None,
+        };
         assert_eq!(
             account_support_info(&crate::agent::Claude),
-            Some(AccountSupportInfo {
-                login: true,
-                logout: true,
-                existing_dir: true,
-                required_secret: None,
-                login_hint: None,
-                logout_hint: None,
-                min_cli_version: None,
-                blocked_reason: None,
-            })
+            Some(plain_support.clone())
         );
-        // Codex has not opted in: the trait defaults mean no added accounts.
-        assert_eq!(account_support_info(&crate::agent::Codex), None);
+        assert_eq!(
+            account_support_info(&crate::agent::Codex),
+            Some(plain_support)
+        );
+        // Cursor has not opted in: the trait defaults mean no added accounts.
+        assert_eq!(account_support_info(&crate::agent::Cursor), None);
     }
 
     /// A harness that sets every optional field of the profile and is blocked,

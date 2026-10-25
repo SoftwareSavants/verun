@@ -2040,8 +2040,9 @@ async fn write_to_stdin(
 ///
 /// The env is applied in a fixed order, and a later call wins over an earlier
 /// one: Verun's own vars, then the session's account patch, then two guards
-/// that hold whatever the account says. A Default session has an empty patch
-/// and so inherits Verun's env as it is.
+/// that hold whatever the account says. A Default session's patch holds only
+/// the project's accounts for the other harnesses (see `session_env`), so its
+/// own harness inherits Verun's env as it is.
 pub(crate) fn build_agent_command(
     binary: &str,
     args: &[String],

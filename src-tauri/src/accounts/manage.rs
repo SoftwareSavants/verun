@@ -1012,6 +1012,13 @@ mod tests {
         }
     }
 
+    fn new_codex(label: &str) -> NewAccountInput {
+        NewAccountInput {
+            agent_type: "codex".into(),
+            ..new_claude(label)
+        }
+    }
+
     fn in_dir(mut input: NewAccountInput, dir: &str) -> NewAccountInput {
         input.existing_dir = Some(dir.into());
         input
@@ -1728,6 +1735,67 @@ mod tests {
             invalid_message(result),
             AccountDirError::StandardHome.to_string()
         );
+        assert!(lab.stored().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_managed_codex_account_makes_and_seeds_its_home() {
+        let lab = Lab::new().await;
+
+        let account = lab.create("c1", new_codex("Acme")).await.unwrap();
+
+        let dir = lab.managed_dir("c1");
+        assert_eq!(account.agent_type, "codex");
+        assert!(account.managed_dir);
+        assert_eq!(account.config_dir, dir.to_string_lossy());
+        // Codex exits when its home is missing, so Verun makes it, and keeps
+        // the MCP logins of the account in it.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("config.toml")).unwrap(),
+            "mcp_oauth_credentials_store = \"file\"\n"
+        );
+        assert_eq!(lab.stored().await, vec![account]);
+    }
+
+    #[tokio::test]
+    async fn create_codex_account_in_a_folder_the_user_brought_writes_nothing_to_it() {
+        // Codex is the harness whose home Verun fills when it makes one, so this
+        // is the case that shows a folder the user brought is never prepared.
+        let lab = Lab::new().await;
+        let dir = lab.user_dir(".codex-acme");
+        std::fs::write(dir.join("auth.json"), "{}").unwrap();
+
+        let account = lab
+            .create("c1", in_dir(new_codex("Acme"), "~/.codex-acme"))
+            .await
+            .unwrap();
+
+        assert_eq!(account.config_dir, dir.to_str().unwrap());
+        assert!(!account.managed_dir);
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(files, ["auth.json"], "only what the user put there");
+    }
+
+    #[tokio::test]
+    async fn create_codex_account_refuses_the_standard_home_and_the_home_var() {
+        let lab = Lab::new().await;
+        lab.user_dir(".codex");
+
+        // The Default account's own home.
+        let result = lab
+            .create("c1", in_dir(new_codex("Acme"), "~/.codex"))
+            .await;
+        assert_eq!(
+            invalid_message(result),
+            AccountDirError::StandardHome.to_string()
+        );
+        // The var that points Codex at the account's home: it would re-point it.
+        let env = vec![plain_in("CODEX_HOME", "/elsewhere")];
+        let result = lab.create("c1", with_env(new_codex("Acme"), env)).await;
+        assert_eq!(invalid_message(result), "CODEX_HOME is reserved for Verun.");
         assert!(lab.stored().await.is_empty());
     }
 
