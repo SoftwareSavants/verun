@@ -1016,7 +1016,7 @@ it('maps settings shortcuts with Accounts third', ...) // SettingsPage.test.tsx:
 Behavior:
 - The heading is "Accounts", with the description "New sessions in this project use these accounts. Existing sessions keep theirs."
 - There is one `Select` per harness that has at least one live account. Its options are `Default` (plus " · email" when known), then each account's label. The value is the binding or `'default'`.
-- A change calls `setProjectAccount(projectId, agent, v === 'default' ? null : v)`, then `applySnapshot`, then a success toast. Errors go through `notifyAccountError`, else an error toast.
+- A change calls `setProjectAccount(projectId, agent, v === 'default' ? null : v)`, then a success toast; the store updates from the `accounts-changed` event (never from the returned snapshot). Errors go through `notifyAccountError`, else an error toast.
 
 - [ ] **Step 1: Write the failing tests:**
 ```ts
