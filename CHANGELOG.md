@@ -2,15 +2,16 @@
 
 ## Unreleased
 
-- Tools the Claude CLI marks as needing a person are never auto-approved, even in Full auto, and their approval card shows the CLI's title/description with Deny as the keyboard default
-- MCP server questions (elicitations) show as an in-chat form or link instead of silently stalling the tool call
-- MCP servers that failed or need sign-in are shown above the composer with Sign in / Reconnect actions
-- Claude in Chrome tools now load in UI sessions when "Enabled by default" is on (Verun passes `--chrome`, since the CLI ignores that setting in stream-json mode)
-- Cmd+V in terminals pastes screenshots/copied images and Finder files as quoted paths, so image paste into Claude Code works reliably
-- File mentions with spaces in the path serialize as `@"path"` so drafts and sent messages keep them intact
-- Dropping or pasting documents into the chat composer inserts them as @-mentions; dropped images attach again (native drops never reached the DOM handler)
+## 0.14.6 - 2026-10-25
 
-- Clicking a desktop notification now focuses the right window and session instead of every open window switching tasks (each window sent its own notification with colliding IDs)
+- Tools the Claude CLI marks as needing a person are never auto-approved, even in Full auto, and their approval card shows the CLI's title/description with Deny as the keyboard default (#279)
+- MCP server questions (elicitations) show as an in-chat form or link instead of silently stalling the tool call (#279)
+- MCP servers that failed or need sign-in are shown above the composer with Sign in / Reconnect actions (#279)
+- Claude in Chrome tools now load in UI sessions when "Enabled by default" is on (Verun passes `--chrome`, since the CLI ignores that setting in stream-json mode) (#279)
+- Cmd+V in terminals pastes screenshots/copied images and Finder files as quoted paths, so image paste into Claude Code works reliably (#278)
+- File mentions with spaces in the path serialize as `@"path"` so drafts and sent messages keep them intact (#278)
+- Dropping or pasting documents into the chat composer inserts them as @-mentions; dropped images attach again (native drops never reached the DOM handler) (#278)
+- Clicking a desktop notification now focuses the right window and session instead of every open window switching tasks (each window sent its own notification with colliding IDs) (#278)
 
 ## 0.14.5 - 2026-10-16
 
