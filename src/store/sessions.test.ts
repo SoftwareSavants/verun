@@ -715,6 +715,33 @@ describe('sendMessage with an account problem', () => {
     ])
   })
 
+  // Sending again while the account is still signed out raises the same problem
+  // again. The user sees one toast for it, not one per attempt.
+  test('the same problem again replaces its toast instead of stacking another', async () => {
+    vi.mocked(ipc.sendMessage).mockRejectedValue(signedOut)
+
+    await sendMessage('s-acc', 'one')
+    const first = toasts()[0]
+    await sendMessage('s-acc', 'two')
+    await sendMessage('s-acc', 'three')
+
+    expect(toasts()).toHaveLength(1)
+    expect(toasts()[0].id).toBe(first.id)
+    expect(toasts()[0].id).toBe('account-error:signedOut:a1')
+  })
+
+  test('another account gets a toast of its own', async () => {
+    setSessions(produce(list => { list.push(makeSession({ id: 's-other', status: 'idle', accountId: 'a2' })) }))
+    vi.mocked(ipc.sendMessage)
+      .mockRejectedValueOnce(signedOut)
+      .mockRejectedValueOnce('ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a2","label":"Beta","projects":[],"message":null}')
+
+    await sendMessage('s-acc', 'hi')
+    await sendMessage('s-other', 'hi')
+
+    expect(toasts().map(t => t.message)).toEqual(['Acme is signed out.', 'Beta is signed out.'])
+  })
+
   test('sendMessage still throws every other error, with the session idle again', async () => {
     vi.mocked(ipc.sendMessage).mockRejectedValue('Session is busy')
 

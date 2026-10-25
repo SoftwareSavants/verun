@@ -214,6 +214,48 @@ describe('a queued step the account stops', () => {
     expect(queue()).toEqual([{ message: 'first', armed: false }, { message: 'second', armed: false }])
   })
 
+  // What a step is sent with is what it was queued with. The values are all
+  // different from the defaults, and thinking and fast mode are opposite, so a
+  // swapped or dropped argument cannot pass.
+  test('a step is sent with its own model, modes and attachments', async () => {
+    const attachments: AttachmentRef[] = [{ hash: 'h-1', mimeType: 'image/png', name: 'a.png', size: 3 }]
+    addStep({ sessionId: SID, message: 'fire me', armed: false, attachments, model: 'opus', planMode: true, thinkingMode: false, fastMode: true })
+    const step = extractStep(SID, getSteps(SID)[0].id)!
+
+    await expect(sendStep(step)).resolves.toBe(true)
+
+    expect(ipc.sendMessage).toHaveBeenCalledWith(SID, 'fire me', attachments, 'opus', true, false, true)
+  })
+
+  test('the other way round: no plan mode, thinking on, fast mode off', async () => {
+    addStep({ sessionId: SID, message: 'fire me', armed: false, model: 'sonnet', planMode: false, thinkingMode: true, fastMode: false })
+    const step = extractStep(SID, getSteps(SID)[0].id)!
+
+    await sendStep(step)
+
+    expect(ipc.sendMessage).toHaveBeenCalledWith(SID, 'fire me', undefined, 'sonnet', false, true, false)
+  })
+
+  test('a step queued with no model or modes is sent with none, which is undefined and not null', async () => {
+    addStep({ sessionId: SID, message: 'plain', armed: false })
+    const step = extractStep(SID, getSteps(SID)[0].id)!
+    expect(step).toMatchObject({ model: null, planMode: null, thinkingMode: null, fastMode: null })
+
+    await sendStep(step)
+
+    expect(ipc.sendMessage).toHaveBeenCalledWith(SID, 'plain', undefined, undefined, undefined, undefined, undefined)
+  })
+
+  test('an armed step the session drains is sent with the same arguments', async () => {
+    const attachments: AttachmentRef[] = [{ hash: 'h-2', mimeType: 'image/png', name: 'b.png', size: 4 }]
+    addStep({ sessionId: SID, message: 'drain me', armed: true, attachments, model: 'opus', planMode: true, thinkingMode: false, fastMode: true })
+
+    fire('session-status', { sessionId: SID, status: 'idle' })
+    await settle()
+
+    expect(ipc.sendMessage).toHaveBeenCalledWith(SID, 'drain me', attachments, 'opus', true, false, true)
+  })
+
   test('a step that was sent stays off the queue and the rest is left as it was', async () => {
     addStep({ sessionId: SID, message: 'first', armed: true })
     addStep({ sessionId: SID, message: 'second', armed: true })

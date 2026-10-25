@@ -42,6 +42,24 @@ function initEnvPathFocusRefresh() {
   })
 }
 
+/**
+ * Brings this window to the front. Unminimize and show come first: setFocus
+ * alone is unreliable on macOS when the window is minimized or behind another
+ * app (`open_task_window` in ipc.rs does the same). Each call is tried on its
+ * own and a refusal is logged, so one that fails does not keep the others from
+ * running, and none of them can crash the caller.
+ */
+async function bringWindowForward() {
+  const win = getCurrentWindow()
+  for (const call of ['unminimize', 'show', 'setFocus'] as const) {
+    try {
+      await win[call]()
+    } catch (e) {
+      console.error(`Failed to ${call} the window:`, e)
+    }
+  }
+}
+
 /** Register all event listeners (parallel — these just register callbacks) */
 export async function initListeners() {
   await Promise.all([
@@ -104,10 +122,9 @@ export async function initListeners() {
   // Only the main window has a Settings page. A task window that needs it (an
   // account toast's "Log in") asks with this event; see `openSettings`.
   if (isMainWindow) {
-    listen<{ section: string | null }>(OPEN_SETTINGS_EVENT, (event) => {
+    listen<{ section: string | null }>(OPEN_SETTINGS_EVENT, async (event) => {
       openSettings(event.payload.section ?? undefined)
-      const win = getCurrentWindow()
-      void win.show().then(() => win.setFocus())
+      await bringWindowForward()
     })
   }
 }

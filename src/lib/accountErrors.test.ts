@@ -3,7 +3,7 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 const ui = vi.hoisted(() => ({ addToast: vi.fn(), openSettings: vi.fn() }))
 vi.mock('../store/ui', () => ui)
 
-import { parseAccountError, accountErrorMessage, notifyAccountError, type AccountErrorPayload } from './accountErrors'
+import { parseAccountError, accountErrorMessage, notifyAccountError, failureText, type AccountErrorPayload } from './accountErrors'
 
 /** What `AccountError::to_ipc` sends: `ACCOUNT_ERROR:` and then the JSON. */
 const ipcError = (fields: Pick<AccountErrorPayload, 'kind'> & Partial<AccountErrorPayload>) =>
@@ -13,7 +13,11 @@ const ipcError = (fields: Pick<AccountErrorPayload, 'kind'> & Partial<AccountErr
 function lastToast() {
   const calls = ui.addToast.mock.calls
   const [message, type, options] = calls[calls.length - 1]
-  return { message: message as string, type: type as string, options: options as { title: string; actions?: { label: string; variant?: string; onClick: () => void }[] } }
+  return {
+    message: message as string,
+    type: type as string,
+    options: options as { id?: string; duration?: number; title: string; actions?: { label: string; variant?: string; onClick: () => void }[] },
+  }
 }
 
 beforeEach(() => {
@@ -228,6 +232,53 @@ describe('notifyAccountError', () => {
     expect(ui.addToast).not.toHaveBeenCalled()
   })
 
+  // The same problem raised again (every retry, every window action that hits
+  // it) replaces its toast instead of stacking another, and it stays up long
+  // enough to read and act on.
+  test('a toast is filed under its kind and account, so the same problem replaces it', () => {
+    const cases: [string, string][] = [
+      [ipcError({ kind: 'signedOut', accountId: 'a1', label: 'Acme' }), 'account-error:signedOut:a1'],
+      [ipcError({ kind: 'signedOut', accountId: 'a2', label: 'Beta' }), 'account-error:signedOut:a2'],
+      [ipcError({ kind: 'removed', accountId: 'a1', label: 'Acme' }), 'account-error:removed:a1'],
+      [ipcError({ kind: 'inUse', accountId: 'a1', projects: ['Web'] }), 'account-error:inUse:a1'],
+      [ipcError({ kind: 'busy' }), 'account-error:busy:none'],
+      [ipcError({ kind: 'invalid', message: 'Choose a folder path.' }), 'account-error:invalid:none'],
+      ['ACCOUNT_ERROR:{"kind":"expired"}', 'account-error:expired:none'],
+    ]
+    for (const [error, id] of cases) {
+      ui.addToast.mockClear()
+      notifyAccountError(error)
+      expect(lastToast().options.id, id).toBe(id)
+    }
+  })
+
+  test('the same problem twice gets the same id, a different account another', () => {
+    const idOf = (error: string) => {
+      ui.addToast.mockClear()
+      notifyAccountError(error)
+      return lastToast().options.id
+    }
+    const first = idOf(ipcError({ kind: 'signedOut', accountId: 'a1', label: 'Acme' }))
+    expect(idOf(ipcError({ kind: 'signedOut', accountId: 'a1', label: 'Acme' }))).toBe(first)
+    expect(idOf(ipcError({ kind: 'signedOut', accountId: 'a2', label: 'Beta' }))).not.toBe(first)
+  })
+
+  test('every account toast stays up for 15 seconds', () => {
+    const errors = [
+      ipcError({ kind: 'signedOut', accountId: 'a1', label: 'Acme' }),
+      ipcError({ kind: 'removed', accountId: 'a1', label: 'Acme' }),
+      ipcError({ kind: 'inUse', accountId: 'a1', projects: ['Web'] }),
+      ipcError({ kind: 'busy' }),
+      ipcError({ kind: 'secret', accountId: 'a1', label: 'Acme' }),
+      ipcError({ kind: 'invalid', message: 'Choose a folder path.' }),
+    ]
+    for (const error of errors) {
+      ui.addToast.mockClear()
+      notifyAccountError(error)
+      expect(lastToast().options.duration, error).toBe(15_000)
+    }
+  })
+
   test('toast copy uses plain hyphens, never dashes', () => {
     const errors = [
       ipcError({ kind: 'signedOut', label: 'Acme' }),
@@ -244,5 +295,34 @@ describe('notifyAccountError', () => {
       const copy = [message, options.title, ...(options.actions ?? []).map(a => a.label)]
       for (const text of copy) expect(text).not.toMatch(/[\u2013\u2014]/)
     }
+  })
+})
+
+// For the places that keep a failure on screen (a task row, the new-task draft,
+// the fork menu): an account problem is told in words and also raised as its
+// toast, so the raw ACCOUNT_ERROR string never reaches the user.
+describe('failureText', () => {
+  test('tells an account problem in words and raises its toast', () => {
+    const text = failureText(ipcError({ kind: 'signedOut', accountId: 'a1', label: 'Acme' }))
+
+    expect(text).toBe('Acme is signed out.')
+    expect(ui.addToast).toHaveBeenCalledOnce()
+    expect(lastToast().options.title).toBe('Account signed out')
+    expect(lastToast().options.actions?.map(a => a.label)).toEqual(['Log in'])
+  })
+
+  test('says any other error as the error itself, with no toast', () => {
+    expect(failureText('Project p1 not found')).toBe('Project p1 not found')
+    expect(failureText(new Error('offline'))).toBe('Error: offline')
+    expect(ui.addToast).not.toHaveBeenCalled()
+  })
+
+  test('says any other error as the text it is given, when it is given one', () => {
+    expect(failureText(new Error('offline'), 'offline')).toBe('offline')
+    expect(ui.addToast).not.toHaveBeenCalled()
+  })
+
+  test('an account problem ignores the text it is given', () => {
+    expect(failureText(ipcError({ kind: 'removed', label: 'Acme' }), 'plain')).toBe('Acme was removed. Start a new session on another account.')
   })
 })

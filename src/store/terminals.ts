@@ -2,7 +2,8 @@ import { batch, createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
-import type { TerminalInstance, PtyOutputEvent, PtyExitedEvent } from '../types'
+import { notifyAccountError } from '../lib/accountErrors'
+import type { TerminalInstance, PtyOutputEvent, PtyExitedEvent, PtySpawnResult } from '../types'
 import type { Terminal as XTerm } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import type { SearchAddon } from '@xterm/addon-search'
@@ -148,10 +149,23 @@ export function seedDemoStartCommands(taskIds: string[]) {
   }))
 }
 
-export async function spawnTerminal(taskId: string, rows: number, cols: number, initialCommand?: string, isStartCommand?: boolean): Promise<TerminalInstance> {
+/**
+ * Opens a terminal on the task. Resolves `null` when the project's accounts
+ * stopped it (a secret the keychain won't give, an account that is gone): the
+ * spawn runs on their env, so it fails with an account error. The user has been
+ * shown the account toast with a way to fix it, and there is no terminal. Any
+ * other error is thrown.
+ */
+export async function spawnTerminal(taskId: string, rows: number, cols: number, initialCommand?: string, isStartCommand?: boolean): Promise<TerminalInstance | null> {
   // `directCommand` controls how the shell is invoked (login vs. sh -c). For
   // start commands we pass both so Rust can label the handle correctly.
-  const result = await ipc.ptySpawn(taskId, rows, cols, initialCommand, isStartCommand || undefined, isStartCommand || undefined)
+  let result: PtySpawnResult
+  try {
+    result = await ipc.ptySpawn(taskId, rows, cols, initialCommand, isStartCommand || undefined, isStartCommand || undefined)
+  } catch (e) {
+    if (notifyAccountError(e)) return null
+    throw e
+  }
   const name = isStartCommand ? 'Dev Server' : result.shellName
   const instance: TerminalInstance = { id: result.terminalId, taskId, name, isStartCommand }
   // Batch so the <For> in TerminalPanel mounts the new ShellTerminal with
@@ -249,8 +263,9 @@ export function isStartCommandRunning(taskId: string): boolean {
 
 /** Spawn the start command in a new terminal, removing any dead previous one first.
  *  Wraps the command so the shell exits when it finishes — this way pty-exited fires
- *  and the terminal correctly transitions to stopped state (e.g. on Ctrl+C or crash). */
-export async function spawnStartCommand(taskId: string, command: string): Promise<TerminalInstance> {
+ *  and the terminal correctly transitions to stopped state (e.g. on Ctrl+C or crash).
+ *  Resolves `null` when the project's accounts stopped it, as `spawnTerminal` does. */
+export async function spawnStartCommand(taskId: string, command: string): Promise<TerminalInstance | null> {
   // Remove any existing (stopped) start command terminal
   const existing = startCommandTerminalId(taskId)
   if (existing) {

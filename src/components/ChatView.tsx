@@ -22,6 +22,7 @@ import { planModeForSession, thinkingModeForSession, fastModeForSession } from '
 import { taskById, setTasks } from '../store/tasks'
 import { setMainView } from '../store/editorView'
 import { formatCost, formatTokens } from '../lib/format'
+import { failureText } from '../lib/accountErrors'
 
 function formatDuration(ms: number): string {
   const totalSec = Math.round(ms / 1000)
@@ -342,7 +343,7 @@ const CopyButton: Component<{ text: string }> = (props) => {
   )
 }
 
-const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props) => {
+export const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props) => {
   const canForkWorktree = () => {
     const task = taskById(sessionById(props.sessionId)?.taskId ?? '')
     return task?.isGit !== false && !task?.existingDirectory
@@ -368,7 +369,7 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
       addToast('Forked in this task', 'success')
       close()
     } catch (e) {
-      setError(String(e))
+      setError(failureText(e))
     } finally {
       setBusy(false)
     }
@@ -386,7 +387,9 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
       addToast('Forked to new task', 'success')
       close()
     } catch (e) {
-      setError(String(e))
+      // A project whose accounts can't be read fails the fork with an account
+      // error: the menu says so in words, with the account toast.
+      setError(failureText(e))
     } finally {
       setBusy(false)
     }

@@ -1,15 +1,21 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
+import capability from '../../src-tauri/capabilities/default.json'
 
 // appInit wires every store into the window. These tests cover the accounts
 // part of that wiring; the stores themselves are stubbed.
 const mocks = vi.hoisted(() => {
   const ok = () => vi.fn(() => Promise.resolve())
+  // The window calls in the order they were made.
+  const windowCalls: string[] = []
+  const windowCall = (name: string) => vi.fn(() => { windowCalls.push(name); return Promise.resolve() })
   return {
     initAccountListeners: ok(),
     loadAccounts: ok(),
     openSettings: vi.fn(),
-    show: ok(),
-    setFocus: ok(),
+    unminimize: windowCall('unminimize'),
+    show: windowCall('show'),
+    setFocus: windowCall('setFocus'),
+    windowCalls,
     listeners: new Map<string, (event: { payload: unknown }) => void>(),
     // Read when initListeners runs, so a test can make this a task window.
     window: { isMainWindow: true },
@@ -23,7 +29,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   }),
 }))
 vi.mock('@tauri-apps/api/window', () => ({
-  getCurrentWindow: () => ({ show: mocks.show, setFocus: mocks.setFocus }),
+  getCurrentWindow: () => ({ unminimize: mocks.unminimize, show: mocks.show, setFocus: mocks.setFocus }),
 }))
 vi.mock('@choochmeque/tauri-plugin-notifications-api', () => ({ onNotificationClicked: vi.fn() }))
 vi.mock('./notifications', () => ({ consumePendingNav: vi.fn(), clearDeliveredNotifications: vi.fn() }))
@@ -69,8 +75,10 @@ beforeEach(() => {
   mocks.initAccountListeners.mockClear()
   mocks.loadAccounts.mockClear()
   mocks.openSettings.mockClear()
+  mocks.unminimize.mockClear()
   mocks.show.mockClear()
   mocks.setFocus.mockClear()
+  mocks.windowCalls.length = 0
   mocks.listeners.clear()
   mocks.window.isMainWindow = true
 })
@@ -98,11 +106,36 @@ describe('open-settings', () => {
 
     const handler = mocks.listeners.get('open-settings')
     expect(handler).toBeDefined()
-    handler!({ payload: { section: 'accounts' } })
+    await handler!({ payload: { section: 'accounts' } })
 
     expect(mocks.openSettings).toHaveBeenCalledWith('accounts')
-    await vi.waitFor(() => expect(mocks.setFocus).toHaveBeenCalledTimes(1))
-    expect(mocks.show).toHaveBeenCalledTimes(1)
+    // Unminimize and show first: setFocus alone is unreliable on macOS when the
+    // window is minimized or behind another app (open_task_window does the same).
+    expect(mocks.windowCalls).toEqual(['unminimize', 'show', 'setFocus'])
+  })
+
+  describe('when a window call fails', () => {
+    let error: ReturnType<typeof vi.spyOn>
+    beforeEach(() => { error = vi.spyOn(console, 'error').mockImplementation(() => {}) })
+    afterEach(() => error.mockRestore())
+
+    // Each call is independent: a refused unminimize (a window that is not
+    // minimized, a missing permission) must not keep the window from being shown.
+    test.each(['unminimize', 'show', 'setFocus'] as const)('%s failing is logged, and the others still run', async (name) => {
+      mocks[name].mockImplementationOnce(() => {
+        mocks.windowCalls.push(name)
+        return Promise.reject(new Error('not allowed'))
+      })
+      await initListeners()
+
+      await mocks.listeners.get('open-settings')!({ payload: { section: 'accounts' } })
+
+      expect(mocks.windowCalls).toEqual(['unminimize', 'show', 'setFocus'])
+      expect(error).toHaveBeenCalledOnce()
+      expect(String(error.mock.calls[0])).toContain(name)
+      // Settings is open whatever happened to the window.
+      expect(mocks.openSettings).toHaveBeenCalledWith('accounts')
+    })
   })
 
   test('a request without a section opens Settings where it was', async () => {
@@ -119,5 +152,19 @@ describe('open-settings', () => {
     await initListeners()
 
     expect(mocks.listeners.has('open-settings')).toBe(false)
+  })
+})
+
+// A window call the capability does not grant is refused at runtime and nowhere
+// else, so the build and the other tests pass without it. These are the calls
+// that bring a window to the front.
+describe('the window capability', () => {
+  test('grants every call that brings a window forward', () => {
+    expect(capability.windows).toEqual(expect.arrayContaining(['main', 'task-*']))
+    expect(capability.permissions).toEqual(expect.arrayContaining([
+      'core:window:allow-unminimize',
+      'core:window:allow-show',
+      'core:window:allow-set-focus',
+    ]))
   })
 })

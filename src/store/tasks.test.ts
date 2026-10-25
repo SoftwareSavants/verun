@@ -32,8 +32,9 @@ vi.mock('../lib/ipc', () => ({
 // imports can otherwise finish after this suite, leaking rejected listeners.
 vi.mock('../lib/lsp', () => ({ stopLspClient: vi.fn().mockResolvedValue(undefined) }))
 
-import { tasks, setTasks, startTaskCreation, retryTaskCreation, loadTasks, archiveTask, getTaskError, isTaskCreating } from './tasks'
+import { tasks, setTasks, startTaskCreation, retryTaskCreation, loadTasks, archiveTask, restoreTask, getTaskError, isTaskCreating } from './tasks'
 import { toasts, setToasts } from './ui'
+import * as ipc from '../lib/ipc'
 
 const makeTask = (overrides: Partial<Task> = {}): Task => ({
   id: 'task-real',
@@ -190,5 +191,47 @@ describe('a task that fails to be created', () => {
 
     expect(getTaskError(id)).toBe('Acme is signed out.')
     expect(toasts().map(t => t.title)).toEqual(['Account signed out'])
+  })
+})
+
+// Restoring runs the project's setup hook again, on the project's accounts. One
+// the keychain won't give a secret for fails the restore with an account error:
+// the task stays archived, and the user gets the toast that leads to the fix.
+describe('restoreTask', () => {
+  const secret = 'ACCOUNT_ERROR:{"kind":"secret","accountId":"a1","label":"Acme","projects":[],"message":"ANTHROPIC_API_KEY has no stored value"}'
+
+  beforeEach(() => {
+    setTasks([makeTask({ id: 'task-real', archived: true })])
+    setToasts([])
+    vi.mocked(ipc.restoreTask).mockReset()
+  })
+
+  test('a restored task is active again', async () => {
+    vi.mocked(ipc.restoreTask).mockResolvedValue(undefined)
+
+    await expect(restoreTask('task-real')).resolves.toBe(true)
+
+    expect(tasks[0].archived).toBe(false)
+    expect(toasts()).toEqual([])
+  })
+
+  test('a restore the account stopped resolves false, keeps the task archived and shows the toast', async () => {
+    vi.mocked(ipc.restoreTask).mockRejectedValue(secret)
+
+    await expect(restoreTask('task-real')).resolves.toBe(false)
+
+    expect(tasks[0].archived).toBe(true)
+    expect(toasts().map(t => ({ title: t.title, message: t.message }))).toEqual([
+      { title: 'Keychain error', message: "Couldn't read a secret for Acme from the keychain." },
+    ])
+  })
+
+  test('any other failure still rejects, with the task archived and no toast', async () => {
+    vi.mocked(ipc.restoreTask).mockRejectedValue('Worktree is gone')
+
+    await expect(restoreTask('task-real')).rejects.toBe('Worktree is gone')
+
+    expect(tasks[0].archived).toBe(true)
+    expect(toasts()).toEqual([])
   })
 })

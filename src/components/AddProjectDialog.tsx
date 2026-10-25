@@ -89,6 +89,9 @@ export const AddProjectDialog: Component<Props> = (props) => {
       }
     } catch (e) {
       if (!notifyAccountError(e)) addToast(String(e), 'error')
+    } finally {
+      // The dialog stays mounted and is shown again for the next project, so
+      // Detect is usable again once the send is over, whichever way it went.
       setAutoDetecting(false)
     }
   }

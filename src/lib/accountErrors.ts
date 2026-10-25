@@ -98,6 +98,25 @@ export function accountErrorMessage(err: unknown): string | null {
   return error ? toastFor(error).message : null
 }
 
+/** How long an account toast stays up: long enough to read it and act on it. */
+const ACCOUNT_TOAST_MS = 15_000
+
+/**
+ * Shows the toast of an account error. It is filed under its kind and account,
+ * so the same problem raised again (every retry, every action that runs into
+ * it) replaces the toast that is up instead of stacking another one.
+ */
+function showToast(error: AccountErrorPayload): string {
+  const { title, message, actions } = toastFor(error)
+  addToast(message, 'error', {
+    id: `account-error:${error.kind}:${error.accountId ?? 'none'}`,
+    duration: ACCOUNT_TOAST_MS,
+    title,
+    actions,
+  })
+  return message
+}
+
 /**
  * Shows `err` as a toast with a way to fix it, if it is an account error.
  * Returns whether it was one, so the caller can skip its own handling:
@@ -107,7 +126,17 @@ export function accountErrorMessage(err: unknown): string | null {
 export function notifyAccountError(err: unknown): boolean {
   const error = parseAccountError(err)
   if (!error) return false
-  const { title, message, actions } = toastFor(error)
-  addToast(message, 'error', actions ? { title, actions } : { title })
+  showToast(error)
   return true
+}
+
+/**
+ * What to say about a failure in a place that keeps it on screen (a task's
+ * row, the new-task draft, a menu). An account problem is told in words and
+ * also raised as its toast, with the way to fix it, so the raw `ACCOUNT_ERROR:`
+ * string never reaches the user. Any other error is `plain`.
+ */
+export function failureText(err: unknown, plain: string = String(err)): string {
+  const error = parseAccountError(err)
+  return error ? showToast(error) : plain
 }

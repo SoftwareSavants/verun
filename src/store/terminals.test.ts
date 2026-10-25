@@ -36,7 +36,9 @@ import {
   spawnStartCommand,
   registerHookTerminal,
   refitActiveTerminal,
+  closeTerminal,
 } from './terminals'
+import { toasts, setToasts } from './ui'
 import type { PtyListEntry, PtyOutputEvent } from '../types'
 
 function makeEntry(overrides: Partial<PtyListEntry> = {}): PtyListEntry {
@@ -302,4 +304,85 @@ test('reactivating a retained terminal resumes output from its last checkpoint',
   vi.mocked(ipc.ptyListen).mockClear()
   refitActiveTerminal('t-1')
   expect(ipc.ptyListen).toHaveBeenCalledWith('returning', 42)
+})
+
+// A project whose accounts can't be read (a secret the keychain won't give, an
+// account that is gone) fails every terminal spawn with an account error. It is
+// shown as its toast with the way to fix it, wherever the spawn came from: the
+// new-terminal button, the shortcut, the start command, or the shell that
+// replaces the last one closed. No terminal is made, and nothing is left
+// rejecting with a raw error string that nobody catches.
+describe('spawning on a project whose accounts cannot be read', () => {
+  const secret = 'ACCOUNT_ERROR:{"kind":"secret","accountId":"a1","label":"Acme","projects":[],"message":"ANTHROPIC_API_KEY has no stored value"}'
+  const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+  const titles = () => toasts().map(t => t.title)
+
+  beforeEach(() => {
+    setToasts([])
+    vi.mocked(ipc.ptySpawn).mockReset()
+  })
+
+  test('spawnTerminal shows the account toast and makes no terminal', async () => {
+    vi.mocked(ipc.ptySpawn).mockRejectedValueOnce(secret)
+    const activeBefore = activeTerminalId('t-1')
+
+    // null: nothing was spawned, and the user has been told why.
+    await expect(spawnTerminal('t-1', 24, 80)).resolves.toBeNull()
+
+    expect(terminalsForTask('t-1')).toHaveLength(0)
+    expect(activeTerminalId('t-1')).toBe(activeBefore)
+    expect(titles()).toEqual(['Keychain error'])
+  })
+
+  test('spawnTerminal still returns the terminal it made, with no toast', async () => {
+    vi.mocked(ipc.ptySpawn).mockResolvedValueOnce({ terminalId: 'p-ok', shellName: 'zsh' })
+
+    await expect(spawnTerminal('t-1', 24, 80)).resolves.toMatchObject({ id: 'p-ok', taskId: 't-1', name: 'zsh' })
+
+    expect(terminalsForTask('t-1').map(t => t.id)).toEqual(['p-ok'])
+    expect(toasts()).toEqual([])
+  })
+
+  test('spawnTerminal still rejects with any other failure, and shows no toast', async () => {
+    vi.mocked(ipc.ptySpawn).mockRejectedValueOnce('Task t-1 not found')
+
+    await expect(spawnTerminal('t-1', 24, 80)).rejects.toBe('Task t-1 not found')
+
+    expect(terminalsForTask('t-1')).toHaveLength(0)
+    expect(toasts()).toEqual([])
+  })
+
+  test('the start command is stopped the same way', async () => {
+    vi.mocked(ipc.ptySpawn).mockRejectedValueOnce(secret)
+
+    await expect(spawnStartCommand('t-1', 'pnpm dev')).resolves.toBeNull()
+
+    expect(terminalsForTask('t-1')).toHaveLength(0)
+    expect(titles()).toEqual(['Keychain error'])
+  })
+
+  test('the shell that replaces the last one closed is stopped the same way, with nothing left unhandled', async () => {
+    // Not t-1: the harness marks it as being deleted, which suppresses the replacement.
+    vi.mocked(ipc.ptySpawn).mockResolvedValueOnce({ terminalId: 'last', shellName: 'zsh' })
+    await spawnTerminal('t-auto', 24, 80)
+    vi.mocked(ipc.ptySpawn).mockRejectedValueOnce(secret)
+
+    // Closing the last shell opens a fresh one, which the account then refuses.
+    await closeTerminal('last')
+    await settle()
+
+    expect(ipc.ptySpawn).toHaveBeenCalledTimes(2)
+    expect(titles()).toEqual(['Keychain error'])
+    expect(terminalsForTask('t-auto')).toHaveLength(0)
+  })
+
+  test('trying again raises the same toast once, not a second one', async () => {
+    vi.mocked(ipc.ptySpawn).mockRejectedValue(secret)
+
+    await spawnTerminal('t-1', 24, 80)
+    await spawnTerminal('t-1', 24, 80)
+    await spawnStartCommand('t-1', 'pnpm dev')
+
+    expect(titles()).toEqual(['Keychain error'])
+  })
 })

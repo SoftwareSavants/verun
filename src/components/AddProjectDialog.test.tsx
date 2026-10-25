@@ -51,6 +51,8 @@ function detect() {
   fireEvent.click(screen.getByRole('button', { name: 'Detect' }))
 }
 
+const detectButton = () => screen.getByRole('button', { name: 'Detect' }) as HTMLButtonElement
+
 beforeEach(() => {
   mocks.createTask.mockReset()
   mocks.sendMessage.mockReset()
@@ -68,6 +70,48 @@ describe('AddProjectDialog auto-detect', () => {
 
     await waitFor(() => expect(toastsOfType('success')).toEqual([SUCCESS]))
     expect(mocks.sendMessage).toHaveBeenCalledWith('s-001', expect.stringContaining('/tmp/my-app'))
+  })
+
+  // The dialog stays mounted and is shown again for the next project, so its
+  // button has to be usable again once the send is over, whichever way it went.
+  test('Detect is usable again once the prompt was sent', async () => {
+    mocks.sendMessage.mockResolvedValue(true)
+
+    detect()
+
+    expect(detectButton().disabled).toBe(true)
+    await waitFor(() => expect(toastsOfType('success')).toEqual([SUCCESS]))
+    await waitFor(() => expect(detectButton().disabled).toBe(false))
+  })
+
+  test('Detect is usable again when the account stopped the send', async () => {
+    mocks.sendMessage.mockResolvedValue(false)
+
+    detect()
+
+    await waitFor(() => expect(mocks.sendMessage).toHaveBeenCalledOnce())
+    await waitFor(() => expect(detectButton().disabled).toBe(false))
+  })
+
+  test('Detect stays busy while the prompt is being sent', async () => {
+    let finish!: (sent: boolean) => void
+    mocks.sendMessage.mockReturnValue(new Promise<boolean>(resolve => { finish = resolve }))
+
+    detect()
+
+    await waitFor(() => expect(mocks.sendMessage).toHaveBeenCalledOnce())
+    expect(detectButton().disabled).toBe(true)
+    finish(true)
+    await waitFor(() => expect(detectButton().disabled).toBe(false))
+  })
+
+  test('Detect is usable again when sending failed', async () => {
+    mocks.sendMessage.mockRejectedValue('Session is busy')
+
+    detect()
+
+    await waitFor(() => expect(toastsOfType('error')).toEqual(['Session is busy']))
+    await waitFor(() => expect(detectButton().disabled).toBe(false))
   })
 
   test('does not say so when the send was blocked by an account problem', async () => {
