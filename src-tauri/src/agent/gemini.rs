@@ -1,10 +1,10 @@
+use super::account_files::{account_home_dir, write_if_absent};
 use super::{AccountHome, AccountProfile, Agent, AgentKind, InputMode, SessionArgs};
 use crate::accounts::identity::{
     read_json_with_retry, unknown_identity, unread_file_identity, AccountIdentity, SignInStatus,
 };
 use serde_json::Value;
-use std::ffi::{OsStr, OsString};
-use std::io::Write;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// The env var that stands in for `HOME` as far as Gemini goes: it keeps its
@@ -159,9 +159,9 @@ impl Agent for Gemini {
     }
 
     fn account_standard_home(&self, user_home: &Path) -> Option<PathBuf> {
-        // `GEMINI_CLI_HOME` defaults to `$HOME`, so with nothing set Gemini's
-        // files are in `.gemini` of the user's home, whatever Verun inherited.
-        Some(user_home.to_path_buf())
+        // Where Gemini's home is when `GEMINI_CLI_HOME` is not set, whatever
+        // Verun inherited.
+        Some(standard_home(user_home))
     }
 
     fn prepare_account_dir(&self, dir: &Path) -> std::io::Result<()> {
@@ -175,20 +175,10 @@ impl Agent for Gemini {
     }
 }
 
-/// Writes `contents` to `path` unless something is there already, and leaves
-/// what is there alone. The file is created only if it does not exist, in one
-/// step, so one that appears after a look at the path is not overwritten
-/// either.
-fn write_if_absent(path: &Path, contents: &str) -> std::io::Result<()> {
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
-        Ok(mut file) => file.write_all(contents.as_bytes()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e),
-    }
+/// Gemini's home when `GEMINI_CLI_HOME` is not set: the user's home itself,
+/// which has the files in its `.gemini`.
+fn standard_home(user_home: &Path) -> PathBuf {
+    user_home.to_path_buf()
 }
 
 /// Who `gemini` is signed in as at `home`. Gemini caches the Google account in
@@ -199,13 +189,18 @@ fn write_if_absent(path: &Path, contents: &str) -> std::io::Result<()> {
 /// Gemini writes it, says nothing either way, so it is `Unknown` rather than a
 /// guess at "signed out".
 ///
+/// Gemini takes `$HOME` to be the dir of an added account, or for Default the
+/// `GEMINI_CLI_HOME` Verun inherited, else the user's home: Default sessions
+/// keep Verun's own env, so a `GEMINI_CLI_HOME` exported where Verun was
+/// launched is the Default home. An empty or non-UTF-8 value counts as unset.
+///
 /// `inherited_gemini_home` is the `GEMINI_CLI_HOME` Verun itself was started
 /// with, passed in so tests need not touch the process env.
 fn gemini_identity(
     home: AccountHome<'_>,
     inherited_gemini_home: Option<OsString>,
 ) -> AccountIdentity {
-    let path = gemini_home_dir(home, inherited_gemini_home)
+    let path = account_home_dir(home, inherited_gemini_home, standard_home)
         .join(".gemini")
         .join("google_accounts.json");
     let Some(accounts) = read_json_with_retry(&path) else {
@@ -222,22 +217,6 @@ fn gemini_identity(
             ..AccountIdentity::default()
         },
         Some(_) => unknown_identity(&path, "has an active account that is not an email"),
-    }
-}
-
-/// The dir `gemini` takes for `$HOME`: the dir of an added account, or for
-/// Default the `GEMINI_CLI_HOME` Verun inherited, else the user's home. Default
-/// sessions keep Verun's own env, so a `GEMINI_CLI_HOME` exported where Verun
-/// was launched is the Default home. A value that is empty or not UTF-8 counts
-/// as unset.
-fn gemini_home_dir(home: AccountHome<'_>, inherited_gemini_home: Option<OsString>) -> PathBuf {
-    match home {
-        AccountHome::Dir(dir) => dir.to_path_buf(),
-        AccountHome::Default { user_home } => inherited_gemini_home
-            .as_deref()
-            .and_then(OsStr::to_str)
-            .filter(|dir| !dir.is_empty())
-            .map_or_else(|| user_home.to_path_buf(), PathBuf::from),
     }
 }
 

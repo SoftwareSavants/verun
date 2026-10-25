@@ -1,3 +1,4 @@
+use super::account_files::{account_home_dir, write_if_absent};
 use super::codex_developer_instructions::{
     CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS, CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 };
@@ -11,14 +12,13 @@ use crate::accounts::identity::{
 };
 use crate::policy::TrustLevel;
 use serde_json::{json, Value};
-use std::ffi::{OsStr, OsString};
-use std::io::Write;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// The env var that moves all of Codex's state: config, sessions and the
 /// signed-in account. Codex takes its value literally and exits when the dir
 /// does not exist.
-const HOME_VAR: &str = "CODEX_HOME";
+const CODEX_HOME_VAR: &str = "CODEX_HOME";
 
 /// What Verun puts in the `config.toml` of a home it makes. Codex keeps the
 /// OAuth tokens of MCP servers in one keychain entry that every home shares,
@@ -425,7 +425,7 @@ impl Agent for Codex {
             // Everything that can sign Codex in or point it at another
             // identity. An account that needs one sets it in its own env.
             scrub_vars: &[
-                HOME_VAR,
+                CODEX_HOME_VAR,
                 "CODEX_API_KEY",
                 "CODEX_ACCESS_TOKEN",
                 "OPENAI_FEDERATION_RULE_ID",
@@ -441,7 +441,13 @@ impl Agent for Codex {
             api_key_vars: &[],
             login_args: Some(&["login"]),
             logout_args: Some(&["logout"]),
-            login_hint: None,
+            // The login terminal runs `codex login`, the browser sign-in. A key
+            // login is `codex login --with-api-key`, which reads the key from
+            // stdin, so the user runs it by hand where CODEX_HOME is the
+            // account's: in a task shell of a project that uses it.
+            login_hint: Some(
+                "To use an API key instead, run `codex login --with-api-key` in a task shell of a project that uses this account.",
+            ),
             logout_hint: None,
             allows_existing_dir: true,
             required_secret: None,
@@ -451,7 +457,10 @@ impl Agent for Codex {
     }
 
     fn account_home_env(&self, dir: &Path) -> Vec<(String, String)> {
-        vec![(HOME_VAR.to_string(), dir.to_string_lossy().into_owned())]
+        vec![(
+            CODEX_HOME_VAR.to_string(),
+            dir.to_string_lossy().into_owned(),
+        )]
     }
 
     fn account_standard_home(&self, user_home: &Path) -> Option<PathBuf> {
@@ -466,29 +475,13 @@ impl Agent for Codex {
     }
 
     fn read_account_identity(&self, home: AccountHome<'_>) -> AccountIdentity {
-        codex_identity(home, std::env::var_os(HOME_VAR))
+        codex_identity(home, std::env::var_os(CODEX_HOME_VAR))
     }
 }
 
 /// Codex's home when `CODEX_HOME` is not set.
 fn standard_home(user_home: &Path) -> PathBuf {
     user_home.join(".codex")
-}
-
-/// Writes `contents` to `path` unless something is there already, and leaves
-/// what is there alone. The file is created only if it does not exist, in one
-/// step, so one that appears after a look at the path is not overwritten
-/// either.
-fn write_if_absent(path: &Path, contents: &str) -> std::io::Result<()> {
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
-        Ok(mut file) => file.write_all(contents.as_bytes()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e),
-    }
 }
 
 /// Who `codex` is signed in as at `home`. The login is `auth.json`, which
@@ -502,20 +495,29 @@ fn write_if_absent(path: &Path, contents: &str) -> std::io::Result<()> {
 /// tokens, no key) is signed out. Tokens are never used, only the claims of the
 /// `id_token` that say who the account is.
 ///
+/// The login is in the dir of an added account, or for Default in the
+/// `CODEX_HOME` Verun inherited, else `~/.codex`: Default sessions keep Verun's
+/// own env, so a `CODEX_HOME` exported where Verun was launched is the Default
+/// home. As Codex reads the variable, a value that is empty or not UTF-8 counts
+/// as unset.
+///
 /// `inherited_codex_home` is the `CODEX_HOME` Verun itself was started with,
 /// passed in so tests need not touch the process env.
 fn codex_identity(
     home: AccountHome<'_>,
     inherited_codex_home: Option<OsString>,
 ) -> AccountIdentity {
-    let path = codex_home_dir(home, inherited_codex_home).join("auth.json");
+    let path = account_home_dir(home, inherited_codex_home, standard_home).join("auth.json");
     let Some(auth) = read_json_with_retry(&path) else {
         return unread_file_identity(&path);
     };
     if !auth.is_object() {
         return unknown_identity(&path, "is not a JSON object");
     }
-    let has_key = non_empty_str(&auth, "OPENAI_API_KEY").is_some();
+    let has_key = auth
+        .get("OPENAI_API_KEY")
+        .and_then(Value::as_str)
+        .is_some_and(|key| !key.is_empty());
     let mode = match auth.get("auth_mode") {
         None | Some(Value::Null) => Some(if has_key { "apikey" } else { "chatgpt" }),
         Some(mode) => mode.as_str(),
@@ -551,31 +553,32 @@ fn chatgpt_identity(path: &Path, auth: &Value) -> AccountIdentity {
         email: non_empty_str(&claims, "email"),
         plan: claims
             .get("https://api.openai.com/auth")
-            .and_then(|auth| non_empty_str(auth, "chatgpt_plan_type")),
+            .and_then(|openai| non_empty_str(openai, "chatgpt_plan_type"))
+            .map(|plan_type| plan_name(&plan_type)),
         ..AccountIdentity::default()
     }
 }
 
-/// The dir `codex` keeps its files in: the dir of an added account, or for
-/// Default the `CODEX_HOME` Verun inherited, else `~/.codex`. Default sessions
-/// keep Verun's own env, so a `CODEX_HOME` exported where Verun was launched
-/// is the Default home. As Codex reads the variable, a value that is empty or
-/// not UTF-8 counts as unset.
-fn codex_home_dir(home: AccountHome<'_>, inherited_codex_home: Option<OsString>) -> PathBuf {
-    match home {
-        AccountHome::Dir(dir) => dir.to_path_buf(),
-        AccountHome::Default { user_home } => inherited_codex_home
-            .as_deref()
-            .and_then(OsStr::to_str)
-            .filter(|dir| !dir.is_empty())
-            .map_or_else(|| standard_home(user_home), PathBuf::from),
+/// The plan name for a `chatgpt_plan_type`, as the ChatGPT plans are called;
+/// types not listed pass through.
+fn plan_name(plan_type: &str) -> String {
+    match plan_type {
+        "free" => "Free",
+        "plus" => "Plus",
+        "pro" => "Pro",
+        "team" => "Team",
+        "business" => "Business",
+        "enterprise" => "Enterprise",
+        "edu" => "Edu",
+        other => other,
     }
+    .to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use crate::accounts::identity::jwt;
     use std::fs;
     use tempfile::TempDir;
 
@@ -598,7 +601,9 @@ mod tests {
                 api_key_vars: &[],
                 login_args: Some(&["login"]),
                 logout_args: Some(&["logout"]),
-                login_hint: None,
+                login_hint: Some(
+                    "To use an API key instead, run `codex login --with-api-key` in a task shell of a project that uses this account."
+                ),
                 logout_hint: None,
                 allows_existing_dir: true,
                 required_secret: None,
@@ -670,15 +675,6 @@ mod tests {
         }
     }
 
-    /// A JWT with `payload` as its claims, signed by nobody: Verun reads the
-    /// claims and never checks them.
-    fn jwt(payload: &str) -> String {
-        format!(
-            "eyJhbGciOiJub25lIn0.{}.c2ln",
-            URL_SAFE_NO_PAD.encode(payload)
-        )
-    }
-
     /// An `id_token` whose claims are `claims`.
     fn id_token(claims: Value) -> String {
         jwt(&claims.to_string())
@@ -740,10 +736,36 @@ mod tests {
                 status: SignInStatus::SignedIn,
                 email: Some("dev@acme.com".into()),
                 org_name: None,
-                plan: Some("pro".into()),
+                plan: Some("Pro".into()),
                 providers: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn codex_identity_names_plans_and_passes_other_types_through() {
+        for (plan_type, plan) in [
+            ("free", "Free"),
+            ("plus", "Plus"),
+            ("pro", "Pro"),
+            ("team", "Team"),
+            ("business", "Business"),
+            ("enterprise", "Enterprise"),
+            ("edu", "Edu"),
+            // A plan this reader does not know is shown as Codex spells it.
+            ("some_new_plan", "some_new_plan"),
+        ] {
+            let dir = TempDir::new().unwrap();
+            let token = id_token(json!({
+                "https://api.openai.com/auth": {"chatgpt_plan_type": plan_type},
+            }));
+            write_auth(dir.path(), &chatgpt_auth(&token).to_string());
+            assert_eq!(
+                identity_at(dir.path()).plan.as_deref(),
+                Some(plan),
+                "type: {plan_type}"
+            );
+        }
     }
 
     #[test]
@@ -800,7 +822,7 @@ mod tests {
                 AccountIdentity {
                     status: SignInStatus::SignedIn,
                     email: Some("dev@acme.com".into()),
-                    plan: Some("pro".into()),
+                    plan: Some("Pro".into()),
                     ..AccountIdentity::default()
                 },
             ),

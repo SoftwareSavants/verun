@@ -38,7 +38,9 @@
 //! 5. **Accounts** - `account_profile`, `account_home_env`,
 //!    `account_standard_home`, `prepare_account_dir`, `read_account_identity`,
 //!    `account_blocked_reason`. Describe how the CLI runs as an added account
-//!    next to the user's own login; the `accounts` module acts on them.
+//!    next to the user's own login; the `accounts` module acts on them. What the
+//!    harnesses share for them (the inherited home var, seeding a home Verun
+//!    makes) is in `account_files`.
 //!
 //! ## Turn model
 //!
@@ -94,6 +96,7 @@
 //! - Don't add state to the agent struct. Impls are instantiated on demand
 //!   via [`AgentKind::implementation`] and are expected to be zero-sized.
 
+mod account_files;
 pub(crate) mod claude;
 mod codex;
 pub mod codex_developer_instructions;
@@ -741,8 +744,11 @@ pub trait Agent: Send + Sync {
         Vec::new()
     }
 
-    /// The CLI's own home (Claude: `~/.claude`), which an added account may
-    /// not use: named explicitly it is a login separate from Default.
+    /// The CLI's own home (Claude: `~/.claude`, Codex: `~/.codex`, Gemini: the
+    /// user's home), which an added account may not use. For Claude, named
+    /// explicitly it is a login separate from Default's; for Codex and Gemini it
+    /// is the very home Default uses, so the account would be Default under
+    /// another name.
     fn account_standard_home(&self, _user_home: &Path) -> Option<PathBuf> {
         None
     }

@@ -75,6 +75,17 @@ pub fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
         .filter(serde_json::Value::is_object)
 }
 
+/// A JWT with `payload` as its claims, signed by nobody: `decode_jwt_payload`
+/// reads the claims and never checks them. For the tests of whatever reads a
+/// token.
+#[cfg(test)]
+pub(crate) fn jwt(payload: &str) -> String {
+    format!(
+        "eyJhbGciOiJub25lIn0.{}.c2ln",
+        URL_SAFE_NO_PAD.encode(payload)
+    )
+}
+
 /// Reads a JSON file, or `None` when it is missing, unreadable or not JSON.
 ///
 /// A CLI may rewrite its file in place (Codex truncates and writes
@@ -172,13 +183,6 @@ mod tests {
     use base64::engine::general_purpose::STANDARD;
     use serde_json::json;
     use tempfile::TempDir;
-
-    fn jwt(payload: &str) -> String {
-        format!(
-            "eyJhbGciOiJub25lIn0.{}.c2ln",
-            URL_SAFE_NO_PAD.encode(payload)
-        )
-    }
 
     #[test]
     fn decode_jwt_payload_reads_middle_segment() {

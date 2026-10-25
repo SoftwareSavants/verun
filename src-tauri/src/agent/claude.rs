@@ -1,3 +1,4 @@
+use super::account_files::inherited_home_dir;
 use super::{
     AbortStrategy, AccountHome, AccountProfile, Agent, AgentKind, AgentSkill, InputMode,
     SessionArgs,
@@ -9,7 +10,7 @@ use crate::accounts::identity::{
 use crate::claude_home::ClaudeHome;
 use crate::markdown_skills::{scan_commands_dir, scan_skills_dir};
 use std::collections::HashSet;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// The env var that moves all of Claude's state: settings, history and the
@@ -358,10 +359,10 @@ fn claude_identity(
 fn claude_json_path(home: AccountHome<'_>, inherited_config_dir: Option<OsString>) -> PathBuf {
     let claude_home = match home {
         AccountHome::Dir(dir) => ClaudeHome::for_config_dir(dir),
-        AccountHome::Default { user_home } => ClaudeHome::default_home(
-            user_home,
-            inherited_config_dir.as_deref().and_then(OsStr::to_str),
-        ),
+        AccountHome::Default { user_home } => {
+            let inherited = inherited_home_dir(inherited_config_dir);
+            ClaudeHome::default_home(user_home, inherited.as_deref())
+        }
     };
     claude_home.config_json().to_path_buf()
 }

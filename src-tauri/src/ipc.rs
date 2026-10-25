@@ -4226,8 +4226,8 @@ mod tests {
 
     #[test]
     fn account_support_info_only_for_supporting_harnesses() {
-        // Claude and Codex both have login and logout commands, take a folder
-        // the user already logged in from, and need nothing explained.
+        // Claude has login and logout commands, takes a folder the user already
+        // logged in from, and needs nothing explained.
         let plain_support = AccountSupportInfo {
             login: true,
             logout: true,
@@ -4242,9 +4242,17 @@ mod tests {
             account_support_info(&crate::agent::Claude),
             Some(plain_support.clone())
         );
+        // Codex is the same, plus a hint for the API key login that its login
+        // terminal does not offer.
         assert_eq!(
             account_support_info(&crate::agent::Codex),
-            Some(plain_support)
+            Some(AccountSupportInfo {
+                login_hint: Some(
+                    "To use an API key instead, run `codex login --with-api-key` in a task shell of a project that uses this account."
+                        .into()
+                ),
+                ..plain_support
+            })
         );
         // Cursor has not opted in: the trait defaults mean no added accounts.
         assert_eq!(account_support_info(&crate::agent::Cursor), None);
