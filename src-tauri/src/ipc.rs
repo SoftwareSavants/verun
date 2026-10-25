@@ -2618,6 +2618,13 @@ pub async fn read_clipboard() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Clipboard contents shaped for pasting: Finder files, an image saved to a
+/// temp file, or text.
+#[tauri::command]
+pub async fn read_clipboard_paste() -> Result<crate::clipboard::ClipboardPaste, String> {
+    crate::clipboard::read_paste().await
+}
+
 fn ext_for_mime(mime_type: &str) -> &'static str {
     match mime_type {
         "image/png" => "png",
@@ -3507,6 +3514,18 @@ pub async fn open_task_window(
     Ok(())
 }
 
+/// Bring the calling window to the front (used when a notification is clicked).
+#[tauri::command]
+pub async fn focus_current_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    // unminimize + show first — set_focus alone is unreliable on macOS
+    // when the window is minimized or behind another app.
+    let _ = window.unminimize();
+    let _ = window.show();
+    window
+        .set_focus()
+        .map_err(|e| format!("Failed to focus window: {e}"))
+}
+
 #[tauri::command]
 pub async fn open_new_task_window(app: AppHandle, project_id: String) -> Result<(), String> {
     let id = Uuid::new_v4().to_string();
@@ -3567,6 +3586,28 @@ pub async fn upload_attachment(
     data: Vec<u8>,
 ) -> Result<BlobRef, String> {
     blob::write_blob(pool.inner(), &app_data.0, &mime, &data).await
+}
+
+/// Upload an image file by path — native file drops only carry paths, never
+/// bytes, so the composer can't read them from JS.
+#[tauri::command]
+pub async fn upload_attachment_from_path(
+    pool: State<'_, SqlitePool>,
+    app_data: State<'_, AppDataDir>,
+    path: String,
+) -> Result<BlobRef, String> {
+    const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+    let mime = crate::clipboard::image_mime_for_path(&path).ok_or("Unsupported image type")?;
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("Failed to stat {path}: {e}"))?;
+    if meta.len() > MAX_ATTACHMENT_BYTES {
+        return Err("Image is larger than 10 MB".into());
+    }
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|e| format!("Failed to read {path}: {e}"))?;
+    blob::write_blob(pool.inner(), &app_data.0, mime, &data).await
 }
 
 /// Read bytes back from the blob store. The frontend calls this lazily when

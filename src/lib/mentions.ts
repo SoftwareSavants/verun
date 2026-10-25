@@ -3,7 +3,13 @@ export interface MentionSegment {
   value: string
 }
 
-const MENTION_RE = /@([^\s]+)/g
+// `@path`, or `@"path with spaces"` (the quoted form Claude Code accepts).
+const MENTION_RE = /@"([^"]+)"|@([^\s]+)/g
+
+/** Serialize a file mention, quoting paths that contain whitespace. */
+export function formatMention(path: string): string {
+  return /\s/.test(path) ? `@"${path}"` : `@${path}`
+}
 
 export function parseMentions(text: string): MentionSegment[] {
   const segments: MentionSegment[] = []
@@ -14,7 +20,7 @@ export function parseMentions(text: string): MentionSegment[] {
     if (start > lastIndex) {
       segments.push({ type: 'text', value: text.slice(lastIndex, start) })
     }
-    segments.push({ type: 'mention', value: match[1] })
+    segments.push({ type: 'mention', value: match[1] ?? match[2] })
     lastIndex = start + match[0].length
   }
 
@@ -28,7 +34,7 @@ export function parseMentions(text: string): MentionSegment[] {
 export function extractMentionedFiles(text: string): string[] {
   const files: string[] = []
   for (const match of text.matchAll(MENTION_RE)) {
-    const path = match[1]
+    const path = match[1] ?? match[2]
     if (!files.includes(path)) files.push(path)
   }
   return files

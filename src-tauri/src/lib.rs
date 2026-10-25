@@ -1,6 +1,7 @@
 mod activity;
 pub mod agent;
 mod blob;
+mod clipboard;
 mod bts_scaffold;
 mod claude_jsonl;
 mod claude_terminal;
@@ -453,6 +454,7 @@ pub fn run() {
             ipc::claude_terminal_close,
             // Clipboard
             ipc::read_clipboard,
+            ipc::read_clipboard_paste,
             ipc::copy_image_to_clipboard,
             ipc::write_binary_file,
             // Utility
@@ -494,6 +496,7 @@ pub fn run() {
             ipc::disarm_all_steps,
             // Window management
             ipc::open_task_window,
+            ipc::focus_current_window,
             ipc::open_new_task_window,
             ipc::force_close_task_window,
             // Better-T-Stack scaffolding
@@ -506,6 +509,7 @@ pub fn run() {
             bts_scaffold::default_bootstrap_dir,
             // Blob store (attachments)
             ipc::upload_attachment,
+            ipc::upload_attachment_from_path,
             ipc::get_blob,
             ipc::get_storage_stats,
             ipc::run_blob_gc,

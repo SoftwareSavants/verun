@@ -568,3 +568,9 @@ export interface SideQuestionResponse {
   response: string;
   synthetic: boolean;
 }
+
+/** Clipboard contents shaped for pasting (see `read_clipboard_paste`). */
+export type ClipboardPaste =
+  | { kind: 'files'; paths: string[] }
+  | { kind: 'image'; path: string }
+  | { kind: 'text'; text: string }

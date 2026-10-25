@@ -17,7 +17,8 @@ import { loadSessions } from '../store/sessions'
 import { refreshTaskGit } from '../store/git'
 import { addToast, setSelectedTaskId, setSelectedProjectId, setPendingSessionNav } from '../store/ui'
 import { onNotificationClicked } from '@choochmeque/tauri-plugin-notifications-api'
-import { consumePendingNav, clearDeliveredNotifications } from './notifications'
+import { clearDeliveredNotifications } from './notifications'
+import { handleNotificationClick } from './notificationClick'
 import { windowContext } from './windowContext'
 import * as ipc from './ipc'
 
@@ -67,17 +68,7 @@ export async function initListeners() {
   })
 
   // Navigate to task+session when a notification is clicked
-  onNotificationClicked((data) => {
-    const nav = consumePendingNav(data.id)
-    if (nav) {
-      const task = taskById(nav.taskId)
-      if (task) {
-        setPendingSessionNav(nav.sessionId, nav.taskId)
-        setSelectedProjectId(task.projectId)
-        setSelectedTaskId(nav.taskId)
-      }
-    }
-  })
+  onNotificationClicked((data) => handleNotificationClick(data.id))
 
   // Debug-only: test navigation from devtools via Rust event
   listen<{ task_id: string; session_id: string }>('navigate-to-task', (event) => {

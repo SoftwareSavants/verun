@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 
@@ -486,6 +486,9 @@ export const claudeTerminalClose = (sessionId: string) =>
 export const readClipboard = () =>
   invoke<string>('read_clipboard')
 
+export const readClipboardPaste = () =>
+  invoke<ClipboardPaste>('read_clipboard_paste')
+
 export const copyImageToClipboard = (mimeType: string, data: Uint8Array) =>
   invoke<void>('copy_image_to_clipboard', data.buffer as ArrayBuffer, {
     headers: { 'mime-type': mimeType },
@@ -597,6 +600,9 @@ export const quitApp = () =>
 export const openTaskWindow = (taskId: string, taskName?: string) =>
   invoke<void>('open_task_window', { taskId, taskName })
 
+export const focusCurrentWindow = () =>
+  invoke<void>('focus_current_window')
+
 export const openNewTaskWindow = (projectId: string) =>
   invoke<void>('open_new_task_window', { projectId })
 
@@ -607,6 +613,9 @@ export const forceCloseTaskWindow = () =>
 // no base64. Tauri v2 serializes Vec<u8> from/to ArrayBuffer-style payloads.
 export const uploadAttachment = (mime: string, data: Uint8Array): Promise<BlobRef> =>
   invoke<BlobRef>('upload_attachment', { mime, data })
+
+export const uploadAttachmentFromPath = (path: string): Promise<BlobRef> =>
+  invoke<BlobRef>('upload_attachment_from_path', { path })
 
 export const getBlob = (hash: string): Promise<Uint8Array> =>
   invoke<number[] | Uint8Array>('get_blob', { hash })
