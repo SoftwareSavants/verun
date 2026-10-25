@@ -142,7 +142,7 @@ export const SessionTerminal: Component<Props> = (props) => {
           >
             {(id) => (
               <div class="flex-1 min-h-0 relative">
-                <ShellTerminal terminalId={id()} disableCmdVIntercept />
+                <ShellTerminal terminalId={id()} />
                 <Show when={!ready()}>
                   <div
                     data-testid="claude-terminal-loading"

@@ -1,4 +1,4 @@
-import type { Session } from '../types'
+import type { ClipboardPaste, Session } from '../types'
 
 /**
  * Whether we can spawn a Claude PTY for this session. Any Claude session
@@ -20,4 +20,11 @@ export function canUseTerminalView(session: Session | null | undefined): boolean
 export function formatDroppedPathsForTerminal(paths: string[]): string {
   if (paths.length === 0) return ''
   return paths.map(p => `'${p.replace(/'/g, "'\\''")}' `).join('')
+}
+
+/** Text to bracket-paste into a terminal: files and images go in as quoted paths. */
+export function terminalPasteText(clip: ClipboardPaste): string {
+  if (clip.kind === 'files') return formatDroppedPathsForTerminal(clip.paths)
+  if (clip.kind === 'image') return formatDroppedPathsForTerminal([clip.path])
+  return clip.text
 }

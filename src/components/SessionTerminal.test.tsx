@@ -81,15 +81,15 @@ describe('SessionTerminal', () => {
     expect(shell.getAttribute('data-terminal-id')).toBe('term-1')
   })
 
-  // Lock in that Claude terminal mode disables the manual Cmd+V intercept so
-  // xterm's native paste flow forwards the bracketed-paste sequence to the
-  // PTY. Claude Code's TUI then polls NSPasteboard itself for image bytes.
-  test('passes disableCmdVIntercept so xterm handles paste natively', async () => {
+  // Claude terminal mode uses the same Cmd+V path as other terminals: images
+  // and Finder files are pasted as paths, which Claude attaches reliably.
+  // Relying on Claude polling NSPasteboard after an empty paste was flaky.
+  test('does not disable the Cmd+V intercept', async () => {
     ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
     const { getByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
     const shell = getByTestId('shell-terminal')
-    expect(shell.getAttribute('data-disable-cmd-v')).toBe('true')
+    expect(shell.getAttribute('data-disable-cmd-v')).toBeNull()
   })
 
   test('shows a reconnect button when the matching pty-exited event fires', async () => {

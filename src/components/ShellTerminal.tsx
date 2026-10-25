@@ -12,6 +12,7 @@ import { isMac, modPressed } from '../lib/platform'
 import { getXtermTheme, getXtermFontConfig, subscribeXtermToAppearance } from '../lib/terminalTheme'
 import { createFileLinkProvider } from '../lib/terminalFileLinks'
 import { openTerminalFile } from '../lib/openTerminalFile'
+import { terminalPasteText } from '../lib/terminalMode'
 import '@xterm/xterm/css/xterm.css'
 
 /**
@@ -26,7 +27,7 @@ const isShiftEnter = (e: KeyboardEvent) =>
   e.key === 'Enter' && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
 
 /** Capture-phase keydown on the container — fires before xterm's textarea gets it */
-export function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>, onToggleSearch?: () => void, disableCmdVIntercept?: boolean) {
+export function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, terminalId: string, isStopped?: Accessor<boolean>, onToggleSearch?: () => void) {
   container.addEventListener('keydown', (e: KeyboardEvent) => {
     const mod = modPressed(e)
     const inInput = (e.target as HTMLElement).tagName === 'INPUT'
@@ -53,10 +54,13 @@ export function setupCaptureKeyHandler(container: HTMLElement, term: XTerm, term
     if (mod && e.key === 'ArrowDown') { e.preventDefault(); term.scrollToBottom(); return }
     // Block PTY writes when stopped
     if (isStopped?.()) return
-    if (mod && e.key === 'v' && !disableCmdVIntercept) {
+    if (mod && e.key === 'v') {
       e.preventDefault()
       e.stopImmediatePropagation()
-      ipc.readClipboard().then(text => { if (text) term.paste(text) })
+      // Images and Finder files paste as quoted paths (agents attach image
+      // paths). Empty pastes still go through as an empty bracketed paste so
+      // TUIs can fall back to reading the pasteboard themselves.
+      ipc.readClipboardPaste().then(clip => term.paste(terminalPasteText(clip))).catch(() => {})
       return
     }
     if (isShiftEnter(e)) { e.preventDefault(); ipc.ptyWrite(terminalId, SHIFT_ENTER_SEQUENCE); return }
@@ -171,13 +175,6 @@ interface Props {
   terminalId: string
   /** Reactive accessor — when true, keyboard input to the PTY is blocked (scrolling still works) */
   isStopped?: Accessor<boolean>
-  /**
-   * Skip our manual Cmd+V intercept (which only handles text via pbpaste) and
-   * let xterm.js's native paste flow forward the bracketed paste to the PTY.
-   * Used by Claude terminal mode so Claude Code's TUI sees the paste sequence
-   * and can poll NSPasteboard itself for image bytes.
-   */
-  disableCmdVIntercept?: boolean
 }
 
 const SEARCH_DECORATIONS = {
@@ -264,7 +261,7 @@ export const ShellTerminal: Component<Props> = (props) => {
       if (el) terminalRef.appendChild(el)
       searchAddonRef = existing.searchAddon
       if (searchAddonRef) attachResultsListener(searchAddonRef)
-      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped, toggleSearch, props.disableCmdVIntercept)
+      setupCaptureKeyHandler(containerRef, existing.term, props.terminalId, props.isStopped, toggleSearch)
       // Don't re-fit on rejoin. The xterm and PTY were already correctly
       // sized when this terminal was first mounted; calling fitAddon.fit()
       // here measures the just-attached container before its flex layout
@@ -327,7 +324,7 @@ export const ShellTerminal: Component<Props> = (props) => {
     term.loadAddon(unicode11)
     term.unicode.activeVersion = '11'
     setupXtermPassthrough(term)
-    setupCaptureKeyHandler(containerRef, term, props.terminalId, props.isStopped, toggleSearch, props.disableCmdVIntercept)
+    setupCaptureKeyHandler(containerRef, term, props.terminalId, props.isStopped, toggleSearch)
     term.onData((data) => {
       if (props.isStopped?.()) return
       ipc.ptyWrite(props.terminalId, data)
