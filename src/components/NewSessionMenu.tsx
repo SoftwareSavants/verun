@@ -11,6 +11,7 @@ import { agentRows } from '../lib/accounts'
 import { formatDurationShort } from '../lib/format'
 import * as ipc from '../lib/ipc'
 import SvgIcon from './SvgIcon'
+import { AccountDot } from './AccountDot'
 import { AgentRowName } from './AgentRowName'
 import { ModelRow } from './ModelRow'
 import { UpdateRequiredDialog } from './UpdateRequiredDialog'
@@ -304,6 +305,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
                       title="Reopen session"
                     >
                       <SvgIcon svg={agentIcon(session.agentType)} size={13} />
+                      <AccountDot accountId={session.accountId} />
                       <span class="flex-1 truncate">{sessionLabel(session)}</span>
                       <span class="text-[10px] text-text-dim shrink-0">{relativeTime(session)}</span>
                     </button>

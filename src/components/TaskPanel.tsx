@@ -112,6 +112,7 @@ import {
 } from "../store/ui";
 import type { AccountSelection, Session } from "../types";
 import { AGENT_DISPLAY_NAMES } from "../types";
+import { AccountDot } from "./AccountDot";
 import { ChatView } from "./ChatView";
 import { ClaudeViewToggle } from "./ClaudeViewToggle";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -745,6 +746,10 @@ export const TaskPanel: Component = () => {
                             <SvgIcon
                               svg={agentIcon(session.agentType)}
                               size={10}
+                            />
+                            <AccountDot
+                              accountId={session.accountId}
+                              size={6}
                             />
                             <span>
                               {session.name ||

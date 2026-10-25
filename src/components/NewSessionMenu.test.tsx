@@ -4,7 +4,8 @@ import { cleanup, fireEvent, render, screen, within } from '@solidjs/testing-lib
 // The "+" menu of a task: an agent row opens the models of that agent, and a
 // model starts a session. A harness with added accounts is a row for each
 // account (`Claude Code · Acme`, with its color), and the session starts on the
-// account of the row it was picked in.
+// account of the row it was picked in. Recent lists the closed sessions of the
+// task, each with the account it ran on.
 vi.mock('../lib/ipc', () => ({ listClosedSessions: vi.fn(() => Promise.resolve([])) }))
 // The harness icons are images titled with the harness; a row is named by its text.
 vi.mock('./SvgIcon', () => ({ default: () => <span data-testid="agent-icon" /> }))
@@ -24,8 +25,11 @@ vi.mock('../store/agents', () => ({
 }))
 
 import { NewSessionMenu } from './NewSessionMenu'
+import * as ipc from '../lib/ipc'
 import { applySnapshot } from '../store/accounts'
 import { makeAccount, makeIdentity, makeSnapshot } from '../test/accountFixtures'
+import { makeSession } from '../test/sessionFixtures'
+import type { Session } from '../types'
 
 const acme = makeAccount()
 const beta = makeAccount({ id: 'a2', label: 'Beta', color: '#16a34a' })
@@ -34,8 +38,10 @@ const key = makeAccount({ id: 'k1', agentType: 'cursor', label: 'Key', color: '#
 const onCreate = vi.fn()
 
 /** Shows the menu of a task in project `p1`. */
-function show(props: { projectId?: string; defaultAgent?: 'claude' | 'codex' } = {}) {
-  render(() => <NewSessionMenu taskId="t1" projectId={props.projectId ?? 'p1'} defaultAgent={props.defaultAgent} onCreate={onCreate} />)
+function show(props: { projectId?: string; defaultAgent?: 'claude' | 'codex'; onReopen?: (sessionId: string) => Promise<void> } = {}) {
+  render(() => (
+    <NewSessionMenu taskId="t1" projectId={props.projectId ?? 'p1'} defaultAgent={props.defaultAgent} onCreate={onCreate} onReopen={props.onReopen} />
+  ))
   fireEvent.click(screen.getByTitle('New Session'))
 }
 
@@ -264,6 +270,57 @@ describe('<NewSessionMenu />', () => {
       fireEvent.click(model(/Opus/))
 
       expect(document.querySelector('[data-new-session-menu]')).toBeNull()
+    })
+  })
+
+  describe('recent sessions', () => {
+    const closedSession = (overrides: Partial<Session> = {}) => makeSession({ name: 'Refactor', endedAt: 1000, closedAt: 2000, ...overrides })
+
+    /** Opens the menu of a task whose closed sessions are `sessions`, and its Recent list. Returns the list's rows. */
+    async function showRecent(sessions: Session[]) {
+      vi.mocked(ipc.listClosedSessions).mockResolvedValueOnce(sessions)
+      show({ onReopen: vi.fn() })
+      fireEvent.mouseEnter(await screen.findByRole('button', { name: /Recent/ }))
+      return screen.getAllByTitle('Reopen session')
+    }
+
+    // Fresh accounts, not the shared ones above: the store keeps the objects it is given and updates them in place.
+    beforeEach(() => applySnapshot(makeSnapshot({ accounts: [makeAccount()] })))
+
+    test('a session that ran on an account shows its dot, right after the agent icon', async () => {
+      const [row] = await showRecent([closedSession({ accountId: 'a1' })])
+
+      const dot = within(row).getByTitle('Acme · dev@acme.com')
+      expect(dot.style.backgroundColor).toBe('rgb(124, 58, 237)')
+      expect(within(row).getByTestId('agent-icon').nextElementSibling).toBe(dot)
+    })
+
+    test('a session on Default shows no dot', async () => {
+      const [row] = await showRecent([closedSession({ accountId: null })])
+
+      expect(within(row).queryByRole('img')).toBeNull()
+      expect(row.textContent).toContain('Refactor')
+    })
+
+    test('a session whose account was removed since shows it as removed', async () => {
+      applySnapshot(makeSnapshot({ accounts: [makeAccount({ removedAt: 3000 })] }))
+
+      const [row] = await showRecent([closedSession({ accountId: 'a1' })])
+
+      expect(within(row).getByTitle('Acme (removed)')).toBeTruthy()
+    })
+
+    test('each session has the dot of its own account', async () => {
+      const other = makeAccount({ id: 'a2', label: 'Beta', color: '#16a34a', identity: makeIdentity({ status: 'signedIn', email: 'me@beta.dev' }) })
+      applySnapshot(makeSnapshot({ accounts: [makeAccount(), other] }))
+
+      const rows = await showRecent([
+        closedSession({ id: 's1', name: 'First', accountId: 'a2' }),
+        closedSession({ id: 's2', name: 'Second', accountId: null }),
+        closedSession({ id: 's3', name: 'Third', accountId: 'a1' }),
+      ])
+
+      expect(rows.map((r) => within(r).queryByRole('img')?.getAttribute('title') ?? null)).toEqual(['Beta · me@beta.dev', null, 'Acme · dev@acme.com'])
     })
   })
 })
