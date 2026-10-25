@@ -353,6 +353,34 @@ export function closeTerminalsForTask(taskId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Terminals kept past their exit
+// ---------------------------------------------------------------------------
+
+// Ids of terminals whose xterm survives the exit of their process. A terminal
+// that is not a task's (the account login dialog's is one) is disposed when its
+// process ends: nothing shows it any more. A host that shows what the command
+// printed after it ended opts out here, and disposes the xterm itself when done.
+const keptAfterExit = new Set<string>()
+
+/**
+ * Keeps the xterm of `terminalId` when its process exits, until
+ * `releaseKeptTerminal`. Call it once the id is known and before the terminal
+ * is mounted: an exit that came earlier found no xterm to dispose.
+ */
+export function keepTerminalAfterExit(terminalId: string) {
+  keptAfterExit.add(terminalId)
+}
+
+/**
+ * Ends `keepTerminalAfterExit` and disposes the xterm, as the exit would have.
+ * The PTY is the host's to close. Does nothing for a terminal that was not kept.
+ */
+export function releaseKeptTerminal(terminalId: string) {
+  if (!keptAfterExit.delete(terminalId)) return
+  removeTerminal(terminalId, { closeNative: false })
+}
+
+// ---------------------------------------------------------------------------
 // Event listeners
 // ---------------------------------------------------------------------------
 
@@ -374,6 +402,8 @@ export async function initTerminalListeners() {
 
   await listen<PtyExitedEvent>('pty-exited', (event) => {
     const { terminalId, exitCode } = event.payload
+    // Its host disposes it (see keepTerminalAfterExit).
+    if (keptAfterExit.has(terminalId)) return
     const term = terminals.find(t => t.id === terminalId)
     // Keep hook and start command terminals alive after exit (read-only logs)
     if (term?.hookType || term?.isStartCommand) {

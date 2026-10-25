@@ -3,8 +3,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Dialog } from './Dialog'
 import { ShellTerminal } from './ShellTerminal'
 import * as ipc from '../lib/ipc'
+import { keepTerminalAfterExit, releaseKeptTerminal } from '../store/terminals'
 import { failureText } from '../lib/accountErrors'
-import { useDismissable } from '../lib/dismissable'
 import type { Account, AccountTerminal, AccountTerminalAction, PtyExitedEvent } from '../types'
 
 interface Props {
@@ -21,8 +21,12 @@ const BROWSER_NOTE = 'Your browser signs in with whichever account it is already
  * The backend sends `accounts-changed` when the command ends, so the list behind
  * this dialog shows the new identity without help from here.
  *
- * The PTY belongs to the dialog: it is closed with it, whether the command is
- * still running or has ended (an ended PTY stays in the backend until closed).
+ * The terminal belongs to the dialog and stays after the command has ended, so
+ * what it printed (why a login failed) can be read until the dialog is
+ * dismissed. The terminal store would dispose its xterm at the exit, so the
+ * dialog opts it out and disposes it itself. The PTY goes the same way: it is
+ * closed with the dialog, whether the command is still running or has ended
+ * (an ended PTY stays in the backend until closed).
  */
 export const AccountTerminalDialog: Component<Props> = (props) => {
   const [terminal, setTerminal] = createSignal<AccountTerminal | null>(null)
@@ -34,6 +38,7 @@ export const AccountTerminalDialog: Component<Props> = (props) => {
   let closed = false
   let released = false
   let unlisten: UnlistenFn | undefined
+  let terminalBox!: HTMLDivElement
 
   const exited = () => {
     const started = terminal()
@@ -49,12 +54,13 @@ export const AccountTerminalDialog: Component<Props> = (props) => {
     ipc.ptyClose(terminalId).catch((e) => console.error('Failed to close the account terminal:', e))
   }
 
-  /** Closes our PTY, once, whichever way the dialog goes away. */
+  /** Closes our PTY and disposes its xterm, once, whichever way the dialog goes away. */
   const releaseTerminal = () => {
     const started = terminal()
     if (!started || released) return
     released = true
     closePty(started.terminalId)
+    releaseKeptTerminal(started.terminalId)
   }
 
   const close = () => {
@@ -82,6 +88,9 @@ export const AccountTerminalDialog: Component<Props> = (props) => {
         closePty(started.terminalId)
         return
       }
+      // From the moment its id is known, before the terminal is mounted: an exit
+      // before this found no xterm to dispose, and the one made on mounting is ours.
+      keepTerminalAfterExit(started.terminalId)
       setTerminal(started)
     } catch (e) {
       // Another login being open is the one to expect. The toast says how to fix
@@ -92,10 +101,21 @@ export const AccountTerminalDialog: Component<Props> = (props) => {
 
   onMount(() => { void start() })
 
-  // Escape closes this, not the page behind it.
-  useDismissable(() => true, close)
+  // Escape closes this, not the page behind it (Settings closes on it too). That
+  // is why it is heard ahead of everything else, and so also ahead of the
+  // terminal: typed into a running command it is the command's, which may be
+  // showing a prompt that takes it. Once the command has ended it is nobody's.
+  const closeOnEscape = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape') return
+    if (!exited() && e.target instanceof Node && terminalBox.contains(e.target)) return
+    e.preventDefault()
+    e.stopPropagation()
+    close()
+  }
+  window.addEventListener('keydown', closeOnEscape, true)
 
   onCleanup(() => {
+    window.removeEventListener('keydown', closeOnEscape, true)
     closed = true
     unlisten?.()
     releaseTerminal()
@@ -113,26 +133,26 @@ export const AccountTerminalDialog: Component<Props> = (props) => {
         {(hint) => <p class="text-xs text-text-muted mb-2">{hint()}</p>}
       </Show>
 
-      <div class="h-72 mt-3 mb-4 rounded-lg overflow-hidden ring-1 ring-outline/8 bg-surface-0">
+      <div ref={terminalBox} class="h-72 mt-3 mb-4 rounded-lg overflow-hidden ring-1 ring-outline/8 bg-surface-0">
         <Switch fallback={<div class="p-4 text-sm text-text-dim">Starting...</div>}>
           <Match when={error()}>
             {(message) => <div class="p-4 text-sm text-status-error">{message()}</div>}
           </Match>
-          {/* The terminal's window goes with its process: the store disposes an ended terminal's xterm. */}
-          <Match when={exited()}>
-            <div class="p-4 text-sm text-text-muted">{endedText()}</div>
-          </Match>
           <Match when={terminal()}>
             {(started) => (
               <div class="h-full p-2">
-                <ShellTerminal terminalId={started().terminalId} />
+                {/* Nothing typed reaches a command that has ended. */}
+                <ShellTerminal terminalId={started().terminalId} isStopped={exited} />
               </div>
             )}
           </Match>
         </Switch>
       </div>
 
-      <div class="flex justify-end">
+      <div class="flex items-center justify-end gap-3">
+        <Show when={exited()}>
+          <span class="mr-auto text-xs text-text-muted">{endedText()}</span>
+        </Show>
         <button class={exited() ? 'btn-primary' : 'btn-ghost'} onClick={close}>
           {exited() ? 'Done' : error() ? 'Close' : 'Cancel'}
         </button>

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createRoot, createEffect } from 'solid-js'
 
 const listenCallbacks = new Map<string, (e: { payload: unknown }) => void>()
@@ -37,6 +37,10 @@ import {
   registerHookTerminal,
   refitActiveTerminal,
   closeTerminal,
+  getXtermEntry,
+  resumeTerminalOutput,
+  keepTerminalAfterExit,
+  releaseKeptTerminal,
 } from './terminals'
 import { toasts, setToasts } from './ui'
 import type { PtyListEntry, PtyOutputEvent } from '../types'
@@ -304,6 +308,170 @@ test('reactivating a retained terminal resumes output from its last checkpoint',
   vi.mocked(ipc.ptyListen).mockClear()
   refitActiveTerminal('t-1')
   expect(ipc.ptyListen).toHaveBeenCalledWith('returning', 42)
+})
+
+// A terminal that is not a task's (the account login dialog's is one) is
+// disposed when its process exits: nothing shows it any more. A host that shows
+// what the command printed after it ended opts its terminal out of that, and
+// disposes it itself when it is done.
+describe('terminals kept after their process exits', () => {
+  const exited = (terminalId: string, exitCode = 0) =>
+    listenCallbacks.get('pty-exited')!({ payload: { terminalId, exitCode } })
+  const fit = () => ({ fit: vi.fn() }) as any
+  const used = ['kept', 'kept-too', 'plain', 'late', 'checkpoint', 'never-kept', 'tracked']
+
+  afterEach(() => {
+    for (const id of used) {
+      releaseKeptTerminal(id)
+      exited(id)
+    }
+  })
+
+  beforeEach(async () => {
+    await initTerminalListeners()
+  })
+
+  test('the exit leaves the xterm of a kept terminal alone', () => {
+    const term = fakeXterm()
+    keepTerminalAfterExit('kept')
+    registerXterm('kept', term as any, fit())
+
+    exited('kept', 127)
+
+    expect(term.dispose).not.toHaveBeenCalled()
+    expect(getXtermEntry('kept')?.term).toBe(term)
+  })
+
+  test('any other terminal is still disposed by its exit, whoever else is kept', () => {
+    const kept = fakeXterm()
+    const plain = fakeXterm()
+    keepTerminalAfterExit('kept')
+    registerXterm('kept', kept as any, fit())
+    registerXterm('plain', plain as any, fit())
+
+    exited('plain')
+
+    expect(plain.dispose).toHaveBeenCalledOnce()
+    expect(getXtermEntry('plain')).toBeUndefined()
+    expect(kept.dispose).not.toHaveBeenCalled()
+    expect(getXtermEntry('kept')).toBeDefined()
+  })
+
+  test('releasing a kept terminal disposes its xterm, once, and forgets it', () => {
+    const term = fakeXterm()
+    keepTerminalAfterExit('kept')
+    registerXterm('kept', term as any, fit())
+    exited('kept')
+    expect(term.dispose).not.toHaveBeenCalled()
+
+    releaseKeptTerminal('kept')
+    releaseKeptTerminal('kept')
+
+    expect(term.dispose).toHaveBeenCalledOnce()
+    expect(getXtermEntry('kept')).toBeUndefined()
+  })
+
+  test('a released terminal is an ordinary one again: its exit, when it comes later, disposes nothing twice', () => {
+    const term = fakeXterm()
+    keepTerminalAfterExit('kept')
+    registerXterm('kept', term as any, fit())
+    // Dismissed while the command still runs: the PTY is closed, and its exit arrives after.
+    releaseKeptTerminal('kept')
+
+    exited('kept')
+
+    expect(term.dispose).toHaveBeenCalledOnce()
+  })
+
+  test('releasing never closes the PTY: that is the host\'s to do', async () => {
+    // Even for a terminal the store tracks, which is the one case where it could.
+    vi.mocked(ipc.ptySpawn).mockResolvedValueOnce({ terminalId: 'tracked', shellName: 'zsh' })
+    await spawnTerminal('t-1', 24, 80)
+    registerXterm('tracked', fakeXterm() as any, fit())
+    keepTerminalAfterExit('tracked')
+
+    releaseKeptTerminal('tracked')
+
+    expect(ipc.ptyClose).not.toHaveBeenCalled()
+    expect(getXtermEntry('tracked')).toBeUndefined()
+  })
+
+  test('a released id is an ordinary terminal again, whatever takes it next', () => {
+    keepTerminalAfterExit('kept')
+    registerXterm('kept', fakeXterm() as any, fit())
+    releaseKeptTerminal('kept')
+
+    const next = fakeXterm()
+    registerXterm('kept', next as any, fit())
+    exited('kept')
+
+    expect(next.dispose).toHaveBeenCalledOnce()
+  })
+
+  test('two kept terminals are independent', () => {
+    const first = fakeXterm()
+    const second = fakeXterm()
+    keepTerminalAfterExit('kept')
+    keepTerminalAfterExit('kept-too')
+    registerXterm('kept', first as any, fit())
+    registerXterm('kept-too', second as any, fit())
+
+    releaseKeptTerminal('kept')
+    exited('kept-too')
+
+    expect(first.dispose).toHaveBeenCalledOnce()
+    expect(second.dispose).not.toHaveBeenCalled()
+  })
+
+  test('a terminal that ended before it was kept loses nothing: its xterm is only made afterwards', () => {
+    // A command that fails at once ends before the host knows its id. There is
+    // no xterm to dispose then, and the one made later is kept like any other.
+    exited('late')
+    const term = fakeXterm()
+    keepTerminalAfterExit('late')
+    registerXterm('late', term as any, fit())
+
+    expect(term.dispose).not.toHaveBeenCalled()
+    releaseKeptTerminal('late')
+    expect(term.dispose).toHaveBeenCalledOnce()
+  })
+
+  test('the replay checkpoint of a kept terminal survives the exit', () => {
+    const term = fakeXterm()
+    keepTerminalAfterExit('checkpoint')
+    markSeqWritten('checkpoint', 42)
+    registerXterm('checkpoint', term as any, fit())
+    exited('checkpoint')
+    vi.mocked(ipc.ptyListen).mockClear()
+
+    // The terminal shown again resumes after what its xterm has, not from the start.
+    resumeTerminalOutput('checkpoint')
+
+    expect(ipc.ptyListen).toHaveBeenCalledWith('checkpoint', 42)
+  })
+
+  test('releasing a terminal that was never kept disposes nothing', () => {
+    const term = fakeXterm()
+    registerXterm('never-kept', term as any, fit())
+
+    releaseKeptTerminal('never-kept')
+
+    expect(term.dispose).not.toHaveBeenCalled()
+    expect(getXtermEntry('never-kept')?.term).toBe(term)
+  })
+
+  test('the exit of a task terminal is unchanged: a shell is removed, a hook is kept as a log', () => {
+    registerHookTerminal('t-1', 'hook-log', 'setup')
+    const hook = fakeXterm()
+    registerXterm('hook-log', hook as any, fit())
+    keepTerminalAfterExit('kept')
+    registerXterm('kept', fakeXterm() as any, fit())
+
+    exited('hook-log', 0)
+
+    expect(hook.dispose).not.toHaveBeenCalled()
+    expect(terminalsForTask('t-1').map(t => t.id)).toContain('hook-log')
+  })
 })
 
 // A project whose accounts can't be read (a secret the keychain won't give, an
