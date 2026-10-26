@@ -22,6 +22,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn((command: string) => Promise.resolve(command === 'read_text_file' ? mocks.planText : undefined)),
 }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(() => Promise.resolve(() => {})), emit: vi.fn() }))
+vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ label: 'main' }) }))
 vi.mock('../lib/ipc', () => ({
   getTrustLevel: vi.fn(() => Promise.resolve('normal')),
   setTrustLevel: vi.fn(() => Promise.resolve()),
