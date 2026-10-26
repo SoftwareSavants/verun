@@ -385,7 +385,7 @@ pub async fn session_title_env_for(
 pub(crate) mod tests {
     use super::*;
     use crate::accounts::secrets::{LockedKeychain, MemorySecretStore};
-    use crate::agent::{Claude, Codex, Gemini};
+    use crate::agent::{Claude, Codex, Gemini, OpenCode};
     use crate::db::tests::{
         make_account, mark_account_removed_confirmed, set_project_account_confirmed, test_pool,
         upsert_account_confirmed,
@@ -564,6 +564,25 @@ pub(crate) mod tests {
     fn gemini_acme(id: &str, dir: &TempDir) -> Account {
         Account {
             agent_type: "gemini".into(),
+            ..acme(id, dir)
+        }
+    }
+
+    /// An OpenCode home as Verun makes it for an account, signed in to
+    /// OpenCode's `openai` provider.
+    fn opencode_dir() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        OpenCode.prepare_account_dir(dir.path()).unwrap();
+        let auth = dir.path().join("data").join("opencode");
+        std::fs::create_dir_all(&auth).unwrap();
+        std::fs::write(auth.join("auth.json"), r#"{"openai":{"type":"api"}}"#).unwrap();
+        dir
+    }
+
+    /// A live OpenCode account called Acme with its home in `dir`.
+    fn opencode_acme(id: &str, dir: &TempDir) -> Account {
+        Account {
+            agent_type: "opencode".into(),
             ..acme(id, dir)
         }
     }
@@ -1033,6 +1052,36 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn session_env_includes_opencode_vars_for_opencode_session() {
+        // OpenCode stays out of the project env, but its own session runs on
+        // its account.
+        let pool = test_pool().await;
+        let dir = opencode_dir();
+        upsert_account_confirmed(&pool, opencode_acme("o1", &dir))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-001", "opencode", Some("o1"))
+            .await
+            .unwrap();
+
+        let patch = session_env_for(&pool, no_secrets(), "p-001", "opencode", Some("o1"))
+            .await
+            .unwrap();
+
+        let home = dir.path().to_string_lossy();
+        assert!(sets(&patch, "XDG_DATA_HOME", &format!("{home}/data")));
+        assert!(sets(&patch, "XDG_STATE_HOME", &format!("{home}/state")));
+        // Inherited provider keys cannot stand in for the account's login.
+        assert!(patch.remove.contains(&"OPENAI_API_KEY".to_string()));
+
+        // A session of another harness in the same project gets none of it.
+        let other = session_env_for(&pool, no_secrets(), "p-001", "claude", None)
+            .await
+            .unwrap();
+        assert_eq!(other, EnvPatch::default());
+    }
+
+    #[tokio::test]
     async fn session_env_for_removed_or_missing_account_errors() {
         let pool = pool_with_accounts().await;
 
@@ -1156,6 +1205,39 @@ pub(crate) mod tests {
         ));
         assert!(sets(&patch, "ANTHROPIC_API_KEY", "sk-ant-one"));
         assert!(sets(&patch, "ANTHROPIC_BASE_URL", "https://proxy"));
+    }
+
+    #[tokio::test]
+    async fn project_env_excludes_opencode_account() {
+        // Its XDG vars would reach every tool a shell or hook runs, so only the
+        // Claude account of this project shows in the project env.
+        let pool = test_pool().await;
+        let claude = claude_dir(SIGNED_IN);
+        let opencode = opencode_dir();
+        upsert_account_confirmed(&pool, acme("a1", &claude))
+            .await
+            .unwrap();
+        upsert_account_confirmed(&pool, opencode_acme("o1", &opencode))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a1"))
+            .await
+            .unwrap();
+        set_project_account_confirmed(&pool, "p-001", "opencode", Some("o1"))
+            .await
+            .unwrap();
+
+        let patch = project_env_for(&pool, no_secrets(), "p-001").await.unwrap();
+
+        assert!(sets(
+            &patch,
+            "CLAUDE_CONFIG_DIR",
+            &claude.path().to_string_lossy()
+        ));
+        for var in ["XDG_DATA_HOME", "XDG_STATE_HOME"] {
+            assert!(!patch.set.iter().any(|(key, _)| key == var), "{var} is set");
+            assert!(!patch.remove.contains(&var.to_string()), "{var} is removed");
+        }
     }
 
     #[tokio::test]
