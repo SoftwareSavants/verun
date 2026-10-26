@@ -433,7 +433,9 @@ fn env_value(
 mod tests {
     use super::*;
     use crate::accounts::secrets::{LockedKeychain, MemorySecretStore};
-    use crate::agent::{AccountProfile, Claude, Codex, InputMode, ModelOption, SessionArgs};
+    use crate::agent::{
+        AccountProfile, Claude, Codex, Gemini, InputMode, ModelOption, SessionArgs,
+    };
 
     // -- Fixtures --
 
@@ -456,6 +458,14 @@ mod tests {
     fn codex_account(id: &str, env: Vec<AccountEnvVar>) -> Account {
         Account {
             agent_type: "codex".into(),
+            ..account(id, env)
+        }
+    }
+
+    /// The Gemini account `id`, at `/acc/<id>` like the others.
+    fn gemini_account(id: &str, env: Vec<AccountEnvVar>) -> Account {
+        Account {
+            agent_type: "gemini".into(),
             ..account(id, env)
         }
     }
@@ -735,6 +745,28 @@ mod tests {
     }
 
     #[test]
+    fn account_env_trusts_the_workspaces_of_a_gemini_account() {
+        // A new Gemini home trusts no folder, and a headless run in a folder it
+        // does not trust stops, so every added account says it trusts its
+        // workspaces. The var comes after the home and before the account's own.
+        let account = gemini_account("g1", vec![plain("GEMINI_API_KEY", "key-one")]);
+
+        let patch = account_env(&Gemini, &account, &MemorySecretStore::default()).unwrap();
+
+        assert_eq!(
+            patch.set,
+            pairs(&[
+                ("GEMINI_CLI_HOME", "/acc/g1"),
+                ("GEMINI_CLI_TRUST_WORKSPACE", "true"),
+                ("GEMINI_API_KEY", "key-one"),
+            ])
+        );
+        // Set on the command itself, so a GEMINI_CLI_TRUST_WORKSPACE=false that
+        // Verun inherited cannot undo it.
+        assert!(sets(&patch, "GEMINI_CLI_TRUST_WORKSPACE", "true"));
+    }
+
+    #[test]
     fn account_env_without_account_support_is_invalid() {
         let err = account_env(
             &FakeHarness(None),
@@ -961,6 +993,24 @@ mod tests {
         let codex_session = session_env("codex", None, &[c1], &secrets).unwrap();
 
         assert_eq!(codex_session, EnvPatch::default());
+    }
+
+    #[test]
+    fn session_env_trusts_workspaces_for_an_added_gemini_account_only() {
+        let secrets = MemorySecretStore::default();
+        let g1 = gemini_account("g1", vec![]);
+
+        // The session's own account, and the project's account reaching the
+        // `gemini` that a session of another harness runs itself.
+        let own = session_env("gemini", Some(&g1), &[], &secrets).unwrap();
+        let other = session_env("claude", None, std::slice::from_ref(&g1), &secrets).unwrap();
+        assert!(sets(&own, "GEMINI_CLI_TRUST_WORKSPACE", "true"));
+        assert!(sets(&other, "GEMINI_CLI_TRUST_WORKSPACE", "true"));
+
+        // A Default Gemini session keeps the env it inherited, as for the other
+        // harnesses.
+        let default = session_env("gemini", None, &[g1], &secrets).unwrap();
+        assert_eq!(default, EnvPatch::default());
     }
 
     #[test]

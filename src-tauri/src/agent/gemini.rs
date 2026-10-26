@@ -110,10 +110,11 @@ impl Agent for Gemini {
 
     fn account_profile(&self) -> Option<AccountProfile> {
         Some(AccountProfile {
-            // Everything that can point Gemini at another home, or sign it in
-            // some other way than the account's own Google login. NO_BROWSER
-            // and CI are here because they change how that sign-in runs. An
-            // account that needs a key sets it in its own env.
+            // Everything that can point Gemini at another home, send its
+            // requests elsewhere, change where it keeps its login, or sign it
+            // in some other way than the account's own Google login or key.
+            // NO_BROWSER and CI are here because they change how that sign-in
+            // runs. An account that needs one sets it in its own env.
             scrub_vars: &[
                 GEMINI_CLI_HOME_VAR,
                 "GEMINI_API_KEY",
@@ -122,22 +123,34 @@ impl Agent for Gemini {
                 "GOOGLE_GENAI_USE_VERTEXAI",
                 "NO_BROWSER",
                 "CI",
+                "GOOGLE_GENAI_USE_GCA",
+                "GOOGLE_CLOUD_ACCESS_TOKEN",
+                "GOOGLE_GEMINI_BASE_URL",
+                "GEMINI_CLI_USE_COMPUTE_ADC",
+                "GEMINI_FORCE_ENCRYPTED_FILE_STORAGE",
             ],
-            fixed_env: &[],
+            // A new home trusts no folder, and Gemini stops a headless run in
+            // one it does not trust (and sets its approval mode back to the
+            // default there), so every added account trusts its workspaces, as
+            // Verun pre-trusts the worktrees it gives Claude. A Default session
+            // keeps the env it inherited.
+            fixed_env: &[("GEMINI_CLI_TRUST_WORKSPACE", "true")],
             // The one way to give an account a key of its own: a key typed
             // into Gemini's own dialog goes into a keychain entry that every
             // home shares. With no sign-in method chosen in settings.json (see
-            // prepare_account_dir), Gemini takes such a key from the env, so an
-            // account that has one works without a login.
-            api_key_vars: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            // prepare_account_dir), Gemini picks the key sign-in from
+            // GEMINI_API_KEY, so an account that has one works without a login.
+            // GOOGLE_API_KEY alone picks no sign-in method ("Please set an Auth
+            // method"), so it is no key login: it is only scrubbed, above.
+            api_key_vars: &["GEMINI_API_KEY"],
             // Gemini has no login or logout command. The bare CLI asks how to
-            // sign in (Login with Google opens the browser) and signs out with
-            // `/auth signout`, so both terminals run it and the hints say what
-            // to type.
+            // sign in (Sign in with Google opens the browser) and signs out
+            // with `/auth signout`, so both terminals run it and the hints say
+            // what to type.
             login_args: Some(&[]),
             logout_args: Some(&[]),
             login_hint: Some(
-                "In Gemini, choose Login with Google and finish in your browser. When it is done, type /quit.",
+                "In Gemini, choose Sign in with Google and finish in your browser. When it is done, type /quit.",
             ),
             logout_hint: Some("Type /auth signout, then /quit."),
             allows_existing_dir: true,
@@ -165,8 +178,8 @@ impl Agent for Gemini {
     /// settings.json names (`security.auth.selectedType`) before they look at
     /// the env, so a method chosen here would shut out an account that signs in
     /// with `GEMINI_API_KEY`. With none chosen, Gemini asks in the login
-    /// terminal (Login with Google), or finds a key in the env, and records the
-    /// choice itself.
+    /// terminal (Sign in with Google), or finds a key in the env, and records
+    /// the choice itself.
     fn prepare_account_dir(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir.join(".gemini"))
     }
@@ -242,14 +255,23 @@ mod tests {
                     "GOOGLE_GENAI_USE_VERTEXAI",
                     "NO_BROWSER",
                     "CI",
+                    "GOOGLE_GENAI_USE_GCA",
+                    "GOOGLE_CLOUD_ACCESS_TOKEN",
+                    "GOOGLE_GEMINI_BASE_URL",
+                    "GEMINI_CLI_USE_COMPUTE_ADC",
+                    "GEMINI_FORCE_ENCRYPTED_FILE_STORAGE",
                 ],
-                fixed_env: &[],
-                api_key_vars: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+                // A new home trusts no folder, and Gemini stops a headless run
+                // in one it does not trust.
+                fixed_env: &[("GEMINI_CLI_TRUST_WORKSPACE", "true")],
+                // GOOGLE_API_KEY alone picks no sign-in method, so only
+                // GEMINI_API_KEY makes a key login (GOOGLE_API_KEY is scrubbed).
+                api_key_vars: &["GEMINI_API_KEY"],
                 // Gemini has no login or logout command: both run the bare CLI.
                 login_args: Some(&[]),
                 logout_args: Some(&[]),
                 login_hint: Some(
-                    "In Gemini, choose Login with Google and finish in your browser. When it is done, type /quit."
+                    "In Gemini, choose Sign in with Google and finish in your browser. When it is done, type /quit."
                 ),
                 logout_hint: Some("Type /auth signout, then /quit."),
                 allows_existing_dir: true,

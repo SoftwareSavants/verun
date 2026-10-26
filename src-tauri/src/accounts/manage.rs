@@ -1019,6 +1019,13 @@ mod tests {
         }
     }
 
+    fn new_gemini(label: &str) -> NewAccountInput {
+        NewAccountInput {
+            agent_type: "gemini".into(),
+            ..new_claude(label)
+        }
+    }
+
     fn in_dir(mut input: NewAccountInput, dir: &str) -> NewAccountInput {
         input.existing_dir = Some(dir.into());
         input
@@ -1796,6 +1803,24 @@ mod tests {
         let env = vec![plain_in("CODEX_HOME", "/elsewhere")];
         let result = lab.create("c1", with_env(new_codex("Acme"), env)).await;
         assert_eq!(invalid_message(result), "CODEX_HOME is reserved for Verun.");
+        assert!(lab.stored().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_gemini_account_refuses_the_vars_verun_sets_for_it() {
+        // The home var would re-point the account, and the trust var would let
+        // an account undo what lets its sessions run in the worktrees.
+        let lab = Lab::new().await;
+
+        for key in ["GEMINI_CLI_HOME", "GEMINI_CLI_TRUST_WORKSPACE"] {
+            let env = vec![plain_in(key, "x")];
+            let result = lab.create("g1", with_env(new_gemini("Acme"), env)).await;
+            assert_eq!(
+                invalid_message(result),
+                format!("{key} is reserved for Verun."),
+                "key: {key}"
+            );
+        }
         assert!(lab.stored().await.is_empty());
     }
 

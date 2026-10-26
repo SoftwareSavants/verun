@@ -385,7 +385,7 @@ pub async fn session_title_env_for(
 pub(crate) mod tests {
     use super::*;
     use crate::accounts::secrets::{LockedKeychain, MemorySecretStore};
-    use crate::agent::{Claude, Codex};
+    use crate::agent::{Claude, Codex, Gemini};
     use crate::db::tests::{
         make_account, mark_account_removed_confirmed, set_project_account_confirmed, test_pool,
         upsert_account_confirmed,
@@ -541,6 +541,29 @@ pub(crate) mod tests {
     fn codex_acme(id: &str, dir: &TempDir) -> Account {
         Account {
             agent_type: "codex".into(),
+            ..acme(id, dir)
+        }
+    }
+
+    /// A Gemini home as Verun makes it for an account, with `json` as the
+    /// `google_accounts.json` Gemini wrote in it, or none.
+    fn gemini_dir(json: Option<&str>) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        Gemini.prepare_account_dir(dir.path()).unwrap();
+        if let Some(json) = json {
+            std::fs::write(
+                dir.path().join(".gemini").join("google_accounts.json"),
+                json,
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    /// A live Gemini account called Acme with its home in `dir`.
+    fn gemini_acme(id: &str, dir: &TempDir) -> Account {
+        Account {
+            agent_type: "gemini".into(),
             ..acme(id, dir)
         }
     }
@@ -795,6 +818,52 @@ pub(crate) mod tests {
         assert_eq!(check_usable(&account, &Codex), Ok(()));
     }
 
+    #[test]
+    fn check_usable_refuses_a_gemini_account_whose_only_key_is_google_api_key() {
+        // GOOGLE_API_KEY alone picks no sign-in method in Gemini ("Please set
+        // an Auth method"), so it is no login: only GEMINI_API_KEY is.
+        let dir = gemini_dir(None);
+        let mut account = gemini_acme("g1", &dir);
+        for var in [
+            secret_var("GOOGLE_API_KEY"),
+            plain_var("GOOGLE_API_KEY", "key-1"),
+        ] {
+            account.env = vec![var];
+
+            assert_eq!(
+                account_identity(&Gemini, &account),
+                AccountIdentity::with_status(SignInStatus::SignedOut)
+            );
+            assert_eq!(
+                check_usable(&account, &Gemini),
+                Err(AccountError::SignedOut {
+                    account_id: "g1".into(),
+                    label: "Acme".into()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn check_usable_allows_a_gemini_account_with_a_gemini_api_key_in_its_env() {
+        // With no sign-in method chosen in the home Verun made, Gemini picks the
+        // key one from the env, so an account that has only the key works.
+        let dir = gemini_dir(None);
+        let mut account = gemini_acme("g1", &dir);
+        for var in [
+            secret_var("GEMINI_API_KEY"),
+            plain_var("GEMINI_API_KEY", "key-1"),
+        ] {
+            account.env = vec![var];
+
+            assert_eq!(
+                account_identity(&Gemini, &account),
+                AccountIdentity::with_status(SignInStatus::ApiKey)
+            );
+            assert_eq!(check_usable(&account, &Gemini), Ok(()));
+        }
+    }
+
     // -- session_env_for --
 
     #[tokio::test]
@@ -914,6 +983,53 @@ pub(crate) mod tests {
                 label: "Acme".into()
             })
         );
+    }
+
+    #[tokio::test]
+    async fn session_env_for_refuses_a_gemini_session_whose_only_key_is_google_api_key() {
+        let pool = test_pool().await;
+        let dir = gemini_dir(None);
+        let mut account = gemini_acme("g1", &dir);
+        account.env = vec![secret_var("GOOGLE_API_KEY")];
+        upsert_account_confirmed(&pool, account).await.unwrap();
+        // The key is in the keychain and the env could be built, but Gemini
+        // picks no sign-in method from it: the session is refused here, not
+        // started to fail inside Gemini.
+        let secrets = Arc::new(MemorySecretStore::default());
+        secrets.set("g1", "GOOGLE_API_KEY", "key-1").unwrap();
+
+        assert_eq!(
+            session_env_for(&pool, secrets, "p-001", "gemini", Some("g1")).await,
+            Err(AccountError::SignedOut {
+                account_id: "g1".into(),
+                label: "Acme".into()
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn session_env_for_gemini_api_key_account_gets_its_key_and_trusts_workspaces() {
+        let pool = test_pool().await;
+        let dir = gemini_dir(None);
+        let mut account = gemini_acme("g1", &dir);
+        account.env = vec![secret_var("GEMINI_API_KEY")];
+        upsert_account_confirmed(&pool, account).await.unwrap();
+        let secrets = Arc::new(MemorySecretStore::default());
+        secrets.set("g1", "GEMINI_API_KEY", "key-1").unwrap();
+
+        let patch = session_env_for(&pool, secrets, "p-001", "gemini", Some("g1"))
+            .await
+            .unwrap();
+
+        assert!(sets(
+            &patch,
+            "GEMINI_CLI_HOME",
+            &dir.path().to_string_lossy()
+        ));
+        assert!(sets(&patch, "GEMINI_API_KEY", "key-1"));
+        assert!(sets(&patch, "GEMINI_CLI_TRUST_WORKSPACE", "true"));
+        // An inherited GOOGLE_API_KEY cannot stand in for the account's.
+        assert!(patch.remove.contains(&"GOOGLE_API_KEY".to_string()));
     }
 
     #[tokio::test]

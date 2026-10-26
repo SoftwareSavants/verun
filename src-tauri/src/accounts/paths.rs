@@ -61,11 +61,13 @@ pub fn normalize_account_dir(input: &str, user_home: &Path) -> Result<String, Ac
 }
 
 /// Checks a normalized `dir` before an account may use it. It must not be the
-/// harness's own home (`standard_home`: named explicitly, that home becomes a
-/// login separate from Default, which would confuse) or one of `taken`, the
-/// dirs of the live accounts of the same harness. With `require_existing` the
-/// dir must already be a folder; that stats the path, so async callers go
-/// through `spawn_blocking`. Managed dirs are created later and skip that check.
+/// harness's own home (`standard_home`): for Claude, named explicitly it is a
+/// login separate from Default's, which would confuse; for Codex and Gemini it
+/// is the very home Default uses, so the account would be Default under another
+/// name. Nor may it be one of `taken`, the dirs of the live accounts of the
+/// same harness. With `require_existing` the dir must already be a folder; that
+/// stats the path, so async callers go through `spawn_blocking`. Managed dirs
+/// are created later and skip that check.
 pub fn validate_account_dir(
     dir: &str,
     standard_home: Option<&Path>,

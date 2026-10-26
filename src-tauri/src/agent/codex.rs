@@ -581,12 +581,16 @@ fn chatgpt_identity(path: &Path, auth: &Value) -> AccountIdentity {
 fn plan_name(plan_type: &str) -> String {
     match plan_type {
         "free" => "Free",
+        "go" => "Go",
         "plus" => "Plus",
         "pro" => "Pro",
+        "prolite" => "Pro Lite",
+        "promax" => "Pro Max",
         "team" => "Team",
         "business" => "Business",
         "enterprise" => "Enterprise",
         "edu" => "Edu",
+        "edu_plus" => "Edu Plus",
         other => other,
     }
     .to_string()
@@ -813,12 +817,16 @@ mod tests {
     fn codex_identity_names_plans_and_passes_other_types_through() {
         for (plan_type, plan) in [
             ("free", "Free"),
+            ("go", "Go"),
             ("plus", "Plus"),
             ("pro", "Pro"),
+            ("prolite", "Pro Lite"),
+            ("promax", "Pro Max"),
             ("team", "Team"),
             ("business", "Business"),
             ("enterprise", "Enterprise"),
             ("edu", "Edu"),
+            ("edu_plus", "Edu Plus"),
             // A plan this reader does not know is shown as Codex spells it.
             ("some_new_plan", "some_new_plan"),
         ] {
