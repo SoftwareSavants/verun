@@ -118,7 +118,9 @@ behind the `Agent` trait (no `if kind == X` outside `agent/`).
 - Identity: `<dir>/.claude.json` → `oauthAccount` (see Adding and logging in).
 - Strip when inherited: `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY`,
   `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`,
-  `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_BASE_URL`.
+  `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`,
+  `CLAUDE_CODE_USE_ANTHROPIC_AWS`, `CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD`,
+  `CLAUDE_CODE_USE_MANTLE`, `ANTHROPIC_BASE_URL`.
 
 **Codex**
 - Home: `CODEX_HOME=<dir>`. It must already exist (Codex exits otherwise),
