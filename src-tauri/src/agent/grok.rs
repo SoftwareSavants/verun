@@ -426,15 +426,26 @@ impl Agent for Grok {
             // Everything that can point Grok at another home or login file, or
             // sign it in some other way than the account's own login. An
             // account that needs one sets it in its own env.
-            scrub_vars: &[GROK_HOME_VAR, "GROK_AUTH", "GROK_AUTH_PATH", "XAI_API_KEY"],
+            scrub_vars: &[
+                GROK_HOME_VAR,
+                "GROK_AUTH",
+                "GROK_AUTH_PATH",
+                "XAI_API_KEY",
+                // The legacy name of XAI_API_KEY, and the other keys Grok takes
+                // as credentials from the env.
+                "GROK_CODE_XAI_API_KEY",
+                "GROK_DEPLOYMENT_KEY",
+                "GROK_EXTRA_AUTH_KEY",
+            ],
             // Grok downloads its updates into its home, so an account's home
             // would grow a copy of the ~140MB binary of its own. Updating is
             // for the install the user runs.
             fixed_env: &[("GROK_DISABLE_AUTOUPDATER", "1")],
-            // The fallback when the home holds no login (a stored login wins).
+            // The fallback when the home holds no login (a stored login wins);
+            // GROK_CODE_XAI_API_KEY is the same key under its older name.
             // `grok agent stdio`, which Verun spawns, uses it without being
             // asked to authenticate (checked against Grok Build 1.0.34).
-            api_key_vars: &["XAI_API_KEY"],
+            api_key_vars: &["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"],
             // `--oauth` is the default flow; it is passed so the login does not
             // depend on that.
             login_args: Some(&["login", "--oauth"]),
@@ -629,9 +640,17 @@ mod tests {
         assert_eq!(
             Grok.account_profile(),
             Some(AccountProfile {
-                scrub_vars: &["GROK_HOME", "GROK_AUTH", "GROK_AUTH_PATH", "XAI_API_KEY"],
+                scrub_vars: &[
+                    "GROK_HOME",
+                    "GROK_AUTH",
+                    "GROK_AUTH_PATH",
+                    "XAI_API_KEY",
+                    "GROK_CODE_XAI_API_KEY",
+                    "GROK_DEPLOYMENT_KEY",
+                    "GROK_EXTRA_AUTH_KEY",
+                ],
                 fixed_env: &[("GROK_DISABLE_AUTOUPDATER", "1")],
-                api_key_vars: &["XAI_API_KEY"],
+                api_key_vars: &["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"],
                 login_args: Some(&["login", "--oauth"]),
                 logout_args: Some(&["logout"]),
                 login_hint: None,
