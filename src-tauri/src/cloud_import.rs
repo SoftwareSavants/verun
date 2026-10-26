@@ -300,6 +300,16 @@ async fn account_signed_out(pool: &SqlitePool, account_id: Option<&str>) -> Opti
     })
 }
 
+/// The reason the probe shows for an account error: the account's own message,
+/// except for `Invalid`, whose message is internal text (a database error) that
+/// means nothing to the user.
+fn account_error_reason(error: &AccountError) -> String {
+    match error {
+        AccountError::Invalid { .. } => "Couldn't read this project's accounts.".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Whether `claude --teleport` can list cloud sessions for the Claude account
 /// that an import in `project_id` runs on (see `import_account`). The UI shows
 /// it as a probe, so an account that can't be used (signed out, removed,
@@ -316,7 +326,7 @@ pub async fn project_availability(
         Err(e) => {
             return Availability {
                 available: false,
-                reason: Some(e.to_string()),
+                reason: Some(account_error_reason(&e)),
             }
         }
     };
@@ -1184,6 +1194,26 @@ mod tests {
                 "bound: {bound}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn availability_does_not_show_raw_database_text() {
+        let (pool, _homes) = pool_with_accounts().await;
+        set_project_account_confirmed(&pool, "p-001", "claude", Some("a3"))
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE accounts")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let availability = project_availability(&pool, no_secrets(), "p-001").await;
+
+        assert!(!availability.available);
+        assert_eq!(
+            availability.reason.as_deref(),
+            Some("Couldn't read this project's accounts.")
+        );
     }
 
     #[tokio::test]
