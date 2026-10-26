@@ -380,21 +380,13 @@ fn plan_name(organization_type: &str) -> String {
     .to_string()
 }
 
-/// Path of the CLI's global config: `$CLAUDE_CONFIG_DIR/.claude.json` when
-/// set, else `~/.claude.json`.
-fn claude_global_config_path(home: &Path, config_dir: Option<&Path>) -> std::path::PathBuf {
-    config_dir.unwrap_or(home).join(".claude.json")
-}
-
 /// Whether the user turned on Claude in Chrome's "Enabled by default"
-/// (`claudeInChromeDefaultEnabled`). The CLI only honours it in interactive
-/// TUI sessions, so stream-json spawns must pass `--chrome` themselves.
-pub fn chrome_default_enabled() -> bool {
-    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
-        return false;
-    };
-    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from);
-    chrome_default_enabled_at(&claude_global_config_path(&home, config_dir.as_deref()))
+/// (`claudeInChromeDefaultEnabled`) in the session's own Claude config. The
+/// CLI only honours it in interactive TUI sessions, so stream-json spawns must
+/// pass `--chrome` themselves. Reads the account's `.claude.json` for an added
+/// account and the Default config otherwise. Blocking file read.
+pub fn chrome_default_enabled_in(home: &crate::claude_home::ClaudeHome) -> bool {
+    chrome_default_enabled_at(home.config_json())
 }
 
 fn chrome_default_enabled_at(config_path: &Path) -> bool {
@@ -459,16 +451,22 @@ mod tests {
     }
 
     #[test]
-    fn claude_global_config_path_honors_config_dir() {
-        let home = Path::new("/Users/me");
-        assert_eq!(
-            claude_global_config_path(home, None),
-            home.join(".claude.json")
-        );
-        assert_eq!(
-            claude_global_config_path(home, Some(Path::new("/custom"))),
-            Path::new("/custom/.claude.json")
-        );
+    fn chrome_default_follows_the_sessions_claude_home() {
+        let acct = TempDir::new().unwrap();
+        fs::write(
+            acct.path().join(".claude.json"),
+            r#"{"claudeInChromeDefaultEnabled":true}"#,
+        )
+        .unwrap();
+        let home = crate::claude_home::ClaudeHome::for_config_dir(acct.path());
+        assert!(chrome_default_enabled_in(&home));
+
+        let user = TempDir::new().unwrap();
+        fs::write(user.path().join(".claude.json"), r#"{"claudeInChromeDefaultEnabled":true}"#).unwrap();
+        let other = crate::claude_home::ClaudeHome::for_config_dir(TempDir::new().unwrap().path());
+        assert!(!chrome_default_enabled_in(&other), "an account never inherits Default's flag");
+        let default = crate::claude_home::ClaudeHome::default_home(user.path(), None);
+        assert!(chrome_default_enabled_in(&default));
     }
 
     /// The Default account's Claude home under a temp user home.

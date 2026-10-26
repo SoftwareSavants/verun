@@ -2976,10 +2976,12 @@ pub async fn spawn_session_process(
     let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
     let mcp_config_path = verun_mcp_config_path_for_task(&app_data, &task_id);
-    let chrome_enabled = agent.kind() == AgentKind::Claude
-        && tokio::task::spawn_blocking(crate::agent::claude::chrome_default_enabled)
+    let chrome_enabled = agent.kind() == AgentKind::Claude && {
+        let home = claude_home.clone();
+        tokio::task::spawn_blocking(move || crate::agent::claude::chrome_default_enabled_in(&home))
             .await
-            .unwrap_or(false);
+            .unwrap_or(false)
+    };
     let session_args = crate::agent::SessionArgs {
         resume_session_id: resume_id,
         model: model.as_deref(),
