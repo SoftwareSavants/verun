@@ -302,6 +302,11 @@ They are applied at:
    The PTY runs `$SHELL -lic`, so a `CLAUDE_CONFIG_DIR` exported in the user's
    shell profile would override Verun's. The account env must win here, and
    secrets must not appear in process arguments.
+   Whenever the session env is non-empty, terminal-mode `claude` is run from
+   `PATH` (a shell alias or function named `claude` is not seen), so installs
+   that only provide `claude` as an alias are unsupported. This includes a
+   Default session in a project that binds another harness's account, whose
+   env is non-empty too.
 3. **Title and task naming:** `generate_session_title` in `task.rs` always runs
    `claude -p --model haiku`, whatever the session's harness.
    - A Claude session uses its own account.
