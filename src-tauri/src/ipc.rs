@@ -4251,11 +4251,21 @@ mod tests {
                     "To use an API key instead, run `codex login --with-api-key` in a task shell of a project that uses this account."
                         .into()
                 ),
+                ..plain_support.clone()
+            })
+        );
+        // Cursor takes API-key accounts only: no login or logout terminal, no
+        // existing folder, and the key is required.
+        assert_eq!(
+            account_support_info(&crate::agent::Cursor),
+            Some(AccountSupportInfo {
+                login: false,
+                logout: false,
+                existing_dir: false,
+                required_secret: Some("CURSOR_API_KEY".into()),
                 ..plain_support
             })
         );
-        // Cursor has not opted in: the trait defaults mean no added accounts.
-        assert_eq!(account_support_info(&crate::agent::Cursor), None);
     }
 
     /// A harness that sets every optional field of the profile and is blocked,

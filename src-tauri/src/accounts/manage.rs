@@ -1807,6 +1807,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_cursor_account_requires_api_key() {
+        let lab = Lab::new().await;
+        let cursor = || NewAccountInput {
+            agent_type: "cursor".into(),
+            ..new_claude("Work")
+        };
+
+        let result = lab.create("c1", cursor()).await;
+        assert_eq!(
+            invalid_message(result),
+            "CURSOR_API_KEY must be set as a secret."
+        );
+        assert!(lab.stored().await.is_empty());
+
+        let input = with_env(cursor(), vec![secret_in("CURSOR_API_KEY", Some("key-1"))]);
+        let account = lab.create("c1", input).await.unwrap();
+        assert!(lab.managed_dir("c1").join("cfg").is_dir());
+        assert_eq!(account.env, vec![secret_var("CURSOR_API_KEY")]);
+    }
+
+    #[tokio::test]
     async fn create_gemini_account_refuses_the_vars_verun_sets_for_it() {
         // The home var would re-point the account, and the trust var would let
         // an account undo what lets its sessions run in the worktrees.
