@@ -182,6 +182,27 @@ async fn load_session_account(
     Ok(account)
 }
 
+/// Whether the session of `agent_type` on `account_id` may run now: the same
+/// checks a spawn makes (`session_env_for`), for a process that is already
+/// running. The Default account (`None`) has nothing to check. The sign-in
+/// check reads files, so it runs in `spawn_blocking`.
+pub async fn ensure_account_usable(
+    pool: &SqlitePool,
+    agent_type: &str,
+    account_id: Option<&str>,
+) -> Result<(), AccountError> {
+    let Some(id) = account_id else {
+        return Ok(());
+    };
+    let account = load_session_account(pool, id, agent_type).await?;
+    let agent_type = agent_type.to_string();
+    blocking(move || {
+        let agent = AgentKind::parse(&agent_type).implementation();
+        check_usable(&account, agent.as_ref())
+    })
+    .await
+}
+
 /// The env a session of `agent_type` in `project_id` is spawned with, on
 /// `account_id` (`None`: the Default account). See `session_env` for what it
 /// holds.
@@ -881,6 +902,45 @@ pub(crate) mod tests {
             );
             assert_eq!(check_usable(&account, &Gemini), Ok(()));
         }
+    }
+
+    // -- ensure_account_usable --
+
+    #[tokio::test]
+    async fn ensure_account_usable_refuses_a_removed_or_signed_out_account() {
+        let pool = test_pool().await;
+        let signed_in = claude_dir(SIGNED_IN);
+        let signed_out = claude_dir("{}");
+        let mut removed = acme("a1", &signed_in);
+        removed.removed_at = Some(1700);
+        upsert_account_confirmed(&pool, removed).await.unwrap();
+        upsert_account_confirmed(&pool, acme("a2", &signed_out))
+            .await
+            .unwrap();
+        upsert_account_confirmed(&pool, acme("a3", &signed_in))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ensure_account_usable(&pool, "claude", Some("a1")).await,
+            Err(AccountError::Removed {
+                account_id: "a1".into(),
+                label: "Acme".into()
+            })
+        );
+        assert_eq!(
+            ensure_account_usable(&pool, "claude", Some("a2")).await,
+            Err(AccountError::SignedOut {
+                account_id: "a2".into(),
+                label: "Acme".into()
+            })
+        );
+        assert_eq!(
+            ensure_account_usable(&pool, "claude", Some("a3")).await,
+            Ok(())
+        );
+        // The Default account has nothing to check.
+        assert_eq!(ensure_account_usable(&pool, "claude", None).await, Ok(()));
     }
 
     // -- session_env_for --

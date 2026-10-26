@@ -2070,6 +2070,21 @@ pub async fn project_account_ids(
     .map_err(|e| e.to_string())
 }
 
+/// Ids of the sessions that run on the account `account_id`, in the order
+/// they were started.
+pub async fn session_ids_for_account(
+    pool: &SqlitePool,
+    account_id: &str,
+) -> Result<Vec<String>, String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT id FROM sessions WHERE account_id = ? ORDER BY started_at ASC, id ASC",
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Names of the projects bound to the account, alphabetically.
 pub async fn projects_using_account(
     pool: &SqlitePool,

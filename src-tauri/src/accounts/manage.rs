@@ -784,15 +784,24 @@ pub async fn update_account(
 /// failure leaves behind is only logged. Removing an account that is already
 /// removed keeps its first time and runs the cleanup again.
 ///
+/// Once the account is marked, `stop` is called with the ids of the sessions
+/// on it, so their live processes and terminals do not outlive it. It is not
+/// called when the removal is refused.
+///
 /// The result is the turn of the change (see `Turn`), still held.
-pub async fn remove_account(
+pub async fn remove_account<Stop, Stopped>(
     pool: &SqlitePool,
     db_tx: &DbWriteTx,
     secrets: Arc<dyn SecretStore>,
     account_id: &str,
     delete_dir: bool,
     now: i64,
-) -> Result<Turn, AccountError> {
+    stop: Stop,
+) -> Result<Turn, AccountError>
+where
+    Stop: FnOnce(Vec<String>) -> Stopped,
+    Stopped: std::future::Future<Output = ()>,
+{
     let turn = Turn::take().await;
     let account = load_account(pool, account_id).await?;
     let projects = db::projects_using_account(pool, account_id)
@@ -805,6 +814,9 @@ pub async fn remove_account(
         });
     }
     let accounts = db::list_accounts(pool).await.map_err(database_error)?;
+    let sessions = db::session_ids_for_account(pool, account_id)
+        .await
+        .map_err(database_error)?;
     if account.removed_at.is_none() {
         write_confirmed(db_tx, |done| DbWrite::MarkAccountRemoved {
             id: account.id.clone(),
@@ -813,6 +825,7 @@ pub async fn remove_account(
         })
         .await?;
     }
+    stop(sessions).await;
     let _ = blocking(move || {
         forget_secrets(secrets.as_ref(), &account.id, &secret_keys(&account.env));
         if delete_dir {
@@ -948,6 +961,7 @@ mod tests {
                 id,
                 delete_dir,
                 2000,
+                |_| async {},
             )
             .await
             .map(|_turn| ())
@@ -2412,16 +2426,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remove_asks_to_stop_the_sessions_on_the_account_and_no_others() {
+        let lab = Lab::new().await;
+        lab.create("a1", new_claude("Acme")).await.unwrap();
+        lab.create("a2", new_claude("Other")).await.unwrap();
+        crate::db::tests::process_write_for_tests(
+            &lab.pool,
+            DbWrite::InsertProject(crate::db::tests::make_project()),
+        )
+        .await
+        .unwrap();
+        crate::db::tests::process_write_for_tests(
+            &lab.pool,
+            DbWrite::InsertTask(crate::db::tests::make_task("p-001")),
+        )
+        .await
+        .unwrap();
+        for (id, account) in [("s-a1", Some("a1")), ("s-a2", Some("a2")), ("s-def", None)] {
+            let mut session = crate::db::tests::make_session("t-001");
+            session.id = id.into();
+            session.account_id = account.map(Into::into);
+            crate::db::tests::process_write_for_tests(&lab.pool, DbWrite::CreateSession(session))
+                .await
+                .unwrap();
+        }
+
+        let asked = Arc::new(std::sync::Mutex::new(None));
+        let seen = asked.clone();
+        remove_account(
+            &lab.pool,
+            &lab.db_tx,
+            lab.store.clone(),
+            "a1",
+            false,
+            2000,
+            move |ids| async move {
+                *seen.lock().unwrap() = Some(ids);
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*asked.lock().unwrap(), Some(vec!["s-a1".to_string()]));
+        // The account was already marked when the stop was asked for.
+        assert_eq!(lab.stored().await[0].removed_at, Some(2000));
+    }
+
+    #[tokio::test]
+    async fn remove_refused_asks_to_stop_nothing() {
+        let lab = Lab::new().await;
+        let asked = Arc::new(std::sync::Mutex::new(false));
+        let seen = asked.clone();
+        let result = remove_account(
+            &lab.pool,
+            &lab.db_tx,
+            lab.store.clone(),
+            "nope",
+            false,
+            2000,
+            move |_| async move {
+                *seen.lock().unwrap() = true;
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(!*asked.lock().unwrap());
+    }
+
+    #[tokio::test]
     async fn remove_twice_is_harmless_and_keeps_the_first_time() {
         let lab = Lab::new().await;
         lab.create("a1", new_claude("Acme")).await.unwrap();
         lab.remove("a1", false).await.unwrap();
 
         // A second request, now asking for the folder too.
-        remove_account(&lab.pool, &lab.db_tx, lab.store.clone(), "a1", true, 3000)
-            .await
-            .map(drop)
-            .unwrap();
+        remove_account(
+            &lab.pool,
+            &lab.db_tx,
+            lab.store.clone(),
+            "a1",
+            true,
+            3000,
+            |_| async {},
+        )
+        .await
+        .map(drop)
+        .unwrap();
 
         assert_eq!(lab.stored().await[0].removed_at, Some(2000));
         assert!(!lab.managed_dir("a1").exists());

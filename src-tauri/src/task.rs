@@ -1619,6 +1619,17 @@ pub async fn send_message(
             }
         };
 
+        if matches!(decision, FastPath::Go { .. } | FastPath::GoRpc { .. }) {
+            refuse_unusable_account(
+                app.state::<SqlitePool>().inner(),
+                &active,
+                &session_id,
+                &agent_type,
+                account_id.as_deref(),
+            )
+            .await?;
+        }
+
         match decision {
             FastPath::Go {
                 stdin,
@@ -2065,6 +2076,56 @@ pub(crate) fn build_agent_command(
         .stderr(std::process::Stdio::piped())
         .current_dir(worktree_path);
     cmd
+}
+
+/// Stops the live process of each session in `session_ids`, gracefully.
+/// Sessions with none are skipped.
+pub async fn stop_active_sessions(active: &ActiveMap, session_ids: &[String]) {
+    for id in session_ids {
+        if let Some((_, mut proc)) = active.remove(id) {
+            graceful_shutdown(&mut proc.child, &proc.stdin).await;
+        }
+    }
+}
+
+/// Stops everything running for `session_ids`: their processes and their Claude
+/// terminals.
+pub async fn stop_sessions(
+    active: &ActiveMap,
+    pty_map: &crate::pty::ActivePtyMap,
+    ct_map: &crate::claude_terminal::ClaudeTerminalMap,
+    session_ids: &[String],
+) {
+    stop_active_sessions(active, session_ids).await;
+    for id in session_ids {
+        let _ = crate::claude_terminal::close_claude_terminal(
+            pty_map.clone(),
+            ct_map.clone(),
+            id.clone(),
+        )
+        .await;
+    }
+}
+
+/// Checks that the session's account can still run before a message goes to
+/// its live process. The spawn path checks the account, but a process that
+/// outlives a removal or a sign-out never goes through it. When the account
+/// can't be used, the process is stopped and the error is returned in its IPC
+/// form.
+async fn refuse_unusable_account(
+    pool: &SqlitePool,
+    active: &ActiveMap,
+    session_id: &str,
+    agent_type: &str,
+    account_id: Option<&str>,
+) -> Result<(), String> {
+    match accounts::service::ensure_account_usable(pool, agent_type, account_id).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            stop_active_sessions(active, &[session_id.to_string()]).await;
+            Err(error.to_ipc())
+        }
+    }
 }
 
 /// The account env a session's CLI is spawned with: see
@@ -5353,5 +5414,117 @@ mod tests {
             resolved_or(None, || async { Err(error.clone()) }).await,
             Err(error)
         );
+    }
+
+    // -- A live process on an account that can no longer run --
+
+    /// A live idle process (`cat`, which exits when its stdin closes) that
+    /// stands in for a prewarmed persistent CLI.
+    fn live_process(task_id: &str) -> ActiveProcess {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        ActiveProcess {
+            child,
+            task_id: task_id.to_string(),
+            stdin: Arc::new(TokioMutex::new(stdin)),
+            busy: Arc::new(AtomicBool::new(false)),
+            trust_level: Arc::new(AtomicU8::new(TrustLevel::Normal.to_u8())),
+            kind: AgentKind::Claude,
+            current_permission_mode: "default".to_string(),
+            current_model: None,
+            current_thinking_mode: false,
+            current_fast_mode: false,
+            rpc_session_id: None,
+            rpc_pending: None,
+            rpc_next_id: None,
+            rpc_current_turn_id: None,
+        }
+    }
+
+    async fn pool_with_account(
+        removed_at: Option<i64>,
+        signed_in: bool,
+    ) -> (SqlitePool, tempfile::TempDir) {
+        use crate::accounts::service::tests::{acme, claude_dir, SIGNED_IN};
+        let pool = crate::db::tests::test_pool().await;
+        let dir = claude_dir(if signed_in { SIGNED_IN } else { "{}" });
+        let mut account = acme("a1", &dir);
+        account.removed_at = removed_at;
+        crate::db::tests::upsert_account_confirmed(&pool, account)
+            .await
+            .unwrap();
+        (pool, dir)
+    }
+
+    #[tokio::test]
+    async fn a_send_on_a_removed_account_is_refused_and_its_process_stopped() {
+        let (pool, _dir) = pool_with_account(Some(1700), true).await;
+        let active = new_active_map();
+        active.insert("s1".to_string(), live_process("t1"));
+
+        let result = refuse_unusable_account(&pool, &active, "s1", "claude", Some("a1")).await;
+
+        assert_eq!(
+            result,
+            Err(AccountError::Removed {
+                account_id: "a1".into(),
+                label: "Acme".into()
+            }
+            .to_ipc())
+        );
+        assert!(!active.contains_key("s1"), "the process was left running");
+    }
+
+    #[tokio::test]
+    async fn a_send_on_a_signed_out_account_is_refused_and_its_process_stopped() {
+        let (pool, _dir) = pool_with_account(None, false).await;
+        let active = new_active_map();
+        active.insert("s1".to_string(), live_process("t1"));
+
+        let result = refuse_unusable_account(&pool, &active, "s1", "claude", Some("a1")).await;
+
+        assert_eq!(
+            result,
+            Err(AccountError::SignedOut {
+                account_id: "a1".into(),
+                label: "Acme".into()
+            }
+            .to_ipc())
+        );
+        assert!(!active.contains_key("s1"));
+    }
+
+    #[tokio::test]
+    async fn a_send_on_a_usable_or_default_account_keeps_its_process() {
+        let (pool, _dir) = pool_with_account(None, true).await;
+        let active = new_active_map();
+        active.insert("s1".to_string(), live_process("t1"));
+
+        assert_eq!(
+            refuse_unusable_account(&pool, &active, "s1", "claude", Some("a1")).await,
+            Ok(())
+        );
+        assert_eq!(
+            refuse_unusable_account(&pool, &active, "s1", "claude", None).await,
+            Ok(())
+        );
+        assert!(active.contains_key("s1"));
+    }
+
+    #[tokio::test]
+    async fn stopping_sessions_stops_only_the_ones_named() {
+        let active = new_active_map();
+        active.insert("s1".to_string(), live_process("t1"));
+        active.insert("s2".to_string(), live_process("t1"));
+
+        stop_active_sessions(&active, &["s1".to_string(), "unknown".to_string()]).await;
+
+        assert!(!active.contains_key("s1"));
+        assert!(active.contains_key("s2"));
     }
 }
