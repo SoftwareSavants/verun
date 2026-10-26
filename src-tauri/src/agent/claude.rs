@@ -4,8 +4,7 @@ use super::{
     SessionArgs,
 };
 use crate::accounts::identity::{
-    non_empty_str, read_json_with_retry, unknown_identity, unread_file_identity, AccountIdentity,
-    SignInStatus,
+    non_empty_str, read_identity_object, unknown_identity, AccountIdentity, SignInStatus,
 };
 use crate::claude_home::ClaudeHome;
 use crate::markdown_skills::{scan_commands_dir, scan_skills_dir};
@@ -330,11 +329,9 @@ fn claude_identity(
     inherited_config_dir: Option<OsString>,
 ) -> AccountIdentity {
     let path = claude_json_path(home, inherited_config_dir);
-    let Some(json) = read_json_with_retry(&path) else {
-        return unread_file_identity(&path);
-    };
-    let Some(config) = json.as_object() else {
-        return unknown_identity(&path, "is not a JSON object");
+    let config = match read_identity_object(&path) {
+        Ok(config) => config,
+        Err(identity) => return identity,
     };
     match config.get("oauthAccount") {
         None | Some(serde_json::Value::Null) => {

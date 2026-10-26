@@ -186,13 +186,18 @@ struct TerminalLaunch {
     /// exec of the sh that applies it (see `pty_command_and_env`).
     command: String,
     env: EnvPatch,
+    /// The folder the terminal runs in.
+    cwd: String,
     /// The name on the terminal's tab.
     name: String,
     /// The harness's hint for the action, for the user to read beside it.
     hint: Option<String>,
 }
 
-/// The launch of `action` on `account`, an account of `agent`'s harness.
+/// The launch of `action` on `account`, an account of `agent`'s harness. The
+/// terminal runs in the account's folder, so that what the CLI reads from where
+/// it runs (Gemini takes `.gemini/settings.json` there for a workspace's) is the
+/// account's own and not Default's.
 ///
 /// The env is the account's own (see `account_env`) and nothing of any
 /// project's: a login is the harness's, not a project's work. There is no
@@ -227,6 +232,7 @@ fn build_launch(
     Ok(TerminalLaunch {
         command,
         env,
+        cwd: account.config_dir.clone(),
         name: format!("{} {}", account.label, action.verb()),
         hint: hint.map(str::to_string),
     })
@@ -249,7 +255,7 @@ async fn load_launch(
 }
 
 /// Starts the login or logout terminal of the account `account_id`: a PTY of
-/// `rows` x `cols` in the user's home folder that runs the harness's command on
+/// `rows` x `cols` in the account's folder that runs the harness's command on
 /// the account's env, and the harness's hint for it.
 ///
 /// `Busy` while another login or logout terminal is running. Everything that can
@@ -263,11 +269,11 @@ pub async fn start(
     rows: u16,
     cols: u16,
 ) -> Result<AccountTerminal, AccountError> {
-    let user_home = account_user_home()?;
     let secrets = app.state::<Secrets>().0.clone();
     let TerminalLaunch {
         command,
         env,
+        cwd,
         name,
         hint,
     } = load_launch(
@@ -286,7 +292,6 @@ pub async fn start(
         || {
             let (app, map) = (app.clone(), pty_map.inner().clone());
             let task_id = format!("account-{account_id}");
-            let cwd = user_home.to_string_lossy().into_owned();
             blocking(move || {
                 pty::spawn_pty(
                     app,
@@ -597,6 +602,19 @@ mod tests {
     }
 
     #[test]
+    fn login_and_logout_run_in_the_accounts_folder() {
+        // Not the user's home: a CLI reads its settings from where it runs, and
+        // Gemini would take Default's `~/.gemini/settings.json` there for a
+        // workspace's. The folder is the account's, spelled as stored.
+        for dir in ["/acc/a1", "/x/Client Accounts/o'brien"] {
+            for action in [AccountTerminalAction::Login, AccountTerminalAction::Logout] {
+                let launch = launch_of(&Claude, &acme_in(dir), action);
+                assert_eq!(launch.cwd, dir, "{action:?}");
+            }
+        }
+    }
+
+    #[test]
     fn logout_runs_the_logout_command() {
         let launch = launch_of(&Claude, &acme_in("/acc/a1"), AccountTerminalAction::Logout);
 
@@ -788,6 +806,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(launch.name, "Acme login");
+        assert_eq!(launch.cwd, dir.path().to_str().unwrap());
         assert!(script_of(&launch.env).contains(&format!(
             "export CLAUDE_CONFIG_DIR='{}'",
             dir.path().display()

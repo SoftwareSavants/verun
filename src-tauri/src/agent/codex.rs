@@ -7,8 +7,8 @@ use super::{
     CodexRpcPermissionsDecision, InputMode, SessionArgs,
 };
 use crate::accounts::identity::{
-    decode_jwt_payload, non_empty_str, read_json_with_retry, unknown_identity,
-    unread_file_identity, AccountIdentity, SignInStatus,
+    decode_jwt_payload, non_empty_str, read_identity_object, unknown_identity, AccountIdentity,
+    SignInStatus,
 };
 use crate::policy::TrustLevel;
 use serde_json::{json, Value};
@@ -525,12 +525,10 @@ fn codex_identity(
     inherited_codex_home: Option<OsString>,
 ) -> AccountIdentity {
     let path = account_home_dir(home, inherited_codex_home, standard_home).join("auth.json");
-    let Some(auth) = read_json_with_retry(&path) else {
-        return unread_file_identity(&path);
+    let auth = match read_identity_object(&path) {
+        Ok(auth) => auth,
+        Err(identity) => return identity,
     };
-    if !auth.is_object() {
-        return unknown_identity(&path, "is not a JSON object");
-    }
     let has_key = auth
         .get("OPENAI_API_KEY")
         .and_then(Value::as_str)
@@ -553,7 +551,7 @@ fn codex_identity(
 /// The identity of the ChatGPT login in `auth`, a parsed `auth.json`: signed
 /// out without tokens, and otherwise whoever the `id_token` says. Tokens that
 /// Codex itself would refuse leave it unknown.
-fn chatgpt_identity(path: &Path, auth: &Value) -> AccountIdentity {
+fn chatgpt_identity(path: &Path, auth: &serde_json::Map<String, Value>) -> AccountIdentity {
     let tokens = match auth.get("tokens") {
         None | Some(Value::Null) => return AccountIdentity::with_status(SignInStatus::SignedOut),
         Some(tokens) => tokens,

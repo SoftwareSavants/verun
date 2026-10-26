@@ -761,9 +761,6 @@ mod tests {
                 ("GEMINI_API_KEY", "key-one"),
             ])
         );
-        // Set on the command itself, so a GEMINI_CLI_TRUST_WORKSPACE=false that
-        // Verun inherited cannot undo it.
-        assert!(sets(&patch, "GEMINI_CLI_TRUST_WORKSPACE", "true"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use super::account_files::account_home_dir;
 use super::{AccountHome, AccountProfile, Agent, AgentKind, InputMode, SessionArgs};
 use crate::accounts::identity::{
-    read_json_with_retry, unknown_identity, unread_file_identity, AccountIdentity, SignInStatus,
+    read_identity_object, unknown_identity, AccountIdentity, SignInStatus,
 };
 use serde_json::Value;
 use std::ffi::OsString;
@@ -217,11 +217,9 @@ fn gemini_identity(
     let path = account_home_dir(home, inherited_gemini_home, standard_home)
         .join(".gemini")
         .join("google_accounts.json");
-    let Some(accounts) = read_json_with_retry(&path) else {
-        return unread_file_identity(&path);
-    };
-    let Some(accounts) = accounts.as_object() else {
-        return unknown_identity(&path, "is not a JSON object");
+    let accounts = match read_identity_object(&path) {
+        Ok(accounts) => accounts,
+        Err(identity) => return identity,
     };
     match accounts.get("active") {
         None | Some(Value::Null) => AccountIdentity::with_status(SignInStatus::SignedOut),

@@ -2138,48 +2138,91 @@ mod tests {
 
     #[test]
     fn gemini_build_args_basic() {
-        let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs {
+        // The whole list, so that no flag (--skip-trust, say) gets in unseen:
+        // added accounts trust their workspaces through the env instead.
+        let args = Gemini.build_session_args(&SessionArgs {
             message: "hello",
             ..default_args()
         });
-        assert!(args.contains(&"stream-json".to_string()));
-        assert!(args.contains(&"--yolo".to_string()));
-        assert!(args.contains(&"-p".to_string()));
-        assert!(args.contains(&"hello".to_string()));
+        assert_eq!(
+            args,
+            ["--output-format", "stream-json", "--yolo", "-p", "hello"]
+        );
     }
 
     #[test]
     fn gemini_build_args_plan_mode() {
-        let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs {
+        let args = Gemini.build_session_args(&SessionArgs {
             plan_mode: true,
             ..default_args()
         });
-        assert!(args.contains(&"--approval-mode".to_string()));
-        assert!(args.contains(&"plan".to_string()));
+        assert_eq!(
+            args,
+            [
+                "--output-format",
+                "stream-json",
+                "--yolo",
+                "--approval-mode",
+                "plan"
+            ]
+        );
     }
 
     #[test]
     fn gemini_build_args_resume() {
-        let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs {
+        let args = Gemini.build_session_args(&SessionArgs {
             resume_session_id: Some("g-1"),
             ..default_args()
         });
-        assert!(args.contains(&"--resume".to_string()));
-        assert!(args.contains(&"g-1".to_string()));
+        assert_eq!(
+            args,
+            [
+                "--output-format",
+                "stream-json",
+                "--yolo",
+                "--resume",
+                "g-1"
+            ]
+        );
     }
 
     #[test]
     fn gemini_build_args_model() {
-        let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs {
+        let args = Gemini.build_session_args(&SessionArgs {
             model: Some("pro"),
             ..default_args()
         });
-        assert!(args.contains(&"-m".to_string()));
-        assert!(args.contains(&"pro".to_string()));
+        assert_eq!(
+            args,
+            ["--output-format", "stream-json", "--yolo", "-m", "pro"]
+        );
+    }
+
+    #[test]
+    fn gemini_build_args_with_every_option_keep_their_order() {
+        let args = Gemini.build_session_args(&SessionArgs {
+            plan_mode: true,
+            model: Some("pro"),
+            resume_session_id: Some("g-1"),
+            message: "hello",
+            ..default_args()
+        });
+        assert_eq!(
+            args,
+            [
+                "--output-format",
+                "stream-json",
+                "--yolo",
+                "--approval-mode",
+                "plan",
+                "-m",
+                "pro",
+                "--resume",
+                "g-1",
+                "-p",
+                "hello"
+            ]
+        );
     }
 
     #[test]

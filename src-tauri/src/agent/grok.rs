@@ -1,8 +1,7 @@
 use super::account_files::account_home_dir;
 use super::{AccountHome, AccountProfile, Agent, AgentKind, InputMode, ModelOption, SessionArgs};
 use crate::accounts::identity::{
-    decode_jwt_payload, non_empty_str, read_json_with_retry, unknown_identity,
-    unread_file_identity, AccountIdentity, SignInStatus,
+    decode_jwt_payload, non_empty_str, read_identity_object, AccountIdentity, SignInStatus,
 };
 use serde_json::{json, Value};
 use std::ffi::{OsStr, OsString};
@@ -513,11 +512,9 @@ fn standard_home(user_home: &Path) -> PathBuf {
 /// passed in so tests need not touch the process env.
 fn grok_identity(home: AccountHome<'_>, inherited_grok_home: Option<OsString>) -> AccountIdentity {
     let path = account_home_dir(home, inherited_grok_home, standard_home).join("auth.json");
-    let Some(auth) = read_json_with_retry(&path) else {
-        return unread_file_identity(&path);
-    };
-    let Some(entries) = auth.as_object() else {
-        return unknown_identity(&path, "is not a JSON object");
+    let entries = match read_identity_object(&path) {
+        Ok(entries) => entries,
+        Err(identity) => return identity,
     };
     let login = entries
         .iter()

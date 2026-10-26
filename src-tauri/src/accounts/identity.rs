@@ -142,6 +142,23 @@ pub fn unknown_identity(path: &Path, reason: &str) -> AccountIdentity {
     AccountIdentity::with_status(SignInStatus::Unknown)
 }
 
+/// The JSON object in the file at `path` that a CLI keeps its login in, or the
+/// identity to report when there is none. The reader of every harness starts
+/// here, so they all decide the same way: a file that is not there is
+/// `SignedOut`, and one that is there but cannot be read or parsed, or is not an
+/// object, says nothing either way and is `Unknown` (see `unread_file_identity`).
+pub fn read_identity_object(
+    path: &Path,
+) -> Result<serde_json::Map<String, serde_json::Value>, AccountIdentity> {
+    let Some(json) = read_json_with_retry(path) else {
+        return Err(unread_file_identity(path));
+    };
+    match json {
+        serde_json::Value::Object(object) => Ok(object),
+        _ => Err(unknown_identity(path, "is not a JSON object")),
+    }
+}
+
 /// The string at `key` of a JSON object, when it is there and not empty.
 pub fn non_empty_str(value: &serde_json::Value, key: &str) -> Option<String> {
     value
@@ -419,6 +436,40 @@ mod tests {
         assert_eq!(read_json_retrying(&path, 3, || waits += 1), None);
         // Three reads, so two pauses: none after the last one.
         assert_eq!(waits, 2);
+    }
+
+    #[test]
+    fn read_identity_object_returns_the_object_in_the_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("auth.json");
+        std::fs::write(&path, r#"{"a":1,"b":{"c":"d"}}"#).unwrap();
+        let object = read_identity_object(&path).unwrap();
+        assert_eq!(object.get("a"), Some(&json!(1)));
+        assert_eq!(object.get("b"), Some(&json!({"c": "d"})));
+    }
+
+    #[test]
+    fn read_identity_object_reports_a_missing_file_as_signed_out() {
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(
+            read_identity_object(&tmp.path().join("auth.json")),
+            Err(AccountIdentity::with_status(SignInStatus::SignedOut))
+        );
+    }
+
+    #[test]
+    fn read_identity_object_reports_a_file_it_cannot_use_as_unknown() {
+        let unknown = Err(AccountIdentity::with_status(SignInStatus::Unknown));
+        let tmp = TempDir::new().unwrap();
+        // Not JSON, empty, cut off; then JSON that is not an object.
+        for text in ["not json", "", r#"{"a":"#, "[]", r#""x""#, "42", "null"] {
+            let path = tmp.path().join("auth.json");
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(read_identity_object(&path), unknown, "file: {text:?}");
+        }
+        let folder = tmp.path().join("folder.json");
+        std::fs::create_dir(&folder).unwrap();
+        assert_eq!(read_identity_object(&folder), unknown);
     }
 
     #[test]
