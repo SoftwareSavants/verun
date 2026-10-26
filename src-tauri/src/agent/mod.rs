@@ -744,10 +744,10 @@ pub trait Agent: Send + Sync {
     }
 
     /// The CLI's own home (Claude: `~/.claude`, Codex: `~/.codex`, Gemini: the
-    /// user's home), which an added account may not use. For Claude, named
-    /// explicitly it is a login separate from Default's; for Codex and Gemini it
-    /// is the very home Default uses, so the account would be Default under
-    /// another name.
+    /// user's home, Grok: `~/.grok`), which an added account may not use. For
+    /// Claude, named explicitly it is a login separate from Default's; for Codex,
+    /// Gemini and Grok it is the very home Default uses, so the account would be
+    /// Default under another name.
     fn account_standard_home(&self, _user_home: &Path) -> Option<PathBuf> {
         None
     }
