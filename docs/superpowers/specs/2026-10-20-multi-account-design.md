@@ -138,17 +138,25 @@ behind the `Agent` trait (no `if kind == X` outside `agent/`).
 **Gemini**
 - Home: `GEMINI_CLI_HOME=<dir>`. It stands in for `HOME`, so Gemini uses
   `<dir>/.gemini`. Requires Gemini CLI 0.25 or later.
-- Login: there is no login subcommand. The login terminal runs `gemini`
-  after Verun seeds `<dir>/.gemini/settings.json` with
-  `security.auth.selectedType = "oauth-personal"`, which starts Google sign-in
-  automatically. Logout: `/auth signout` in that terminal.
+- Login: there is no login subcommand. The login terminal runs `gemini`, and
+  the user chooses "Sign in with Google" in its dialog; Gemini then saves that
+  choice in the account's own settings. Verun does not seed
+  `security.auth.selectedType` (amended during build): Gemini's configured
+  auth type wins over `GEMINI_API_KEY`, so a seed would break API-key accounts.
+  Logout: `/auth signout` in that terminal.
 - Identity: `<dir>/.gemini/google_accounts.json` → `active` (an email, or
   null when signed out).
 - API keys only through `GEMINI_API_KEY` in the account env: a key typed into
   Gemini's own dialog lands in a keychain entry shared by every home.
+  `GOOGLE_API_KEY` alone selects no auth type, so it does not count as signed in.
+- Added accounts always set `GEMINI_CLI_TRUST_WORKSPACE=true` (amended during
+  build): a new home trusts no folders, and headless Gemini aborts in an
+  untrusted folder. This matches Verun pre-trusting worktrees for Claude.
 - Strip when inherited: `GEMINI_CLI_HOME`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
   `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_GENAI_USE_VERTEXAI`, `NO_BROWSER`,
-  `CI`.
+  `CI`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_CLOUD_ACCESS_TOKEN`,
+  `GOOGLE_GEMINI_BASE_URL`, `GEMINI_CLI_USE_COMPUTE_ADC`,
+  `GEMINI_FORCE_ENCRYPTED_FILE_STORAGE`.
 
 **Grok** (xAI's Grok Build CLI)
 - Home: `GROK_HOME=<dir>`. Credentials are files only, no keychain.

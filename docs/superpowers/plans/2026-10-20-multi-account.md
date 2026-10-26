@@ -1151,13 +1151,13 @@ it('marks removed accounts', ...)             // title === 'Acme (removed)'
   - logout hint "Type /auth signout, then /quit."
   - existing dir allowed, in project env, `min_cli_version: Some("0.25.0")`
 - **Standard home:** `user_home` itself, because `GEMINI_CLI_HOME=$HOME` is the default.
-- **Prepare:** create `<dir>/.gemini` and write `<dir>/.gemini/settings.json` as `{"security":{"auth":{"selectedType":"oauth-personal"}}}` if it doesn't exist.
+- **Prepare:** create `<dir>/.gemini` only. (Amended during build: no settings.json seed, because Gemini's configured auth type wins over `GEMINI_API_KEY`; the login hint asks the user to choose "Sign in with Google". Added accounts also get fixed env `GEMINI_CLI_TRUST_WORKSPACE=true`, and `api_key_vars` is `["GEMINI_API_KEY"]` only.)
 - **Identity:** `<home>/.gemini/google_accounts.json` → `active`. An email string means `SignedIn`; null or a missing file means `SignedOut`. Default reads `$GEMINI_CLI_HOME` if inherited, else `user_home`.
 
 - [ ] **Step 1: Write the failing tests:**
 ```rust
 #[test] fn gemini_profile_values()
-#[test] fn gemini_prepare_dir_seeds_oauth_settings_once()
+#[test] fn gemini_prepare_dir_makes_the_gemini_dir_and_writes_no_settings()   // amended
 #[test] fn gemini_identity_reads_active_account() // {"active":"dev@acme.com","old":[]} -> SignedIn; {"active":null} -> SignedOut
 ```
 - [ ] **Step 2: Run** `cargo test gemini_`. Expected: FAIL.
