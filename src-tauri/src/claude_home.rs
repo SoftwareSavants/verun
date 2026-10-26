@@ -19,6 +19,7 @@ use sqlx::SqlitePool;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::accounts::AccountError;
+use crate::agent::AgentKind;
 use crate::db;
 
 /// The files of one Claude account. Plain paths: building one reads and
@@ -207,6 +208,14 @@ pub(crate) async fn for_account_with_default(
         }
         .to_string()
     })?;
+    // Another harness's dir is not a Claude home: refuse rather than read or
+    // write Claude's files in it.
+    if account.agent_type != AgentKind::Claude.as_str() {
+        return Err(AccountError::WrongHarness {
+            account_id: id.to_string(),
+        }
+        .to_string());
+    }
     Ok(ClaudeHome::for_config_dir(&account.config_dir))
 }
 
@@ -436,6 +445,26 @@ mod tests {
         assert_eq!(
             for_account_with_default(&pool, Some("a1"), None).await,
             Ok(ClaudeHome::for_config_dir("/tmp/verun-accounts/a1"))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_account_of_another_harness_has_no_claude_home() {
+        let pool = test_pool().await;
+        let mut codex = make_account("c1", 1000);
+        codex.agent_type = "codex".into();
+        upsert_account_confirmed(&pool, codex).await.unwrap();
+
+        let err = for_account_with_default(&pool, Some("c1"), None)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            AccountError::WrongHarness {
+                account_id: "c1".into()
+            }
+            .to_string()
         );
     }
 }
