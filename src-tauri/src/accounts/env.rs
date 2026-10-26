@@ -371,8 +371,21 @@ pub fn session_env(
         .iter()
         .filter(|account| AgentKind::parse(&account.agent_type) != session_harness);
     let mut patch = merged_project_env(other_harnesses, secrets)?;
-    if let Some(account) = session_account {
-        patch.merge(account_env(agent_of(account).as_ref(), account, secrets)?);
+    match session_account {
+        Some(account) => {
+            patch.merge(account_env(agent_of(account).as_ref(), account, secrets)?);
+        }
+        None => {
+            // Default keeps the auth its harness inherited: another harness's
+            // scrub list may name the same var (OpenCode reads
+            // `ANTHROPIC_API_KEY`) and must not strip it from this one.
+            if let Some(own) = session_harness.implementation().account_profile() {
+                patch.remove.retain(|var| {
+                    !own.scrub_vars.contains(&var.as_str())
+                        && !own.api_key_vars.contains(&var.as_str())
+                });
+            }
+        }
     }
     Ok(patch)
 }
@@ -1008,6 +1021,32 @@ mod tests {
         // harnesses.
         let default = session_env("gemini", None, &[g1], &secrets).unwrap();
         assert_eq!(default, EnvPatch::default());
+    }
+
+    #[test]
+    fn session_env_default_session_keeps_the_auth_vars_it_inherited() {
+        // A Default OpenCode session in a project bound to a Claude account:
+        // the Claude account scrubs `ANTHROPIC_API_KEY` for the `claude` the
+        // agent runs, but OpenCode reads that key itself and, on Default, keeps
+        // what it inherited.
+        let secrets = MemorySecretStore::default();
+        let a1 = account("a1", vec![]);
+
+        let patch = session_env("opencode", None, std::slice::from_ref(&a1), &secrets).unwrap();
+
+        assert!(!removes(&patch, "ANTHROPIC_API_KEY"));
+        // The Claude account still reaches the `claude` it runs.
+        assert!(sets(&patch, "CLAUDE_CONFIG_DIR", "/acc/a1"));
+        assert!(removes(&patch, "ANTHROPIC_AUTH_TOKEN"));
+        // A session on an added account still takes the scrub in full.
+        let own = session_env(
+            "claude",
+            Some(&a1),
+            &[codex_account("c1", vec![plain("ANTHROPIC_API_KEY", "k")])],
+            &secrets,
+        )
+        .unwrap();
+        assert!(removes(&own, "ANTHROPIC_API_KEY"));
     }
 
     #[test]
