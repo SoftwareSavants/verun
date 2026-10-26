@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Multiple accounts per harness: bind each project to its own Claude, Codex, Gemini, Grok or OpenCode login, or a Cursor API key, with per-account sign-in, identity, usage and sign-out handling
+- Claude transcript folders for long or symlinked worktree paths now resolve to the right slug, fixing resume and title lookup for those Default sessions
+- Read-policy path checks match whole path components, so sibling folders sharing a prefix are no longer auto-allowed
+- Default with an inherited CLAUDE_CONFIG_DIR reads skills from that dir, and ~/.claude reads are no longer auto-allowed
+- Session titles fall back to a plain title instead of borrowing another login, and non-Claude sessions never use Claude titling
+- Deleting a task waits at most 10 s on a locked keychain
+- Shells, hooks and dev servers in projects bound to an account lose inherited provider vars
 - Confirm dialogs no longer confirm when Enter is pressed on a focused Cancel or other button
 - A new session that fails to start (new-session menu, Cmd+T, /new-session, Retry in new session) shows an error toast instead of failing silently
 

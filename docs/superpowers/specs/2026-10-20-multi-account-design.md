@@ -117,7 +117,8 @@ behind the `Agent` trait (no `if kind == X` outside `agent/`).
 - Login / logout: `claude auth login` / `claude auth logout`.
 - Identity: `<dir>/.claude.json` → `oauthAccount` (see Adding and logging in).
 - Strip when inherited: `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY`,
-  `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`.
+  `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`,
+  `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_BASE_URL`.
 
 **Codex**
 - Home: `CODEX_HOME=<dir>`. It must already exist (Codex exits otherwise),
@@ -134,6 +135,8 @@ behind the `Agent` trait (no `if kind == X` outside `agent/`).
   by seeding the new home's `config.toml` or with a `-c` override at spawn.
 - Strip when inherited: `CODEX_HOME`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`,
   `OPENAI_FEDERATION_RULE_ID`, `OPENAI_IDENTITY_TOKEN_FILE`.
+- `api_key_vars` is empty for Codex: API-key Codex accounts are set up by
+  running `codex login --with-api-key` in a task shell of a bound project.
 
 **Gemini**
 - Home: `GEMINI_CLI_HOME=<dir>`. It stands in for `HOME`, so Gemini uses
@@ -182,7 +185,9 @@ behind the `Agent` trait (no `if kind == X` outside `agent/`).
 - These XDG vars also reach every tool the agent runs, which is accepted for
   OpenCode sessions.
 - Inherited provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ...) apply to
-  every OpenCode account. Strip the ones OpenCode reads.
+  every OpenCode account. Strip the ones OpenCode reads. Known limitation: the
+  scrub list is the nine common provider keys and is not exhaustive, so other
+  providers' inherited keys (AWS, Azure, ...) can still reach an added account.
 
 **Cursor** (API-key accounts only)
 - Cursor's login lives in fixed keychain entries (`cursor-access-token`,

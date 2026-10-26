@@ -18,6 +18,8 @@ Pluggable agent backend with first-class support for Claude Code, Codex, and Gro
 
 Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Astra.
 
+- **Multiple accounts per harness** - add several Claude, Codex, Gemini, Grok, or OpenCode logins (Cursor via API key) in Settings and bind each project to the account it should use; Default keeps behaving as before.
+
 ## Stay in control without babysitting
 
 - **Task board** - scan live Needs attention, Running, and Ready columns across projects and groups; search tasks, open a card, or reveal archived work. Columns follow agent activity automatically. Claude terminal sessions report activity through per-launch observer hooks; unavailable status is shown separately. Terminal detection is partial, and approvals stay in Claude.
