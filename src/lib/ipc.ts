@@ -1,13 +1,13 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste, AccountSelection, AccountsSnapshot, NewAccountInput, UpdateAccountInput, AccountTerminal, AccountTerminalAction } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 
 export interface CloudSessionChoice { index: number; title: string; updated: string }
 export interface CloudImportStart { importId: string; sessions: CloudSessionChoice[] }
 export interface CloudImportProgress { importId: string; phase: string }
-export const claudeCloudAvailability = () =>
-  invoke<{ available: boolean; reason: string | null }>('claude_cloud_availability')
+export const claudeCloudAvailability = (projectId: string) =>
+  invoke<{ available: boolean; reason: string | null }>('claude_cloud_availability', { projectId })
 export const beginCloudImport = (projectId: string) =>
   invoke<CloudImportStart>('begin_cloud_import', { projectId })
 export const selectCloudImport = (projectId: string, importId: string, index: number) =>
@@ -66,8 +66,8 @@ export const importProjectConfig = (projectId: string, taskId?: string) =>
   invoke<{ setupHook: string; destroyHook: string; startCommand: string }>('import_project_config', { projectId, taskId: taskId ?? null })
 
 // Tasks
-export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType, directory?: string) =>
-  invoke<TaskWithSession>('create_task', { projectId, baseBranch, agentType, directory })
+export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType, directory?: string, account?: AccountSelection) =>
+  invoke<TaskWithSession>('create_task', { projectId, baseBranch, agentType, directory, account: account ?? null })
 
 export const listTasks = (projectId: string): Promise<Task[]> =>
   DEMO
@@ -102,8 +102,8 @@ export const stopHook = (taskId: string) =>
   invoke<void>('stop_hook', { taskId })
 
 // Sessions
-export const createSession = (taskId: string, agentType: string, model?: string) =>
-  invoke<Session>('create_session', { taskId, agentType, model })
+export const createSession = (taskId: string, agentType: string, model?: string, account?: AccountSelection) =>
+  invoke<Session>('create_session', { taskId, agentType, model, account: account ?? null })
 
 export const sendMessage = (sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) =>
   invoke<void>('send_message', { sessionId, message, attachments, model, planMode, thinkingMode, fastMode })
@@ -436,11 +436,37 @@ export const workspaceSearchCancel = (taskId: string) =>
 export const checkGitignored = (taskId: string, paths: string[]) =>
   invoke<string[]>('check_gitignored', { taskId, paths })
 
+// Accounts. Every mutation resolves to the fresh snapshot, which every window
+// also gets as the `accounts-changed` event.
+export const listAccounts = (): Promise<AccountsSnapshot> =>
+  DEMO
+    ? Promise.resolve({ accounts: [], defaults: [], projectAccounts: [] })
+    : invoke<AccountsSnapshot>('list_accounts')
+
+export const createAccount = (input: NewAccountInput) =>
+  invoke<AccountsSnapshot>('create_account', { input })
+
+export const updateAccount = (input: UpdateAccountInput) =>
+  invoke<AccountsSnapshot>('update_account', { input })
+
+export const removeAccount = (accountId: string, deleteDir: boolean) =>
+  invoke<AccountsSnapshot>('remove_account', { accountId, deleteDir })
+
+export const setProjectAccount = (projectId: string, agentType: AgentType, accountId: string | null) =>
+  invoke<AccountsSnapshot>('set_project_account', { projectId, agentType, accountId })
+
+// Opens a PTY that runs the harness's own login or logout command on the
+// account. One at a time: a second start is refused with a `busy` account
+// error. The terminal ending sends the `accounts-changed` event.
+export const startAccountTerminal = (accountId: string, action: AccountTerminalAction, rows: number, cols: number) =>
+  invoke<AccountTerminal>('start_account_terminal', { accountId, action, rows, cols })
+
 // Utility
-export const listAgentSkills = (agentKind: AgentType, scanRoot?: string) =>
+export const listAgentSkills = (agentKind: AgentType, scanRoot?: string, accountId?: string | null) =>
   invoke<AgentSkill[]>('list_agent_skills', {
     agentKind,
     scanRoot: scanRoot ?? null,
+    accountId: accountId ?? null,
   })
 
 export const checkAgent = (agentType: AgentType) =>

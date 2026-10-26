@@ -236,6 +236,9 @@ export const ShellTerminal: Component<Props> = (props) => {
   const handleSearchKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
       closeSearch()
+      // That is all this Escape is for. A dialog around the terminal (the login
+      // dialog) and the page behind it close on Escape too, and must not hear it.
+      e.stopPropagation()
     } else if (e.key === 'Enter') {
       if (e.shiftKey) findPrev()
       else findNext()

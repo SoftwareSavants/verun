@@ -20,6 +20,7 @@ import { addToast, dismissToast, setSelectedSessionIdForTask } from '../store/ui
 import { setMainView } from '../store/editorView'
 import { openModelPicker } from '../store/modelPicker'
 import * as ipc from '../lib/ipc'
+import { notifyAccountError } from '../lib/accountErrors'
 import { formatDurationShort } from '../lib/format'
 import { parseGhLogs, formatShortTime, type LogLevel, type LogLine } from '../lib/ghLogs'
 import { Popover } from './Popover'
@@ -322,9 +323,11 @@ const ActionsJobRow: Component<{ taskId: string; run: WorkflowRun; job: Workflow
       if (!logsCached) addToast('Fetching failure context...', 'info', { id: toastId, persistent: true, loading: true })
       try {
         const prompt = await buildPrompt()
-        await sendMessage(existingSessionId, prompt)
+        // false: the session's account stopped the send and sendMessage has
+        // shown why, so there is nothing sent to report.
+        const sent = await sendMessage(existingSessionId, prompt)
         dismissToast(toastId)
-        addToast('Sent failure context to session', 'success')
+        if (sent) addToast('Sent failure context to session', 'success')
       } catch (e) {
         dismissToast(toastId)
         addToast(`Fix failed: ${e}`, 'error')
@@ -345,24 +348,26 @@ const ActionsJobRow: Component<{ taskId: string; run: WorkflowRun; job: Workflow
     openModelPicker({
       title: 'Fix in new session',
       placeholder: 'Select agent and model for fix session...',
+      projectId: t.projectId,
       defaultAgent: current?.agentType ?? t.agentType,
       defaultModel: current?.model ?? undefined,
-      onPick: async (agentType, model) => {
+      defaultAccountId: current?.accountId,
+      onPick: async (agentType, model, account) => {
         setBusy('fix')
         if (!logsCached) addToast('Fetching failure context...', 'info', { id: toastId, persistent: true, loading: true })
         try {
           const [created, prompt] = await Promise.all([
-            ipc.createSession(props.taskId, agentType, model),
+            ipc.createSession(props.taskId, agentType, model, account),
             buildPrompt(),
           ])
           setSelectedSessionIdForTask(props.taskId, created.id)
           setMainView(props.taskId, 'session')
-          await sendMessage(created.id, prompt)
+          const sent = await sendMessage(created.id, prompt)
           dismissToast(toastId)
-          addToast('Started new session with failure context', 'success')
+          if (sent) addToast('Started new session with failure context', 'success')
         } catch (e) {
           dismissToast(toastId)
-          addToast(`Fix failed: ${e}`, 'error')
+          if (!notifyAccountError(e)) addToast(`Fix failed: ${e}`, 'error')
         } finally {
           setBusy(null)
         }

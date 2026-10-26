@@ -17,11 +17,13 @@ import {
   sideQuestionState,
 } from '../store/sideQuestion'
 import { addToast, setSelectedTaskId, setSelectedSessionIdForTask } from '../store/ui'
-import { sessionById, setSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, sendMessage, createSession } from '../store/sessions'
+import { sessionById, setSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, sendMessage } from '../store/sessions'
 import { planModeForSession, thinkingModeForSession, fastModeForSession } from '../store/sessionContext'
 import { taskById, setTasks } from '../store/tasks'
-import { setMainView } from '../store/editorView'
 import { formatCost, formatTokens } from '../lib/format'
+import { failureText } from '../lib/accountErrors'
+import { inheritedSelection } from '../lib/accounts'
+import { openNewSession } from '../lib/newSession'
 
 function formatDuration(ms: number): string {
   const totalSec = Math.round(ms / 1000)
@@ -342,7 +344,7 @@ const CopyButton: Component<{ text: string }> = (props) => {
   )
 }
 
-const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props) => {
+export const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props) => {
   const canForkWorktree = () => {
     const task = taskById(sessionById(props.sessionId)?.taskId ?? '')
     return task?.isGit !== false && !task?.existingDirectory
@@ -368,7 +370,7 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
       addToast('Forked in this task', 'success')
       close()
     } catch (e) {
-      setError(String(e))
+      setError(failureText(e))
     } finally {
       setBusy(false)
     }
@@ -386,7 +388,9 @@ const ForkButton: Component<{ sessionId: string; messageUuid: string }> = (props
       addToast('Forked to new task', 'success')
       close()
     } catch (e) {
-      setError(String(e))
+      // A project whose accounts can't be read fails the fork with an account
+      // error: the menu says so in words, with the account toast.
+      setError(failureText(e))
     } finally {
       setBusy(false)
     }
@@ -781,7 +785,7 @@ function prettyJson(raw?: string): string {
   try { return JSON.stringify(JSON.parse(raw), null, 2) } catch { return raw }
 }
 
-const ErrorBlockView: Component<{
+export const ErrorBlockView: Component<{
   message: string
   raw?: string
   turnIndex: number
@@ -828,11 +832,13 @@ const ErrorBlockView: Component<{
     if (!msg || !tid) return
     setRetrying(true)
     try {
-      const session = await createSession(tid, props.agentType ?? 'claude', props.model ?? undefined)
-      setSelectedSessionIdForTask(tid, session.id)
-      setMainView(tid, 'session')
-      const [model, plan, thinking, fast] = modeArgs()
-      await sendMessage(session.id, msg, undefined, model, plan, thinking, fast)
+      // The new session runs on the account of the one that failed.
+      const failed = props.sessionId ? sessionById(props.sessionId) : undefined
+      const session = await openNewSession(tid, props.agentType ?? 'claude', props.model ?? undefined, failed ? inheritedSelection(failed.accountId) : undefined)
+      if (session) {
+        const [model, plan, thinking, fast] = modeArgs()
+        await sendMessage(session.id, msg, undefined, model, plan, thinking, fast)
+      }
     } catch { /* status will update via event */ }
     setRetrying(false)
   }

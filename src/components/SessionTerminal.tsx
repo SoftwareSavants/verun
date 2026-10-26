@@ -4,6 +4,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { Loader2 } from 'lucide-solid'
 import { ShellTerminal } from './ShellTerminal'
 import * as ipc from '../lib/ipc'
+import { notifyAccountError } from '../lib/accountErrors'
 import { formatDroppedPathsForTerminal } from '../lib/terminalMode'
 import type { PtyExitedEvent, PtyOutputEvent } from '../types'
 
@@ -42,6 +43,12 @@ export const SessionTerminal: Component<Props> = (props) => {
       const res = await ipc.claudeTerminalOpen(props.sessionId, 24, 80)
       setTerminalId(res.terminalId)
     } catch (e) {
+      // A signed-out or removed account gets a toast with a way to fix it. The
+      // pane offers Reconnect, for trying again once the account works.
+      if (notifyAccountError(e)) {
+        setExited(true)
+        return
+      }
       setError(e instanceof Error ? e.message : String(e))
     }
   }

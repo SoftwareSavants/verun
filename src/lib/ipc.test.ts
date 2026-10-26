@@ -61,6 +61,156 @@ describe('ipc', () => {
     expect(typeof ipc.getStorageStats).toBe('function')
   })
 
+  describe('account selection', () => {
+    test('createSession passes the account selection', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ id: 's1' })
+      await ipc.createSession('t1', 'claude', undefined, { kind: 'account', id: 'a1' })
+      expect(invoke).toHaveBeenCalledWith('create_session', {
+        taskId: 't1',
+        agentType: 'claude',
+        model: undefined,
+        account: { kind: 'account', id: 'a1' },
+      })
+    })
+
+    test('createSession sends account null by default', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ id: 's1' })
+      await ipc.createSession('t1', 'claude', 'opus')
+      expect(invoke).toHaveBeenCalledWith('create_session', {
+        taskId: 't1',
+        agentType: 'claude',
+        model: 'opus',
+        account: null,
+      })
+    })
+
+    test('createTask passes the account selection', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ task: { id: 't1' }, session: { id: 's1' } })
+      await ipc.createTask('p1', 'main', 'codex', undefined, { kind: 'default' })
+      expect(invoke).toHaveBeenCalledWith('create_task', {
+        projectId: 'p1',
+        baseBranch: 'main',
+        agentType: 'codex',
+        directory: undefined,
+        account: { kind: 'default' },
+      })
+    })
+
+    test('createTask sends account null by default', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ task: { id: 't1' }, session: { id: 's1' } })
+      await ipc.createTask('p1')
+      expect(invoke).toHaveBeenCalledWith('create_task', {
+        projectId: 'p1',
+        baseBranch: undefined,
+        agentType: undefined,
+        directory: undefined,
+        account: null,
+      })
+    })
+  })
+
+  describe('accounts', () => {
+    const snapshot = { accounts: [], defaults: [], projectAccounts: [] }
+
+    test('account wrappers invoke the right commands', async () => {
+      vi.mocked(invoke).mockResolvedValue(snapshot)
+
+      await expect(ipc.listAccounts()).resolves.toEqual(snapshot)
+      expect(invoke).toHaveBeenLastCalledWith('list_accounts')
+
+      const input = {
+        agentType: 'claude' as const,
+        label: 'Acme',
+        color: '#d97757',
+        existingDir: null,
+        env: [{ key: 'ANTHROPIC_API_KEY', value: 'sk-ant-1', secret: true }],
+      }
+      await ipc.createAccount(input)
+      expect(invoke).toHaveBeenLastCalledWith('create_account', { input })
+
+      const edit = { id: 'a1', label: 'Acme 2', color: '#000000', env: [{ key: 'ANTHROPIC_API_KEY', value: null, secret: true }] }
+      await ipc.updateAccount(edit)
+      expect(invoke).toHaveBeenLastCalledWith('update_account', { input: edit })
+
+      await ipc.removeAccount('a1', true)
+      expect(invoke).toHaveBeenLastCalledWith('remove_account', { accountId: 'a1', deleteDir: true })
+
+      await ipc.setProjectAccount('p1', 'claude', null)
+      expect(invoke).toHaveBeenLastCalledWith('set_project_account', { projectId: 'p1', agentType: 'claude', accountId: null })
+
+      await ipc.setProjectAccount('p1', 'claude', 'a1')
+      expect(invoke).toHaveBeenLastCalledWith('set_project_account', { projectId: 'p1', agentType: 'claude', accountId: 'a1' })
+    })
+
+    test('a rejected account command surfaces its error', async () => {
+      vi.mocked(invoke).mockRejectedValueOnce('ACCOUNT_ERROR:{"kind":"inUse"}')
+      await expect(ipc.removeAccount('a1', false)).rejects.toBe('ACCOUNT_ERROR:{"kind":"inUse"}')
+    })
+
+    test('startAccountTerminal opens a login or logout terminal', async () => {
+      vi.mocked(invoke).mockResolvedValue({ terminalId: 't1', hint: 'Sign in, then type /quit.' })
+
+      await expect(ipc.startAccountTerminal('a1', 'login', 24, 80)).resolves.toEqual({
+        terminalId: 't1',
+        hint: 'Sign in, then type /quit.',
+      })
+      expect(invoke).toHaveBeenLastCalledWith('start_account_terminal', { accountId: 'a1', action: 'login', rows: 24, cols: 80 })
+
+      await ipc.startAccountTerminal('a2', 'logout', 30, 100)
+      expect(invoke).toHaveBeenLastCalledWith('start_account_terminal', { accountId: 'a2', action: 'logout', rows: 30, cols: 100 })
+    })
+
+    test('a refused terminal start surfaces its error', async () => {
+      vi.mocked(invoke).mockRejectedValueOnce('ACCOUNT_ERROR:{"kind":"busy"}')
+      await expect(ipc.startAccountTerminal('a1', 'login', 24, 80)).rejects.toBe('ACCOUNT_ERROR:{"kind":"busy"}')
+    })
+
+    test('listAccounts is an empty snapshot in demo mode', async () => {
+      vi.stubEnv('VITE_DEMO_MODE', 'true')
+      vi.resetModules()
+      try {
+        const demo = await import('./ipc')
+        const { invoke: demoInvoke } = await import('@tauri-apps/api/core')
+        await expect(demo.listAccounts()).resolves.toEqual(snapshot)
+        expect(demoInvoke).not.toHaveBeenCalled()
+      } finally {
+        vi.unstubAllEnvs()
+        vi.resetModules()
+      }
+    })
+  })
+
+  describe('listAgentSkills', () => {
+    test('passes the scan root and the account', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce([])
+      await ipc.listAgentSkills('claude', '/repo', 'a1')
+      expect(invoke).toHaveBeenCalledWith('list_agent_skills', {
+        agentKind: 'claude',
+        scanRoot: '/repo',
+        accountId: 'a1',
+      })
+    })
+
+    test('sends nulls when there is no scan root or account', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce([])
+      await ipc.listAgentSkills('claude')
+      expect(invoke).toHaveBeenCalledWith('list_agent_skills', {
+        agentKind: 'claude',
+        scanRoot: null,
+        accountId: null,
+      })
+    })
+  })
+
+  describe('claudeCloudAvailability', () => {
+    test('asks about the given project', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ available: false, reason: 'Account "Acme" is signed out' })
+      const result = await ipc.claudeCloudAvailability('p1')
+      expect(invoke).toHaveBeenCalledWith('claude_cloud_availability', { projectId: 'p1' })
+      expect(result).toEqual({ available: false, reason: 'Account "Acme" is signed out' })
+    })
+  })
+
   describe('askSideQuestion', () => {
     test('forwards camelCase args to ask_side_question and resolves to typed object', async () => {
       vi.mocked(invoke).mockResolvedValueOnce({ response: 'ok', synthetic: false })

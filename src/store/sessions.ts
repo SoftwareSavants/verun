@@ -1,14 +1,14 @@
-import { createSignal } from 'solid-js'
-import { createStore, produce } from 'solid-js/store'
+import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus } from '../types'
+import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection } from '../types'
 import { setSessionMcpServers } from './mcpServers'
 import { ELICITATION_TOOL_NAME, parseElicitation } from '../lib/mcpElicitation'
 import { setTasks, taskById } from './tasks'
 import { markTaskUnread, markTaskAttention, clearTaskAttention, markSessionUnread } from './ui'
-import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps } from './steps'
+import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps, restoreStep } from './steps'
 import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
+import { notifyAccountError } from '../lib/accountErrors'
 import { deserializeAttachments } from '../lib/binary'
 import {
   appendCodexLivePlanDelta,
@@ -28,7 +28,14 @@ export const [sessionTokens, setSessionTokens] = createStore<Record<string, { in
 /// Tracks sessions whose CLI is in the middle of a graceful shutdown after abort.
 /// Set on abort click, cleared when the backend emits `session-aborted`.
 export const [abortingSessions, setAbortingSessions] = createStore<Record<string, boolean>>({})
-export const [rateLimitInfo, setRateLimitInfo] = createSignal<RateLimitInfo | null>(null)
+/// Latest rate limits per account, keyed by `accountKey`. The backend tags each
+/// `rate-limit-info` event with its session's key, so accounts never share an entry.
+export const [rateLimitByAccount, setRateLimitByAccount] = createStore<Record<string, RateLimitInfo>>({})
+
+/** The latest rate limits reported for an account, or `null` before its first event. */
+export function rateLimitFor(key: string): RateLimitInfo | null {
+  return rateLimitByAccount[key] ?? null
+}
 
 function seedSessionAggregates(session: Session) {
   if (session.totalCost > 0) setSessionCosts(session.id, session.totalCost)
@@ -67,8 +74,9 @@ export async function loadSessions(taskId: string) {
   for (const s of list) seedSessionAggregates(s)
 }
 
-export async function createSession(taskId: string, agentType: string, model?: string): Promise<Session> {
-  const session = await ipc.createSession(taskId, agentType, model)
+/** `account` is the one the session runs on; the project's account for the harness when left out. */
+export async function createSession(taskId: string, agentType: string, model?: string, account?: AccountSelection): Promise<Session> {
+  const session = await ipc.createSession(taskId, agentType, model, account)
   // Dedup vs the session-created broadcast: Rust emits to all windows including
   // the source, and the broadcast can land before this await resolves.
   setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
@@ -91,7 +99,15 @@ export function updateSessionModel(sessionId: string, model: string | null) {
   ipc.updateSessionModel(sessionId, model)
 }
 
-export async function sendMessage(sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) {
+/**
+ * Sends `message` on the session. Resolves `true` once the backend has taken
+ * it, and `false` when the session's account stopped it (signed out, removed):
+ * the user has been shown the account toast with a way to fix it, so there is
+ * nothing to catch, and the message is out of the chat again. A caller that
+ * reports success, or clears something it sends from, has to check which, and
+ * give that back on `false`. Any other error is thrown.
+ */
+export async function sendMessage(sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean): Promise<boolean> {
   const images = attachments?.filter(a => a.mimeType.startsWith('image/'))
 
   const item: OutputItem = {
@@ -112,10 +128,48 @@ export async function sendMessage(sessionId: string, message: string, attachment
   setSessions(s => s.id === sessionId, 'status', 'running')
   try {
     await ipc.sendMessage(sessionId, message, attachments, model, planMode, thinkingMode, fastMode)
+    return true
   } catch (e) {
     setSessions(s => s.id === sessionId, 'status', 'idle')
+    if (notifyAccountError(e)) {
+      // Nothing was sent and the backend saved nothing of it, so the chat must
+      // not go on showing the message.
+      removeOutputItem(sessionId, item)
+      return false
+    }
     throw e
   }
+}
+
+/** Takes `item` out of the session's output, wherever it is now. */
+function removeOutputItem(sessionId: string, item: OutputItem) {
+  setOutputItems(produce(store => {
+    const items = store[sessionId]
+    if (!items) return
+    // The newest items are last, and a message was appended a moment ago.
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (unwrap(items[i]) === item) {
+        items.splice(i, 1)
+        return
+      }
+    }
+  }))
+}
+
+/**
+ * Sends a step that was just taken off the queue (`dequeueArmedStep`,
+ * `extractStep`). When the session's account stops the send, the step goes back
+ * on the queue where it was, and the queue is paused: nothing is lost, and
+ * nothing retries by itself. It is sent, or armed again, once the account works.
+ */
+export async function sendStep(step: Step): Promise<boolean> {
+  const attachments = step.attachmentsJson ? deserializeAttachments(step.attachmentsJson) : undefined
+  const sent = await sendMessage(step.sessionId, step.message, attachments, step.model ?? undefined, step.planMode ?? undefined, step.thinkingMode ?? undefined, step.fastMode ?? undefined)
+  if (!sent) {
+    restoreStep({ ...step, armed: false })
+    disarmAllSteps(step.sessionId)
+  }
+  return sent
 }
 
 export async function abortMessage(sessionId: string) {
@@ -374,10 +428,7 @@ export function tryDrainSteps(sessionId: string) {
   const session = sessions.find(s => s.id === sessionId)
   if (session?.status === 'idle') {
     const next = dequeueArmedStep(sessionId)
-    if (next) {
-      const attachments = next.attachmentsJson ? deserializeAttachments(next.attachmentsJson) : undefined
-      sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
-    }
+    if (next) sendStep(next)
   }
 }
 
@@ -466,10 +517,7 @@ export async function initSessionListeners() {
     // `session-aborted` listener below.
     if (status === 'idle' && !abortingSessions[sessionId]) {
       const next = dequeueArmedStep(sessionId)
-      if (next) {
-        const attachments = next.attachmentsJson ? deserializeAttachments(next.attachmentsJson) : undefined
-        sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
-      }
+      if (next) sendStep(next)
     }
     // Disarm all steps on error (keep them, just stop auto-send)
     if (status === 'error') {
@@ -541,10 +589,7 @@ export async function initSessionListeners() {
     const session = sessions.find(s => s.id === sid)
     if (session?.status === 'idle') {
       const next = dequeueArmedStep(sid)
-      if (next) {
-        const attachments = next.attachmentsJson ? deserializeAttachments(next.attachmentsJson) : undefined
-        sendMessage(next.sessionId, next.message, attachments, next.model ?? undefined, next.planMode ?? undefined, next.thinkingMode ?? undefined, next.fastMode ?? undefined)
-      }
+      if (next) sendStep(next)
     }
   })
 
@@ -583,7 +628,10 @@ export async function initSessionListeners() {
   })
 
   await listen<RateLimitInfo>('rate-limit-info', (event) => {
-    setRateLimitInfo(event.payload)
+    // The newest report is the whole picture for its account, so it replaces
+    // the entry. A plain set would merge it into the older one and keep fields
+    // the newer report no longer has.
+    setRateLimitByAccount(event.payload.accountKey, reconcile(event.payload))
   })
 
   // Re-fetch any pending approvals that survived a frontend reload

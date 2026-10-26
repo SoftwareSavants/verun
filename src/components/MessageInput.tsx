@@ -1,14 +1,14 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, respondToElicitation, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
+import { sendMessage, abortMessage, steerSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, respondToElicitation, sessionCosts, sessionTokens, outputItems, tryDrainSteps, sessionById, updateSessionModel, rateLimitFor, sendStep } from '../store/sessions'
 import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession, codexLivePlanForSession } from '../store/sessionContext'
-import { setSelectedSessionIdForTask, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
+import { selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
 import { isSetupRunning, setupFailed, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
-import { openFile, setMainView } from '../store/editorView'
+import { openFile } from '../store/editorView'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import { primeSkills, type Command, type SkillContext } from '../store/commands'
 import { projectById } from '../store/projects'
@@ -34,6 +34,8 @@ import { decideApprovalKeyAction } from '../lib/approvalKeyAction'
 import { ELICITATION_TOOL_NAME } from '../lib/mcpElicitation'
 import { McpElicitationCard } from './McpElicitationCard'
 import { McpServerStatusBar } from './McpServerStatusBar'
+import { accountKey, inheritedSelection } from '../lib/accounts'
+import { openNewSession } from '../lib/newSession'
 
 interface Props {
   sessionId: string | null
@@ -102,11 +104,15 @@ function UsageChip(chipProps: { sessionId: string | null }) {
     const sid = chipProps.sessionId
     return sid ? sessionTokens[sid] : undefined
   }
-  const isClaudeSession = () => {
+  const session = () => {
     const sid = chipProps.sessionId
-    return sid ? sessionById(sid)?.agentType === 'claude' : false
+    return sid ? sessionById(sid) : undefined
   }
-  const rl = () => isClaudeSession() ? rateLimitInfo() : null
+  // Only Claude reports rate limits, and each Claude account has its own.
+  const rl = () => {
+    const s = session()
+    return s?.agentType === 'claude' ? rateLimitFor(accountKey(s.agentType, s.accountId)) : null
+  }
 
   const hasAnything = () => cost() > 0 || tokens() || rl()
   const hasCache = () => {
@@ -226,6 +232,16 @@ function UsageChip(chipProps: { sessionId: string | null }) {
       </div>
     </Show>
   )
+}
+
+/**
+ * Why a task's queued prompt is waiting. It is queued while setup runs; one
+ * still queued once setup is over is one the session's account stopped.
+ */
+function queuedNote(taskId: string): string {
+  if (setupFailed(taskId)) return 'Setup failed. Prompt saved; retry setup or edit it.'
+  if (isSetupRunning(taskId)) return 'Message queued - will send when setup completes'
+  return 'Not sent. Prompt saved; once the account works, edit it to send.'
 }
 
 export const MessageInput: Component<Props> = (props) => {
@@ -428,6 +444,7 @@ export const MessageInput: Component<Props> = (props) => {
     if (!sess || !task || !project) return null
     return {
       agentKind: sess.agentType,
+      accountId: sess.accountId ?? null,
       projectRoot: project.repoPath,
       taskId: task.id,
       worktreePath: task.worktreePath,
@@ -591,10 +608,19 @@ export const MessageInput: Component<Props> = (props) => {
     const sid = props.sessionId
     if (!sid) return
     setPlanActionPending(true)
+    const planPath = planFilePathForSession(sid)
+    const wasPlanMode = planMode()
     setPlanFilePathForSession(sid, null)
     setPlanMode(false)
     try {
-      await sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+      const sent = await sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+      // false: the session's account stopped the send and sendMessage said why.
+      // The plan is still waiting to be approved.
+      if (!sent) {
+        setPlanFilePathForSession(sid, planPath)
+        setPlanModeForSession(sid, wasPlanMode)
+        setPlanActionPending(false)
+      }
     } catch (error) {
       setPlanActionPending(false)
       throw error
@@ -620,21 +646,36 @@ export const MessageInput: Component<Props> = (props) => {
           // the reason and continues the same turn. No separate sendMessage.
           await denyToolUse(action.requestId, action.sessionId, action.message)
           break
-        case 'sendFeedback':
+        case 'sendFeedback': {
+          const planPath = planFilePathForSession(action.sessionId)
           setPlanChanges('')
           setPlanFilePathForSession(action.sessionId, null)
-          await sendMessage(action.sessionId, action.message, undefined, currentModel(), true)
+          // false: the session's account stopped the send and sendMessage said
+          // why. The plan and the changes asked for stay as they were.
+          if (!await sendMessage(action.sessionId, action.message, undefined, currentModel(), true)) {
+            setPlanFilePathForSession(action.sessionId, planPath)
+            setPlanChanges(action.message)
+            setPlanActionPending(false)
+          }
           break
+        }
         case 'approve':
           setPlanMode(false)
           setPlanFilePathForSession(action.sessionId, null)
           await approveToolUse(action.requestId, action.sessionId)
           break
-        case 'sendImplementation':
+        case 'sendImplementation': {
+          const planPath = planFilePathForSession(action.sessionId)
+          const wasPlanMode = planMode()
           setPlanMode(false)
           setPlanFilePathForSession(action.sessionId, null)
-          await sendMessage(action.sessionId, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+          if (!await sendMessage(action.sessionId, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)) {
+            setPlanFilePathForSession(action.sessionId, planPath)
+            setPlanModeForSession(action.sessionId, wasPlanMode)
+            setPlanActionPending(false)
+          }
           break
+        }
       }
     } catch (error) {
       setPlanActionPending(false)
@@ -642,13 +683,17 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
 
-  const handlePlanFeedback = () => {
+  const handlePlanFeedback = async () => {
     const text = planFeedback().trim()
     if (!text) return
     const sid = props.sessionId
     if (!sid) return
     setPlanFeedback('')
-    sendMessage(sid, text, undefined, currentModel(), true)
+    // false: the session's account stopped the send and sendMessage said why.
+    // The words come back, ahead of anything typed since.
+    if (!await sendMessage(sid, text, undefined, currentModel(), true)) {
+      setPlanFeedback([text, planFeedback()].filter(Boolean).join(' '))
+    }
   }
 
   const currentModel = (): string | undefined => {
@@ -929,6 +974,23 @@ export const MessageInput: Component<Props> = (props) => {
     setAttachments(prev => prev.filter((_, i) => i !== index))
   }
 
+  /**
+   * Puts back what a send cleared from the composer of session `sid`, ahead of
+   * anything typed since. The user may have gone to another session while the
+   * send was out: its text goes back to the composer it came from, which shows
+   * it when that session is shown again.
+   */
+  const restoreComposer = (sid: string, text: string, atts: AttachmentRef[]) => {
+    const restored = [text, sessionMessages()[sid]].filter(Boolean).join('\n')
+    if (sid === props.sessionId) {
+      setMessage(restored)
+    } else {
+      setSessionMessages(prev => ({ ...prev, [sid]: restored }))
+    }
+    if (atts.length > 0) setSessionAttachments(prev => ({ ...prev, [sid]: [...atts, ...(prev[sid] ?? [])] }))
+    persistDraft(sid)
+  }
+
   const handleSend = async () => {
     const sid = props.sessionId
     const msg = message().trim()
@@ -962,9 +1024,17 @@ export const MessageInput: Component<Props> = (props) => {
     setAttachments([])
     setShowPalette(false)
     // Dismiss any persisted plan panel — the user has moved on from that plan.
-    if (planFilePathForSession(sid)) setPlanFilePathForSession(sid, null)
+    const planPath = planFilePathForSession(sid)
+    if (planPath) setPlanFilePathForSession(sid, null)
     try {
-      await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
+      const sent = await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
+      // false: the session's account stopped the send, and sendMessage said why
+      // and took the message back out of the chat. Give back what was cleared
+      // above, so the only copy of what the user wrote is not gone.
+      if (!sent) {
+        restoreComposer(sid, msg, atts)
+        if (planPath) setPlanFilePathForSession(sid, planPath)
+      }
     } catch (e) {
       console.error('Failed to send message:', e)
     } finally {
@@ -1024,8 +1094,7 @@ export const MessageInput: Component<Props> = (props) => {
     if (steps.length === 0) return
     const step = extractStep(sid, steps[0].id)
     if (!step) return
-    const atts = step.attachmentsJson ? deserializeAttachments(step.attachmentsJson) : undefined
-    await sendMessage(sid, step.message, atts, step.model ?? undefined, step.planMode ?? undefined, step.thinkingMode ?? undefined, step.fastMode ?? undefined)
+    await sendStep(step)
   }
 
   const handleAppCommand = async (cmd: Command) => {
@@ -1033,10 +1102,10 @@ export const MessageInput: Component<Props> = (props) => {
       case 'new-session': {
         const tid = selectedTaskId()
         if (tid) {
-          const currentAgent = sessionById(props.sessionId ?? '')?.agentType ?? 'claude' as AgentType
-          const session = await createSession(tid, currentAgent)
-          setSelectedSessionIdForTask(tid, session.id)
-          setMainView(tid, 'session')
+          // The new session runs where this one does: the same harness, and the
+          // same account, whatever the project uses by now.
+          const current = sessionById(props.sessionId ?? '')
+          await openNewSession(tid, current?.agentType ?? 'claude', undefined, current ? inheritedSelection(current.accountId) : undefined)
         }
         break
       }
@@ -2175,8 +2244,8 @@ export const MessageInput: Component<Props> = (props) => {
       {/* Queued message indicator (setup hook still running) */}
       <Show when={selectedTaskId() && queuedMessages[selectedTaskId()!]}>
         <div class="flex items-center gap-2 px-3 py-1.5 mb-1 text-xs text-text-dim bg-surface-1 rounded-lg border border-accent/10">
-          <Show when={!setupFailed(selectedTaskId()!)}><Loader2 size={10} class="animate-spin text-accent shrink-0" /></Show>
-          <span class="truncate">{setupFailed(selectedTaskId()!) ? "Setup failed. Prompt saved; retry setup or edit it." : "Message queued — will send when setup completes"}</span>
+          <Show when={isSetupRunning(selectedTaskId()!)}><Loader2 size={10} class="animate-spin text-accent shrink-0" /></Show>
+          <span class="truncate">{queuedNote(selectedTaskId()!)}</span>
           <button
             class="ml-auto shrink-0 text-text-dim hover:text-text-muted transition-colors"
             onClick={() => {

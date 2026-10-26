@@ -1,9 +1,11 @@
+mod accounts;
 mod activity;
 pub mod agent;
 mod blob;
 mod clipboard;
 mod bts_scaffold;
 mod claude_control;
+mod claude_home;
 mod claude_jsonl;
 mod claude_terminal;
 mod claude_transcript_tail;
@@ -85,6 +87,7 @@ pub fn run() {
         .manage(task::new_setup_in_progress())
         .manage(task::new_hook_pty_map())
         .manage(pty::new_active_pty_map())
+        .manage(accounts::login::LoginGuard::default())
         .manage(claude_terminal::new_claude_terminal_map())
         .manage(cloud_import::CloudImportMap::default())
         .manage(watcher::new_file_watcher_map())
@@ -208,6 +211,17 @@ pub fn run() {
             app.manage(pool);
             app.manage(db_tx);
             app.manage(blob::AppDataDir(app_data_dir));
+            // Account secrets (API keys) live in the OS keychain, never SQLite.
+            // The service name carries the bundle id, so dev and prod builds
+            // keep separate secrets.
+            app.manage(accounts::Secrets(std::sync::Arc::new(
+                accounts::secrets::KeychainSecretStore::new(accounts::secrets::keychain_service(
+                    &app.config().identifier,
+                )),
+            )));
+            // A login or logout terminal ending sends the windows the accounts
+            // as they are then.
+            accounts::login::install_exit_listener(app.handle());
 
             #[cfg(unix)]
             {
@@ -461,6 +475,13 @@ pub fn run() {
             ipc::read_clipboard_paste,
             ipc::copy_image_to_clipboard,
             ipc::write_binary_file,
+            // Accounts
+            ipc::list_accounts,
+            ipc::create_account,
+            ipc::update_account,
+            ipc::remove_account,
+            ipc::set_project_account,
+            ipc::start_account_terminal,
             // Utility
             ipc::list_agent_skills,
             ipc::check_agent,

@@ -10,9 +10,9 @@ vi.mock('../lib/ipc', () => ({
   disarmAllSteps: vi.fn().mockResolvedValue(undefined),
 }))
 
-const sendMessageMock = vi.fn()
+const sendStepMock = vi.fn()
 vi.mock('../store/sessions', () => ({
-  sendMessage: (...args: unknown[]) => sendMessageMock(...args),
+  sendStep: (...args: unknown[]) => sendStepMock(...args),
   sessionById: () => ({ id: 's-001', agentType: 'claude' }),
 }))
 
@@ -64,7 +64,7 @@ describe('<StepList />', () => {
   beforeEach(() => {
     clearSteps(SID)
     clearSteps('s-002')
-    sendMessageMock.mockReset()
+    sendStepMock.mockReset()
     modelChangeMock.mockReset()
     vi.mocked(ipc.updateStep).mockClear()
     vi.mocked(ipc.deleteStep).mockClear()
@@ -280,7 +280,11 @@ describe('<StepList />', () => {
     const { container } = render(() => <StepList sessionId={SID} isRunning={false} />)
     fireEvent.click(container.querySelector('button[title="Send now"]')!)
 
-    expect(sendMessageMock).toHaveBeenCalledWith(SID, 'fire me', undefined, 'opus', true, false, true)
+    // sendStep sends it with its own model and modes, and puts it back if the
+    // session's account stops the send.
+    expect(sendStepMock).toHaveBeenCalledWith(expect.objectContaining({
+      id: step.id, sessionId: SID, message: 'fire me', model: 'opus', planMode: true, thinkingMode: false, fastMode: true,
+    }))
     // Fire extracts the step, so it should be gone from the store
     expect(getSteps(SID).find(s => s.id === step.id)).toBeUndefined()
   })

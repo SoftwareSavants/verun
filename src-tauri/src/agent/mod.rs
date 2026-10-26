@@ -18,7 +18,7 @@
 //! serializable tag stored on `sessions.agent_type` in the DB; it maps 1:1
 //! to a concrete impl via [`AgentKind::implementation`].
 //!
-//! The trait groups methods into four concerns:
+//! The trait groups methods into five concerns:
 //!
 //! 1. **Identity** — `kind`, `display_name`, `cli_binary`, `install_hint`,
 //!    `docs_url`. Purely descriptive.
@@ -35,6 +35,11 @@
 //!    `defers_resume_id_until_turn_end`, `persists_across_turns`,
 //!    `abort_strategy`, `encode_stream_user_message`, `encode_stream_interrupt`.
 //!    Govern how the process is spawned, reused, and cancelled.
+//! 5. **Accounts** - `account_profile`, `account_home_env`,
+//!    `account_standard_home`, `prepare_account_dir`, `read_account_identity`,
+//!    `account_blocked_reason`. Describe how the CLI runs as an added account
+//!    next to the user's own login; the `accounts` module acts on them. What the
+//!    harnesses share for them (the inherited home var) is in `account_files`.
 //!
 //! ## Turn model
 //!
@@ -90,6 +95,7 @@
 //! - Don't add state to the agent struct. Impls are instantiated on demand
 //!   via [`AgentKind::implementation`] and are expected to be zero-sized.
 
+mod account_files;
 pub(crate) mod claude;
 mod codex;
 pub mod codex_developer_instructions;
@@ -99,8 +105,9 @@ mod gemini;
 mod grok;
 mod opencode;
 
+use crate::accounts::identity::AccountIdentity;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // Re-export the concrete types so callers can reference them if needed.
 pub use claude::Claude;
@@ -395,6 +402,57 @@ pub struct RpcTokenUsage {
 }
 
 // ---------------------------------------------------------------------------
+// Account support
+// ---------------------------------------------------------------------------
+//
+// A harness takes part in multiple accounts by describing itself with these
+// types and the account methods on `Agent`. The `accounts` module acts on the
+// description and never branches on which harness it is.
+
+/// How a harness runs next to the user's own login: which env vars isolate an
+/// account, which commands sign it in and out, and what the UI needs to know
+/// before it offers one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountProfile {
+    /// Vars removed from the env of an added account's processes, so nothing
+    /// Verun inherited (the home var, API keys, tokens, provider routing) can
+    /// override it. An account that needs one sets it in its own env.
+    pub scrub_vars: &'static [&'static str],
+    /// Vars every added account sets, before its own env vars.
+    pub fixed_env: &'static [(&'static str, &'static str)],
+    /// Vars that sign the CLI in without a login. An account whose env holds
+    /// one shows as "API key" while it has no login of its own.
+    pub api_key_vars: &'static [&'static str],
+    /// Args after the binary for the login and logout terminals. `Some(&[])`
+    /// runs the bare CLI, `None` means the harness has no such command.
+    pub login_args: Option<&'static [&'static str]>,
+    pub logout_args: Option<&'static [&'static str]>,
+    /// What the user does in the login or logout terminal when the command
+    /// alone does not finish the job.
+    pub login_hint: Option<&'static str>,
+    pub logout_hint: Option<&'static str>,
+    /// An account may use a dir the user already logged in from.
+    pub allows_existing_dir: bool,
+    /// An env var every account has to define as a secret (Cursor's API key).
+    pub required_secret: Option<&'static str>,
+    /// The project's account for this harness also applies to task shells,
+    /// hooks and the start command.
+    pub in_project_env: bool,
+    /// The oldest CLI version that supports added accounts.
+    pub min_cli_version: Option<&'static str>,
+}
+
+/// Where an identity is read from.
+#[derive(Debug, Clone, Copy)]
+pub enum AccountHome<'a> {
+    /// The Default account: whatever home the CLI uses when Verun overrides
+    /// nothing.
+    Default { user_home: &'a Path },
+    /// The config dir of an added account.
+    Dir(&'a Path),
+}
+
+// ---------------------------------------------------------------------------
 // The trait
 // ---------------------------------------------------------------------------
 
@@ -475,8 +533,8 @@ pub trait Agent: Send + Sync {
     }
 
     /// Whether this agent uses Claude Code's on-disk JSONL transcript
-    /// format at ~/.claude/projects/. Gates transcript manipulation
-    /// in fork operations.
+    /// format at `<claude home>/projects/` (`~/.claude`, or the dir of the
+    /// session's account). Gates transcript manipulation in fork operations.
     fn uses_claude_jsonl(&self) -> bool {
         false
     }
@@ -660,11 +718,56 @@ pub trait Agent: Send + Sync {
     }
 
     /// Discover agent-specific skills/commands available in the given scan
-    /// root (typically a repo root or worktree path) and the user's home
-    /// directory. Returns empty by default; each agent that supports skills
+    /// root (typically a repo root or worktree path) and in `agent_home`, the
+    /// harness's config root (Claude: `~/.claude`, or the dir of the session's
+    /// account). Returns empty by default; each agent that supports skills
     /// overrides this.
-    fn discover_skills(&self, _scan_root: Option<&Path>, _user_home: &Path) -> Vec<AgentSkill> {
+    fn discover_skills(&self, _scan_root: Option<&Path>, _agent_home: &Path) -> Vec<AgentSkill> {
         Vec::new()
+    }
+
+    // ── Accounts ───────────────────────────────────────────────────────
+    //
+    // How the harness runs as an added account. The defaults describe a
+    // harness without support: no profile, and the rest is never asked.
+
+    /// The harness's account support. `None`: no added accounts, only the
+    /// Default login.
+    fn account_profile(&self) -> Option<AccountProfile> {
+        None
+    }
+
+    /// Env vars that make the CLI use `dir` as its home. The dir is passed
+    /// byte for byte: Claude hashes the exact string into its keychain entry.
+    fn account_home_env(&self, _dir: &Path) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// The CLI's own home (Claude: `~/.claude`, Codex: `~/.codex`, Gemini: the
+    /// user's home, Grok: `~/.grok`), which an added account may not use. For
+    /// Claude, named explicitly it is a login separate from Default's; for Codex,
+    /// Gemini and Grok it is the very home Default uses, so the account would be
+    /// Default under another name.
+    fn account_standard_home(&self, _user_home: &Path) -> Option<PathBuf> {
+        None
+    }
+
+    /// Lays out what the CLI needs inside a dir Verun created for an account.
+    /// Never called for a dir the user brought in.
+    fn prepare_account_dir(&self, dir: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)
+    }
+
+    /// Who is signed in at `home`, read from the CLI's files. It blocks on
+    /// file I/O, so async callers go through `spawn_blocking`.
+    fn read_account_identity(&self, _home: AccountHome<'_>) -> AccountIdentity {
+        AccountIdentity::default()
+    }
+
+    /// Why added accounts cannot work with the CLI as installed, shown in
+    /// Settings. `None`: nothing in the way.
+    fn account_blocked_reason(&self) -> Option<String> {
+        None
     }
 
     // ── JSON-RPC approval-response encoders (Codex app-server) ─────────
@@ -2035,48 +2138,91 @@ mod tests {
 
     #[test]
     fn gemini_build_args_basic() {
-        let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs {
+        // The whole list, so that no flag (--skip-trust, say) gets in unseen:
+        // added accounts trust their workspaces through the env instead.
+        let args = Gemini.build_session_args(&SessionArgs {
             message: "hello",
             ..default_args()
         });
-        assert!(args.contains(&"stream-json".to_string()));
-        assert!(args.contains(&"--yolo".to_string()));
-        assert!(args.contains(&"-p".to_string()));
-        assert!(args.contains(&"hello".to_string()));
+        assert_eq!(
+            args,
+            ["--output-format", "stream-json", "--yolo", "-p", "hello"]
+        );
     }
 
     #[test]
     fn gemini_build_args_plan_mode() {
-        let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs {
+        let args = Gemini.build_session_args(&SessionArgs {
             plan_mode: true,
             ..default_args()
         });
-        assert!(args.contains(&"--approval-mode".to_string()));
-        assert!(args.contains(&"plan".to_string()));
+        assert_eq!(
+            args,
+            [
+                "--output-format",
+                "stream-json",
+                "--yolo",
+                "--approval-mode",
+                "plan"
+            ]
+        );
     }
 
     #[test]
     fn gemini_build_args_resume() {
-        let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs {
+        let args = Gemini.build_session_args(&SessionArgs {
             resume_session_id: Some("g-1"),
             ..default_args()
         });
-        assert!(args.contains(&"--resume".to_string()));
-        assert!(args.contains(&"g-1".to_string()));
+        assert_eq!(
+            args,
+            [
+                "--output-format",
+                "stream-json",
+                "--yolo",
+                "--resume",
+                "g-1"
+            ]
+        );
     }
 
     #[test]
     fn gemini_build_args_model() {
-        let agent = Gemini;
-        let args = agent.build_session_args(&SessionArgs {
+        let args = Gemini.build_session_args(&SessionArgs {
             model: Some("pro"),
             ..default_args()
         });
-        assert!(args.contains(&"-m".to_string()));
-        assert!(args.contains(&"pro".to_string()));
+        assert_eq!(
+            args,
+            ["--output-format", "stream-json", "--yolo", "-m", "pro"]
+        );
+    }
+
+    #[test]
+    fn gemini_build_args_with_every_option_keep_their_order() {
+        let args = Gemini.build_session_args(&SessionArgs {
+            plan_mode: true,
+            model: Some("pro"),
+            resume_session_id: Some("g-1"),
+            message: "hello",
+            ..default_args()
+        });
+        assert_eq!(
+            args,
+            [
+                "--output-format",
+                "stream-json",
+                "--yolo",
+                "--approval-mode",
+                "plan",
+                "-m",
+                "pro",
+                "--resume",
+                "g-1",
+                "-p",
+                "hello"
+            ]
+        );
     }
 
     #[test]

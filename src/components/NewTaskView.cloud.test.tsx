@@ -47,6 +47,25 @@ test('unavailable cloud access does not prefetch', async () => {
   expect(screen.queryByRole('button', { name: 'Continue from cloud' })).toBeNull()
   expect(ipc.beginCloudImport).not.toHaveBeenCalled()
 })
+test('checks cloud availability for the selected project', async () => {
+  const [project, setProject] = createSignal('p1')
+  render(() => <NewTaskDraft open projectId={project()} onClose={() => {}} />)
+  await waitFor(() => expect(ipc.claudeCloudAvailability).toHaveBeenCalledWith('p1'))
+  setProject('p2')
+  await waitFor(() => expect(ipc.claudeCloudAvailability).toHaveBeenCalledWith('p2'))
+})
+test('a project whose Claude account cannot import falls back to the prompt', async () => {
+  // Projects run on their own Claude accounts, so cloud access differs per project.
+  ipc.claudeCloudAvailability.mockImplementation(async (projectId: string) => ({ available: projectId === 'first', reason: null }))
+  const [project, setProject] = createSignal('first')
+  render(() => <NewTaskDraft open projectId={project()} onClose={() => {}} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Continue from cloud' }))
+  setProject('second')
+  await waitFor(() => expect(ipc.claudeCloudAvailability).toHaveBeenCalledWith('second'))
+  await screen.findByRole('textbox', { name: 'Task prompt' })
+  expect(screen.queryByRole('button', { name: 'Continue from cloud' })).toBeNull()
+  expect(ipc.beginCloudImport).not.toHaveBeenCalledWith('second')
+})
 test('closing while prefetch is pending cleans up its eventual result', async () => {
   let resolve!: (value: unknown) => void
   ipc.beginCloudImport.mockReturnValue(new Promise(r => { resolve = r }))

@@ -2,6 +2,7 @@ import { For, Show, createSignal, onCleanup, onMount, type Component } from 'sol
 import { ArrowRight, Loader2, RefreshCw, Search } from 'lucide-solid'
 import { startCloudTaskImport } from '../store/tasks'
 import * as ipc from '../lib/ipc'
+import { accountErrorMessage, notifyAccountError } from '../lib/accountErrors'
 
 interface Props {
   projectId: string
@@ -26,7 +27,15 @@ export const CloudSessionPicker: Component<Props> = (props) => {
       if (disposed || current !== generation) { await ipc.cancelCloudImport(result.importId); return }
       importId = result.importId
       setSessions(result.sessions)
-    } catch (e) { if (!disposed && current === generation) setError(String(e).replace(/^Error: /, '')) }
+    } catch (e) {
+      if (!disposed && current === generation) {
+        // The project's Claude account may be signed out. That gets the account
+        // toast, and the panel keeps saying what is wrong once the toast is gone,
+        // instead of showing the raw error or claiming there are no sessions.
+        notifyAccountError(e)
+        setError(accountErrorMessage(e) ?? String(e).replace(/^Error: /, ''))
+      }
+    }
     finally { if (!disposed && current === generation) setLoading(false) }
   }
 

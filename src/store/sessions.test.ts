@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, beforeEach, vi } from 'vitest'
-import { produce } from 'solid-js/store'
+import { createEffect, createRoot } from 'solid-js'
+import { produce, reconcile } from 'solid-js/store'
 
 // Capture every `listen(eventName, cb)` registration so tests can fire events
 // directly. Mock factory must be self-contained — vi.mock is hoisted above
@@ -22,18 +23,20 @@ vi.mock('../lib/ipc', () => ({
   clearSession: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
   reopenSession: vi.fn(),
+  sendMessage: vi.fn(),
 }))
 
 vi.mock('../lib/notifications', () => ({
   notify: vi.fn(),
 }))
 
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, reopenSession, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, reopenSession, sendMessage, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, rateLimitFor, setRateLimitByAccount, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
 import * as ipc from '../lib/ipc'
 import { setTasks } from './tasks'
+import { toasts, setToasts } from './ui'
 import { notify } from '../lib/notifications'
 import { setPlanFilePathForSession, planFilePathForSession, sessionContexts, setSessionContexts } from './sessionContext'
-import type { Session, OutputItem, Task, ToolApprovalRequest } from '../types'
+import type { Session, OutputItem, Task, ToolApprovalRequest, RateLimitInfo } from '../types'
 
 const makeTask = (overrides: Partial<Task> = {}): Task => ({
   id: 't-001',
@@ -70,6 +73,7 @@ const makeSession = (overrides: Partial<Session> = {}): Session => ({
   agentType: 'claude' as const,
   model: null,
   closedAt: null,
+  accountId: null,
   ...overrides,
 })
 
@@ -585,6 +589,26 @@ describe('createSession dedup vs cross-window broadcast', () => {
   })
 })
 
+// The picker's account choice reaches the backend, which binds the session to it.
+describe('createSession account', () => {
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    vi.mocked(ipc.createSession).mockReset()
+    vi.mocked(ipc.createSession).mockResolvedValue(makeSession({ id: 's-acct', taskId: 't-001' }))
+  })
+
+  test('passes the account selection to the backend', async () => {
+    await createSession('t-001', 'claude', 'opus', { kind: 'account', id: 'a1' })
+    expect(ipc.createSession).toHaveBeenCalledWith('t-001', 'claude', 'opus', { kind: 'account', id: 'a1' })
+  })
+
+  test('says nothing about the account when none is chosen', async () => {
+    await createSession('t-001', 'claude', 'opus')
+    expect(ipc.createSession).toHaveBeenCalledWith('t-001', 'claude', 'opus', undefined)
+  })
+})
+
 describe('reopenSession', () => {
   beforeAll(async () => {
     await initSessionListeners()
@@ -677,5 +701,185 @@ describe('notification name selection', () => {
 
     expect(notify).toHaveBeenCalledTimes(1)
     expect(vi.mocked(notify).mock.calls[0][0].body).toBe('Refactor auth: Bash')
+  })
+})
+
+// A session on a signed-out or removed account cannot send. The backend says so
+// with an account error, and the user gets a toast with a way to fix it instead
+// of the raw error from every place that sends. The result says whether the
+// message went out, for callers that report success or clear something after it.
+describe('sendMessage with an account problem', () => {
+  const signedOut = 'ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a1","label":"Acme","projects":[],"message":null}'
+
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setSessions([makeSession({ id: 's-acc', status: 'idle', accountId: 'a1' })])
+    setOutputItems(produce(store => { delete store['s-acc'] }))
+    setToasts([])
+    vi.mocked(ipc.sendMessage).mockReset()
+  })
+
+  test('sendMessage swallows account errors after the toast', async () => {
+    vi.mocked(ipc.sendMessage).mockRejectedValue(signedOut)
+
+    // false: the message was not sent, and the user has been told why.
+    await expect(sendMessage('s-acc', 'hi')).resolves.toBe(false)
+
+    // The session is not left running, and the toast tells the user what to do.
+    expect(sessionById('s-acc')?.status).toBe('idle')
+    expect(toasts().map(t => ({ title: t.title, message: t.message, actions: t.actions?.map(a => a.label) }))).toEqual([
+      { title: 'Account signed out', message: 'Acme is signed out.', actions: ['Log in'] },
+    ])
+  })
+
+  // Sending again while the account is still signed out raises the same problem
+  // again. The user sees one toast for it, not one per attempt.
+  test('the same problem again replaces its toast instead of stacking another', async () => {
+    vi.mocked(ipc.sendMessage).mockRejectedValue(signedOut)
+
+    await sendMessage('s-acc', 'one')
+    const first = toasts()[0]
+    await sendMessage('s-acc', 'two')
+    await sendMessage('s-acc', 'three')
+
+    expect(toasts()).toHaveLength(1)
+    expect(toasts()[0].id).toBe(first.id)
+    expect(toasts()[0].id).toBe('account-error:signedOut:a1')
+  })
+
+  test('another account gets a toast of its own', async () => {
+    setSessions(produce(list => { list.push(makeSession({ id: 's-other', status: 'idle', accountId: 'a2' })) }))
+    vi.mocked(ipc.sendMessage)
+      .mockRejectedValueOnce(signedOut)
+      .mockRejectedValueOnce('ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a2","label":"Beta","projects":[],"message":null}')
+
+    await sendMessage('s-acc', 'hi')
+    await sendMessage('s-other', 'hi')
+
+    expect(toasts().map(t => t.message)).toEqual(['Acme is signed out.', 'Beta is signed out.'])
+  })
+
+  test('sendMessage still throws every other error, with the session idle again', async () => {
+    vi.mocked(ipc.sendMessage).mockRejectedValue('Session is busy')
+
+    await expect(sendMessage('s-acc', 'hi')).rejects.toBe('Session is busy')
+
+    expect(sessionById('s-acc')?.status).toBe('idle')
+    expect(toasts()).toEqual([])
+  })
+
+  test('a send that works resolves true, leaves the session running and shows nothing', async () => {
+    vi.mocked(ipc.sendMessage).mockResolvedValue(undefined)
+
+    await expect(sendMessage('s-acc', 'hi')).resolves.toBe(true)
+
+    expect(sessionById('s-acc')?.status).toBe('running')
+    expect(toasts()).toEqual([])
+  })
+
+  // The chat shows a message the moment it is sent. One the account stopped was
+  // never sent, and the backend saved nothing of it, so the chat must not keep it.
+  test('a send the account stopped takes its message back out of the chat', async () => {
+    setOutputItems('s-acc', [{ kind: 'text', text: 'earlier' }])
+    vi.mocked(ipc.sendMessage).mockRejectedValue(signedOut)
+
+    await sendMessage('s-acc', 'hi')
+
+    expect(outputItems['s-acc']).toEqual([{ kind: 'text', text: 'earlier' }])
+  })
+
+  test('a message that was sent stays in the chat', async () => {
+    vi.mocked(ipc.sendMessage).mockResolvedValue(undefined)
+
+    await sendMessage('s-acc', 'hi')
+
+    expect(outputItems['s-acc']).toMatchObject([{ kind: 'userMessage', text: 'hi' }])
+  })
+
+  test('it takes out its own message only: an identical one sent earlier and output that arrived meanwhile stay', async () => {
+    const earlier = { kind: 'userMessage' as const, text: 'hi', timestamp: 1 }
+    setOutputItems('s-acc', [earlier])
+    let rejectSend!: (error: unknown) => void
+    vi.mocked(ipc.sendMessage).mockReturnValue(new Promise((_, reject) => { rejectSend = reject }))
+
+    const sending = sendMessage('s-acc', 'hi')
+    // In flight, the message is in the chat after the earlier one.
+    expect(outputItems['s-acc']).toHaveLength(2)
+    listenCallbacks.get('session-output')!({ payload: { sessionId: 's-acc', items: [{ kind: 'text', text: 'late' }] } })
+    rejectSend(signedOut)
+    await expect(sending).resolves.toBe(false)
+
+    expect(outputItems['s-acc']).toEqual([earlier, { kind: 'text', text: 'late' }])
+  })
+
+  test('another error leaves the message where it was: the backend may have saved it', async () => {
+    vi.mocked(ipc.sendMessage).mockRejectedValue('Session is busy')
+
+    await expect(sendMessage('s-acc', 'hi')).rejects.toBe('Session is busy')
+
+    expect(outputItems['s-acc']).toMatchObject([{ kind: 'userMessage', text: 'hi' }])
+  })
+})
+
+// Rate limits belong to an account. With several accounts, one account's event
+// must not replace another's, which a single global signal did.
+describe('rate limits per account', () => {
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setRateLimitByAccount(reconcile({}))
+  })
+
+  const makeRateLimit = (overrides: Partial<RateLimitInfo> = {}): RateLimitInfo => ({
+    sessionId: 's-001',
+    accountKey: 'default:claude',
+    resetsAt: 0,
+    overageResetsAt: 0,
+    rateLimitType: 'five_hour',
+    overageStatus: 'allowed',
+    isUsingOverage: false,
+    ...overrides,
+  })
+
+  test('stores rate limit events per account', () => {
+    const fire = listenCallbacks.get('rate-limit-info')!
+    fire({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 1 }) })
+    fire({ payload: makeRateLimit({ accountKey: 'default:claude', resetsAt: 2 }) })
+    expect(rateLimitFor('a1')?.resetsAt).toBe(1)
+    expect(rateLimitFor('default:claude')?.resetsAt).toBe(2)
+  })
+
+  test('a newer event replaces its own account entry and leaves the others', () => {
+    const fire = listenCallbacks.get('rate-limit-info')!
+    fire({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 1, overageStatus: 'rejected', overageResetsAt: 9 }) })
+    fire({ payload: makeRateLimit({ accountKey: 'default:claude', resetsAt: 2 }) })
+    // The newer report no longer has the overage fields, so they must be gone
+    // from the entry, not carried over from the older one (a merge keeps them).
+    const newer = { sessionId: 's-001', accountKey: 'a1', resetsAt: 3, rateLimitType: 'five_hour', isUsingOverage: true }
+    fire({ payload: newer })
+    expect(rateLimitFor('a1')).toEqual(newer)
+    expect(rateLimitFor('default:claude')).toMatchObject({ resetsAt: 2, isUsingOverage: false })
+  })
+
+  test('an account with no event yet has no rate limit', () => {
+    expect(rateLimitFor('a1')).toBeNull()
+  })
+
+  // The usage chip reads the limits of an account that may not have reported
+  // yet, and has to show them as soon as its first event arrives.
+  test('a reader of an account with no entry yet sees its first event', () => {
+    const seen: Array<number | null> = []
+    const dispose = createRoot(dispose => {
+      createEffect(() => { seen.push(rateLimitFor('a1')?.resetsAt ?? null) })
+      return dispose
+    })
+    listenCallbacks.get('rate-limit-info')!({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 7 }) })
+    dispose()
+    expect(seen).toEqual([null, 7])
   })
 })

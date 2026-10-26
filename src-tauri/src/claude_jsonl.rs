@@ -1,4 +1,6 @@
 // Knowledge of Claude Code's on-disk session JSONL format lives in this one file.
+// Where those files live (the per-account Claude home and the folder slug of a
+// cwd) is `claude_home.rs`.
 //
 // Format (verified against Claude Code 2.1.101): one JSON object per line, with
 // a per-line `uuid` field on real message lines and a `sessionId` field that we
@@ -45,40 +47,6 @@ impl std::fmt::Display for JsonlError {
 }
 
 impl std::error::Error for JsonlError {}
-
-/// Compute the path of a Claude Code session transcript.
-///
-/// Claude stores transcripts at `~/.claude/projects/<encoded-cwd>/<id>.jsonl`
-/// where `<encoded-cwd>` is the absolute path of the cwd with all
-/// non-alphanumeric characters replaced by `-`.
-pub fn session_path(cwd: &Path, session_id: &str) -> Option<PathBuf> {
-    projects_dir(cwd).map(|d| d.join(format!("{session_id}.jsonl")))
-}
-
-/// Compute the per-cwd directory under `~/.claude/projects/` where Claude
-/// writes transcripts for sessions started in `cwd`. Used to watch for newly
-/// created sessions when we spawn `claude` without a known id.
-pub fn projects_dir(cwd: &Path) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let encoded = encode_cwd(cwd);
-    Some(home.join(".claude").join("projects").join(encoded))
-}
-
-fn encode_cwd(cwd: &Path) -> String {
-    let s = cwd.to_string_lossy();
-    let mut out = String::with_capacity(s.len() + 1);
-    if !s.starts_with('/') {
-        out.push('-');
-    }
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch);
-        } else {
-            out.push('-');
-        }
-    }
-    out
-}
 
 /// Truncate a session JSONL to end at (and include) the line whose `uuid`
 /// equals `last_kept_uuid`, rewriting every kept line's `sessionId` to
@@ -494,20 +462,6 @@ mod tests {
 
     fn write(path: &Path, content: &str) {
         std::fs::write(path, content).unwrap();
-    }
-
-    #[test]
-    fn encode_cwd_replaces_slashes_and_dots() {
-        let p = Path::new("/Users/me/Project.X");
-        assert_eq!(encode_cwd(p), "-Users-me-Project-X");
-    }
-
-    #[test]
-    fn encode_cwd_matches_claude_for_macos_temp_paths_and_spaces() {
-        assert_eq!(
-            encode_cwd(Path::new("/private/var/folders/hg/task_vmr/T/cloud repo")),
-            "-private-var-folders-hg-task-vmr-T-cloud-repo"
-        );
     }
 
     #[test]

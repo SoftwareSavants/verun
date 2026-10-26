@@ -1,6 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { render, cleanup, fireEvent } from '@solidjs/testing-library'
-import type { WorkflowRun } from '../types'
+import type { AccountSelection, WorkflowRun } from '../types'
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
@@ -37,6 +37,15 @@ vi.mock('../store/taskContext', () => ({
 }))
 vi.mock('../store/ui', () => ({
   addToast: vi.fn(),
+  dismissToast: vi.fn(),
+  setSelectedSessionIdForTask: vi.fn(),
+  openSettings: vi.fn(),
+}))
+vi.mock('../store/modelPicker', () => ({
+  openModelPicker: vi.fn(),
+}))
+vi.mock('../store/editorView', () => ({
+  setMainView: vi.fn(),
 }))
 
 const gitMocks = vi.hoisted(() => ({
@@ -74,6 +83,10 @@ vi.mock('../store/githubDebug', () => githubDebugMocks)
 
 import { ActionsPanel } from './ActionsPanel'
 import { clearActionsState, stopPolling } from '../store/actions'
+import { sendMessage, sessionsForTask } from '../store/sessions'
+import { selectedSessionForTask } from '../store/taskContext'
+import { addToast } from '../store/ui'
+import { openModelPicker } from '../store/modelPicker'
 
 function run(partial: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
@@ -299,5 +312,190 @@ describe('<ActionsPanel /> layout', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1)
     expect(vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0]).toContain('fetch-success')
     expect(vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0]).toContain('overview')
+  })
+})
+
+// "Fix with Claude" sends the failure to a session. Its success toast says the
+// session has the failure context, so it must not show when the send was
+// blocked by an account problem (sendMessage resolves false after its own toast).
+describe('<ActionsPanel /> fixing a failed job with Claude', () => {
+  const removed = 'ACCOUNT_ERROR:{"kind":"removed","accountId":"a1","label":"Acme","projects":[],"message":null}'
+  const SENT_HERE = 'Sent failure context to session'
+  const SENT_NEW = 'Started new session with failure context'
+
+  const toastsOfType = (type: string) => vi.mocked(addToast).mock.calls.filter(call => call[1] === type).map(call => call[0])
+
+  async function renderFailedJob() {
+    ipcMocks.getGithubActions.mockResolvedValue({
+      runs: [run({ databaseId: 1, state: 'failure', workflowName: 'CI' })],
+      fetchedAt: 1, staleAt: 2, expiresAt: 3, isStale: false, fromCache: false,
+    })
+    ipcMocks.getGithubWorkflowJobs.mockResolvedValue({
+      runId: 1,
+      jobs: [{ databaseId: 10, name: 'Type Check', state: 'failure', startedAt: '2026-04-20T10:00:00Z', completedAt: '2026-04-20T10:01:12Z', url: 'https://github.com/x/y/runs/10' }],
+      fetchedAt: 1, staleAt: 2, expiresAt: 3, isStale: false, fromCache: false,
+    })
+    ipcMocks.getGithubWorkflowLog.mockResolvedValue({
+      jobId: 10, text: 'error TS2322: Type mismatch at foo.ts:17',
+      fetchedAt: 1, staleAt: 2, expiresAt: 3, isStale: false, fromCache: false,
+    })
+    const view = render(() => <ActionsPanel taskId="t1" />)
+    await flush()
+    await flush()
+    return view
+  }
+
+  async function chooseFix(view: Awaited<ReturnType<typeof renderFailedJob>>, option: 'Fix in this session' | 'Fix in new session') {
+    fireEvent.click(view.container.querySelector('[title="Fix with Claude"]') as HTMLElement)
+    fireEvent.click(view.getByText(option))
+    await flush()
+    await flush()
+  }
+
+  /** The model picker's callback, for the "new session" path. */
+  async function pickModel(account?: AccountSelection) {
+    const request = vi.mocked(openModelPicker).mock.calls[0][0]
+    await request.onPick('claude', 'opus', account)
+    await flush()
+  }
+
+  beforeEach(() => {
+    cleanup()
+    stopPolling('t1')
+    clearActionsState('t1')
+    vi.mocked(addToast).mockClear()
+    vi.mocked(sendMessage).mockReset()
+    vi.mocked(openModelPicker).mockClear()
+    vi.mocked(sessionsForTask).mockReturnValue([])
+    vi.mocked(selectedSessionForTask).mockReturnValue('s1')
+    ipcMocks.getGithubActions.mockReset()
+    ipcMocks.getGithubWorkflowJobs.mockReset()
+    ipcMocks.getGithubWorkflowLog.mockReset()
+    ipcMocks.createSession.mockReset()
+    ipcMocks.createSession.mockResolvedValue({ id: 'new-session' })
+  })
+
+  test('a fix sent to the current session says so', async () => {
+    vi.mocked(sendMessage).mockResolvedValue(true)
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in this session')
+
+    expect(sendMessage).toHaveBeenCalledWith('s1', expect.stringContaining('Type Check'))
+    expect(toastsOfType('success')).toEqual([SENT_HERE])
+  })
+
+  test('a fix blocked by an account problem does not say it was sent', async () => {
+    vi.mocked(sendMessage).mockResolvedValue(false)
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in this session')
+
+    expect(sendMessage).toHaveBeenCalledOnce()
+    expect(toastsOfType('success')).toEqual([])
+    // sendMessage has shown the account toast; nothing here adds a failure toast.
+    expect(toastsOfType('error')).toEqual([])
+  })
+
+  test('a fix sent to a new session says so', async () => {
+    vi.mocked(sendMessage).mockResolvedValue(true)
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+    await pickModel()
+
+    expect(sendMessage).toHaveBeenCalledWith('new-session', expect.stringContaining('Type Check'))
+    expect(toastsOfType('success')).toEqual([SENT_NEW])
+  })
+
+  test('the picker is for the project of the task', async () => {
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+
+    expect(openModelPicker).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'p1' }))
+  })
+
+  // The picker marks "Current" on the group of the session it was opened from,
+  // its account too once the harness has accounts.
+  test('the picker is told which account the current session runs on', async () => {
+    vi.mocked(sessionsForTask).mockReturnValue([{ id: 's1', agentType: 'codex', model: 'gpt-5', accountId: 'c1' } as never])
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+
+    expect(openModelPicker).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'codex', defaultModel: 'gpt-5', defaultAccountId: 'c1' }))
+  })
+
+  test('a current session on Default is the null account', async () => {
+    vi.mocked(sessionsForTask).mockReturnValue([{ id: 's1', agentType: 'claude', model: null, accountId: null } as never])
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+
+    expect(vi.mocked(openModelPicker).mock.calls[0][0].defaultAccountId).toBeNull()
+  })
+
+  test('without a session no account is named', async () => {
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+
+    expect(vi.mocked(openModelPicker).mock.calls[0][0].defaultAccountId).toBeUndefined()
+  })
+
+  test('the session is created on the account picked', async () => {
+    vi.mocked(sendMessage).mockResolvedValue(true)
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+    await pickModel({ kind: 'account', id: 'a1' })
+
+    expect(ipcMocks.createSession).toHaveBeenCalledWith('t1', 'claude', 'opus', { kind: 'account', id: 'a1' })
+    expect(sendMessage).toHaveBeenCalledWith('new-session', expect.stringContaining('Type Check'))
+  })
+
+  test('without an account picked the project decides', async () => {
+    vi.mocked(sendMessage).mockResolvedValue(true)
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+    await pickModel()
+
+    expect(ipcMocks.createSession).toHaveBeenCalledWith('t1', 'claude', 'opus', undefined)
+  })
+
+  test('a new-session fix blocked by an account problem does not say it was started', async () => {
+    vi.mocked(sendMessage).mockResolvedValue(false)
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+    await pickModel()
+
+    expect(sendMessage).toHaveBeenCalledOnce()
+    expect(toastsOfType('success')).toEqual([])
+    expect(toastsOfType('error')).toEqual([])
+  })
+
+  test('an account problem creating the session gets the account toast, not "Fix failed" with the raw error', async () => {
+    ipcMocks.createSession.mockRejectedValue(removed)
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+    await pickModel()
+
+    expect(sendMessage).not.toHaveBeenCalled()
+    expect(addToast).toHaveBeenCalledWith('Acme was removed. Start a new session on another account.', 'error', expect.objectContaining({ title: 'Account removed' }))
+    expect(toastsOfType('error').some(message => message.includes('ACCOUNT_ERROR') || message.startsWith('Fix failed'))).toBe(false)
+  })
+
+  test('other failures still say "Fix failed"', async () => {
+    ipcMocks.createSession.mockRejectedValue('Task t1 not found')
+    const view = await renderFailedJob()
+
+    await chooseFix(view, 'Fix in new session')
+    await pickModel()
+
+    expect(toastsOfType('error')).toEqual(['Fix failed: Task t1 not found'])
   })
 })

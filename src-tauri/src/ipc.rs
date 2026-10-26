@@ -1,3 +1,11 @@
+use crate::accounts::login::{self as accounts_login, AccountTerminal, AccountTerminalAction};
+use crate::accounts::manage::{
+    self as accounts_manage, account_user_home, publish_accounts, AccountsSnapshot,
+    NewAccountInput, UpdateAccountInput,
+};
+use crate::accounts::service::resolve_new_session_account;
+use crate::accounts::AccountSelection;
+use crate::claude_home::{self, ClaudeHome};
 use crate::claude_terminal::{self, ClaudeTerminalMap, OpenClaudeTerminalResult};
 use crate::db::{self, DbWriteTx, OutputLine, Project, Session, Step, Task};
 use crate::file_search::{SearchMap, SearchOpts};
@@ -242,6 +250,8 @@ pub async fn delete_project(
         .ok_or_else(|| format!("Project {id} not found"))?;
 
     let tasks = db::list_tasks_for_project(pool.inner(), &id).await?;
+    // The project's accounts, read once for the destroy hook of every task.
+    let project_env = task::destroy_hook_account_env(&app, &project, &tasks, false).await;
     for t in &tasks {
         task::delete_task(
             &app,
@@ -251,6 +261,7 @@ pub async fn delete_project(
             &project.repo_path,
             t,
             &project.destroy_hook,
+            &project_env,
             true,
             false,
         )
@@ -416,9 +427,21 @@ pub struct ImportedHooks {
 // Tasks
 // ---------------------------------------------------------------------------
 
+/// Whether the cloud import of `project_id` can list sessions, on the Claude
+/// account that project uses. A probe: an account that can't be used is
+/// reported as unavailable with the reason, not as an error.
 #[tauri::command]
-pub async fn claude_cloud_availability() -> crate::cloud_import::Availability {
-    crate::cloud_import::availability().await
+pub async fn claude_cloud_availability(
+    app: AppHandle,
+    project_id: String,
+) -> crate::cloud_import::Availability {
+    let secrets = app.state::<crate::accounts::Secrets>().0.clone();
+    crate::cloud_import::project_availability(
+        app.state::<SqlitePool>().inner(),
+        secrets,
+        &project_id,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -471,6 +494,9 @@ pub async fn finish_cloud_import(
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or("Project not found")?;
+    // Before the import creates the task: an account that can't be read leaves
+    // nothing behind.
+    let project_env = task::hook_account_env(&app, &project.id, &project.setup_hook).await?;
     let (task, session) = crate::cloud_import::finish(
         &app,
         pool.inner(),
@@ -492,6 +518,7 @@ pub async fn finish_cloud_import(
         &project.setup_hook,
         task.port_offset,
         &project.repo_path,
+        project_env,
     );
     Ok(TaskWithSession { task, session })
 }
@@ -519,10 +546,19 @@ pub async fn create_task(
     base_branch: Option<String>,
     agent_type: Option<String>,
     directory: Option<String>,
+    account: Option<AccountSelection>,
 ) -> Result<TaskWithSession, String> {
     let project = db::get_project(pool.inner(), &project_id)
         .await?
         .ok_or_else(|| format!("Project {project_id} not found"))?;
+
+    let agent_type =
+        agent_type.unwrap_or_else(|| crate::agent::AgentKind::Claude.as_str().to_string());
+    // Before the worktree exists, so a bad pick leaves nothing behind.
+    let account_id =
+        resolve_new_session_account(pool.inner(), &project_id, &agent_type, account.as_ref())
+            .await
+            .map_err(|e| e.to_ipc())?;
 
     let from_task_window = window.label().starts_with("task-");
     let source_window = window.label().to_string();
@@ -543,8 +579,8 @@ pub async fn create_task(
             setup_hook: project.setup_hook,
             port_offset,
             from_task_window,
-            agent_type: agent_type
-                .unwrap_or_else(|| crate::agent::AgentKind::Claude.as_str().to_string()),
+            agent_type,
+            account_id,
             source_window,
         },
     )
@@ -592,6 +628,7 @@ pub async fn run_hook(
         _ => return Err(format!("Invalid hook type: {hook_type}")),
     };
 
+    let project_env = task::hook_account_env(&app, &t.project_id, hook_command).await?;
     task::spawn_hook_pty(
         &app,
         pty_map.inner(),
@@ -603,6 +640,7 @@ pub async fn run_hook(
         ht,
         t.port_offset,
         &project.repo_path,
+        project_env,
     )
 }
 
@@ -657,6 +695,10 @@ pub async fn delete_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
+    let skip_destroy_hook = skip_destroy_hook.unwrap_or(false);
+    let project_env =
+        task::destroy_hook_account_env(&app, &project, std::slice::from_ref(&t), skip_destroy_hook)
+            .await;
     task::delete_task(
         &app,
         pool.inner(),
@@ -665,8 +707,9 @@ pub async fn delete_task(
         &project.repo_path,
         &t,
         &project.destroy_hook,
+        &project_env,
         delete_branch,
-        skip_destroy_hook.unwrap_or(false),
+        skip_destroy_hook,
     )
     .await
 }
@@ -688,6 +731,10 @@ pub async fn archive_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
+    let skip_destroy_hook = skip_destroy_hook.unwrap_or(false);
+    let project_env =
+        task::destroy_hook_account_env(&app, &project, std::slice::from_ref(&t), skip_destroy_hook)
+            .await;
     task::archive_task(
         &app,
         pool.inner(),
@@ -695,8 +742,9 @@ pub async fn archive_task(
         active.inner(),
         &t,
         &project.destroy_hook,
+        &project_env,
         &project.repo_path,
-        skip_destroy_hook.unwrap_or(false),
+        skip_destroy_hook,
     )
     .await
 }
@@ -747,6 +795,11 @@ pub async fn restore_task(
         .await?
         .ok_or_else(|| format!("Project {} not found", t.project_id))?;
 
+    let setup_hook = task::setup_hook_to_run(t.existing_directory, &project.setup_hook);
+    // Before the task is restored: an account that can't be read leaves it
+    // archived.
+    let project_env = task::hook_account_env(&app, &t.project_id, setup_hook).await?;
+
     db_tx
         .send(db::DbWrite::RestoreTask { id })
         .await
@@ -760,13 +813,10 @@ pub async fn restore_task(
         setup_in_progress.inner(),
         &t.id,
         &t.worktree_path,
-        if t.existing_directory {
-            ""
-        } else {
-            &project.setup_hook
-        },
+        setup_hook,
         t.port_offset,
         &project.repo_path,
+        project_env,
     );
 
     Ok(())
@@ -796,15 +846,26 @@ pub async fn rename_task(
 // ---------------------------------------------------------------------------
 
 /// Create a new session (no process spawned — call send_message to talk to Claude)
+///
+/// `account` is the account picked for it; without one the task's project decides.
 #[tauri::command]
 pub async fn create_session(
     app: AppHandle,
+    pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     task_id: String,
     agent_type: String,
     model: Option<String>,
+    account: Option<AccountSelection>,
 ) -> Result<Session, String> {
-    task::create_session(&app, db_tx.inner(), task_id, agent_type, model).await
+    let t = db::get_task(pool.inner(), &task_id)
+        .await?
+        .ok_or_else(|| format!("Task {task_id} not found"))?;
+    let account_id =
+        resolve_new_session_account(pool.inner(), &t.project_id, &agent_type, account.as_ref())
+            .await
+            .map_err(|e| e.to_ipc())?;
+    task::create_session(&app, db_tx.inner(), task_id, agent_type, model, account_id).await
 }
 
 /// Fork an existing session at a specific assistant message uuid into a new
@@ -837,7 +898,7 @@ pub async fn fork_session_to_new_task(
     fork_after_message_uuid: String,
     worktree_state: task::WorktreeForkState,
 ) -> Result<TaskWithSession, String> {
-    let (new_task, new_session) = task::fork_session_to_new_task(
+    let (new_task, new_session, setup_env) = task::fork_session_to_new_task(
         &app,
         pool.inner(),
         session_id,
@@ -861,6 +922,7 @@ pub async fn fork_session_to_new_task(
             &project.setup_hook,
             new_task.port_offset,
             &project.repo_path,
+            setup_env,
         );
     }
 
@@ -934,6 +996,7 @@ pub async fn send_message(
             fast_mode: fast_mode.unwrap_or(false),
             task_name: t.name,
             agent_type: session.agent_type.clone(),
+            account_id: session.account_id,
             external: false,
             wakeup_reason: None,
         },
@@ -1002,6 +1065,8 @@ pub async fn prewarm_session(
             thinking_mode: false,
             fast_mode: false,
             agent_type: session.agent_type.clone(),
+            account_id: session.account_id,
+            account_env: None,
             message: String::new(),
             attachments: Vec::new(),
             prewarm: true,
@@ -2478,7 +2543,10 @@ pub async fn pty_spawn(
         .ok_or_else(|| format!("Task {task_id} not found"))?;
 
     let repo_path = db::get_repo_path_for_task(pool.inner(), &task_id).await?;
-    let env_vars = worktree::verun_env_vars(t.port_offset, &repo_path);
+    // Shells and the start command run on the project's accounts, so `claude`
+    // typed in a client's worktree uses the client's login.
+    let project_env = task::project_account_env(&app, &t.project_id).await?;
+    let env = worktree::task_env(t.port_offset, &repo_path, project_env);
     let map = pty_map.inner().clone();
     let direct = direct_command.unwrap_or(false);
     // Frontend sends is_start_command explicitly when spawning the project start
@@ -2499,7 +2567,7 @@ pub async fn pty_spawn(
                 rows,
                 cols,
                 initial_command,
-                env_vars,
+                env,
                 direct,
                 name_override,
                 start_cmd,
@@ -2739,6 +2807,129 @@ pub async fn write_binary_file(request: tauri::ipc::Request<'_>) -> Result<(), S
 }
 
 // ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn list_accounts(pool: State<'_, SqlitePool>) -> Result<AccountsSnapshot, String> {
+    let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    accounts_manage::snapshot(pool.inner(), &user_home).await
+}
+
+#[tauri::command]
+pub async fn create_account(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    secrets: State<'_, crate::accounts::Secrets>,
+    app_data: State<'_, crate::blob::AppDataDir>,
+    input: NewAccountInput,
+) -> Result<AccountsSnapshot, String> {
+    let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    let (_, turn) = accounts_manage::create_account(
+        pool.inner(),
+        db_tx.inner(),
+        secrets.0.clone(),
+        &app_data.0,
+        &user_home,
+        input,
+        Uuid::new_v4().to_string(),
+        task::epoch_ms(),
+    )
+    .await
+    .map_err(|e| e.to_ipc())?;
+    publish_accounts(&turn, &app, pool.inner(), &user_home).await
+}
+
+#[tauri::command]
+pub async fn update_account(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    secrets: State<'_, crate::accounts::Secrets>,
+    input: UpdateAccountInput,
+) -> Result<AccountsSnapshot, String> {
+    let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    let (_, turn) =
+        accounts_manage::update_account(pool.inner(), db_tx.inner(), secrets.0.clone(), input)
+            .await
+            .map_err(|e| e.to_ipc())?;
+    publish_accounts(&turn, &app, pool.inner(), &user_home).await
+}
+
+#[tauri::command]
+pub async fn remove_account(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    secrets: State<'_, crate::accounts::Secrets>,
+    account_id: String,
+    delete_dir: bool,
+) -> Result<AccountsSnapshot, String> {
+    let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    let app_handle = &app;
+    let turn = accounts_manage::remove_account(
+        pool.inner(),
+        db_tx.inner(),
+        secrets.0.clone(),
+        &account_id,
+        delete_dir,
+        task::epoch_ms(),
+        |session_ids| async move {
+            task::stop_sessions(
+                app_handle.state::<ActiveMap>().inner(),
+                app_handle.state::<ActivePtyMap>().inner(),
+                app_handle.state::<ClaudeTerminalMap>().inner(),
+                &session_ids,
+            )
+            .await;
+        },
+    )
+    .await
+    .map_err(|e| e.to_ipc())?;
+    publish_accounts(&turn, &app, pool.inner(), &user_home).await
+}
+
+#[tauri::command]
+pub async fn set_project_account(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    project_id: String,
+    agent_type: String,
+    account_id: Option<String>,
+) -> Result<AccountsSnapshot, String> {
+    let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    let turn = accounts_manage::set_project_account(
+        pool.inner(),
+        db_tx.inner(),
+        &project_id,
+        &agent_type,
+        account_id,
+    )
+    .await
+    .map_err(|e| e.to_ipc())?;
+    publish_accounts(&turn, &app, pool.inner(), &user_home).await
+}
+
+/// Opens a PTY that runs the harness's own login or logout command on the
+/// account. One at a time: a second start is refused while the first terminal's
+/// process is still running. When the terminal ends, every window gets the
+/// accounts as they are then (`accounts-changed`).
+#[tauri::command]
+pub async fn start_account_terminal(
+    app: AppHandle,
+    account_id: String,
+    action: AccountTerminalAction,
+    rows: u16,
+    cols: u16,
+) -> Result<AccountTerminal, String> {
+    accounts_login::start(&app, &account_id, action, rows, cols)
+        .await
+        .map_err(|e| e.to_ipc())
+}
+
+// ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
 
@@ -2746,23 +2937,58 @@ pub use crate::agent::AgentSkill;
 
 #[tauri::command]
 pub async fn list_agent_skills(
+    pool: State<'_, SqlitePool>,
     agent_kind: String,
     scan_root: Option<String>,
+    account_id: Option<String>,
 ) -> Result<Vec<AgentSkill>, String> {
     let kind = crate::agent::AgentKind::parse(&agent_kind);
     if !kind.implementation().supports_skills() {
         return Ok(vec![]);
     }
-    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+    let Some(agent_home) = skills_home(
+        &pool,
+        kind,
+        account_id.as_deref(),
+        claude_home::process_default(),
+    )
+    .await?
+    else {
         return Ok(vec![]);
     };
     tokio::task::spawn_blocking(move || {
         let agent = kind.implementation();
         let root = scan_root.as_deref().map(std::path::Path::new);
-        agent.discover_skills(root, &home)
+        agent.discover_skills(root, &agent_home)
     })
     .await
     .map_err(|e| format!("skill discovery task failed: {e}"))
+}
+
+/// The config root `list_agent_skills` scans for harness `kind` on a session of
+/// `account_id`. Claude's is the home of the session's account. No other
+/// harness discovers skills yet, so those get the user's home. `None`: there
+/// is no `$HOME` to look in, so no skills to list, as ever for the Default
+/// account. Only an account that can't be found is an error.
+///
+/// `process_default` is `claude_home::process_default()`, passed in so tests
+/// skip the process env.
+async fn skills_home(
+    pool: &SqlitePool,
+    kind: crate::agent::AgentKind,
+    account_id: Option<&str>,
+    process_default: Option<ClaudeHome>,
+) -> Result<Option<std::path::PathBuf>, String> {
+    // Only a harness that lives in a Claude home has one to resolve, and its
+    // account says which. Another harness's account is not a Claude account.
+    if !kind.implementation().uses_claude_jsonl() {
+        return Ok(std::env::var_os("HOME").map(std::path::PathBuf::from));
+    }
+    if account_id.is_none() && process_default.is_none() {
+        return Ok(None);
+    }
+    let home = claude_home::for_account_with_default(pool, account_id, process_default).await?;
+    Ok(Some(home.root().to_path_buf()))
 }
 
 #[tauri::command]
@@ -2869,6 +3095,7 @@ pub fn detect_all_agents() -> Vec<AgentInfo> {
                 supports_skills: agent.supports_skills(),
                 supports_attachments: agent.supports_attachments(),
                 supports_fork: agent.supports_fork(),
+                account_support: account_support_info(&*agent),
             }
         })
         .collect()
@@ -2913,6 +3140,38 @@ pub struct AgentInfo {
     pub supports_skills: bool,
     pub supports_attachments: bool,
     pub supports_fork: bool,
+    pub account_support: Option<AccountSupportInfo>,
+}
+
+/// What the UI needs to know about a harness's added accounts: which buttons
+/// to offer and what to say beside them.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSupportInfo {
+    pub login: bool,
+    pub logout: bool,
+    pub existing_dir: bool,
+    pub required_secret: Option<String>,
+    pub login_hint: Option<String>,
+    pub logout_hint: Option<String>,
+    pub min_cli_version: Option<String>,
+    pub blocked_reason: Option<String>,
+}
+
+/// The account support of `agent` as the UI sees it, or `None` for a harness
+/// without added accounts.
+pub fn account_support_info(agent: &dyn crate::agent::Agent) -> Option<AccountSupportInfo> {
+    let profile = agent.account_profile()?;
+    Some(AccountSupportInfo {
+        login: profile.login_args.is_some(),
+        logout: profile.logout_args.is_some(),
+        existing_dir: profile.allows_existing_dir,
+        required_secret: profile.required_secret.map(str::to_string),
+        login_hint: profile.login_hint.map(str::to_string),
+        logout_hint: profile.logout_hint.map(str::to_string),
+        min_cli_version: profile.min_cli_version.map(str::to_string),
+        blocked_reason: agent.account_blocked_reason(),
+    })
 }
 
 #[tauri::command]
@@ -3733,6 +3992,9 @@ pub async fn get_resource_usage_now(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentKind;
+    use crate::db::tests::{make_account, test_pool, upsert_account_confirmed};
+    use std::path::PathBuf;
 
     #[test]
     fn derive_dir_name_handles_https_url() {
@@ -3960,6 +4222,7 @@ mod tests {
             supports_skills: false,
             supports_attachments: true,
             supports_fork: true,
+            account_support: None,
         }];
         let sample_clone = sample.clone();
 
@@ -3969,6 +4232,197 @@ mod tests {
         assert_eq!(returned.len(), 1);
         assert_eq!(cache.read().unwrap().len(), 1);
         assert_eq!(cache.read().unwrap()[0].id, "claude");
+    }
+
+    #[test]
+    fn account_support_info_only_for_supporting_harnesses() {
+        // Claude has login and logout commands, takes a folder the user already
+        // logged in from, and needs nothing explained.
+        let plain_support = AccountSupportInfo {
+            login: true,
+            logout: true,
+            existing_dir: true,
+            required_secret: None,
+            login_hint: None,
+            logout_hint: None,
+            min_cli_version: None,
+            blocked_reason: None,
+        };
+        assert_eq!(
+            account_support_info(&crate::agent::Claude),
+            Some(plain_support.clone())
+        );
+        // Codex is the same, plus a hint for the API key login that its login
+        // terminal does not offer.
+        assert_eq!(
+            account_support_info(&crate::agent::Codex),
+            Some(AccountSupportInfo {
+                login_hint: Some(
+                    "To use an API key instead, run `codex login --with-api-key` in a task shell of a project that uses this account."
+                        .into()
+                ),
+                ..plain_support.clone()
+            })
+        );
+        // Cursor takes API-key accounts only: no login or logout terminal, no
+        // existing folder, and the key is required.
+        assert_eq!(
+            account_support_info(&crate::agent::Cursor),
+            Some(AccountSupportInfo {
+                login: false,
+                logout: false,
+                existing_dir: false,
+                required_secret: Some("CURSOR_API_KEY".into()),
+                ..plain_support
+            })
+        );
+    }
+
+    /// A harness that sets every optional field of the profile and is blocked,
+    /// to check that each one reaches the summary.
+    struct FullySpecifiedAgent;
+
+    impl crate::agent::Agent for FullySpecifiedAgent {
+        fn kind(&self) -> crate::agent::AgentKind {
+            crate::agent::AgentKind::Gemini
+        }
+        fn display_name(&self) -> &'static str {
+            "Fake"
+        }
+        fn cli_binary(&self) -> &'static str {
+            "fake"
+        }
+        fn input_mode(&self) -> crate::agent::InputMode {
+            crate::agent::InputMode::PositionalOrStdin
+        }
+        fn build_session_args(&self, _args: &crate::agent::SessionArgs<'_>) -> Vec<String> {
+            Vec::new()
+        }
+        fn install_hint(&self) -> &'static str {
+            ""
+        }
+        fn available_models(&self) -> Vec<crate::agent::ModelOption> {
+            Vec::new()
+        }
+        fn account_profile(&self) -> Option<crate::agent::AccountProfile> {
+            Some(crate::agent::AccountProfile {
+                scrub_vars: &["FAKE_HOME"],
+                fixed_env: &[("FAKE_NO_UPDATE", "1")],
+                api_key_vars: &["FAKE_API_KEY"],
+                // The bare CLI is a login command; no logout command at all.
+                login_args: Some(&[]),
+                logout_args: None,
+                login_hint: Some("Sign in, then type /quit."),
+                logout_hint: Some("Type /signout."),
+                allows_existing_dir: false,
+                required_secret: Some("FAKE_API_KEY"),
+                in_project_env: false,
+                min_cli_version: Some("0.25.0"),
+            })
+        }
+        fn account_blocked_reason(&self) -> Option<String> {
+            Some("Installed through npm.".to_string())
+        }
+    }
+
+    #[test]
+    fn account_support_info_maps_the_profile_fields_the_ui_shows() {
+        assert_eq!(
+            account_support_info(&FullySpecifiedAgent),
+            Some(AccountSupportInfo {
+                login: true,
+                logout: false,
+                existing_dir: false,
+                required_secret: Some("FAKE_API_KEY".into()),
+                login_hint: Some("Sign in, then type /quit.".into()),
+                logout_hint: Some("Type /signout.".into()),
+                min_cli_version: Some("0.25.0".into()),
+                blocked_reason: Some("Installed through npm.".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn account_support_serializes_with_the_keys_of_the_frontend_type() {
+        // The keys of `AccountSupport` in src/types/index.ts.
+        let json = serde_json::to_value(account_support_info(&FullySpecifiedAgent)).unwrap();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "blockedReason",
+                "existingDir",
+                "login",
+                "loginHint",
+                "logout",
+                "logoutHint",
+                "minCliVersion",
+                "requiredSecret",
+            ]
+        );
+        assert_eq!(json["existingDir"], false);
+        assert_eq!(json["minCliVersion"], "0.25.0");
+    }
+
+    // -- list_agent_skills: which home is scanned --
+
+    fn default_home() -> ClaudeHome {
+        ClaudeHome::default_home(std::path::Path::new("/Users/me"), None)
+    }
+
+    #[tokio::test]
+    async fn claude_skills_come_from_the_sessions_account_home() {
+        let pool = test_pool().await;
+        upsert_account_confirmed(&pool, make_account("a1", 1))
+            .await
+            .unwrap();
+
+        // An added account: its dir, as stored. The Default home is not used.
+        assert_eq!(
+            skills_home(&pool, AgentKind::Claude, Some("a1"), Some(default_home())).await,
+            Ok(Some(PathBuf::from("/tmp/verun-accounts/a1")))
+        );
+        // The Default account: the process default's root.
+        assert_eq!(
+            skills_home(&pool, AgentKind::Claude, None, Some(default_home())).await,
+            Ok(Some(PathBuf::from("/Users/me/.claude")))
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_skills_of_a_missing_account_are_an_error_not_the_default() {
+        let pool = test_pool().await;
+        let err = skills_home(&pool, AgentKind::Claude, Some("nope"), Some(default_home()))
+            .await
+            .unwrap_err();
+        assert!(err.contains("nope"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn default_skills_without_a_home_are_simply_none() {
+        // No account and no $HOME to look in: nothing to list, and no error.
+        let pool = test_pool().await;
+        assert_eq!(
+            skills_home(&pool, AgentKind::Claude, None, None).await,
+            Ok(None)
+        );
+    }
+
+    #[tokio::test]
+    async fn other_harnesses_get_the_user_home_and_no_account_lookup() {
+        // The account here is not a Claude account and no row exists for it:
+        // looking it up must not be what decides their (empty) skill list.
+        let pool = test_pool().await;
+        assert_eq!(
+            skills_home(&pool, AgentKind::Codex, Some("codex-account"), None).await,
+            Ok(std::env::var_os("HOME").map(PathBuf::from))
+        );
     }
 }
 

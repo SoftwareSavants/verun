@@ -1,10 +1,11 @@
-import { Component, For, Show, createSignal, createEffect } from 'solid-js'
+import { Component, For, Show, createSignal, createEffect, untrack } from 'solid-js'
 import { Plus, X, Square, Loader2, Check, AlertCircle, RotateCcw } from 'lucide-solid'
 import { clsx } from 'clsx'
 import { terminalsForTask, activeTerminalId, setActiveTerminalForTask, spawnTerminal, closeTerminal, focusActiveTerminal, terminalExitCodes, isTerminalStopped, spawnStartCommand, isTaskHydrated } from '../store/terminals'
 import { isSetupRunning } from '../store/setup'
 import { ShellTerminal } from './ShellTerminal'
 import * as ipc from '../lib/ipc'
+import { notifyAccountError } from '../lib/accountErrors'
 
 interface Props {
   taskId: string
@@ -57,18 +58,26 @@ export const TerminalPanel: Component<Props> = (props) => {
     try {
       await ipc.runHook(props.taskId, hookType)
     } catch (err) {
-      console.error('Failed to re-run hook:', err)
+      // A hook runs on the project's accounts: one that can't be read fails the
+      // run with an account error, which gets its toast.
+      if (!notifyAccountError(err)) console.error('Failed to re-run hook:', err)
     }
   }
 
   // Auto-spawn first terminal if none exist. Wait for hydration first so we
   // don't spawn a fresh shell on top of PTYs the Rust side already has running
   // (e.g. opened from another window or surviving a window reload).
+  //
+  // `spawning` is read untracked: it only keeps two spawns from overlapping.
+  // Tracked, a spawn that ends without a terminal (the project's accounts
+  // stopped it, with the toast already up) would flip it back to false, re-run
+  // this and ask again, for ever. The effect follows the task's terminals,
+  // hydration and setup; a failed try waits for the new-terminal button.
   createEffect(() => {
     if (!isTaskHydrated(props.taskId)) return
     if (taskTerminals().length > 0) return
     if (isSetupRunning(props.taskId)) return
-    if (spawning()) return
+    if (untrack(spawning)) return
     if (props.autoStart && props.startCommand) {
       setSpawning(true)
       spawnStartCommand(props.taskId, props.startCommand).finally(() => setSpawning(false))

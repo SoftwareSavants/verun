@@ -164,6 +164,24 @@ export function extractStep(sessionId: string, stepId: string): Step | undefined
   return result
 }
 
+/** Put a step taken off the queue (`extractStep`, `dequeueArmedStep`) back where it was, in the store and the database. */
+export function restoreStep(step: Step) {
+  let restored = false
+  setStepStore(produce(store => {
+    if (!store[step.sessionId]) store[step.sessionId] = []
+    const list = store[step.sessionId]
+    if (list.some(s => s.id === step.id)) return
+    // The queue is in sortOrder; the step goes before the first one that follows it.
+    const next = list.findIndex(s => s.sortOrder > step.sortOrder)
+    list.splice(next === -1 ? list.length : next, 0, step)
+    restored = true
+  }))
+  if (restored) {
+    ipc.addStep(step.id, step.sessionId, step.message, step.attachmentsJson, step.armed,
+      step.model, step.planMode, step.thinkingMode, step.fastMode, step.sortOrder)
+  }
+}
+
 /** Clear all steps for a session */
 export function clearSteps(sessionId: string) {
   const list = stepStore[sessionId]

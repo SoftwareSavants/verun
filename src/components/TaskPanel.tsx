@@ -36,6 +36,7 @@ import { agentIcon } from "../lib/agents";
 import { getFileIcon } from "../lib/fileIcons";
 import * as ipc from "../lib/ipc";
 import { getLspClient } from "../lib/lsp";
+import { openNewSession } from "../lib/newSession";
 import { fileManagerName } from "../lib/platform";
 import { canUseTerminalView } from "../lib/terminalMode";
 import {
@@ -58,7 +59,6 @@ import { projectById, projects } from "../store/projects";
 import {
   abortMessage,
   closeSession,
-  createSession,
   loadOutputLines,
   loadSessions,
   outputItems,
@@ -110,8 +110,9 @@ import {
   terminalHeight,
   toggleTerminal,
 } from "../store/ui";
-import type { Session } from "../types";
+import type { AccountSelection, Session } from "../types";
 import { AGENT_DISPLAY_NAMES } from "../types";
+import { AccountDot } from "./AccountDot";
 import { ChatView } from "./ChatView";
 import { ClaudeViewToggle } from "./ClaudeViewToggle";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -341,12 +342,14 @@ export const TaskPanel: Component = () => {
   } | null>(null);
   const closeTabMenu = () => setTabMenu(null);
 
-  const handleNewSession = async (agentType: string, model?: string) => {
+  const handleNewSession = async (
+    agentType: string,
+    model?: string,
+    account?: AccountSelection,
+  ) => {
     const tid = selectedTaskId();
     if (!tid) return;
-    const session = await createSession(tid, agentType, model);
-    setSelectedSessionIdForTask(tid, session.id);
-    setMainView(tid, "session");
+    await openNewSession(tid, agentType, model, account);
   };
 
   const handleReopenSession = async (sessionId: string) => {
@@ -708,12 +711,11 @@ export const TaskPanel: Component = () => {
                     {/* New session button */}
                     <NewSessionMenu
                       taskId={t().id}
+                      projectId={t().projectId}
                       defaultAgent={
                         projectById(t().projectId)?.defaultAgentType
                       }
-                      onCreate={(agentType, model) =>
-                        handleNewSession(agentType, model)
-                      }
+                      onCreate={handleNewSession}
                       onReopen={handleReopenSession}
                     />
                     {/* Session tabs */}
@@ -744,6 +746,10 @@ export const TaskPanel: Component = () => {
                             <SvgIcon
                               svg={agentIcon(session.agentType)}
                               size={10}
+                            />
+                            <AccountDot
+                              accountId={session.accountId}
+                              size={6}
                             />
                             <span>
                               {session.name ||

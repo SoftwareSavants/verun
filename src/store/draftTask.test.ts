@@ -10,13 +10,21 @@ const input = { projectId: 'p', baseBranch: 'main', agentType: 'claude' as const
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); m.current.mockReturnValue(null)
   m.create.mockResolvedValue({ task: { id: 'task', projectId: 'p' }, session: { id: 'session' } })
-  m.send.mockResolvedValue(undefined); m.running.mockReturnValue(false); m.failed.mockReturnValue(false)
+  m.send.mockResolvedValue(true); m.running.mockReturnValue(false); m.failed.mockReturnValue(false)
 })
 test('first message targets the new session in the chosen folder', async () => {
   await startDraftTask(input)
-  expect(m.create).toHaveBeenCalledWith('p', 'main', 'claude', '/notes')
+  expect(m.create).toHaveBeenCalledWith('p', 'main', 'claude', '/notes', undefined)
   expect(m.select).toHaveBeenCalledWith('task')
   expect(m.send).toHaveBeenCalledWith('session', 'Organize notes', undefined, undefined)
+})
+test('the account picked for the task goes to task creation', async () => {
+  await startDraftTask({ ...input, account: { kind: 'account', id: 'a1' } })
+  expect(m.create).toHaveBeenCalledWith('p', 'main', 'claude', '/notes', { kind: 'account', id: 'a1' })
+})
+test('so does the project default, when that is what was chosen', async () => {
+  await startDraftTask({ ...input, account: { kind: 'projectDefault' } })
+  expect(m.create).toHaveBeenCalledWith('p', 'main', 'claude', '/notes', { kind: 'projectDefault' })
 })
 test('waits for setup before delivering the first message', async () => {
   m.running.mockReturnValue(true)
@@ -31,6 +39,20 @@ test('send failure preserves the prompt and completes creation without inviting 
   expect(m.toast).toHaveBeenCalledOnce()
   expect(m.create).toHaveBeenCalledOnce()
 })
+test('a delivered first message clears the retained prompt', async () => {
+  await startDraftTask(input)
+  expect(localStorage.getItem('verun:draft-msg:session')).toBeNull()
+})
+// sendMessage has shown the account toast and resolved false: the agent did not
+// start, so the prompt stays for the user to send once the account works.
+test('a first message blocked by an account problem keeps the prompt and still opens the task', async () => {
+  m.send.mockResolvedValue(false)
+  await expect(startDraftTask(input)).resolves.toBeUndefined()
+  expect(localStorage.getItem('verun:draft-msg:session')).toBe('Organize notes')
+  expect(m.select).toHaveBeenCalledWith('task')
+  expect(m.toast).not.toHaveBeenCalled()
+  expect(m.create).toHaveBeenCalledOnce()
+})
 test('creation failure leaves the draft available and never sends', async () => {
   m.create.mockRejectedValue(new Error('folder missing'))
   await expect(startDraftTask(input)).rejects.toThrow('folder missing')
@@ -38,25 +60,25 @@ test('creation failure leaves the draft available and never sends', async () => 
   expect(m.select).not.toHaveBeenCalled()
 })
 test('does not mount a composer with the already-sent draft while the agent starts', async () => {
-  let resolve!: () => void
-  m.send.mockReturnValue(new Promise<void>(r => { resolve = r }))
+  let resolve!: (sent: boolean) => void
+  m.send.mockReturnValue(new Promise<boolean>(r => { resolve = r }))
   const pending = startDraftTask(input)
   await Promise.resolve()
   await Promise.resolve()
   expect(m.select).not.toHaveBeenCalled()
-  resolve()
+  resolve(true)
   await pending
   expect(m.select).toHaveBeenCalledWith('task')
 })
 
 test('finishing creation does not steal focus after switching to another task', async () => {
-  let resolve!: () => void
-  m.send.mockReturnValue(new Promise<void>(r => { resolve = r }))
+  let resolve!: (sent: boolean) => void
+  m.send.mockReturnValue(new Promise<boolean>(r => { resolve = r }))
   const pending = startDraftTask(input)
   await Promise.resolve()
   await Promise.resolve()
   m.current.mockReturnValue('other-task')
-  resolve()
+  resolve(true)
   await pending
   expect(m.select).not.toHaveBeenCalled()
 })

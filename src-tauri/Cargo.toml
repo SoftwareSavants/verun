@@ -1,6 +1,6 @@
 [package]
 name = "verun"
-version = "0.14.6"
+version = "0.15.0"
 description = "Parallel Claude Code Agent Orchestrator for macOS"
 authors = ["SoftwareSavants"]
 edition = "2021"
@@ -50,6 +50,7 @@ sha2 = "0.10"
 base64 = "0.22"
 tempfile = "3"
 vt100 = "0.15"
+unicode-normalization = "0.1"
 
 # macOS: native UNUserNotificationCenter (click routing + Notification Center clearing).
 # The plugin's build.rs invokes `swift build` with no --arch flag, so Swift compiles for the
@@ -59,9 +60,19 @@ vt100 = "0.15"
 # Linux / Windows: the plugin has no native branch without `notify-rust`, so we enable it.
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-notifications = { version = "0.4", default-features = false }
+# Account secrets (API keys) live in the OS credential store through `keyring`,
+# with one native backend per OS. Linux uses the kernel keyring, which needs no
+# libdbus (the Secret Service backends do).
+keyring = { version = "3.6", features = ["apple-native"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 tauri-plugin-notifications = { version = "0.4", default-features = false, features = ["notify-rust"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6", features = ["linux-native"] }
 
 [dev-dependencies]
 plist = "1"

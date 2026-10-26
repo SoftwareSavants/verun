@@ -1,6 +1,7 @@
 import { createSignal } from 'solid-js'
+import { emit } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import { registerWindowedTaskChecker } from '../lib/windowContext'
+import { isTaskWindow, registerWindowedTaskChecker } from '../lib/windowContext'
 import { pendingSessionNavForTask, selectedSessionForTask, setPendingSessionNavForTask, setSelectedSessionForTask, setTerminalOpenForTask, terminalOpenForTask } from './taskContext'
 import { openTaskWindow } from '../lib/ipc'
 
@@ -181,6 +182,27 @@ export function openTaskBoard() {
 export const [showSettings, setShowSettings] = createSignal(false)
 export const [showArchived, setShowArchived] = createSignal(false)
 export const [showQuickOpen, setShowQuickOpen] = createSignal(false)
+
+// A section of Settings someone else wants shown (an account toast's "Log in"
+// goes to Accounts). SettingsPage selects it, then clears the request.
+export const [settingsSectionRequest, setSettingsSectionRequest] = createSignal<string | null>(null)
+
+/** What a task window sends to ask the main window to open Settings. */
+export const OPEN_SETTINGS_EVENT = 'open-settings'
+
+/**
+ * Open Settings, on `section` when given. Settings is a page of the main
+ * window, so a task window asks the main window to open it (appInit.ts
+ * listens) instead of flipping state nothing there renders.
+ */
+export function openSettings(section?: string): void {
+  if (isTaskWindow) {
+    void emit(OPEN_SETTINGS_EVENT, { section: section ?? null })
+    return
+  }
+  setShowSettings(true)
+  if (section) setSettingsSectionRequest(section)
+}
 
 export function showTerminal(): boolean {
   const tid = selectedTaskId()

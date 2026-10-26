@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { createEffect, createRoot } from 'solid-js'
 
 vi.mock('../lib/ipc', () => ({
   openTaskWindow: vi.fn(),
@@ -30,6 +31,11 @@ import {
   setSelectedSessionIdForTask,
   siblingTaskInList,
   nextSessionIdInTask,
+  showSettings,
+  setShowSettings,
+  settingsSectionRequest,
+  setSettingsSectionRequest,
+  openSettings,
 } from './ui'
 import { selectedSessionForTask, clearTaskContext } from './taskContext'
 import * as ipc from '../lib/ipc'
@@ -46,6 +52,40 @@ describe('new-task dialog signal', () => {
   test('requestNewTaskForProject sets newTaskProjectId so the dialog opens', () => {
     requestNewTaskForProject('p-001')
     expect(newTaskProjectId()).toBe('p-001')
+  })
+})
+
+// Other parts of the app (an account toast's "Log in") send the user to a
+// section of Settings. SettingsPage selects the section and clears the request.
+describe('openSettings', () => {
+  beforeEach(() => {
+    setShowSettings(false)
+    setSettingsSectionRequest(null)
+  })
+
+  test('opens Settings on the requested section', () => {
+    openSettings('accounts')
+    expect(showSettings()).toBe(true)
+    expect(settingsSectionRequest()).toBe('accounts')
+  })
+
+  test('opens Settings where it was when no section is asked for', () => {
+    openSettings()
+    expect(showSettings()).toBe(true)
+    expect(settingsSectionRequest()).toBeNull()
+  })
+
+  test('asks again for a section that was already taken', () => {
+    openSettings('accounts')
+    setSettingsSectionRequest(null) // SettingsPage took it
+    const seen: Array<string | null> = []
+    const dispose = createRoot(dispose => {
+      createEffect(() => { seen.push(settingsSectionRequest()) })
+      return dispose
+    })
+    openSettings('accounts')
+    dispose()
+    expect(seen).toEqual([null, 'accounts'])
   })
 })
 

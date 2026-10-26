@@ -1,4 +1,6 @@
+use crate::accounts::{self, env::EnvPatch};
 use crate::agent::AgentKind;
+use crate::claude_home::{self, ClaudeHome};
 use crate::db::{self, DbWriteTx, Session, Task};
 #[cfg(unix)]
 use crate::mcp;
@@ -8,6 +10,7 @@ use crate::worktree;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -636,6 +639,9 @@ pub fn new_hook_pty_map() -> HookPtyMap {
 
 /// Spawn a hook command via PTY so output streams to the frontend in real-time.
 /// Returns the terminal_id on success.
+///
+/// `project_env` is the project's account env (`hook_account_env`), applied
+/// over Verun's own vars so the hook runs on the project's logins.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_hook_pty(
     app: &AppHandle,
@@ -648,6 +654,7 @@ pub fn spawn_hook_pty(
     hook_type: HookType,
     port_offset: i64,
     repo_path: &str,
+    project_env: EnvPatch,
 ) -> Result<crate::pty::SpawnResult, String> {
     if hook_command.is_empty() {
         return Err(format!("No {} hook configured", hook_type.as_str()));
@@ -657,7 +664,7 @@ pub fn spawn_hook_pty(
         return Err("A hook is already running for this task".to_string());
     }
 
-    let env_vars = worktree::verun_env_vars(port_offset, repo_path);
+    let env = worktree::task_env(port_offset, repo_path, project_env);
 
     let display_name = match hook_type {
         HookType::Setup => "Setup",
@@ -671,7 +678,7 @@ pub fn spawn_hook_pty(
         24,
         80,
         Some(hook_command.to_string()),
-        env_vars,
+        env,
         true, // direct_command — PTY exits when hook exits
         Some(display_name.to_string()),
         false,
@@ -772,8 +779,22 @@ pub fn spawn_hook_pty(
     Ok(result)
 }
 
+/// The setup hook a task runs, given the project's: the same hook, except in an
+/// existing directory. That directory is the user's own and gets no setup.
+/// Task creation and restoration both ask this once, and use the answer for
+/// the hook's account env as well as for `spawn_setup_hook`.
+pub fn setup_hook_to_run(existing_directory: bool, setup_hook: &str) -> &str {
+    if existing_directory {
+        ""
+    } else {
+        setup_hook
+    }
+}
+
 /// Run a setup hook in the background via PTY, emitting events to the frontend.
-/// Shared by task creation and task restoration.
+/// Shared by task creation and task restoration. `project_env` is what
+/// `hook_account_env` found for `setup_hook`, resolved by the caller before it
+/// created anything.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_setup_hook(
     app: &AppHandle,
@@ -785,6 +806,7 @@ pub fn spawn_setup_hook(
     setup_hook: &str,
     port_offset: i64,
     repo_path: &str,
+    project_env: EnvPatch,
 ) {
     if setup_hook.is_empty() {
         return;
@@ -801,6 +823,7 @@ pub fn spawn_setup_hook(
         HookType::Setup,
         port_offset,
         repo_path,
+        project_env,
     ) {
         eprintln!("[verun] failed to spawn setup hook PTY: {e}");
         // Fall back: emit failed event so frontend isn't stuck
@@ -927,6 +950,8 @@ pub struct CreateTaskParams {
     pub port_offset: i64,
     pub from_task_window: bool,
     pub agent_type: String, // flows to the first session, not stored on the task
+    /// The first session's account (`None`: Default). Resolved by the caller.
+    pub account_id: Option<String>,
     pub source_window: String,
     pub directory: Option<String>,
 }
@@ -939,7 +964,6 @@ pub async fn create_task(
     setup_in_progress: &SetupInProgress,
     params: CreateTaskParams,
 ) -> Result<(Task, Session), String> {
-    let _workspace_guard = crate::workspace::LIFECYCLE_LOCK.lock().await;
     let CreateTaskParams {
         project_id,
         repo_path,
@@ -948,15 +972,22 @@ pub async fn create_task(
         port_offset,
         from_task_window,
         agent_type,
+        account_id,
         source_window,
         directory,
     } = params;
+    let existing_directory = directory.is_some();
+    let hook = setup_hook_to_run(existing_directory, &setup_hook);
+    // Before the lock and the worktree: if the project's accounts can't be read
+    // the call fails with nothing created, and the lock isn't held while the
+    // keychain answers.
+    let project_env = hook_account_env(app, &project_id, hook).await?;
+    let _workspace_guard = crate::workspace::LIFECYCLE_LOCK.lock().await;
     let id = Uuid::new_v4().to_string();
     let mut branch = generate_branch_name(&repo_path);
     let now = epoch_ms();
 
     // Phase 1: Create worktree only (fast — git ops)
-    let existing_directory = directory.is_some();
     let mut is_git = true;
     let worktree_path = if let Some(path) = directory {
         let info = tokio::task::spawn_blocking(move || crate::workspace::inspect_directory(&path))
@@ -1019,7 +1050,7 @@ pub async fn create_task(
     };
 
     // Persist both records atomically before the first prompt can be sent.
-    let session = new_session(task.id.clone(), agent_type, None);
+    let session = new_session(task.id.clone(), agent_type, None, account_id);
     let (done, ready) = tokio::sync::oneshot::channel();
     db_tx
         .send(db::DbWrite::InsertTaskWithSession {
@@ -1063,14 +1094,45 @@ pub async fn create_task(
         setup_in_progress,
         &task.id,
         &worktree_path,
-        if existing_directory { "" } else { &setup_hook },
+        hook,
         port_offset,
         &repo_path,
+        project_env,
     );
 
     Ok((task, session))
 }
 
+/// The destroy hook that removing a task runs, given the project's: the same
+/// hook, unless the user skipped it or the task's workspace is not cleaned up
+/// with it, which is all the hook is for. An existing directory is never
+/// cleaned up, and neither is a worktree another task still uses.
+fn destroy_hook_to_run(
+    destroy_hook: &str,
+    skip_destroy_hook: bool,
+    cleanup_workspace: bool,
+) -> &str {
+    if skip_destroy_hook || !cleanup_workspace {
+        ""
+    } else {
+        destroy_hook
+    }
+}
+
+/// Whether removing any of `tasks` can clean its workspace up, judged without
+/// the workspace lock. A task in an existing directory never does, and no task
+/// at all has nothing to clean. A worktree that another task shares is only
+/// found under the lock, so such a task still counts here: the destroy hook may
+/// then not run, but its env was worth reading.
+fn any_workspace_cleaned_up(tasks: &[Task]) -> bool {
+    tasks
+        .iter()
+        .any(|task| crate::workspace::allows_cleanup(task.existing_directory, 0))
+}
+
+/// `project_env` is the account env the destroy hook runs with over Verun's
+/// own vars: `destroy_hook_account_env`, resolved by the caller before the
+/// workspace lock is taken.
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_task(
     app: &AppHandle,
@@ -1080,6 +1142,7 @@ pub async fn delete_task(
     repo_path: &str,
     task: &Task,
     destroy_hook: &str,
+    project_env: &EnvPatch,
     delete_branch: bool,
     skip_destroy_hook: bool,
 ) -> Result<(), String> {
@@ -1130,16 +1193,12 @@ pub async fn delete_task(
 
     let rp = repo_path.to_string();
     let wtp = task.worktree_path.clone();
-    let hook = if skip_destroy_hook || !cleanup_workspace {
-        String::new()
-    } else {
-        destroy_hook.to_string()
-    };
+    let hook = destroy_hook_to_run(destroy_hook, skip_destroy_hook, cleanup_workspace).to_string();
     let branch = task.branch.clone();
-    let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
+    let env = worktree::task_env(task.port_offset, repo_path, project_env.clone());
     let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
         if !hook.is_empty() {
-            if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
+            if let Err(e) = worktree::run_hook(&wtp, &hook, &env) {
                 eprintln!("[verun] destroy hook failed: {e}");
             }
         }
@@ -1170,6 +1229,9 @@ pub async fn delete_task(
     Ok(())
 }
 
+/// `project_env` is the account env the destroy hook runs with over Verun's
+/// own vars: `destroy_hook_account_env`, resolved by the caller before the
+/// workspace lock is taken.
 #[allow(clippy::too_many_arguments)]
 pub async fn archive_task(
     app: &AppHandle,
@@ -1178,6 +1240,7 @@ pub async fn archive_task(
     active: &ActiveMap,
     task: &Task,
     destroy_hook: &str,
+    project_env: &EnvPatch,
     repo_path: &str,
     skip_destroy_hook: bool,
 ) -> Result<(), String> {
@@ -1250,20 +1313,16 @@ pub async fn archive_task(
 
     let rp = task.worktree_path.clone();
     let branch = "HEAD".to_string();
-    let hook = if skip_destroy_hook || !cleanup_workspace {
-        String::new()
-    } else {
-        destroy_hook.to_string()
-    };
+    let hook = destroy_hook_to_run(destroy_hook, skip_destroy_hook, cleanup_workspace).to_string();
     let wtp = task.worktree_path.clone();
-    let env_vars = worktree::verun_env_vars(task.port_offset, repo_path);
+    let env = worktree::task_env(task.port_offset, repo_path, project_env.clone());
     let task_id = task.id.clone();
     let db_tx_bg = db_tx.clone();
     tokio::spawn(async move {
         let _workspace_guard = workspace_guard;
         let last_commit_message = tokio::task::spawn_blocking(move || {
             if !hook.is_empty() {
-                if let Err(e) = worktree::run_hook(&wtp, &hook, &env_vars) {
+                if let Err(e) = worktree::run_hook(&wtp, &hook, &env) {
                     eprintln!("[verun] destroy hook failed: {e}");
                 }
             }
@@ -1289,7 +1348,12 @@ pub async fn archive_task(
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
-fn new_session(task_id: String, agent_type: String, model: Option<String>) -> Session {
+fn new_session(
+    task_id: String,
+    agent_type: String,
+    model: Option<String>,
+    account_id: Option<String>,
+) -> Session {
     Session {
         id: Uuid::new_v4().to_string(),
         task_id,
@@ -1308,18 +1372,23 @@ fn new_session(task_id: String, agent_type: String, model: Option<String>) -> Se
         agent_type,
         model,
         closed_at: None,
+        account_id,
     }
 }
 
 /// Create a new session record (no process spawned yet — that happens on send_message)
+///
+/// `account_id` is the account the session runs on for life (`None`: Default);
+/// callers resolve it with `accounts::service::resolve_new_session_account`.
 pub async fn create_session(
     app: &AppHandle,
     db_tx: &DbWriteTx,
     task_id: String,
     agent_type: String,
     model: Option<String>,
+    account_id: Option<String>,
 ) -> Result<Session, String> {
-    let session = new_session(task_id, agent_type, model);
+    let session = new_session(task_id, agent_type, model, account_id);
 
     db_tx
         .send(db::DbWrite::CreateSession(session.clone()))
@@ -1397,6 +1466,10 @@ pub struct SendMessageParams {
     pub fast_mode: bool,
     pub task_name: Option<String>,
     pub agent_type: String,
+    /// The session's account (`None`: Default), copied from its row (or from
+    /// the in-memory session when the row may not be written yet) so a spawn
+    /// needn't read it again.
+    pub account_id: Option<String>,
     /// `true` when the message did NOT originate from the UI (e.g. an
     /// agent calling `verun_send_message` over MCP). The UI optimistically
     /// inserts its own user message on submit; external messages need an
@@ -1415,8 +1488,11 @@ pub struct SendMessageParams {
 /// * **Fast path** (persistent agent, process already alive): encode the
 ///   user message via `agent.encode_stream_user_message` and write it to
 ///   the existing stdin. No spawn, no cold start.
-/// * **Spawn path** (no live process, or non-persistent agent): build the
-///   command, spawn the child, and hand off to `spawn_session_process`.
+/// * **Spawn path** (no live process, or non-persistent agent): check the
+///   session's account, then name the task, save the message, build the
+///   command, spawn the child, and hand off to `spawn_session_process`
+///   (`run_spawn_path`). An account that can't be used fails the send before
+///   anything is saved.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_message(
     app: AppHandle,
@@ -1444,6 +1520,7 @@ pub async fn send_message(
         fast_mode,
         task_name,
         agent_type,
+        account_id,
         external,
         wakeup_reason,
     } = params;
@@ -1542,6 +1619,17 @@ pub async fn send_message(
             }
         };
 
+        if matches!(decision, FastPath::Go { .. } | FastPath::GoRpc { .. }) {
+            refuse_unusable_account(
+                app.state::<SqlitePool>().inner(),
+                &active,
+                &session_id,
+                &agent_type,
+                account_id.as_deref(),
+            )
+            .await?;
+        }
+
         match decision {
             FastPath::Go {
                 stdin,
@@ -1571,6 +1659,9 @@ pub async fn send_message(
                     db_tx.clone(),
                     session_id.clone(),
                     task_id.clone(),
+                    project_id.clone(),
+                    agent_type.clone(),
+                    account_id.clone(),
                     message.clone(),
                     worktree_path.clone(),
                     is_first_turn,
@@ -1650,6 +1741,9 @@ pub async fn send_message(
                     db_tx.clone(),
                     session_id.clone(),
                     task_id.clone(),
+                    project_id.clone(),
+                    agent_type.clone(),
+                    account_id.clone(),
                     message.clone(),
                     worktree_path.clone(),
                     is_first_turn,
@@ -1733,39 +1827,18 @@ pub async fn send_message(
         return Err("Session is already processing a message".to_string());
     }
 
-    spawn_session_title_generation(
-        app.clone(),
-        db_tx.clone(),
-        session_id.clone(),
-        task_id.clone(),
-        message.clone(),
-        worktree_path.clone(),
-        is_first_turn,
-        task_name.is_none(),
-    );
-
-    persist_verun_user_message(
-        &app,
-        db_tx,
-        &session_id,
-        &message,
-        &attachments,
-        plan_mode,
-        thinking_mode,
-        fast_mode,
-        external,
-        wakeup_reason.clone(),
-    )
-    .await;
-
-    spawn_session_process(
+    run_spawn_path(AppSpawnPath {
         app,
-        db_tx.clone(),
+        db_tx: db_tx.clone(),
         active,
         pending_approvals,
         pending_approval_meta,
         pending_control_responses,
-        SpawnSessionParams {
+        is_first_turn,
+        task_needs_name: task_name.is_none(),
+        external,
+        wakeup_reason,
+        params: SpawnSessionParams {
             session_id,
             task_id,
             project_id,
@@ -1779,11 +1852,13 @@ pub async fn send_message(
             thinking_mode,
             fast_mode,
             agent_type,
+            account_id,
+            account_env: None,
             message,
             attachments,
             prewarm: false,
         },
-    )
+    })
     .await
 }
 
@@ -1856,14 +1931,20 @@ async fn persist_verun_user_message(
     }
 }
 
-/// Kick off the background Haiku call that names the session and task.
-/// No-op unless there's something to name.
+/// Kick off the background Haiku call that names the session and task, on the
+/// Claude login the session's message may go to (`session_title_env`: the
+/// session's own account, or for another harness the project's Claude account).
+/// When there is none, the title is a plain one cut from the message and the
+/// message is sent nowhere. No-op unless there's something to name.
 #[allow(clippy::too_many_arguments)]
 fn spawn_session_title_generation(
     app: AppHandle,
     db_tx: DbWriteTx,
     session_id: String,
     task_id: String,
+    project_id: String,
+    agent_type: String,
+    account_id: Option<String>,
     message: String,
     worktree_path: String,
     is_first_turn: bool,
@@ -1875,8 +1956,13 @@ fn spawn_session_title_generation(
         return;
     }
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        if let Some(title) = generate_session_title(&message, &worktree_path).await {
+        let env = session_title_env(&app, &project_id, &agent_type, account_id.as_deref()).await;
+        if env.is_some() {
+            // Only a model call starts a second claude process, so only it
+            // waits for the main session to claim CPU/network first.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+        if let Some(title) = session_title(&message, &worktree_path, env.as_ref()).await {
             if needs_session_name {
                 let _ = db_tx
                     .send(db::DbWrite::UpdateSessionName {
@@ -1960,6 +2046,301 @@ async fn write_to_stdin(
     Ok(())
 }
 
+/// The command that starts a chat session's CLI: piped stdin, stdout and
+/// stderr, run in the task's worktree.
+///
+/// The env is applied in a fixed order, and a later call wins over an earlier
+/// one: Verun's own vars, then the session's account patch, then two guards
+/// that hold whatever the account says. A Default session's patch holds only
+/// the project's accounts for the other harnesses (see `session_env`), so its
+/// own harness inherits Verun's env as it is.
+pub(crate) fn build_agent_command(
+    binary: &str,
+    args: &[String],
+    worktree_path: &str,
+    verun_vars: Vec<(String, String)>,
+    account_env: &EnvPatch,
+) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(binary);
+    cmd.args(args);
+    for (k, v) in &verun_vars {
+        cmd.env(k, v);
+    }
+    account_env.apply_to_command(&mut cmd);
+    // Match claude-agent-sdk-python: strip `CLAUDECODE` (issue #573) so the spawned
+    // CLI doesn't detect itself as nested, and tag the entrypoint for Anthropic telemetry.
+    cmd.env_remove("CLAUDECODE");
+    cmd.env("CLAUDE_CODE_ENTRYPOINT", "verun");
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .current_dir(worktree_path);
+    cmd
+}
+
+/// Stops the live process of each session in `session_ids`, gracefully.
+/// Sessions with none are skipped.
+pub async fn stop_active_sessions(active: &ActiveMap, session_ids: &[String]) {
+    for id in session_ids {
+        if let Some((_, mut proc)) = active.remove(id) {
+            graceful_shutdown(&mut proc.child, &proc.stdin).await;
+        }
+    }
+}
+
+/// Stops everything running for `session_ids`: their processes and their Claude
+/// terminals.
+pub async fn stop_sessions(
+    active: &ActiveMap,
+    pty_map: &crate::pty::ActivePtyMap,
+    ct_map: &crate::claude_terminal::ClaudeTerminalMap,
+    session_ids: &[String],
+) {
+    stop_active_sessions(active, session_ids).await;
+    for id in session_ids {
+        let _ = crate::claude_terminal::close_claude_terminal(
+            pty_map.clone(),
+            ct_map.clone(),
+            id.clone(),
+        )
+        .await;
+    }
+}
+
+/// Checks that the session's account can still run before a message goes to
+/// its live process. The spawn path checks the account, but a process that
+/// outlives a removal or a sign-out never goes through it. When the account
+/// can't be used, the process is stopped and the error is returned in its IPC
+/// form.
+async fn refuse_unusable_account(
+    pool: &SqlitePool,
+    active: &ActiveMap,
+    session_id: &str,
+    agent_type: &str,
+    account_id: Option<&str>,
+) -> Result<(), String> {
+    match accounts::service::ensure_account_usable(pool, agent_type, account_id).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            stop_active_sessions(active, &[session_id.to_string()]).await;
+            Err(error.to_ipc())
+        }
+    }
+}
+
+/// The account env a session's CLI is spawned with: see
+/// `accounts::service::session_env_for`. A session on an account that is
+/// signed out, removed or missing fails here, before anything is spawned, with
+/// the `AccountError` in its IPC form so the frontend can offer the fix. It
+/// never falls back to another login.
+pub async fn session_account_env(
+    app: &AppHandle,
+    project_id: &str,
+    agent_type: &str,
+    account_id: Option<&str>,
+) -> Result<EnvPatch, String> {
+    let secrets = app.state::<accounts::Secrets>().0.clone();
+    accounts::service::session_env_for(
+        app.state::<SqlitePool>().inner(),
+        secrets,
+        project_id,
+        agent_type,
+        account_id,
+    )
+    .await
+    .map_err(|e| e.to_ipc())
+}
+
+/// The account env a project's task shells and start command run with, over
+/// Verun's own vars: see `accounts::service::project_env_for`. An account that
+/// can't be read (a secret the keychain won't give, a binding to an account
+/// that's gone) fails here, before anything is spawned, with the `AccountError`
+/// in its IPC form so the frontend can offer the fix. It never falls back to
+/// another login.
+pub async fn project_account_env(app: &AppHandle, project_id: &str) -> Result<EnvPatch, String> {
+    let secrets = app.state::<accounts::Secrets>().0.clone();
+    accounts::service::project_env_for(app.state::<SqlitePool>().inner(), secrets, project_id)
+        .await
+        .map_err(|e| e.to_ipc())
+}
+
+/// `project_account_env` for a hook, `hook` being its command: see
+/// `accounts::service::hook_env_for`. No hook means nothing to spawn, so no env
+/// is read and no account can fail it.
+pub async fn hook_account_env(
+    app: &AppHandle,
+    project_id: &str,
+    hook: &str,
+) -> Result<EnvPatch, String> {
+    let secrets = app.state::<accounts::Secrets>().0.clone();
+    accounts::service::hook_env_for(app.state::<SqlitePool>().inner(), secrets, project_id, hook)
+        .await
+        .map_err(|e| e.to_ipc())
+}
+
+/// The account env for the destroy hook of `tasks`, which are being deleted or
+/// archived: see `accounts::service::destroy_hook_env_for`. Unlike every other
+/// spawn it cannot fail, so an account problem never blocks removing a task.
+/// There is no hook to run, and so no env, when `skip_destroy_hook` is set or
+/// no task's workspace is cleaned up (`any_workspace_cleaned_up`), and the
+/// accounts are not read at all.
+pub async fn destroy_hook_account_env(
+    app: &AppHandle,
+    project: &db::Project,
+    tasks: &[Task],
+    skip_destroy_hook: bool,
+) -> EnvPatch {
+    let hook = destroy_hook_to_run(
+        &project.destroy_hook,
+        skip_destroy_hook,
+        any_workspace_cleaned_up(tasks),
+    );
+    let secrets = app.state::<accounts::Secrets>().0.clone();
+    accounts::service::destroy_hook_env_for(
+        app.state::<SqlitePool>().inner(),
+        secrets,
+        &project.id,
+        hook,
+    )
+    .await
+}
+
+/// The env a spawn uses: the one its caller already resolved, else what
+/// `resolve` finds.
+async fn resolved_or<Fut>(
+    resolved: Option<EnvPatch>,
+    resolve: impl FnOnce() -> Fut,
+) -> Result<EnvPatch, String>
+where
+    Fut: Future<Output = Result<EnvPatch, String>>,
+{
+    match resolved {
+        Some(env) => Ok(env),
+        None => resolve().await,
+    }
+}
+
+/// The account env a spawn uses. `send_message` resolves it before it saves
+/// anything and passes it down in `SpawnSessionParams::account_env`; a spawn
+/// that got none (prewarm) resolves the session's own here.
+async fn spawn_account_env(
+    app: &AppHandle,
+    resolved: Option<EnvPatch>,
+    project_id: &str,
+    agent_type: &str,
+    account_id: Option<&str>,
+) -> Result<EnvPatch, String> {
+    resolved_or(resolved, || {
+        session_account_env(app, project_id, agent_type, account_id)
+    })
+    .await
+}
+
+/// The steps `send_message` takes to start a new process for a message. A
+/// trait only so a test can check the order they run in without an
+/// `AppHandle`; `AppSpawnPath` is the real one.
+trait SpawnPath: Send + Sync {
+    /// The account env the process spawns with. Fails when the session's
+    /// account can't be used.
+    fn account_env(&self) -> impl Future<Output = Result<EnvPatch, String>> + Send;
+    /// Starts naming the session and the task in the background.
+    fn start_title_generation(&self);
+    /// Saves the user's message to the session's history.
+    fn persist_message(&self) -> impl Future<Output = ()> + Send;
+    /// Spawns the CLI with `account_env`.
+    fn spawn(self, account_env: EnvPatch) -> impl Future<Output = Result<(), String>> + Send;
+}
+
+/// Starts a new process for a message. The account comes first: a session on
+/// one that can't be used (signed out, removed, missing) ends here with the
+/// error, before the task is named or the message saved. Neither would reach an
+/// agent that never starts, and the message would be in the history twice once
+/// the user fixes the account and sends it again.
+async fn run_spawn_path(path: impl SpawnPath) -> Result<(), String> {
+    let account_env = path.account_env().await?;
+    path.start_title_generation();
+    path.persist_message().await;
+    path.spawn(account_env).await
+}
+
+/// The real `SpawnPath`: the steps on the app, the database queue and the
+/// process maps, for the session in `params`.
+struct AppSpawnPath {
+    app: AppHandle,
+    db_tx: DbWriteTx,
+    active: ActiveMap,
+    pending_approvals: PendingApprovals,
+    pending_approval_meta: PendingApprovalMeta,
+    pending_control_responses: PendingControlResponses,
+    /// The session's first turn, so the message names the session.
+    is_first_turn: bool,
+    /// The task has no name yet, so the message names it.
+    task_needs_name: bool,
+    /// The message did not come from the UI (`SendMessageParams::external`).
+    external: bool,
+    wakeup_reason: Option<String>,
+    /// `account_env` is `None` until the account has been resolved.
+    params: SpawnSessionParams,
+}
+
+impl SpawnPath for AppSpawnPath {
+    async fn account_env(&self) -> Result<EnvPatch, String> {
+        session_account_env(
+            &self.app,
+            &self.params.project_id,
+            &self.params.agent_type,
+            self.params.account_id.as_deref(),
+        )
+        .await
+    }
+
+    fn start_title_generation(&self) {
+        spawn_session_title_generation(
+            self.app.clone(),
+            self.db_tx.clone(),
+            self.params.session_id.clone(),
+            self.params.task_id.clone(),
+            self.params.project_id.clone(),
+            self.params.agent_type.clone(),
+            self.params.account_id.clone(),
+            self.params.message.clone(),
+            self.params.worktree_path.clone(),
+            self.is_first_turn,
+            self.task_needs_name,
+        );
+    }
+
+    async fn persist_message(&self) {
+        persist_verun_user_message(
+            &self.app,
+            &self.db_tx,
+            &self.params.session_id,
+            &self.params.message,
+            &self.params.attachments,
+            self.params.plan_mode,
+            self.params.thinking_mode,
+            self.params.fast_mode,
+            self.external,
+            self.wakeup_reason.clone(),
+        )
+        .await;
+    }
+
+    async fn spawn(mut self, account_env: EnvPatch) -> Result<(), String> {
+        self.params.account_env = Some(account_env);
+        spawn_session_process(
+            self.app,
+            self.db_tx,
+            self.active,
+            self.pending_approvals,
+            self.pending_approval_meta,
+            self.pending_control_responses,
+            self.params,
+        )
+        .await
+    }
+}
+
 /// Params for [`spawn_session_process`]. `prewarm=true` skips writing any
 /// initial user message; the CLI just boots and waits for the first send.
 pub struct SpawnSessionParams {
@@ -1976,6 +2357,12 @@ pub struct SpawnSessionParams {
     pub thinking_mode: bool,
     pub fast_mode: bool,
     pub agent_type: String,
+    /// The session's account (`None`: Default).
+    pub account_id: Option<String>,
+    /// The account's env, when the caller has already resolved it:
+    /// `send_message` does so before it saves the message. `None` (prewarm):
+    /// the spawn resolves it from `account_id` itself.
+    pub account_env: Option<EnvPatch>,
     pub message: String,
     pub attachments: Vec<Attachment>,
     pub prewarm: bool,
@@ -2016,11 +2403,23 @@ async fn spawn_rpc_session(
         thinking_mode,
         fast_mode,
         agent_type,
+        account_id,
+        account_env: resolved_env,
         message,
         attachments,
         prewarm,
     } = params;
 
+    // Resolved before anything is spawned, so an account that can't be used
+    // leaves no process behind.
+    let account_env = spawn_account_env(
+        &app,
+        resolved_env,
+        &project_id,
+        &agent_type,
+        account_id.as_deref(),
+    )
+    .await?;
     let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
     let mcp_config_path = verun_mcp_config_path_for_task(&app_data, &task_id);
     let args_list = agent.build_session_args(&crate::agent::SessionArgs {
@@ -2046,17 +2445,13 @@ async fn spawn_rpc_session(
     );
     eprintln!("[verun][{}] cwd: {}", agent.display_name(), worktree_path);
 
-    let mut cmd = tokio::process::Command::new(agent.cli_binary());
-    cmd.args(&args_list);
-    for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
-        cmd.env(&k, &v);
-    }
-    cmd.env_remove("CLAUDECODE");
-    cmd.env("CLAUDE_CODE_ENTRYPOINT", "verun");
-    cmd.stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(&worktree_path);
+    let mut cmd = build_agent_command(
+        agent.cli_binary(),
+        &args_list,
+        &worktree_path,
+        worktree::verun_env_vars(port_offset, &repo_path),
+        &account_env,
+    );
 
     let mut child = cmd
         .spawn()
@@ -2486,6 +2881,30 @@ fn spawn_turn_start_response_watcher(
     });
 }
 
+/// The Claude home a session of harness `kind` is spawned with, which
+/// `stream_and_capture` hands to the per-turn snapshot. `process_default` is
+/// `claude_home::process_default()`.
+///
+/// A spawn doesn't need a home to exist: only that best-effort snapshot reads
+/// it, and only for a harness that keeps a Claude transcript (Claude). So a
+/// session on the Default account, and every session of another harness, keeps
+/// spawning when `$HOME` can't be resolved: it gets the standard layout under
+/// `/`, where the snapshot finds no transcript. The one thing that stops a
+/// spawn is a Claude session on an added account whose row is missing.
+async fn session_claude_home(
+    pool: &SqlitePool,
+    kind: AgentKind,
+    account_id: Option<&str>,
+    process_default: Option<ClaudeHome>,
+) -> Result<ClaudeHome, String> {
+    let default_home = process_default
+        .unwrap_or_else(|| ClaudeHome::default_home(std::path::Path::new("/"), None));
+    if !kind.implementation().uses_claude_jsonl() {
+        return Ok(default_home);
+    }
+    claude_home::for_account_with_default(pool, account_id, Some(default_home)).await
+}
+
 /// Spawn a new CLI process for this session and start the stream monitor.
 ///
 /// Registers the child in `active` with `busy = !prewarm` (pre-warm leaves
@@ -2530,17 +2949,39 @@ pub async fn spawn_session_process(
         thinking_mode,
         fast_mode,
         agent_type,
+        account_id,
+        account_env: resolved_env,
         message,
         attachments,
         prewarm,
     } = params;
+    // Resolved before anything is spawned, so an account that can't be used
+    // leaves no process behind. The env goes first: it reports a missing
+    // account in the form the UI acts on, which the home lookup does not.
+    let account_env = spawn_account_env(
+        &app,
+        resolved_env,
+        &project_id,
+        &agent_type,
+        account_id.as_deref(),
+    )
+    .await?;
+    let claude_home = session_claude_home(
+        app.state::<SqlitePool>().inner(),
+        agent.kind(),
+        account_id.as_deref(),
+        claude_home::process_default(),
+    )
+    .await?;
     let resume_id = resume_session_id.as_deref().filter(|s| !s.is_empty());
     let app_data = app.state::<crate::blob::AppDataDir>().0.clone();
     let mcp_config_path = verun_mcp_config_path_for_task(&app_data, &task_id);
-    let chrome_enabled = agent.kind() == AgentKind::Claude
-        && tokio::task::spawn_blocking(crate::agent::claude::chrome_default_enabled)
+    let chrome_enabled = agent.kind() == AgentKind::Claude && {
+        let home = claude_home.clone();
+        tokio::task::spawn_blocking(move || crate::agent::claude::chrome_default_enabled_in(&home))
             .await
-            .unwrap_or(false);
+            .unwrap_or(false)
+    };
     let session_args = crate::agent::SessionArgs {
         resume_session_id: resume_id,
         model: model.as_deref(),
@@ -2570,19 +3011,13 @@ pub async fn spawn_session_process(
         agent.input_mode()
     );
 
-    let mut cmd = tokio::process::Command::new(agent.cli_binary());
-    cmd.args(&args_list);
-    for (k, v) in worktree::verun_env_vars(port_offset, &repo_path) {
-        cmd.env(&k, &v);
-    }
-    // Match claude-agent-sdk-python: strip `CLAUDECODE` (issue #573) so the spawned
-    // CLI doesn't detect itself as nested, and tag the entrypoint for Anthropic telemetry.
-    cmd.env_remove("CLAUDECODE");
-    cmd.env("CLAUDE_CODE_ENTRYPOINT", "verun");
-    cmd.stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(&worktree_path);
+    let mut cmd = build_agent_command(
+        agent.cli_binary(),
+        &args_list,
+        &worktree_path,
+        worktree::verun_env_vars(port_offset, &repo_path),
+        &account_env,
+    );
 
     let mut child = cmd
         .spawn()
@@ -2723,6 +3158,7 @@ pub async fn spawn_session_process(
     let monitor_trust = trust_level_atom.clone();
     let monitor_agent = AgentKind::parse(&agent_type).implementation();
     let monitor_busy = busy.clone();
+    let monitor_account_key = accounts::account_key(&agent_type, account_id.as_deref());
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let wt_for_hooks = monitor_wt.clone();
@@ -2741,6 +3177,8 @@ pub async fn spawn_session_process(
             monitor_repo,
             monitor_trust,
             monitor_agent,
+            claude_home,
+            monitor_account_key,
         )
         .await;
 
@@ -3285,14 +3723,23 @@ fn title_generation_args(prompt: &str) -> Vec<String> {
 }
 
 /// Naming is detached from the terminal driver so CLI output never waits on it.
+/// A terminal session is a Claude session, so its title is named on its own
+/// account.
 pub(crate) fn name_terminal_task(app: AppHandle, pool: SqlitePool, session_id: String, prompt: String) {
     tokio::spawn(async move {
         let Ok(Some(session)) = db::get_session(&pool, &session_id).await else { return };
         let Ok(Some(task)) = db::get_task(&pool, &session.task_id).await else { return };
         if task.name.as_deref().is_some_and(|name| !name.trim().is_empty()) { return; }
+        let env = session_title_env(
+            &app,
+            &task.project_id,
+            &session.agent_type,
+            session.account_id.as_deref(),
+        )
+        .await;
         let Ok(Some(title)) = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            generate_session_title(&prompt, &task.worktree_path),
+            session_title(&prompt, &task.worktree_path, env.as_ref()),
         ).await else { return };
         if db::set_unnamed_task_title(&pool, &task.id, &title).await.unwrap_or(false) {
             let _ = app.emit("task-name", stream::TaskNameEvent { task_id: task.id, name: title });
@@ -3300,19 +3747,103 @@ pub(crate) fn name_terminal_task(app: AppHandle, pool: SqlitePool, session_id: S
     });
 }
 
+/// The env of the Claude call that names a session, or `None` when no Claude
+/// login is safe for its message: see `accounts::service::session_title_env_for`.
+/// It never falls back to the Default login on its own, so a session on a
+/// client's account can't have its first message sent to the user's own.
+async fn session_title_env(
+    app: &AppHandle,
+    project_id: &str,
+    agent_type: &str,
+    account_id: Option<&str>,
+) -> Option<EnvPatch> {
+    let secrets = app.state::<accounts::Secrets>().0.clone();
+    accounts::service::session_title_env_for(
+        app.state::<SqlitePool>().inner(),
+        secrets,
+        project_id,
+        agent_type,
+        account_id,
+    )
+    .await
+}
+
+/// The longest a plain title gets, before its ellipsis.
+const FALLBACK_TITLE_MAX_CHARS: usize = 50;
+
+/// A title cut from the message itself, for when no Claude login may see it:
+/// the first line that has anything on it, its whitespace collapsed, cut at a
+/// word boundary to at most `FALLBACK_TITLE_MAX_CHARS` chars and then an
+/// ellipsis. A line that fits is the title as it is. A first word longer than
+/// the limit has no boundary, so it is cut at the limit. `None` when there is
+/// nothing to name.
+pub(crate) fn fallback_title(message: &str) -> Option<String> {
+    let line = message
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|line| !line.is_empty())?;
+    let Some((cut, _)) = line.char_indices().nth(FALLBACK_TITLE_MAX_CHARS) else {
+        return Some(line);
+    };
+    let head = &line[..cut];
+    // The head ends on a word boundary if the next char is the space after it.
+    let words = if line[cut..].starts_with(' ') {
+        head
+    } else {
+        head.rsplit_once(' ').map_or(head, |(words, _)| words)
+    };
+    Some(format!("{}…", words.trim_end()))
+}
+
+/// The title for a first message: the model's, on the Claude login `env` is
+/// the env of, or the plain one from the message when `env` is `None` because
+/// no Claude login is safe to send it to. The model is not called in that case.
+async fn session_title(
+    first_message: &str,
+    worktree_path: &str,
+    env: Option<&EnvPatch>,
+) -> Option<String> {
+    match env {
+        Some(env) => generate_session_title(first_message, worktree_path, env).await,
+        None => fallback_title(first_message),
+    }
+}
+
+/// The Haiku call that names a session, run in the worktree on the Claude login
+/// `env` is the env of.
+///
+/// The env is applied in a fixed order, and a later call wins over an earlier
+/// one: the login's patch, then the two nested-CLI guards that hold whatever the
+/// account says (as in `build_agent_command`). The Default login has an empty
+/// patch and so inherits Verun's env as it is.
+fn title_generation_command(
+    prompt: &str,
+    worktree_path: &str,
+    env: &EnvPatch,
+) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(AgentKind::Claude.implementation().cli_binary());
+    cmd.args(title_generation_args(prompt)).kill_on_drop(true);
+    env.apply_to_command(&mut cmd);
+    cmd.env_remove("CLAUDECODE")
+        .env("CLAUDE_CODE_ENTRYPOINT", "verun")
+        .current_dir(worktree_path);
+    cmd
+}
+
 /// Generate a short title using a standalone Haiku call (fast, doesn't affect session).
 /// Uses the Claude CLI regardless of agent type since title generation is a Verun feature.
-async fn generate_session_title(first_message: &str, worktree_path: &str) -> Option<String> {
+/// `env` is the env of the Claude login that makes the call (`session_title_env`):
+/// the message goes to that login's account and no other.
+async fn generate_session_title(
+    first_message: &str,
+    worktree_path: &str,
+    env: &EnvPatch,
+) -> Option<String> {
     let prompt = format!(
         "Generate a 3-5 word title summarizing what the user wants. Reply with ONLY the title, nothing else. Never include passwords, tokens, credentials, or other secret values in the title. If the message is too vague or unclear to summarize (e.g. just a greeting), reply with exactly NONE.\n\nUser message: {}",
         first_message.chars().take(300).collect::<String>()
     );
-    let output = tokio::process::Command::new(AgentKind::Claude.implementation().cli_binary())
-        .args(title_generation_args(&prompt))
-        .kill_on_drop(true)
-        .env_remove("CLAUDECODE")
-        .env("CLAUDE_CODE_ENTRYPOINT", "verun")
-        .current_dir(worktree_path)
+    let output = title_generation_command(&prompt, worktree_path, env)
         .output()
         .await
         .ok()?;
@@ -3386,11 +3917,89 @@ pub enum WorktreeForkState {
     Current,
 }
 
+/// Session row for a fork of `parent` after `fork_after_message_uuid`, placed
+/// in `task_id`. It starts idle with the usage accrued up to that message and
+/// keeps the parent's agent, model and account: a transcript never moves
+/// between account homes.
+fn forked_session(
+    parent: &Session,
+    task_id: &str,
+    id: String,
+    resume_session_id: String,
+    fork_after_message_uuid: &str,
+    usage: &db::SessionUsageDelta,
+    started_at: i64,
+) -> Session {
+    Session {
+        id,
+        task_id: task_id.to_string(),
+        name: parent.name.as_ref().map(|n| format!("{n} (fork)")),
+        resume_session_id: Some(resume_session_id),
+        status: "idle".to_string(),
+        started_at,
+        ended_at: None,
+        total_cost: usage.total_cost,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_write_tokens: usage.cache_write_tokens,
+        parent_session_id: Some(parent.id.clone()),
+        forked_at_message_uuid: Some(fork_after_message_uuid.to_string()),
+        agent_type: parent.agent_type.clone(),
+        model: parent.model.clone(),
+        closed_at: None,
+        account_id: parent.account_id.clone(),
+    }
+}
+
+/// Writes the fork's Claude transcript: the parent's, cut after
+/// `fork_after_message_uuid` and renumbered `fork_csid`. Both files sit in
+/// `home`, the parent's, because a transcript never moves between account
+/// homes; they differ only in the folder of their worktree. Blocking file I/O.
+fn fork_claude_transcript(
+    home: &ClaudeHome,
+    parent_cwd: &std::path::Path,
+    parent_csid: &str,
+    fork_cwd: &std::path::Path,
+    fork_csid: &str,
+    fork_after_message_uuid: &str,
+) -> Result<(), String> {
+    crate::claude_jsonl::truncate_after_message(
+        &home.session_path(parent_cwd, parent_csid),
+        &home.session_path(fork_cwd, fork_csid),
+        fork_csid,
+        fork_after_message_uuid,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// The Claude home a fork of `parent` writes its transcript in: the home of the
+/// parent's account. `None` for a harness that keeps no Claude transcript.
+/// `process_default` is `claude_home::process_default()`.
+///
+/// Unlike a spawn, a fork has to find the parent's transcript, so a Default
+/// session with no `$HOME` is an error here, as it was before accounts.
+async fn fork_claude_home(
+    pool: &SqlitePool,
+    parent: &Session,
+    process_default: Option<ClaudeHome>,
+) -> Result<Option<ClaudeHome>, String> {
+    let keeps_claude_transcript = AgentKind::parse(&parent.agent_type)
+        .implementation()
+        .uses_claude_jsonl();
+    if !keeps_claude_transcript {
+        return Ok(None);
+    }
+    claude_home::for_account_with_default(pool, parent.account_id.as_deref(), process_default)
+        .await
+        .map(Some)
+}
+
 /// Fork a session at a specific assistant message uuid into a NEW session
 /// inside the SAME task (the worktree is unchanged).
 ///
 /// The new session has a fresh claude session id; we hand-craft a truncated
-/// JSONL transcript at `~/.claude/projects/<dir>/<new-uuid>.jsonl` so
+/// JSONL transcript at `<claude home>/projects/<dir>/<new-uuid>.jsonl` so
 /// `claude --resume <new-uuid>` picks up exactly the prefix the user chose.
 ///
 /// We also copy the parent's `output_lines` rows up to and including the
@@ -3415,30 +4024,28 @@ pub async fn fork_session_in_task(
         .await?
         .ok_or_else(|| format!("Task {} not found", parent.task_id))?;
 
-    let agent_impl = AgentKind::parse(&parent.agent_type).implementation();
+    // Claude only: its transcript goes in the home of the parent's account.
+    let claude_home = fork_claude_home(pool, &parent, claude_home::process_default()).await?;
     let new_csid = Uuid::new_v4().to_string();
     let new_verun_sid = Uuid::new_v4().to_string();
     let now = epoch_ms();
 
     // Truncate the on-disk JSONL transcript (Claude only).
-    if agent_impl.uses_claude_jsonl() {
+    if let Some(claude_home) = claude_home {
         let worktree_path = task.worktree_path.clone();
         let parent_csid_for_blocking = parent_csid.clone();
         let new_csid_for_blocking = new_csid.clone();
         let fork_uuid_for_blocking = fork_after_message_uuid.clone();
         tokio::task::spawn_blocking(move || {
             let wt = std::path::Path::new(&worktree_path);
-            let src = crate::claude_jsonl::session_path(wt, &parent_csid_for_blocking)
-                .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
-            let dest = crate::claude_jsonl::session_path(wt, &new_csid_for_blocking)
-                .ok_or_else(|| "no $HOME for jsonl path".to_string())?;
-            crate::claude_jsonl::truncate_after_message(
-                &src,
-                &dest,
+            fork_claude_transcript(
+                &claude_home,
+                wt,
+                &parent_csid_for_blocking,
+                wt,
                 &new_csid_for_blocking,
                 &fork_uuid_for_blocking,
             )
-            .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
@@ -3449,25 +4056,15 @@ pub async fn fork_session_in_task(
     let parent_lines = db::get_output_lines(pool, &parent.id, None, None).await?;
     let fork_usage = session_usage_up_to_marker(&parent_lines, &fork_after_message_uuid)?;
 
-    let new_session = Session {
-        id: new_verun_sid.clone(),
-        task_id: parent.task_id.clone(),
-        name: parent.name.as_ref().map(|n| format!("{n} (fork)")),
-        resume_session_id: Some(new_csid),
-        status: "idle".to_string(),
-        started_at: now,
-        ended_at: None,
-        total_cost: fork_usage.total_cost,
-        input_tokens: fork_usage.input_tokens,
-        output_tokens: fork_usage.output_tokens,
-        cache_read_tokens: fork_usage.cache_read_tokens,
-        cache_write_tokens: fork_usage.cache_write_tokens,
-        parent_session_id: Some(parent.id.clone()),
-        forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
-        agent_type: parent.agent_type.clone(),
-        model: parent.model.clone(),
-        closed_at: None,
-    };
+    let new_session = forked_session(
+        &parent,
+        &parent.task_id,
+        new_verun_sid.clone(),
+        new_csid,
+        &fork_after_message_uuid,
+        &fork_usage,
+        now,
+    );
 
     // Single transaction: insert session row + copy output_lines up to the
     // matching verun_turn_snapshot marker. If the marker is missing we fail
@@ -3581,8 +4178,8 @@ async fn insert_session_row_tx(
     s: &Session,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, ended_at, total_cost, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, parent_session_id, forked_at_message_uuid, agent_type, model, closed_at, account_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.task_id)
@@ -3601,6 +4198,7 @@ async fn insert_session_row_tx(
     .bind(&s.agent_type)
     .bind(&s.model)
     .bind(s.closed_at)
+    .bind(&s.account_id)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert session: {e}"))?;
@@ -3636,15 +4234,18 @@ async fn insert_task_row_tx(
 /// per-turn snapshot taken at the chosen message (true counterfactual) or
 /// from the parent's current worktree state (HEAD + any uncommitted edits).
 ///
-/// Returns the new task + session. The caller is responsible for spawning
-/// the project's setup hook on the new worktree (see ipc::fork_session_to_new_task).
+/// Returns the new task + session, and the account env of the project's setup
+/// hook (`hook_account_env`). The caller is responsible for spawning the hook
+/// on the new worktree with it (see ipc::fork_session_to_new_task). The env is
+/// resolved before the worktree exists, so an account that can't be read fails
+/// the fork with nothing created.
 pub async fn fork_session_to_new_task(
     app: &AppHandle,
     pool: &sqlx::sqlite::SqlitePool,
     source_session_id: String,
     fork_after_message_uuid: String,
     worktree_state: WorktreeForkState,
-) -> Result<(Task, Session), String> {
+) -> Result<(Task, Session, EnvPatch), String> {
     let parent_session = db::get_session(pool, &source_session_id)
         .await?
         .ok_or_else(|| format!("Session {source_session_id} not found"))?;
@@ -3682,6 +4283,13 @@ pub async fn fork_session_to_new_task(
     let parent_lines = db::get_output_lines(pool, &parent_session.id, None, None).await?;
     validate_fork_marker_present(&parent_lines, &fork_after_message_uuid)?;
     let fork_usage = session_usage_up_to_marker(&parent_lines, &fork_after_message_uuid)?;
+
+    // Claude only: its transcript goes in the home of the parent's account.
+    // Resolve it before the worktree exists, for the same reason.
+    let claude_home =
+        fork_claude_home(pool, &parent_session, claude_home::process_default()).await?;
+    // The project's accounts for its setup hook, for the same reason.
+    let setup_env = hook_account_env(app, &project.id, &project.setup_hook).await?;
 
     // Create the new worktree (off the runtime).
     let repo_path = project.repo_path.clone();
@@ -3769,56 +4377,40 @@ pub async fn fork_session_to_new_task(
         is_git: true,
     };
 
-    let parent_agent = AgentKind::parse(&parent_session.agent_type).implementation();
     let new_csid = Uuid::new_v4().to_string();
     let new_verun_sid = Uuid::new_v4().to_string();
     let now = epoch_ms();
 
     // Truncate on-disk JSONL transcript (Claude only)
-    if parent_agent.uses_claude_jsonl() {
+    if let Some(claude_home) = claude_home {
         let parent_csid_for_blocking = parent_csid.clone();
         let new_csid_for_blocking = new_csid.clone();
         let fork_uuid_for_blocking = fork_after_message_uuid.clone();
         let new_wt_for_blocking = new_task.worktree_path.clone();
         let parent_wt_for_blocking = parent_task.worktree_path.clone();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
-            let parent_wt = std::path::Path::new(&parent_wt_for_blocking);
-            let new_wt = std::path::Path::new(&new_wt_for_blocking);
-            let src = crate::claude_jsonl::session_path(parent_wt, &parent_csid_for_blocking)
-                .ok_or_else(|| "no $HOME for src jsonl".to_string())?;
-            let dest = crate::claude_jsonl::session_path(new_wt, &new_csid_for_blocking)
-                .ok_or_else(|| "no $HOME for dest jsonl".to_string())?;
-            crate::claude_jsonl::truncate_after_message(
-                &src,
-                &dest,
+            fork_claude_transcript(
+                &claude_home,
+                std::path::Path::new(&parent_wt_for_blocking),
+                &parent_csid_for_blocking,
+                std::path::Path::new(&new_wt_for_blocking),
                 &new_csid_for_blocking,
                 &fork_uuid_for_blocking,
             )
-            .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
     }
 
-    let new_session = Session {
-        id: new_verun_sid.clone(),
-        task_id: new_task.id.clone(),
-        name: parent_session.name.as_ref().map(|n| format!("{n} (fork)")),
-        resume_session_id: Some(new_csid),
-        status: "idle".to_string(),
-        started_at: now,
-        ended_at: None,
-        total_cost: fork_usage.total_cost,
-        input_tokens: fork_usage.input_tokens,
-        output_tokens: fork_usage.output_tokens,
-        cache_read_tokens: fork_usage.cache_read_tokens,
-        cache_write_tokens: fork_usage.cache_write_tokens,
-        parent_session_id: Some(parent_session.id.clone()),
-        forked_at_message_uuid: Some(fork_after_message_uuid.clone()),
-        agent_type: parent_session.agent_type.clone(),
-        model: parent_session.model.clone(),
-        closed_at: None,
-    };
+    let new_session = forked_session(
+        &parent_session,
+        &new_task.id,
+        new_verun_sid.clone(),
+        new_csid,
+        &fork_after_message_uuid,
+        &fork_usage,
+        now,
+    );
 
     // Single transaction: task row + session row + copied output_lines.
     // If anything fails, the DB rolls back cleanly. The filesystem worktree
@@ -3843,7 +4435,7 @@ pub async fn fork_session_to_new_task(
     );
     let _ = app.emit("session-created", &new_session);
 
-    Ok((new_task, new_session))
+    Ok((new_task, new_session, setup_env))
 }
 
 /// Scan parent output_lines for a `verun_turn_snapshot` marker whose
@@ -3885,6 +4477,10 @@ fn run_git_ignoring_env(cwd: &std::path::Path, args: &[&str]) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::env::{account_env, env_change, EnvChange};
+    use crate::accounts::secrets::MemorySecretStore;
+    use crate::accounts::AccountError;
+    use crate::agent::Claude;
 
     #[test]
     fn branch_name_format() {
@@ -3985,6 +4581,40 @@ mod tests {
     }
 
     #[test]
+    fn setup_hook_to_run_is_the_projects_except_in_an_existing_directory() {
+        assert_eq!(setup_hook_to_run(false, "pnpm install"), "pnpm install");
+        // The directory is the user's own: it gets no setup.
+        assert_eq!(setup_hook_to_run(true, "pnpm install"), "");
+        assert_eq!(setup_hook_to_run(false, ""), "");
+    }
+
+    #[test]
+    fn destroy_hook_to_run_needs_a_workspace_that_is_cleaned_up_and_no_skip() {
+        assert_eq!(
+            destroy_hook_to_run("rm -rf node_modules", false, true),
+            "rm -rf node_modules"
+        );
+        // Skipped by the user, or nothing to clean up: the hook has no job.
+        assert_eq!(destroy_hook_to_run("rm -rf node_modules", true, true), "");
+        assert_eq!(destroy_hook_to_run("rm -rf node_modules", false, false), "");
+        assert_eq!(destroy_hook_to_run("", false, true), "");
+    }
+
+    #[test]
+    fn any_workspace_cleaned_up_needs_a_task_that_owns_its_workspace() {
+        let owned = make_task("p-001");
+        let mut existing = make_task("p-001");
+        existing.existing_directory = true;
+
+        // Nothing is removed, so no destroy hook can run.
+        assert!(!any_workspace_cleaned_up(&[]));
+        // An existing directory is the user's: it is never cleaned up.
+        assert!(!any_workspace_cleaned_up(std::slice::from_ref(&existing)));
+        assert!(any_workspace_cleaned_up(std::slice::from_ref(&owned)));
+        assert!(any_workspace_cleaned_up(&[existing, owned]));
+    }
+
+    #[test]
     fn title_generation_args_disables_mcp() {
         let args = title_generation_args("do something");
         assert!(
@@ -4000,6 +4630,149 @@ mod tests {
         assert!(args.iter().any(|a| a == "test prompt"));
         assert!(args.iter().any(|a| a == "--no-session-persistence"));
         assert!(args.iter().any(|a| a == "haiku"));
+    }
+
+    #[test]
+    fn fallback_title_cuts_at_word_boundary() {
+        // "tokens" would end at 53 chars, so the title stops after "that" (46).
+        assert_eq!(
+            fallback_title(
+                "Refactor the authentication middleware so that tokens refresh before expiry"
+            ),
+            Some("Refactor the authentication middleware so that…".to_string())
+        );
+
+        // A word that ends exactly on the 50th char is kept whole.
+        let fifty = "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeee";
+        assert_eq!(fifty.chars().count(), 50);
+        assert_eq!(
+            fallback_title(&format!("{fifty} ffff")),
+            Some(format!("{fifty}…"))
+        );
+        // One char further in and that word is cut off.
+        assert_eq!(
+            fallback_title(&format!("{fifty}e ffff")),
+            Some("aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd…".to_string())
+        );
+
+        // A line that fits is its own title, with no ellipsis.
+        assert_eq!(fallback_title(fifty), Some(fifty.to_string()));
+        assert_eq!(
+            fallback_title("Fix the login bug"),
+            Some("Fix the login bug".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_title_cuts_a_single_long_word_at_the_limit() {
+        // A path or URL has no word boundary to cut at. Chars are counted,
+        // not bytes, so this does not split a multi-byte char either.
+        for word in ["x".repeat(80), "é".repeat(80), "日".repeat(80)] {
+            let title = fallback_title(&word).unwrap();
+            let kept: String = word.chars().take(50).collect();
+            assert_eq!(title, format!("{kept}…"));
+        }
+    }
+
+    #[test]
+    fn fallback_title_uses_first_line_and_none_when_empty() {
+        // The first line that has anything on it, with its whitespace collapsed.
+        assert_eq!(
+            fallback_title("\n \t\n  Fix   the\tbuild  \nthen deploy it\n"),
+            Some("Fix the build".to_string())
+        );
+        // Later lines never make it into the title, and nor does an ellipsis
+        // for them: the line itself was not cut.
+        assert_eq!(
+            fallback_title("Fix the build\nand then add a very long list of follow-up work items"),
+            Some("Fix the build".to_string())
+        );
+        // Nothing to name.
+        for blank in ["", " ", "\n\n", " \t \r\n  \n"] {
+            assert_eq!(fallback_title(blank), None, "{blank:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn session_title_without_a_safe_login_is_the_plain_title() {
+        // No Claude login to send the message to, so nothing is sent. The
+        // directory is not there: a model call that started anyway could not
+        // run in it, and would come back with no title at all.
+        let title = session_title(
+            "Fix the login bug\nsecond line",
+            "/nonexistent/worktree",
+            None,
+        )
+        .await;
+
+        assert_eq!(title, Some("Fix the login bug".to_string()));
+    }
+
+    #[test]
+    fn title_generation_command_runs_on_the_given_accounts_env() {
+        let mut account = make_account("a1", 1);
+        account.config_dir = "/acc/a1".into();
+        let patch = account_env(&Claude, &account, &MemorySecretStore::default()).unwrap();
+
+        let cmd = title_generation_command("name this", "/work/tree", &patch);
+
+        // The account's home is the one the call runs on, and what Verun
+        // inherited can't override it.
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CONFIG_DIR"),
+            EnvChange::Set("/acc/a1".into())
+        );
+        assert_eq!(env_change(&cmd, "ANTHROPIC_API_KEY"), EnvChange::Removed);
+        // The nested-CLI guards of every Claude call Verun starts.
+        assert_eq!(env_change(&cmd, "CLAUDECODE"), EnvChange::Removed);
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CODE_ENTRYPOINT"),
+            EnvChange::Set("verun".into())
+        );
+        // The rest of the command is the Haiku call, in the worktree.
+        assert_eq!(cmd.as_std().get_program(), "claude");
+        let args = title_generation_args("name this");
+        assert_eq!(
+            cmd.as_std().get_args().collect::<Vec<_>>(),
+            args.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            cmd.as_std().get_current_dir(),
+            Some(std::path::Path::new("/work/tree"))
+        );
+    }
+
+    #[test]
+    fn title_generation_command_on_default_touches_only_the_guards() {
+        let cmd = title_generation_command("name this", "/work/tree", &EnvPatch::default());
+
+        // The Default login inherits Verun's env as it is, as the call always did.
+        for key in ["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"] {
+            assert_eq!(env_change(&cmd, key), EnvChange::Untouched, "{key}");
+        }
+        let mut touched: Vec<String> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        touched.sort();
+        assert_eq!(touched, ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"]);
+    }
+
+    #[test]
+    fn title_generation_command_keeps_the_guards_over_the_account_env() {
+        let patch = EnvPatch::from_vars(vec![
+            ("CLAUDECODE".to_string(), "1".to_string()),
+            ("CLAUDE_CODE_ENTRYPOINT".to_string(), "cli".to_string()),
+        ]);
+
+        let cmd = title_generation_command("name this", "/work/tree", &patch);
+
+        assert_eq!(env_change(&cmd, "CLAUDECODE"), EnvChange::Removed);
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CODE_ENTRYPOINT"),
+            EnvChange::Set("verun".into())
+        );
     }
 
     #[test]
@@ -4091,5 +4864,669 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("No active session"), "got: {err}");
+    }
+
+    // -- Session account on forks --
+
+    use crate::db::tests::{
+        make_account, make_project, make_session, make_task, process_write_for_tests, test_pool,
+        upsert_account_confirmed,
+    };
+
+    #[test]
+    fn forked_session_keeps_the_source_account() {
+        let mut parent = make_session("t-001");
+        parent.name = Some("Refactor".into());
+        parent.agent_type = "codex".into();
+        parent.model = Some("gpt-5".into());
+        parent.account_id = Some("a1".into());
+        let usage = db::SessionUsageDelta {
+            total_cost: 0.5,
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 30,
+            cache_write_tokens: 40,
+        };
+
+        let fork = forked_session(
+            &parent,
+            "t-002",
+            "s-fork".into(),
+            "resume-fork".into(),
+            "msg-1",
+            &usage,
+            9000,
+        );
+
+        assert_eq!(fork.account_id.as_deref(), Some("a1"));
+        assert_eq!(fork.id, "s-fork");
+        assert_eq!(fork.task_id, "t-002");
+        assert_eq!(fork.name.as_deref(), Some("Refactor (fork)"));
+        assert_eq!(fork.resume_session_id.as_deref(), Some("resume-fork"));
+        assert_eq!(fork.status, "idle");
+        assert_eq!(fork.started_at, 9000);
+        assert_eq!(fork.ended_at, None);
+        assert_eq!(fork.closed_at, None);
+        assert_eq!(fork.parent_session_id.as_deref(), Some("s-001"));
+        assert_eq!(fork.forked_at_message_uuid.as_deref(), Some("msg-1"));
+        assert_eq!(fork.agent_type, "codex");
+        assert_eq!(fork.model.as_deref(), Some("gpt-5"));
+        assert_eq!(fork.total_cost, 0.5);
+        assert_eq!(
+            (
+                fork.input_tokens,
+                fork.output_tokens,
+                fork.cache_read_tokens,
+                fork.cache_write_tokens
+            ),
+            (10, 20, 30, 40)
+        );
+    }
+
+    #[test]
+    fn forked_session_of_a_default_account_session_stays_default() {
+        let parent = make_session("t-001");
+        let fork = forked_session(
+            &parent,
+            "t-001",
+            "s-fork".into(),
+            "resume-fork".into(),
+            "msg-1",
+            &db::SessionUsageDelta::default(),
+            9000,
+        );
+        assert_eq!(fork.account_id, None);
+    }
+
+    #[tokio::test]
+    async fn insert_session_row_tx_persists_account_id() {
+        let pool = test_pool().await;
+        process_write_for_tests(&pool, db::DbWrite::InsertProject(make_project()))
+            .await
+            .unwrap();
+        process_write_for_tests(&pool, db::DbWrite::InsertTask(make_task("p-001")))
+            .await
+            .unwrap();
+        let mut session = make_session("t-001");
+        session.account_id = Some("a1".into());
+
+        let mut tx = pool.begin().await.unwrap();
+        insert_session_row_tx(&mut tx, &session).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let saved = db::get_session(&pool, "s-001").await.unwrap().unwrap();
+        assert_eq!(saved.account_id.as_deref(), Some("a1"));
+    }
+
+    // -- Session account at creation --
+
+    #[test]
+    fn new_session_records_the_account() {
+        let bound = new_session(
+            "t-001".into(),
+            "claude".into(),
+            Some("opus".into()),
+            Some("a1".into()),
+        );
+        assert_eq!(bound.account_id.as_deref(), Some("a1"));
+        assert_eq!(bound.task_id, "t-001");
+        assert_eq!(bound.agent_type, "claude");
+        assert_eq!(bound.model.as_deref(), Some("opus"));
+        assert_eq!(bound.status, "idle");
+
+        let default = new_session("t-001".into(), "claude".into(), None, None);
+        assert_eq!(default.account_id, None);
+    }
+
+    // -- Claude home of a session --
+
+    #[test]
+    fn fork_transcript_stays_in_the_source_accounts_home() {
+        let account_dir = tempfile::tempdir().unwrap();
+        let home = ClaudeHome::for_config_dir(account_dir.path().to_str().unwrap());
+        let parent_wt = tempfile::tempdir().unwrap();
+        let fork_wt = tempfile::tempdir().unwrap();
+        let src = home.session_path(parent_wt.path(), "parent-csid");
+        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::fs::write(
+            &src,
+            concat!(
+                r#"{"type":"user","uuid":"u1","sessionId":"parent-csid"}"#,
+                "\n",
+                r#"{"type":"assistant","uuid":"a1","sessionId":"parent-csid"}"#,
+                "\n",
+                r#"{"type":"user","uuid":"u2","sessionId":"parent-csid"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        fork_claude_transcript(
+            &home,
+            parent_wt.path(),
+            "parent-csid",
+            fork_wt.path(),
+            "fork-csid",
+            "a1",
+        )
+        .unwrap();
+
+        // Same account dir, the fork worktree's own folder in it; cut after
+        // the fork point and renumbered.
+        let dest = home.session_path(fork_wt.path(), "fork-csid");
+        assert!(dest.starts_with(account_dir.path()), "got: {dest:?}");
+        let text = std::fs::read_to_string(&dest).unwrap();
+        assert_eq!(text.lines().count(), 2, "got: {text}");
+        assert!(text.lines().all(|l| l.contains("\"fork-csid\"")));
+    }
+
+    #[test]
+    fn fork_transcript_reports_a_missing_source() {
+        let account_dir = tempfile::tempdir().unwrap();
+        let home = ClaudeHome::for_config_dir(account_dir.path().to_str().unwrap());
+        let wt = tempfile::tempdir().unwrap();
+
+        let err =
+            fork_claude_transcript(&home, wt.path(), "gone", wt.path(), "new", "a1").unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn claude_sessions_run_against_their_accounts_home() {
+        let pool = test_pool().await;
+        upsert_account_confirmed(&pool, make_account("a1", 1))
+            .await
+            .unwrap();
+
+        let default = ClaudeHome::default_home(std::path::Path::new("/Users/me"), None);
+
+        // An added account: the dir its row stores. The default is not used.
+        assert_eq!(
+            session_claude_home(&pool, AgentKind::Claude, Some("a1"), Some(default.clone())).await,
+            Ok(ClaudeHome::for_config_dir("/tmp/verun-accounts/a1"))
+        );
+        // The Default account: the process default as it is.
+        assert_eq!(
+            session_claude_home(&pool, AgentKind::Claude, None, Some(default.clone())).await,
+            Ok(default.clone())
+        );
+        // An account that can't be found is an error, not the Default home.
+        assert!(
+            session_claude_home(&pool, AgentKind::Claude, Some("nope"), Some(default))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_copies_within_the_parents_account_home() {
+        let pool = test_pool().await;
+        upsert_account_confirmed(&pool, make_account("a1", 1))
+            .await
+            .unwrap();
+        let mut parent = make_session("t-001");
+        parent.account_id = Some("a1".into());
+
+        assert_eq!(
+            fork_claude_home(&pool, &parent, None).await,
+            Ok(Some(ClaudeHome::for_config_dir("/tmp/verun-accounts/a1")))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_of_a_default_session_still_needs_a_home() {
+        // Unlike a spawn, a fork has to find the parent's transcript. A
+        // Default Claude session with no $HOME to look in is an error, as it
+        // was before accounts.
+        let pool = test_pool().await;
+        let parent = make_session("t-001");
+        let err = fork_claude_home(&pool, &parent, None).await.unwrap_err();
+        assert!(err.contains("HOME"), "got: {err}");
+
+        let default = ClaudeHome::default_home(std::path::Path::new("/Users/me"), None);
+        assert_eq!(
+            fork_claude_home(&pool, &parent, Some(default.clone())).await,
+            Ok(Some(default))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_needs_its_account_row() {
+        let pool = test_pool().await;
+        let mut parent = make_session("t-001");
+        parent.account_id = Some("nope".into());
+
+        let err = fork_claude_home(&pool, &parent, None).await.unwrap_err();
+        assert!(err.contains("nope"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn a_fork_of_another_harness_has_no_claude_transcript_to_copy() {
+        // Nothing to find, so nothing to look up and nothing to fail on.
+        let pool = test_pool().await;
+        let mut parent = make_session("t-001");
+        parent.agent_type = "codex".into();
+        parent.account_id = Some("codex-account".into());
+
+        assert_eq!(fork_claude_home(&pool, &parent, None).await, Ok(None));
+    }
+
+    #[tokio::test]
+    async fn default_sessions_spawn_without_a_home() {
+        // No account and no $HOME to find a home in: the spawn still goes
+        // ahead, on the standard layout under "/", where the per-turn snapshot
+        // finds no transcript. Claude is no exception.
+        let pool = test_pool().await;
+        for kind in [AgentKind::Claude, AgentKind::Codex] {
+            let home = session_claude_home(&pool, kind, None, None)
+                .await
+                .unwrap_or_else(|e| panic!("{kind:?} must still spawn: {e}"));
+            assert_eq!(home.root(), std::path::Path::new("/.claude"), "{kind:?}");
+            assert_eq!(
+                home,
+                ClaudeHome::default_home(std::path::Path::new("/"), None),
+                "{kind:?}"
+            );
+            assert!(!home.is_account_home(), "{kind:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_missing_account_row_stops_a_spawn() {
+        // The account is the one thing a spawn can't guess, so it stays an
+        // error even where the Default home would fall back.
+        let pool = test_pool().await;
+        let err = session_claude_home(&pool, AgentKind::Claude, Some("nope"), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("nope"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn other_harnesses_never_look_up_an_account_for_a_claude_home() {
+        // No accounts exist, and no $HOME is needed: nothing but Claude reads
+        // this home, so a Codex session must never fail over it.
+        let pool = test_pool().await;
+        let home = session_claude_home(&pool, AgentKind::Codex, Some("codex-account"), None)
+            .await
+            .unwrap();
+        assert!(!home.is_account_home());
+    }
+
+    // -- Env of a session's CLI --
+
+    #[test]
+    fn agent_command_applies_account_env() {
+        let mut account = make_account("a1", 1);
+        account.config_dir = "/acc/a1".into();
+        let patch = account_env(&Claude, &account, &MemorySecretStore::default()).unwrap();
+
+        let cmd = build_agent_command(
+            "claude",
+            &["--print".to_string()],
+            "/work/tree",
+            worktree::verun_env_vars(3, "/repo"),
+            &patch,
+        );
+
+        // The account's home, and the Claude vars Verun inherited are gone.
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CONFIG_DIR"),
+            EnvChange::Set("/acc/a1".into())
+        );
+        assert_eq!(env_change(&cmd, "ANTHROPIC_API_KEY"), EnvChange::Removed);
+        // Verun's own vars and the nested-CLI guards are still applied.
+        assert_eq!(
+            env_change(&cmd, "VERUN_PORT_0"),
+            EnvChange::Set("10030".into())
+        );
+        assert_eq!(
+            env_change(&cmd, "VERUN_REPO_PATH"),
+            EnvChange::Set("/repo".into())
+        );
+        assert_eq!(env_change(&cmd, "CLAUDECODE"), EnvChange::Removed);
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CODE_ENTRYPOINT"),
+            EnvChange::Set("verun".into())
+        );
+        // The rest of the command is what was asked for.
+        assert_eq!(cmd.as_std().get_program(), "claude");
+        assert_eq!(cmd.as_std().get_args().collect::<Vec<_>>(), ["--print"]);
+        assert_eq!(
+            cmd.as_std().get_current_dir(),
+            Some(std::path::Path::new("/work/tree"))
+        );
+    }
+
+    #[test]
+    fn agent_command_default_session_env_untouched() {
+        let verun_vars = worktree::verun_env_vars(0, "/repo");
+        let cmd = build_agent_command(
+            "claude",
+            &[],
+            "/work/tree",
+            verun_vars.clone(),
+            &EnvPatch::default(),
+        );
+
+        // The Default account inherits Verun's env as it is.
+        for key in ["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"] {
+            assert_eq!(env_change(&cmd, key), EnvChange::Untouched, "{key}");
+        }
+        // Nothing is touched beyond what a spawn did before accounts: Verun's
+        // vars and the two nested-CLI guards.
+        let mut touched: Vec<String> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        touched.sort();
+        let mut expected: Vec<String> = verun_vars.into_iter().map(|(key, _)| key).collect();
+        expected.extend([
+            "CLAUDECODE".to_string(),
+            "CLAUDE_CODE_ENTRYPOINT".to_string(),
+        ]);
+        expected.sort();
+        assert_eq!(touched, expected);
+    }
+
+    #[test]
+    fn agent_command_keeps_the_nested_cli_guards_over_the_account_env() {
+        // An account's own vars are applied before the guards, so they cannot
+        // make the CLI think it is nested or hide that Verun started it.
+        let patch = EnvPatch::from_vars(vec![
+            ("CLAUDECODE".to_string(), "1".to_string()),
+            ("CLAUDE_CODE_ENTRYPOINT".to_string(), "cli".to_string()),
+        ]);
+
+        let cmd = build_agent_command("claude", &[], "/work/tree", vec![], &patch);
+
+        assert_eq!(env_change(&cmd, "CLAUDECODE"), EnvChange::Removed);
+        assert_eq!(
+            env_change(&cmd, "CLAUDE_CODE_ENTRYPOINT"),
+            EnvChange::Set("verun".into())
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_command_spawns_in_the_worktree_with_piped_stdio() {
+        let worktree = tempfile::tempdir().unwrap();
+        let patch = EnvPatch::from_vars(vec![(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            "/acc/a1".to_string(),
+        )]);
+        let script = r#"pwd; printf '%s|%s|%s|' "$CLAUDE_CONFIG_DIR" "$CLAUDE_CODE_ENTRYPOINT" "${CLAUDECODE-unset}"; read line; printf '%s' "$line""#;
+
+        let mut cmd = build_agent_command(
+            "sh",
+            &["-c".to_string(), script.to_string()],
+            worktree.path().to_str().unwrap(),
+            vec![],
+            &patch,
+        );
+        // If an assertion fails first, the shell must not stay behind waiting
+        // on a stdin nobody writes to.
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().unwrap();
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        stdin.write_all(b"hello\n").await.unwrap();
+        drop(stdin);
+        let output = child.wait_with_output().await.unwrap();
+
+        // Run in the worktree, with the account's env on the child, the
+        // guards over whatever this process inherited, and both ends piped.
+        let cwd = worktree.path().canonicalize().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{}\n/acc/a1|verun|unset|hello", cwd.display())
+        );
+    }
+
+    // -- Order of the spawn path --
+
+    fn account_patch(dir: &str) -> EnvPatch {
+        EnvPatch::from_vars(vec![("CLAUDE_CONFIG_DIR".to_string(), dir.to_string())])
+    }
+
+    /// What a `RecordingPath` was asked to do.
+    #[derive(Debug, PartialEq)]
+    enum Step {
+        AccountEnv,
+        Title,
+        Persist,
+        Spawn(EnvPatch),
+    }
+
+    /// A `SpawnPath` that only notes the steps it is asked to take, in order.
+    /// Its account resolves to `account`.
+    struct RecordingPath {
+        steps: Arc<std::sync::Mutex<Vec<Step>>>,
+        account: Result<EnvPatch, String>,
+    }
+
+    impl RecordingPath {
+        fn new(account: Result<EnvPatch, String>) -> (Self, Arc<std::sync::Mutex<Vec<Step>>>) {
+            let steps = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let path = Self {
+                steps: steps.clone(),
+                account,
+            };
+            (path, steps)
+        }
+
+        fn note(&self, step: Step) {
+            self.steps.lock().unwrap().push(step);
+        }
+    }
+
+    impl SpawnPath for RecordingPath {
+        async fn account_env(&self) -> Result<EnvPatch, String> {
+            self.note(Step::AccountEnv);
+            self.account.clone()
+        }
+
+        fn start_title_generation(&self) {
+            self.note(Step::Title);
+        }
+
+        async fn persist_message(&self) {
+            self.note(Step::Persist);
+        }
+
+        async fn spawn(self, account_env: EnvPatch) -> Result<(), String> {
+            self.note(Step::Spawn(account_env));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_path_stops_at_an_account_that_cannot_be_used() {
+        let error = AccountError::SignedOut {
+            account_id: "a1".into(),
+            label: "Acme".into(),
+        }
+        .to_ipc();
+        let (path, steps) = RecordingPath::new(Err(error.clone()));
+
+        let result = run_spawn_path(path).await;
+
+        // The caller gets the error as it is. Nothing else happened: no title
+        // call for an account that cannot run, and no message in the history
+        // for an agent that never received it (it would show twice once the
+        // user fixes the account and sends it again).
+        assert_eq!(result, Err(error));
+        assert_eq!(*steps.lock().unwrap(), vec![Step::AccountEnv]);
+    }
+
+    #[tokio::test]
+    async fn spawn_path_names_the_task_and_saves_the_message_once_the_account_passes() {
+        let env = account_patch("/acc/a1");
+        let (path, steps) = RecordingPath::new(Ok(env.clone()));
+
+        assert_eq!(run_spawn_path(path).await, Ok(()));
+
+        // The account comes first, and the env it found is the one the
+        // process spawns with.
+        assert_eq!(
+            *steps.lock().unwrap(),
+            vec![
+                Step::AccountEnv,
+                Step::Title,
+                Step::Persist,
+                Step::Spawn(env)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spawn_uses_the_env_its_caller_resolved() {
+        let env = account_patch("/acc/a1");
+        let resolved_again = AtomicBool::new(false);
+
+        let found = resolved_or(Some(env.clone()), || async {
+            resolved_again.store(true, Ordering::SeqCst);
+            Ok(account_patch("/acc/other"))
+        })
+        .await;
+
+        assert_eq!(found, Ok(env));
+        assert!(
+            !resolved_again.load(Ordering::SeqCst),
+            "the account was resolved a second time"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spawn_nobody_resolved_for_resolves_the_account_itself() {
+        // Prewarm and any other direct caller: an added account must never
+        // start on the Default env because the caller had nothing to pass.
+        let env = account_patch("/acc/a1");
+        assert_eq!(
+            resolved_or(None, || async { Ok(env.clone()) }).await,
+            Ok(env)
+        );
+
+        let error = AccountError::Removed {
+            account_id: "a1".into(),
+            label: "Acme".into(),
+        }
+        .to_ipc();
+        assert_eq!(
+            resolved_or(None, || async { Err(error.clone()) }).await,
+            Err(error)
+        );
+    }
+
+    // -- A live process on an account that can no longer run --
+
+    /// A live idle process (`cat`, which exits when its stdin closes) that
+    /// stands in for a prewarmed persistent CLI.
+    fn live_process(task_id: &str) -> ActiveProcess {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        ActiveProcess {
+            child,
+            task_id: task_id.to_string(),
+            stdin: Arc::new(TokioMutex::new(stdin)),
+            busy: Arc::new(AtomicBool::new(false)),
+            trust_level: Arc::new(AtomicU8::new(TrustLevel::Normal.to_u8())),
+            kind: AgentKind::Claude,
+            current_permission_mode: "default".to_string(),
+            current_model: None,
+            current_thinking_mode: false,
+            current_fast_mode: false,
+            rpc_session_id: None,
+            rpc_pending: None,
+            rpc_next_id: None,
+            rpc_current_turn_id: None,
+        }
+    }
+
+    async fn pool_with_account(
+        removed_at: Option<i64>,
+        signed_in: bool,
+    ) -> (SqlitePool, tempfile::TempDir) {
+        use crate::accounts::service::tests::{acme, claude_dir, SIGNED_IN};
+        let pool = crate::db::tests::test_pool().await;
+        let dir = claude_dir(if signed_in { SIGNED_IN } else { "{}" });
+        let mut account = acme("a1", &dir);
+        account.removed_at = removed_at;
+        crate::db::tests::upsert_account_confirmed(&pool, account)
+            .await
+            .unwrap();
+        (pool, dir)
+    }
+
+    #[tokio::test]
+    async fn a_send_on_a_removed_account_is_refused_and_its_process_stopped() {
+        let (pool, _dir) = pool_with_account(Some(1700), true).await;
+        let active = new_active_map();
+        active.insert("s1".to_string(), live_process("t1"));
+
+        let result = refuse_unusable_account(&pool, &active, "s1", "claude", Some("a1")).await;
+
+        assert_eq!(
+            result,
+            Err(AccountError::Removed {
+                account_id: "a1".into(),
+                label: "Acme".into()
+            }
+            .to_ipc())
+        );
+        assert!(!active.contains_key("s1"), "the process was left running");
+    }
+
+    #[tokio::test]
+    async fn a_send_on_a_signed_out_account_is_refused_and_its_process_stopped() {
+        let (pool, _dir) = pool_with_account(None, false).await;
+        let active = new_active_map();
+        active.insert("s1".to_string(), live_process("t1"));
+
+        let result = refuse_unusable_account(&pool, &active, "s1", "claude", Some("a1")).await;
+
+        assert_eq!(
+            result,
+            Err(AccountError::SignedOut {
+                account_id: "a1".into(),
+                label: "Acme".into()
+            }
+            .to_ipc())
+        );
+        assert!(!active.contains_key("s1"));
+    }
+
+    #[tokio::test]
+    async fn a_send_on_a_usable_or_default_account_keeps_its_process() {
+        let (pool, _dir) = pool_with_account(None, true).await;
+        let active = new_active_map();
+        active.insert("s1".to_string(), live_process("t1"));
+
+        assert_eq!(
+            refuse_unusable_account(&pool, &active, "s1", "claude", Some("a1")).await,
+            Ok(())
+        );
+        assert_eq!(
+            refuse_unusable_account(&pool, &active, "s1", "claude", None).await,
+            Ok(())
+        );
+        assert!(active.contains_key("s1"));
+    }
+
+    #[tokio::test]
+    async fn stopping_sessions_stops_only_the_ones_named() {
+        let active = new_active_map();
+        active.insert("s1".to_string(), live_process("t1"));
+        active.insert("s2".to_string(), live_process("t1"));
+
+        stop_active_sessions(&active, &["s1".to_string(), "unknown".to_string()]).await;
+
+        assert!(!active.contains_key("s1"));
+        assert!(active.contains_key("s2"));
     }
 }

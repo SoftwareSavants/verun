@@ -1,4 +1,4 @@
-use crate::claude_jsonl;
+use crate::claude_home::ClaudeHome;
 use crate::db::{DbWrite, DbWriteTx};
 use crate::policy::{self, PolicyDecision, TrustLevel};
 use crate::snapshots;
@@ -265,11 +265,44 @@ pub struct ToolApprovalEvent {
 #[serde(rename_all = "camelCase")]
 pub struct RateLimitInfoEvent {
     pub session_id: String,
+    /// Limits belong to the account the session runs on, not to the session:
+    /// the UI keeps one entry per `accounts::account_key`.
+    pub account_key: String,
     pub resets_at: i64,
     pub overage_resets_at: i64,
     pub rate_limit_type: String,
     pub overage_status: String,
     pub is_using_overage: bool,
+}
+
+impl RateLimitInfoEvent {
+    /// Reads the `rate_limit_info` object of a `rate_limit_event` line. What
+    /// the line leaves out is zero, empty or false.
+    fn from_info(session_id: &str, account_key: &str, info: &serde_json::Value) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            account_key: account_key.to_string(),
+            resets_at: info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
+            overage_resets_at: info
+                .get("overageResetsAt")
+                .and_then(|r| r.as_i64())
+                .unwrap_or(0),
+            rate_limit_type: info
+                .get("rateLimitType")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string(),
+            overage_status: info
+                .get("overageStatus")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string(),
+            is_using_overage: info
+                .get("isUsingOverage")
+                .and_then(|r| r.as_bool())
+                .unwrap_or(false),
+        }
+    }
 }
 
 /// Emitted to frontend when a tool call was auto-approved by the policy engine
@@ -1359,7 +1392,8 @@ pub struct StreamResult {
 }
 
 /// After a turn ends, snapshot the worktree and persist a `turn_snapshots`
-/// row keyed to the latest assistant message uuid in the on-disk JSONL.
+/// row keyed to the latest assistant message uuid in the on-disk JSONL, which
+/// Claude writes in `claude_home`.
 ///
 /// All failures are logged and swallowed — the snapshot machinery is
 /// best-effort and must never break the streaming hot path.
@@ -1367,6 +1401,7 @@ async fn snapshot_turn_best_effort(
     verun_session_id: &str,
     worktree_path: &str,
     resume_session_id: Option<&str>,
+    claude_home: &ClaudeHome,
     db_tx: &DbWriteTx,
     app: &AppHandle,
 ) {
@@ -1376,16 +1411,14 @@ async fn snapshot_turn_best_effort(
     };
     let worktree = worktree_path.to_string();
     let verun_sid = verun_session_id.to_string();
+    let claude_home = claude_home.clone();
     let db_tx = db_tx.clone();
     let app = app.clone();
 
     // Do all blocking I/O off the runtime thread.
     let result = tokio::task::spawn_blocking(move || {
         let wt_path = Path::new(&worktree);
-        let jsonl = match claude_jsonl::session_path(wt_path, &csid) {
-            Some(p) => p,
-            None => return Err("no $HOME for jsonl path".to_string()),
-        };
+        let jsonl = claude_home.session_path(wt_path, &csid);
         if !jsonl.exists() {
             return Err(format!("jsonl not found: {}", jsonl.display()));
         }
@@ -1538,6 +1571,13 @@ fn process_github_remote_invalidation(
 ///
 /// When a `control_request` (tool approval) is detected, we emit it to the
 /// frontend and block until the user responds via `respond_to_approval`.
+///
+/// `claude_home` is where Claude keeps its files for this session: the home of
+/// the session's account. It holds the transcript, and tool reads under it are
+/// auto-approved. Only Claude sessions read it.
+///
+/// `account_key` is the session's `accounts::account_key`. The rate limits the
+/// stream reports are tagged with it.
 #[allow(clippy::too_many_arguments)]
 pub async fn stream_and_capture(
     app: AppHandle,
@@ -1554,6 +1594,8 @@ pub async fn stream_and_capture(
     repo_path: String,
     trust_level: Arc<AtomicU8>,
     agent: Box<dyn crate::agent::Agent>,
+    claude_home: ClaudeHome,
+    account_key: String,
 ) -> StreamResult {
     let claims = (agent.kind() == crate::agent::AgentKind::Claude)
         .then(|| crate::transcript_source::for_session(&app, &session_id)).flatten();
@@ -1638,7 +1680,7 @@ pub async fn stream_and_capture(
                         if let Some(cr) = handle_control_request(
                             &app, &session_id, &task_id, &v, &stdin,
                             &pending_approvals, &pending_approval_meta,
-                            &worktree_path, &repo_path,
+                            &worktree_path, &repo_path, claude_home.root(),
                             &trust_level, &db_tx,
                         ).await {
                             if cr.handled {
@@ -1686,14 +1728,10 @@ pub async fn stream_and_capture(
                         // Intercept rate_limit_event — emit as separate Tauri event
                         if msg_type == "rate_limit_event" {
                             if let Some(info) = v.get("rate_limit_info") {
-                                let _ = app.emit("rate-limit-info", RateLimitInfoEvent {
-                                    session_id: session_id.clone(),
-                                    resets_at: info.get("resetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
-                                    overage_resets_at: info.get("overageResetsAt").and_then(|r| r.as_i64()).unwrap_or(0),
-                                    rate_limit_type: info.get("rateLimitType").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-                                    overage_status: info.get("overageStatus").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-                                    is_using_overage: info.get("isUsingOverage").and_then(|r| r.as_bool()).unwrap_or(false),
-                                });
+                                let _ = app.emit(
+                                    "rate-limit-info",
+                                    RateLimitInfoEvent::from_info(&session_id, &account_key, info),
+                                );
                             }
                             persist_line(&db_tx, &session_id, &line, &mut total_persisted);
                             continue;
@@ -1824,6 +1862,7 @@ pub async fn stream_and_capture(
                             let sid = session_id.clone();
                             let wt = worktree_path.clone();
                             let csid = resume_id_for_snapshot.clone();
+                            let home = claude_home.clone();
                             let dbtx = db_tx.clone();
                             let app2 = app.clone();
                             tokio::spawn(async move {
@@ -1831,6 +1870,7 @@ pub async fn stream_and_capture(
                                     &sid,
                                     &wt,
                                     csid.as_deref(),
+                                    &home,
                                     &dbtx,
                                     &app2,
                                 )
@@ -2137,6 +2177,7 @@ async fn handle_control_request(
     pending_meta: &PendingApprovalMeta,
     worktree_path: &str,
     repo_path: &str,
+    claude_home: &Path,
     trust_level: &Arc<AtomicU8>,
     db_tx: &DbWriteTx,
 ) -> Option<ControlRequestResult> {
@@ -2208,6 +2249,7 @@ async fn handle_control_request(
                 worktree_path,
                 repo_path,
                 TrustLevel::from_atomic(trust_level),
+                claude_home,
             ),
             prompt.as_ref(),
         )
@@ -3042,6 +3084,40 @@ mod tests {
         let line = r#"{"type":"rate_limit_event","data":{}}"#;
         let items = parse_sdk_event(line);
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn rate_limit_event_carries_the_session_and_its_account() {
+        let info = serde_json::json!({
+            "resetsAt": 1_700_000_000,
+            "overageResetsAt": 1_700_003_600,
+            "rateLimitType": "five_hour",
+            "overageStatus": "allowed",
+            "isUsingOverage": true,
+        });
+        let event = RateLimitInfoEvent::from_info("s-001", "a1", &info);
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["sessionId"], "s-001");
+        // The UI files the limits under this key: one entry per account.
+        assert_eq!(json["accountKey"], "a1");
+        assert_eq!(json["resetsAt"], 1_700_000_000);
+        assert_eq!(json["overageResetsAt"], 1_700_003_600);
+        assert_eq!(json["rateLimitType"], "five_hour");
+        assert_eq!(json["overageStatus"], "allowed");
+        assert_eq!(json["isUsingOverage"], true);
+    }
+
+    #[test]
+    fn rate_limit_event_defaults_what_the_line_leaves_out() {
+        let event =
+            RateLimitInfoEvent::from_info("s-001", "default:claude", &serde_json::json!({}));
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["accountKey"], "default:claude");
+        assert_eq!(json["resetsAt"], 0);
+        assert_eq!(json["overageResetsAt"], 0);
+        assert_eq!(json["rateLimitType"], "");
+        assert_eq!(json["overageStatus"], "");
+        assert_eq!(json["isUsingOverage"], false);
     }
 
     #[test]

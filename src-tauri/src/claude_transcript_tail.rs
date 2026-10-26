@@ -2,11 +2,12 @@
 //!
 //! Claude Code writes a full transcript of every user prompt, assistant
 //! message, tool_use, and tool_result to
-//! `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` regardless of whether
-//! the CLI is running in interactive TUI, headless `--print`, or
-//! `--output-format stream-json` mode. When we run Claude in a PTY for
-//! terminal-view sessions, tailing this file is how we capture a lossless
-//! copy of the conversation for the DB-backed UI view.
+//! `<claude home>/projects/<encoded-cwd>/<session-id>.jsonl` (`~/.claude` or
+//! the dir of the session's account) regardless of whether the CLI is running
+//! in interactive TUI, headless `--print`, or `--output-format stream-json`
+//! mode. When we run Claude in a PTY for terminal-view sessions, tailing this
+//! file is how we capture a lossless copy of the conversation for the
+//! DB-backed UI view.
 //!
 //! The polling-only strategy keeps this module self-contained and free of
 //! flaky FSEvent races. Claude does not write at an interactive cadence that

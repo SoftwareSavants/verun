@@ -12,12 +12,17 @@ const {
   setSelectedSessionIdForTaskMock,
   setMainViewMock,
   modelPickerRequestMock,
+  addToastMock,
+  sessionsForTaskMock,
 } = vi.hoisted(() => ({
   openModelPickerMock: vi.fn(),
   createSessionMock: vi.fn(() => Promise.resolve({ id: 'new-session-id' })),
   setSelectedSessionIdForTaskMock: vi.fn(),
   setMainViewMock: vi.fn(),
   modelPickerRequestMock: vi.fn(() => null),
+  addToastMock: vi.fn(),
+  // The sessions of the task; `beforeEach` gives it one, on the added account a1.
+  sessionsForTaskMock: vi.fn((): unknown[] => []),
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -57,6 +62,7 @@ vi.mock('../store/projects', () => ({
   projectById: () => undefined,
 }))
 vi.mock('../store/agents', () => ({ loadAgents: vi.fn(() => Promise.resolve()) }))
+vi.mock('../store/accounts', () => ({ loadAccounts: vi.fn(() => Promise.resolve()) }))
 
 vi.mock('../store/ui', () => ({
   showTaskBoard: () => false,
@@ -71,6 +77,8 @@ vi.mock('../store/ui', () => ({
   setShowQuickOpen: vi.fn(),
   setFocusSearchRequest: vi.fn(),
   setSelectedSessionIdForTask: setSelectedSessionIdForTaskMock,
+  addToast: addToastMock,
+  openSettings: vi.fn(),
 }))
 
 vi.mock('../lib/platform', () => ({
@@ -107,7 +115,7 @@ vi.mock('../store/modelPicker', () => ({
 
 vi.mock('../store/sessions', () => ({
   createSession: createSessionMock,
-  sessionsForTask: () => [{ id: 's-1', agentType: 'claude', model: 'opus-4-5' }],
+  sessionsForTask: sessionsForTaskMock,
 }))
 
 vi.mock('../store/taskContext', () => ({
@@ -147,7 +155,9 @@ describe('TaskWindowShell keyboard shortcuts (issue #243)', () => {
     createSessionMock.mockClear()
     setSelectedSessionIdForTaskMock.mockClear()
     setMainViewMock.mockClear()
+    addToastMock.mockClear()
     modelPickerRequestMock.mockReturnValue(null)
+    sessionsForTaskMock.mockReturnValue([{ id: 's-1', agentType: 'claude', model: 'opus-4-5', accountId: 'a1' }])
     cleanup()
   })
 
@@ -162,6 +172,80 @@ describe('TaskWindowShell keyboard shortcuts (issue #243)', () => {
     const arg = openModelPickerMock.mock.calls[0][0]
     expect(arg.title).toBe('New session')
     expect(arg.defaultAgent).toBe('claude')
+    // The picker lists the accounts of the task's project, its own first.
+    expect(arg.projectId).toBe('p-001')
+  })
+
+  // Presses Cmd+T in the window of the task and returns what the picker was asked for.
+  async function pressCmdT() {
+    render(() => <TaskWindowShell />)
+    await Promise.resolve()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 't', metaKey: true, bubbles: true, cancelable: true }))
+    return openModelPickerMock.mock.calls[0][0]
+  }
+
+  // The picker marks "Current" on the group of the session it was opened from:
+  // its account too, once the harness has accounts.
+  test('Cmd+T tells the picker which account the current session runs on', async () => {
+    const request = await pressCmdT()
+
+    expect(request.defaultAgent).toBe('claude')
+    expect(request.defaultModel).toBe('opus-4-5')
+    expect(request.defaultAccountId).toBe('a1')
+  })
+
+  test('a current session on Default is the null account, not an unknown one', async () => {
+    sessionsForTaskMock.mockReturnValue([{ id: 's-1', agentType: 'claude', model: null, accountId: null }])
+
+    const request = await pressCmdT()
+
+    expect(request.defaultAccountId).toBeNull()
+  })
+
+  test('a task without sessions names no account, and its own harness is the default', async () => {
+    sessionsForTaskMock.mockReturnValue([])
+
+    const request = await pressCmdT()
+
+    expect(request.defaultAgent).toBe('claude')
+    expect(request.defaultAccountId).toBeUndefined()
+  })
+
+  // Opens the picker with Cmd+T and returns what it was asked to do on a pick.
+  async function openPicker() {
+    return (await pressCmdT()).onPick as (agentType: string, model?: string, account?: unknown) => Promise<void>
+  }
+
+  test('a pick starts the session on the account picked, and shows it', async () => {
+    const onPick = await openPicker()
+
+    await onPick('codex', 'gpt-5', { kind: 'account', id: 'a1' })
+
+    expect(createSessionMock).toHaveBeenCalledWith('t-001', 'codex', 'gpt-5', { kind: 'account', id: 'a1' })
+    expect(setSelectedSessionIdForTaskMock).toHaveBeenCalledWith('t-001', 'new-session-id')
+    expect(setMainViewMock).toHaveBeenCalledWith('t-001', 'session')
+  })
+
+  test('a pick without an account leaves it to the project', async () => {
+    const onPick = await openPicker()
+
+    await onPick('claude', 'opus-4-5')
+
+    expect(createSessionMock).toHaveBeenCalledWith('t-001', 'claude', 'opus-4-5', undefined)
+  })
+
+  test('an account problem starting the session is shown as its toast', async () => {
+    createSessionMock.mockRejectedValueOnce('ACCOUNT_ERROR:{"kind":"removed","accountId":"a1","label":"Acme","projects":[],"message":null}')
+    const onPick = await openPicker()
+
+    await onPick('claude', 'opus-4-5', { kind: 'account', id: 'a1' })
+
+    expect(addToastMock).toHaveBeenCalledWith(
+      'Acme was removed. Start a new session on another account.',
+      'error',
+      expect.objectContaining({ title: 'Account removed' }),
+    )
+    expect(setSelectedSessionIdForTaskMock).not.toHaveBeenCalled()
   })
 
   test('Cmd+Shift+T does NOT open model picker (it reopens closed tab)', async () => {

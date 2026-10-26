@@ -1,7 +1,20 @@
-use super::{AbortStrategy, Agent, AgentKind, AgentSkill, InputMode, SessionArgs};
+use super::account_files::inherited_home_dir;
+use super::{
+    AbortStrategy, AccountHome, AccountProfile, Agent, AgentKind, AgentSkill, InputMode,
+    SessionArgs,
+};
+use crate::accounts::identity::{
+    non_empty_str, read_identity_object, unknown_identity, AccountIdentity, SignInStatus,
+};
+use crate::claude_home::ClaudeHome;
 use crate::markdown_skills::{scan_commands_dir, scan_skills_dir};
 use std::collections::HashSet;
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+/// The env var that moves all of Claude's state: settings, history and the
+/// signed-in account.
+const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
 
 /// Claude Code - Anthropic's CLI coding agent.
 ///
@@ -230,7 +243,7 @@ impl Agent for Claude {
         Ok(payload)
     }
 
-    fn discover_skills(&self, scan_root: Option<&Path>, user_home: &Path) -> Vec<AgentSkill> {
+    fn discover_skills(&self, scan_root: Option<&Path>, agent_home: &Path) -> Vec<AgentSkill> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut out: Vec<AgentSkill> = Vec::new();
 
@@ -247,29 +260,133 @@ impl Agent for Claude {
             add(scan_skills_dir(&root.join(".agents/skills")));
             add(scan_commands_dir(&root.join(".claude/commands")));
         }
-        add(scan_skills_dir(&user_home.join(".claude/skills")));
-        add(scan_commands_dir(&user_home.join(".claude/commands")));
-        add(scan_installed_plugins(user_home));
+        add(scan_skills_dir(&agent_home.join("skills")));
+        add(scan_commands_dir(&agent_home.join("commands")));
+        add(scan_installed_plugins(agent_home));
 
         out
     }
+
+    fn account_profile(&self) -> Option<AccountProfile> {
+        Some(AccountProfile {
+            // Everything that can sign Claude in or route it elsewhere. An
+            // account that needs a base URL sets its own.
+            scrub_vars: &[
+                CONFIG_DIR_VAR,
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY",
+                "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+                "CLAUDE_CODE_USE_MANTLE",
+                "ANTHROPIC_BASE_URL",
+            ],
+            fixed_env: &[],
+            api_key_vars: &[
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+            ],
+            login_args: Some(&["auth", "login"]),
+            logout_args: Some(&["auth", "logout"]),
+            login_hint: None,
+            logout_hint: None,
+            allows_existing_dir: true,
+            required_secret: None,
+            in_project_env: true,
+            min_cli_version: None,
+        })
+    }
+
+    fn account_home_env(&self, dir: &Path) -> Vec<(String, String)> {
+        vec![(
+            CONFIG_DIR_VAR.to_string(),
+            dir.to_string_lossy().into_owned(),
+        )]
+    }
+
+    fn account_standard_home(&self, user_home: &Path) -> Option<PathBuf> {
+        // The standard layout, whatever `CLAUDE_CONFIG_DIR` Verun inherited.
+        let standard = ClaudeHome::default_home(user_home, None);
+        Some(standard.root().to_path_buf())
+    }
+
+    fn read_account_identity(&self, home: AccountHome<'_>) -> AccountIdentity {
+        claude_identity(home, std::env::var_os(CONFIG_DIR_VAR))
+    }
 }
 
-/// Path of the CLI's global config: `$CLAUDE_CONFIG_DIR/.claude.json` when
-/// set, else `~/.claude.json`.
-fn claude_global_config_path(home: &Path, config_dir: Option<&Path>) -> std::path::PathBuf {
-    config_dir.unwrap_or(home).join(".claude.json")
+/// Who `claude` is signed in as at `home`. The signed-in account is the
+/// `oauthAccount` of `.claude.json`, which logout removes; the tokens are in
+/// the keychain and are never read. A home without the file, or without an
+/// account in it, has nobody signed in. A file that is there but cannot be
+/// read, or is not shaped like Claude's config, says nothing either way, so it
+/// is `Unknown` rather than a guess at "signed out".
+///
+/// `inherited_config_dir` is the `CLAUDE_CONFIG_DIR` Verun itself was started
+/// with, passed in so tests need not touch the process env.
+fn claude_identity(
+    home: AccountHome<'_>,
+    inherited_config_dir: Option<OsString>,
+) -> AccountIdentity {
+    let path = claude_json_path(home, inherited_config_dir);
+    let config = match read_identity_object(&path) {
+        Ok(config) => config,
+        Err(identity) => return identity,
+    };
+    match config.get("oauthAccount") {
+        None | Some(serde_json::Value::Null) => {
+            AccountIdentity::with_status(SignInStatus::SignedOut)
+        }
+        Some(account) if account.is_object() => AccountIdentity {
+            status: SignInStatus::SignedIn,
+            email: non_empty_str(account, "emailAddress"),
+            org_name: non_empty_str(account, "organizationName"),
+            plan: non_empty_str(account, "organizationType").map(|kind| plan_name(&kind)),
+            providers: Vec::new(),
+        },
+        Some(_) => unknown_identity(&path, "has an oauthAccount that is not an object"),
+    }
+}
+
+/// The `.claude.json` of a home, wherever `ClaudeHome` puts it: inside the dir
+/// of an added account, beside `~/.claude` for Default. Default sessions keep
+/// Verun's own env, so a `CLAUDE_CONFIG_DIR` exported where Verun was launched
+/// is the Default home; as when sessions resolve their home, a value that is
+/// empty or not UTF-8 counts as unset.
+fn claude_json_path(home: AccountHome<'_>, inherited_config_dir: Option<OsString>) -> PathBuf {
+    let claude_home = match home {
+        AccountHome::Dir(dir) => ClaudeHome::for_config_dir(dir),
+        AccountHome::Default { user_home } => {
+            let inherited = inherited_home_dir(inherited_config_dir);
+            ClaudeHome::default_home(user_home, inherited.as_deref())
+        }
+    };
+    claude_home.config_json().to_path_buf()
+}
+
+/// The plan name for an `organizationType`; types not listed pass through.
+fn plan_name(organization_type: &str) -> String {
+    match organization_type {
+        "claude_max" => "Max",
+        "claude_pro" => "Pro",
+        "claude_team" => "Team",
+        "claude_enterprise" => "Enterprise",
+        other => other,
+    }
+    .to_string()
 }
 
 /// Whether the user turned on Claude in Chrome's "Enabled by default"
-/// (`claudeInChromeDefaultEnabled`). The CLI only honours it in interactive
-/// TUI sessions, so stream-json spawns must pass `--chrome` themselves.
-pub fn chrome_default_enabled() -> bool {
-    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
-        return false;
-    };
-    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from);
-    chrome_default_enabled_at(&claude_global_config_path(&home, config_dir.as_deref()))
+/// (`claudeInChromeDefaultEnabled`) in the session's own Claude config. The
+/// CLI only honours it in interactive TUI sessions, so stream-json spawns must
+/// pass `--chrome` themselves. Reads the account's `.claude.json` for an added
+/// account and the Default config otherwise. Blocking file read.
+pub fn chrome_default_enabled_in(home: &crate::claude_home::ClaudeHome) -> bool {
+    chrome_default_enabled_at(home.config_json())
 }
 
 fn chrome_default_enabled_at(config_path: &Path) -> bool {
@@ -280,12 +397,12 @@ fn chrome_default_enabled_at(config_path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Reads `<user_home>/.claude/plugins/installed_plugins.json` and scans each
+/// Reads `<agent_home>/plugins/installed_plugins.json` and scans each
 /// active plugin's `skills/` and `commands/` directories. Mirrors how the CLI
 /// itself resolves plugin content — catalog entries under `marketplaces/`
 /// without a matching manifest entry are ignored.
-fn scan_installed_plugins(user_home: &Path) -> Vec<AgentSkill> {
-    let manifest = user_home.join(".claude/plugins/installed_plugins.json");
+fn scan_installed_plugins(agent_home: &Path) -> Vec<AgentSkill> {
+    let manifest = agent_home.join("plugins/installed_plugins.json");
     let Ok(text) = std::fs::read_to_string(&manifest) else {
         return Vec::new();
     };
@@ -334,16 +451,27 @@ mod tests {
     }
 
     #[test]
-    fn claude_global_config_path_honors_config_dir() {
-        let home = Path::new("/Users/me");
-        assert_eq!(
-            claude_global_config_path(home, None),
-            home.join(".claude.json")
-        );
-        assert_eq!(
-            claude_global_config_path(home, Some(Path::new("/custom"))),
-            Path::new("/custom/.claude.json")
-        );
+    fn chrome_default_follows_the_sessions_claude_home() {
+        let acct = TempDir::new().unwrap();
+        fs::write(
+            acct.path().join(".claude.json"),
+            r#"{"claudeInChromeDefaultEnabled":true}"#,
+        )
+        .unwrap();
+        let home = crate::claude_home::ClaudeHome::for_config_dir(acct.path());
+        assert!(chrome_default_enabled_in(&home));
+
+        let user = TempDir::new().unwrap();
+        fs::write(user.path().join(".claude.json"), r#"{"claudeInChromeDefaultEnabled":true}"#).unwrap();
+        let other = crate::claude_home::ClaudeHome::for_config_dir(TempDir::new().unwrap().path());
+        assert!(!chrome_default_enabled_in(&other), "an account never inherits Default's flag");
+        let default = crate::claude_home::ClaudeHome::default_home(user.path(), None);
+        assert!(chrome_default_enabled_in(&default));
+    }
+
+    /// The Default account's Claude home under a temp user home.
+    fn claude_dir(home: &TempDir) -> PathBuf {
+        home.path().join(".claude")
     }
 
     fn write_skill(dir: &Path, name: &str, body: &str) {
@@ -357,8 +485,8 @@ mod tests {
         fs::write(dir.join(format!("{name}.md")), body).unwrap();
     }
 
-    fn write_installed_plugins(home: &Path, install_paths: &[&Path]) {
-        let plugins_dir = home.join(".claude/plugins");
+    fn write_installed_plugins(agent_home: &Path, install_paths: &[&Path]) {
+        let plugins_dir = agent_home.join("plugins");
         fs::create_dir_all(&plugins_dir).unwrap();
         let entries: Vec<String> = install_paths
             .iter()
@@ -403,9 +531,9 @@ mod tests {
             "plugin-only",
             "---\nname: plugin-only\ndescription: pl\n---\n",
         );
-        write_installed_plugins(home.path(), &[&install_path]);
+        write_installed_plugins(&claude_dir(&home), &[&install_path]);
 
-        let skills = Claude.discover_skills(Some(project.path()), home.path());
+        let skills = Claude.discover_skills(Some(project.path()), &claude_dir(&home));
         let names: HashSet<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains("global-only"));
         assert!(names.contains("project-only"));
@@ -433,7 +561,7 @@ mod tests {
             "---\nname: review\ndescription: project override\n---\n",
         );
 
-        let skills = Claude.discover_skills(Some(project.path()), home.path());
+        let skills = Claude.discover_skills(Some(project.path()), &claude_dir(&home));
         let review: Vec<&AgentSkill> = skills.iter().filter(|s| s.name == "review").collect();
         assert_eq!(review.len(), 1);
         assert_eq!(review[0].description, "project override");
@@ -446,7 +574,7 @@ mod tests {
         fs::create_dir_all(&global_dir).unwrap();
         write_skill(&global_dir, "g1", "---\nname: g1\ndescription: g\n---\n");
 
-        let skills = Claude.discover_skills(None, home.path());
+        let skills = Claude.discover_skills(None, &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["g1"]);
     }
@@ -454,7 +582,7 @@ mod tests {
     #[test]
     fn discover_skills_returns_empty_when_nothing_exists() {
         let home = TempDir::new().unwrap();
-        assert!(Claude.discover_skills(None, home.path()).is_empty());
+        assert!(Claude.discover_skills(None, &claude_dir(&home)).is_empty());
     }
 
     #[test]
@@ -470,9 +598,9 @@ mod tests {
             "review",
             "---\nname: review\ndescription: PR review\n---\n",
         );
-        write_installed_plugins(home.path(), &[&install_path]);
+        write_installed_plugins(&claude_dir(&home), &[&install_path]);
 
-        let skills = Claude.discover_skills(None, home.path());
+        let skills = Claude.discover_skills(None, &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["review"]);
     }
@@ -490,7 +618,7 @@ mod tests {
             "---\nname: example-skill\ndescription: catalog only\n---\n",
         );
 
-        let skills = Claude.discover_skills(None, home.path());
+        let skills = Claude.discover_skills(None, &claude_dir(&home));
         assert!(skills.iter().all(|s| s.name != "example-skill"));
     }
 
@@ -505,7 +633,7 @@ mod tests {
             "---\nname: bump-version\ndescription: Bump the version\n---\n",
         );
 
-        let skills = Claude.discover_skills(Some(project.path()), home.path());
+        let skills = Claude.discover_skills(Some(project.path()), &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"bump-version"));
     }
@@ -520,7 +648,7 @@ mod tests {
             "---\nname: my-global-cmd\ndescription: Global\n---\n",
         );
 
-        let skills = Claude.discover_skills(None, home.path());
+        let skills = Claude.discover_skills(None, &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"my-global-cmd"));
     }
@@ -534,9 +662,9 @@ mod tests {
             "plugin-cmd",
             "---\nname: plugin-cmd\ndescription: from plugin\n---\n",
         );
-        write_installed_plugins(home.path(), &[&install_path]);
+        write_installed_plugins(&claude_dir(&home), &[&install_path]);
 
-        let skills = Claude.discover_skills(None, home.path());
+        let skills = Claude.discover_skills(None, &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"plugin-cmd"));
     }
@@ -553,9 +681,344 @@ mod tests {
             "---\nname: tauri-v2\ndescription: Tauri v2 helper\n---\n",
         );
 
-        let skills = Claude.discover_skills(Some(project.path()), home.path());
+        let skills = Claude.discover_skills(Some(project.path()), &claude_dir(&home));
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"tauri-v2"));
+    }
+
+    #[test]
+    fn discover_skills_reads_account_dir_layout() {
+        // An account's dir is Claude's home itself: skills, commands and
+        // plugins sit directly in it, with no `.claude` level.
+        let account = TempDir::new().unwrap();
+        write_skill(
+            &account.path().join("skills"),
+            "x",
+            "---\nname: x\ndescription: from the account\n---\n",
+        );
+        write_command(
+            &account.path().join("commands"),
+            "deploy",
+            "---\nname: deploy\ndescription: account command\n---\n",
+        );
+        let install_path = account.path().join("plugins/cache/mp/plugin-x/1.0.0");
+        write_skill(
+            &install_path.join("skills"),
+            "from-plugin",
+            "---\nname: from-plugin\ndescription: account plugin\n---\n",
+        );
+        write_installed_plugins(account.path(), &[&install_path]);
+
+        let skills = Claude.discover_skills(None, account.path());
+        let names: HashSet<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, HashSet::from(["x", "deploy", "from-plugin"]));
+    }
+
+    // ── Accounts ────────────────────────────────────────────────────────
+
+    #[test]
+    fn claude_account_profile_values() {
+        assert_eq!(
+            Claude.account_profile(),
+            Some(AccountProfile {
+                scrub_vars: &[
+                    "CLAUDE_CONFIG_DIR",
+                    "ANTHROPIC_API_KEY",
+                    "ANTHROPIC_AUTH_TOKEN",
+                    "CLAUDE_CODE_OAUTH_TOKEN",
+                    "CLAUDE_CODE_USE_BEDROCK",
+                    "CLAUDE_CODE_USE_VERTEX",
+                    "CLAUDE_CODE_USE_FOUNDRY",
+                    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+                    "CLAUDE_CODE_USE_MANTLE",
+                    "ANTHROPIC_BASE_URL",
+                ],
+                fixed_env: &[],
+                api_key_vars: &[
+                    "ANTHROPIC_API_KEY",
+                    "ANTHROPIC_AUTH_TOKEN",
+                    "CLAUDE_CODE_OAUTH_TOKEN",
+                ],
+                login_args: Some(&["auth", "login"]),
+                logout_args: Some(&["auth", "logout"]),
+                login_hint: None,
+                logout_hint: None,
+                allows_existing_dir: true,
+                required_secret: None,
+                in_project_env: true,
+                min_cli_version: None,
+            })
+        );
+    }
+
+    #[test]
+    fn claude_home_env_sets_config_dir_verbatim() {
+        // Claude hashes the exact string into its keychain entry, so nothing
+        // may tidy the spelling on the way to the env.
+        for dir in [
+            "/x/Client Accounts/acme",
+            "/x/Client Accounts/acme/",
+            "/x/./acme/../acme",
+            "/x/o'brien-é",
+        ] {
+            assert_eq!(
+                Claude.account_home_env(Path::new(dir)),
+                vec![("CLAUDE_CONFIG_DIR".to_string(), dir.to_string())],
+                "dir: {dir}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_standard_home_is_dot_claude() {
+        assert_eq!(
+            Claude.account_standard_home(Path::new("/Users/me")),
+            Some(PathBuf::from("/Users/me/.claude"))
+        );
+    }
+
+    #[test]
+    fn claude_prepares_a_managed_dir_by_creating_it() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("accounts").join("a1");
+        Claude.prepare_account_dir(&dir).unwrap();
+        assert!(dir.is_dir());
+        // Preparing it again leaves what is there alone.
+        fs::write(dir.join("marker"), "").unwrap();
+        Claude.prepare_account_dir(&dir).unwrap();
+        assert!(dir.join("marker").exists());
+    }
+
+    fn write_claude_json(dir: &Path, json: &str) {
+        fs::write(dir.join(".claude.json"), json).unwrap();
+    }
+
+    #[test]
+    fn claude_identity_reads_oauth_account() {
+        let dir = TempDir::new().unwrap();
+        // Claude keeps much else in the file; only the account matters.
+        write_claude_json(
+            dir.path(),
+            r#"{
+                "numStartups": 12,
+                "oauthAccount": {
+                    "accountUuid": "a-1",
+                    "emailAddress": "dev@acme.com",
+                    "organizationName": "Acme",
+                    "organizationType": "claude_max"
+                },
+                "projects": {}
+            }"#,
+        );
+        assert_eq!(
+            Claude.read_account_identity(AccountHome::Dir(dir.path())),
+            AccountIdentity {
+                status: SignInStatus::SignedIn,
+                email: Some("dev@acme.com".into()),
+                org_name: Some("Acme".into()),
+                plan: Some("Max".into()),
+                providers: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn claude_identity_names_plans_and_passes_other_types_through() {
+        for (organization_type, plan) in [
+            ("claude_max", "Max"),
+            ("claude_pro", "Pro"),
+            ("claude_team", "Team"),
+            ("claude_enterprise", "Enterprise"),
+            ("claude_free", "claude_free"),
+        ] {
+            let dir = TempDir::new().unwrap();
+            write_claude_json(
+                dir.path(),
+                &format!(r#"{{"oauthAccount":{{"organizationType":"{organization_type}"}}}}"#),
+            );
+            let identity = Claude.read_account_identity(AccountHome::Dir(dir.path()));
+            assert_eq!(
+                identity.plan.as_deref(),
+                Some(plan),
+                "type: {organization_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_identity_is_signed_in_by_the_account_alone() {
+        let dir = TempDir::new().unwrap();
+        write_claude_json(
+            dir.path(),
+            r#"{"oauthAccount":{"emailAddress":"dev@acme.com","organizationName":""}}"#,
+        );
+        assert_eq!(
+            Claude.read_account_identity(AccountHome::Dir(dir.path())),
+            AccountIdentity {
+                status: SignInStatus::SignedIn,
+                email: Some("dev@acme.com".into()),
+                ..AccountIdentity::default()
+            }
+        );
+    }
+
+    #[test]
+    fn claude_identity_signed_out_without_oauth_account() {
+        // Logout removes the account, and a dir that never saw a login has no
+        // file at all.
+        for json in [Some("{}"), Some(r#"{"oauthAccount":null}"#), None] {
+            let dir = TempDir::new().unwrap();
+            if let Some(json) = json {
+                write_claude_json(dir.path(), json);
+            }
+            assert_eq!(
+                Claude.read_account_identity(AccountHome::Dir(dir.path())),
+                AccountIdentity::with_status(SignInStatus::SignedOut),
+                "file: {json:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_identity_unknown_when_the_file_cannot_be_read() {
+        // The file is there, so someone may well be signed in; "signed out"
+        // would refuse the account on a guess.
+        let unknown = AccountIdentity::with_status(SignInStatus::Unknown);
+        // Not JSON, and empty, which is what a truncating rewrite leaves.
+        for json in ["not json", ""] {
+            let dir = TempDir::new().unwrap();
+            write_claude_json(dir.path(), json);
+            assert_eq!(
+                Claude.read_account_identity(AccountHome::Dir(dir.path())),
+                unknown,
+                "file: {json:?}"
+            );
+        }
+        // Not a file.
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(".claude.json")).unwrap();
+        assert_eq!(
+            Claude.read_account_identity(AccountHome::Dir(dir.path())),
+            unknown
+        );
+    }
+
+    #[test]
+    fn claude_identity_unknown_for_an_unexpected_shape() {
+        // Valid JSON, but not what Claude writes: not a logout either.
+        for json in [
+            r#"{"oauthAccount":"dev@acme.com"}"#,
+            r#"{"oauthAccount":42}"#,
+            r#"{"oauthAccount":true}"#,
+            r#"{"oauthAccount":[]}"#,
+            "[]",
+            r#""dev@acme.com""#,
+            "42",
+            "null",
+        ] {
+            let dir = TempDir::new().unwrap();
+            write_claude_json(dir.path(), json);
+            assert_eq!(
+                Claude.read_account_identity(AccountHome::Dir(dir.path())),
+                AccountIdentity::with_status(SignInStatus::Unknown),
+                "file: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_identity_default_reads_home_claude_json() {
+        let home = TempDir::new().unwrap();
+        write_claude_json(
+            home.path(),
+            r#"{"oauthAccount":{"emailAddress":"me@home.dev"}}"#,
+        );
+        // `~/.claude.json` sits beside `~/.claude`, not inside it.
+        fs::create_dir(home.path().join(".claude")).unwrap();
+        write_claude_json(
+            &home.path().join(".claude"),
+            r#"{"oauthAccount":{"emailAddress":"wrong@home.dev"}}"#,
+        );
+
+        let identity = claude_identity(
+            AccountHome::Default {
+                user_home: home.path(),
+            },
+            None,
+        );
+        assert_eq!(identity.status, SignInStatus::SignedIn);
+        assert_eq!(identity.email.as_deref(), Some("me@home.dev"));
+    }
+
+    #[test]
+    fn claude_identity_default_follows_the_inherited_config_dir() {
+        // Default sessions keep Verun's env, so a CLAUDE_CONFIG_DIR exported
+        // where Verun was launched is the Default home.
+        let home = TempDir::new().unwrap();
+        let inherited = TempDir::new().unwrap();
+        write_claude_json(
+            home.path(),
+            r#"{"oauthAccount":{"emailAddress":"home@x.dev"}}"#,
+        );
+        write_claude_json(
+            inherited.path(),
+            r#"{"oauthAccount":{"emailAddress":"inherited@x.dev"}}"#,
+        );
+        let default_email = |inherited: Option<OsString>| {
+            let default = AccountHome::Default {
+                user_home: home.path(),
+            };
+            claude_identity(default, inherited).email
+        };
+
+        assert_eq!(
+            default_email(Some(inherited.path().into())).as_deref(),
+            Some("inherited@x.dev")
+        );
+        // An empty value counts as unset.
+        assert_eq!(
+            default_email(Some(OsString::new())).as_deref(),
+            Some("home@x.dev")
+        );
+        assert_eq!(default_email(None).as_deref(), Some("home@x.dev"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_identity_default_treats_a_non_utf8_inherited_config_dir_as_unset() {
+        // The same reading sessions give the variable when they resolve their
+        // home, so both land on the same `.claude.json`.
+        use std::os::unix::ffi::OsStringExt;
+        let home = TempDir::new().unwrap();
+        write_claude_json(
+            home.path(),
+            r#"{"oauthAccount":{"emailAddress":"home@x.dev"}}"#,
+        );
+        let inherited = OsString::from_vec(vec![b'/', 0xff, b'x']);
+        let identity = claude_identity(
+            AccountHome::Default {
+                user_home: home.path(),
+            },
+            Some(inherited),
+        );
+        assert_eq!(identity.email.as_deref(), Some("home@x.dev"));
+    }
+
+    #[test]
+    fn claude_identity_of_an_added_dir_ignores_the_inherited_config_dir() {
+        let dir = TempDir::new().unwrap();
+        let inherited = TempDir::new().unwrap();
+        write_claude_json(
+            dir.path(),
+            r#"{"oauthAccount":{"emailAddress":"acme@x.dev"}}"#,
+        );
+        write_claude_json(
+            inherited.path(),
+            r#"{"oauthAccount":{"emailAddress":"inherited@x.dev"}}"#,
+        );
+        let identity = claude_identity(AccountHome::Dir(dir.path()), Some(inherited.path().into()));
+        assert_eq!(identity.email.as_deref(), Some("acme@x.dev"));
     }
 
     #[test]
@@ -567,7 +1030,7 @@ mod tests {
         let project = std::env::current_dir()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-        let skills = Claude.discover_skills(project.as_deref(), &home);
+        let skills = Claude.discover_skills(project.as_deref(), &home.join(".claude"));
         println!("discovered {} skills", skills.len());
         let mut names: Vec<_> = skills.iter().map(|s| s.name.clone()).collect();
         names.sort();

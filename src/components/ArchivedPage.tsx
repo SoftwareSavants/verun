@@ -55,8 +55,9 @@ export const ArchivedPage: Component = () => {
         setMissingDialog({ worktree: !worktreeExists, branch: !branchExists })
         return
       }
-      await restoreTask(taskId)
-      addToast('Task restored', 'success')
+      // false: the project's accounts stopped the restore and restoreTask has
+      // shown why, so there is nothing restored to report.
+      if (await restoreTask(taskId)) addToast('Task restored', 'success')
     } finally {
       setRestoringIds(prev => { const s = new Set(prev); s.delete(taskId); return s })
     }
