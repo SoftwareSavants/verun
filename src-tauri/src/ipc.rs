@@ -2863,13 +2863,11 @@ pub async fn remove_account(
     pool: State<'_, SqlitePool>,
     db_tx: State<'_, DbWriteTx>,
     secrets: State<'_, crate::accounts::Secrets>,
-    active: State<'_, ActiveMap>,
-    pty_map: State<'_, ActivePtyMap>,
-    ct_map: State<'_, ClaudeTerminalMap>,
     account_id: String,
     delete_dir: bool,
 ) -> Result<AccountsSnapshot, String> {
     let user_home = account_user_home().map_err(|e| e.to_ipc())?;
+    let app_handle = &app;
     let turn = accounts_manage::remove_account(
         pool.inner(),
         db_tx.inner(),
@@ -2879,9 +2877,9 @@ pub async fn remove_account(
         task::epoch_ms(),
         |session_ids| async move {
             task::stop_sessions(
-                active.inner(),
-                pty_map.inner(),
-                ct_map.inner(),
+                app_handle.state::<ActiveMap>().inner(),
+                app_handle.state::<ActivePtyMap>().inner(),
+                app_handle.state::<ClaudeTerminalMap>().inner(),
                 &session_ids,
             )
             .await;
