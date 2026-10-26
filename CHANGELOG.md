@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 - 2026-10-26
 
 - Multiple accounts per harness: bind each project to its own Claude, Codex, Gemini, Grok or OpenCode login, or a Cursor API key, with per-account sign-in, identity, usage and sign-out handling
 - Claude transcript folders for long or symlinked worktree paths now resolve to the right slug, fixing resume and title lookup for those Default sessions
@@ -11,6 +11,7 @@
 - Shells, hooks and dev servers in projects bound to an account lose inherited provider vars
 - Confirm dialogs no longer confirm when Enter is pressed on a focused Cancel or other button
 - A new session that fails to start (new-session menu, Cmd+T, /new-session, Retry in new session) shows an error toast instead of failing silently
+- Claude in Chrome "Enabled by default" is read from the session account's own Claude config
 
 ## 0.14.6 - 2026-10-25
 
