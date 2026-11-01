@@ -14,7 +14,7 @@ New tasks open as drafts. Write a prompt, pick a harness and model from the comb
 
 ## Multi-agent support
 
-Pluggable agent backend with first-class support for Claude Code, Codex, and Grok (structured approvals, streaming, resume; plan mode where the agent supports it). Cursor, Gemini CLI, and OpenCode are also supported.
+Pluggable agent backend with first-class support for Claude Code, Codex, Grok, and Muse Code (structured approvals, streaming, resume; plan mode where the agent supports it). Cursor, Gemini CLI, and OpenCode are also supported.
 
 Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Astra.
 

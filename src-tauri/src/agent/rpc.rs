@@ -226,6 +226,19 @@ pub fn route_message(
     }
 }
 
+/// Some protocols (Muse MSP) deliver approval requests as notifications and
+/// take the decision as a separate client command. Re-shape those into a
+/// `ServerRequest` with a null id so the stream loop's approval path handles
+/// them uniformly; the agent's response encoder never echoes the id.
+pub fn promote_approval_notification(agent: &dyn crate::agent::Agent, ev: RpcEvent) -> RpcEvent {
+    match ev {
+        RpcEvent::Notification { method, params } if agent.rpc_is_approval(&method) => {
+            RpcEvent::ServerRequest { id: Value::Null, method, params }
+        }
+        other => other,
+    }
+}
+
 /// Spawn a reader task that classifies each line and forwards events. When
 /// stdout closes or errors, every outstanding pending response is failed and
 /// a `ReaderClosed` event is emitted.
@@ -539,6 +552,38 @@ mod tests {
         assert!(err.message.contains("closed"), "got {err:?}");
         let ev = events_rx.recv().await.unwrap();
         assert!(matches!(ev, RpcEvent::ReaderClosed { .. }));
+    }
+
+    #[test]
+    fn approval_notifications_are_promoted_to_server_requests() {
+        // Muse MSP delivers `approval/request` on the view stream (no id) and
+        // takes the decision as a separate `approval/decide` command.
+        let muse = crate::agent::AgentKind::Muse.implementation();
+        let ev = promote_approval_notification(
+            &*muse,
+            RpcEvent::Notification { method: "approval/request".into(), params: json!({"approvalId": "a"}) },
+        );
+        match ev {
+            RpcEvent::ServerRequest { id, method, params } => {
+                assert!(id.is_null());
+                assert_eq!(method, "approval/request");
+                assert_eq!(params["approvalId"], "a");
+            }
+            other => panic!("expected ServerRequest, got {other:?}"),
+        }
+        // Ordinary notifications pass through untouched.
+        let ev = promote_approval_notification(
+            &*muse,
+            RpcEvent::Notification { method: "item/delta".into(), params: json!({}) },
+        );
+        assert!(matches!(ev, RpcEvent::Notification { .. }));
+        // Agents whose approvals are server requests are unaffected.
+        let grok = crate::agent::AgentKind::Grok.implementation();
+        let ev = promote_approval_notification(
+            &*grok,
+            RpcEvent::Notification { method: "session/update".into(), params: json!({}) },
+        );
+        assert!(matches!(ev, RpcEvent::Notification { .. }));
     }
 
     #[test]
