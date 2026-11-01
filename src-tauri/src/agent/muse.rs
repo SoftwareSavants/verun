@@ -433,6 +433,7 @@ impl Agent for Muse {
             session_id: session_id.to_string(),
             tool_name,
             tool_input: Value::Object(input),
+            prompt: None,
         }
     }
 
