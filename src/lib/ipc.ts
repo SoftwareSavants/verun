@@ -1,13 +1,13 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste, AccountSelection, AccountsSnapshot, NewAccountInput, UpdateAccountInput, AccountTerminal, AccountTerminalAction } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 
 export interface CloudSessionChoice { index: number; title: string; updated: string }
 export interface CloudImportStart { importId: string; sessions: CloudSessionChoice[] }
 export interface CloudImportProgress { importId: string; phase: string }
-export const claudeCloudAvailability = () =>
-  invoke<{ available: boolean; reason: string | null }>('claude_cloud_availability')
+export const claudeCloudAvailability = (projectId: string) =>
+  invoke<{ available: boolean; reason: string | null }>('claude_cloud_availability', { projectId })
 export const beginCloudImport = (projectId: string) =>
   invoke<CloudImportStart>('begin_cloud_import', { projectId })
 export const selectCloudImport = (projectId: string, importId: string, index: number) =>
@@ -66,8 +66,8 @@ export const importProjectConfig = (projectId: string, taskId?: string) =>
   invoke<{ setupHook: string; destroyHook: string; startCommand: string }>('import_project_config', { projectId, taskId: taskId ?? null })
 
 // Tasks
-export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType) =>
-  invoke<TaskWithSession>('create_task', { projectId, baseBranch, agentType })
+export const createTask = (projectId: string, baseBranch?: string, agentType?: AgentType, directory?: string, account?: AccountSelection) =>
+  invoke<TaskWithSession>('create_task', { projectId, baseBranch, agentType, directory, account: account ?? null })
 
 export const listTasks = (projectId: string): Promise<Task[]> =>
   DEMO
@@ -102,8 +102,8 @@ export const stopHook = (taskId: string) =>
   invoke<void>('stop_hook', { taskId })
 
 // Sessions
-export const createSession = (taskId: string, agentType: string, model?: string) =>
-  invoke<Session>('create_session', { taskId, agentType, model })
+export const createSession = (taskId: string, agentType: string, model?: string, account?: AccountSelection) =>
+  invoke<Session>('create_session', { taskId, agentType, model, account: account ?? null })
 
 export const sendMessage = (sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) =>
   invoke<void>('send_message', { sessionId, message, attachments, model, planMode, thinkingMode, fastMode })
@@ -132,6 +132,17 @@ export const interruptSession = (sessionId: string) =>
 export const getSessionContextUsage = (sessionId: string) =>
   invoke<unknown>('get_session_context_usage', { sessionId })
 
+export const getMcpStatus = (sessionId: string) =>
+  invoke<McpServerStatus[]>('get_mcp_status', { sessionId })
+
+// Opens the server's sign-in page in the browser; the CLI finishes the flow
+// and reconnects the server on its own.
+export const authenticateMcpServer = (sessionId: string, serverName: string) =>
+  invoke<void>('authenticate_mcp_server', { sessionId, serverName })
+
+export const reconnectMcpServer = (sessionId: string, serverName: string) =>
+  invoke<void>('reconnect_mcp_server', { sessionId, serverName })
+
 // Ephemeral side question (`/btw`). Resolves to `null` when the CLI cannot
 // answer (e.g. on a freshly resumed session before the first turn completes).
 export const askSideQuestion = (sessionId: string, question: string) =>
@@ -140,7 +151,8 @@ export const askSideQuestion = (sessionId: string, question: string) =>
 export const getActiveSessions = (): Promise<string[]> =>
   DEMO ? Promise.resolve([]) : invoke<string[]>('get_active_sessions')
 
-export const respondToApproval = (requestId: string, behavior: 'allow' | 'deny', updatedInput?: Record<string, unknown>, message?: string) =>
+// 'cancel' is only meaningful for MCP elicitations (McpElicitation).
+export const respondToApproval = (requestId: string, behavior: 'allow' | 'deny' | 'cancel', updatedInput?: Record<string, unknown>, message?: string) =>
   invoke<void>('respond_to_approval', { requestId, behavior, updatedInput, message })
 
 export const getPendingApprovals = (): Promise<ToolApprovalRequest[]> =>
@@ -424,11 +436,37 @@ export const workspaceSearchCancel = (taskId: string) =>
 export const checkGitignored = (taskId: string, paths: string[]) =>
   invoke<string[]>('check_gitignored', { taskId, paths })
 
+// Accounts. Every mutation resolves to the fresh snapshot, which every window
+// also gets as the `accounts-changed` event.
+export const listAccounts = (): Promise<AccountsSnapshot> =>
+  DEMO
+    ? Promise.resolve({ accounts: [], defaults: [], projectAccounts: [] })
+    : invoke<AccountsSnapshot>('list_accounts')
+
+export const createAccount = (input: NewAccountInput) =>
+  invoke<AccountsSnapshot>('create_account', { input })
+
+export const updateAccount = (input: UpdateAccountInput) =>
+  invoke<AccountsSnapshot>('update_account', { input })
+
+export const removeAccount = (accountId: string, deleteDir: boolean) =>
+  invoke<AccountsSnapshot>('remove_account', { accountId, deleteDir })
+
+export const setProjectAccount = (projectId: string, agentType: AgentType, accountId: string | null) =>
+  invoke<AccountsSnapshot>('set_project_account', { projectId, agentType, accountId })
+
+// Opens a PTY that runs the harness's own login or logout command on the
+// account. One at a time: a second start is refused with a `busy` account
+// error. The terminal ending sends the `accounts-changed` event.
+export const startAccountTerminal = (accountId: string, action: AccountTerminalAction, rows: number, cols: number) =>
+  invoke<AccountTerminal>('start_account_terminal', { accountId, action, rows, cols })
+
 // Utility
-export const listAgentSkills = (agentKind: AgentType, scanRoot?: string) =>
+export const listAgentSkills = (agentKind: AgentType, scanRoot?: string, accountId?: string | null) =>
   invoke<AgentSkill[]>('list_agent_skills', {
     agentKind,
     scanRoot: scanRoot ?? null,
+    accountId: accountId ?? null,
   })
 
 export const checkAgent = (agentType: AgentType) =>
@@ -485,6 +523,9 @@ export const claudeTerminalClose = (sessionId: string) =>
 // Clipboard
 export const readClipboard = () =>
   invoke<string>('read_clipboard')
+
+export const readClipboardPaste = () =>
+  invoke<ClipboardPaste>('read_clipboard_paste')
 
 export const copyImageToClipboard = (mimeType: string, data: Uint8Array) =>
   invoke<void>('copy_image_to_clipboard', data.buffer as ArrayBuffer, {
@@ -597,6 +638,9 @@ export const quitApp = () =>
 export const openTaskWindow = (taskId: string, taskName?: string) =>
   invoke<void>('open_task_window', { taskId, taskName })
 
+export const focusCurrentWindow = () =>
+  invoke<void>('focus_current_window')
+
 export const openNewTaskWindow = (projectId: string) =>
   invoke<void>('open_new_task_window', { projectId })
 
@@ -607,6 +651,9 @@ export const forceCloseTaskWindow = () =>
 // no base64. Tauri v2 serializes Vec<u8> from/to ArrayBuffer-style payloads.
 export const uploadAttachment = (mime: string, data: Uint8Array): Promise<BlobRef> =>
   invoke<BlobRef>('upload_attachment', { mime, data })
+
+export const uploadAttachmentFromPath = (path: string): Promise<BlobRef> =>
+  invoke<BlobRef>('upload_attachment_from_path', { path })
 
 export const getBlob = (hash: string): Promise<Uint8Array> =>
   invoke<number[] | Uint8Array>('get_blob', { hash })
@@ -663,3 +710,10 @@ export const getResourceUsageNow = () =>
 
 export const resolveTerminalFile = (terminalId: string, path: string) =>
   invoke<{ taskId: string; relativePath: string }>('resolve_terminal_file', { terminalId, path })
+
+export interface DirectoryInfo { path: string; isGit: boolean; branch: string }
+export const inspectTaskDirectory = (path: string) => invoke<DirectoryInfo>('inspect_task_directory', { path })
+
+export function sessionActivitySnapshot(): Promise<import('./sessionActivity').SessionActivity[]> {
+  return invoke('session_activity_snapshot')
+}

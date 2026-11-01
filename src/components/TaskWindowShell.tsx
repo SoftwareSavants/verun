@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, on, onMount, onCleanup } from 'solid-js'
+import { Component, Show, createSignal, createEffect, on, onMount, onCleanup } from 'solid-js'
 import { listen, emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useWindowContext } from '../lib/windowContext'
@@ -8,11 +8,12 @@ import { refreshTaskGit } from '../store/git'
 import { loadTasks } from '../store/tasks'
 import { loadProjects } from '../store/projects'
 import { loadAgents } from '../store/agents'
+import { loadAccounts } from '../store/accounts'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setShowQuickOpen } from '../store/ui'
 import { hydrateTerminalsForTask } from '../store/terminals'
 import { useTaskShortcuts } from '../lib/useTaskShortcuts'
 import { TaskPanel } from './TaskPanel'
-import { NewTaskDialog } from './NewTaskDialog'
+import { NewTaskView } from './NewTaskView'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ToastContainer } from './ToastContainer'
 import { SelectionMenu } from './SelectionMenu'
@@ -59,7 +60,8 @@ export const TaskWindowShell: Component = () => {
     // Register listeners and load task data in parallel for fast startup.
     // Detached windows must hydrate the projects + agents stores too, because
     // the new-session menu reads from `agents` and the start-command button
-    // reads from `projects[].startCommand`.
+    // reads from `projects[].startCommand`. The accounts store is the same:
+    // the pickers and session tabs read it.
     const taskDataPromise = ctx.taskId
       ? ipc.getTask(ctx.taskId).then(async (task) => {
           if (task) {
@@ -71,7 +73,7 @@ export const TaskWindowShell: Component = () => {
       : ctx.projectId
         ? loadTasks(ctx.projectId)
         : Promise.resolve()
-    const storeHydratePromise = Promise.all([loadProjects(), loadAgents()])
+    const storeHydratePromise = Promise.all([loadProjects(), loadAgents(), loadAccounts()])
 
     await Promise.all([initListeners(), taskDataPromise, storeHydratePromise])
 
@@ -135,11 +137,12 @@ export const TaskWindowShell: Component = () => {
   return (
     <>
       <div class="flex flex-col h-screen w-screen bg-surface-0 text-text-primary select-none overflow-hidden">
-        <TaskPanel />
+        <Show when={showNewTask() && ctx.projectId} fallback={<TaskPanel />}>
+          <NewTaskView projectId={ctx.projectId!} onClose={handleNewTaskClose} />
+        </Show>
       </div>
       <ToastContainer />
       <SelectionMenu pos={selMenu()} onClose={() => setSelMenu(null)} />
-      <NewTaskDialog open={showNewTask()} projectId={ctx.projectId} onClose={handleNewTaskClose} />
       <ConfirmDialog
         open={showQuitConfirm()}
         title="Quit Verun?"

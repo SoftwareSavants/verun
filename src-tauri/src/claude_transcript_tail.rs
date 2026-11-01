@@ -2,11 +2,12 @@
 //!
 //! Claude Code writes a full transcript of every user prompt, assistant
 //! message, tool_use, and tool_result to
-//! `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` regardless of whether
-//! the CLI is running in interactive TUI, headless `--print`, or
-//! `--output-format stream-json` mode. When we run Claude in a PTY for
-//! terminal-view sessions, tailing this file is how we capture a lossless
-//! copy of the conversation for the DB-backed UI view.
+//! `<claude home>/projects/<encoded-cwd>/<session-id>.jsonl` (`~/.claude` or
+//! the dir of the session's account) regardless of whether the CLI is running
+//! in interactive TUI, headless `--print`, or `--output-format stream-json`
+//! mode. When we run Claude in a PTY for terminal-view sessions, tailing this
+//! file is how we capture a lossless copy of the conversation for the
+//! DB-backed UI view.
 //!
 //! The polling-only strategy keeps this module self-contained and free of
 //! flaky FSEvent races. Claude does not write at an interactive cadence that
@@ -39,6 +40,7 @@ pub(crate) struct TailState {
     offset: u64,
     /// Bytes past the last newline we have seen, waiting for completion.
     partial: String,
+    claims: Option<crate::transcript_source::SharedClaims>,
 }
 
 impl TailState {
@@ -46,6 +48,7 @@ impl TailState {
         Self {
             offset: start_offset,
             partial: String::new(),
+            claims: None,
         }
     }
 
@@ -69,7 +72,15 @@ impl TailState {
         let mut items = Vec::new();
         while let Some(pos) = self.partial.find('\n') {
             let line: String = self.partial.drain(..=pos).collect();
-            items.extend(parse_transcript_line(&line));
+            if let Some(claims) = &self.claims {
+                if let Ok(value) = serde_json::from_str(&line) {
+                    if let Some(value) = claims.lock().unwrap().transcript(value) {
+                        items.extend(parse_transcript_line(&value.to_string()));
+                    }
+                }
+            } else {
+                items.extend(parse_transcript_line(&line));
+            }
         }
         items
     }
@@ -123,10 +134,20 @@ pub fn spawn_transcript_tail(
     start_offset: u64,
     sender: mpsc::UnboundedSender<OutputItem>,
 ) -> TranscriptTail {
+    spawn_transcript_tail_with_claims(path, start_offset, sender, None)
+}
+
+pub fn spawn_transcript_tail_with_claims(
+    path: impl AsRef<Path>,
+    start_offset: u64,
+    sender: mpsc::UnboundedSender<OutputItem>,
+    claims: Option<crate::transcript_source::SharedClaims>,
+) -> TranscriptTail {
     let path = path.as_ref().to_path_buf();
     let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
     let join = tokio::spawn(async move {
         let mut state = TailState::new(start_offset);
+        state.claims = claims;
         let mut ticker = tokio::time::interval(POLL_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -213,6 +234,33 @@ mod tests {
             OutputItem::Text { text } => assert_eq!(text, expected),
             other => panic!("expected Text, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn terminal_tail_skips_sdk_history_but_keeps_distinct_terminal_turns() {
+        use crate::transcript_source::Claims;
+        use serde_json::json;
+        use std::sync::{Arc, Mutex};
+        let claims = Arc::new(Mutex::new(Claims::default()));
+        let bytes = crate::agent::AgentKind::Claude.implementation().encode_stream_user_message("same prompt", &[]).unwrap();
+        let mut user: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let mut current = None;
+        claims.lock().unwrap().input(&user);
+        let mut start = json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"sdk-response"}}});
+        claims.lock().unwrap().stream(&mut start, &mut current);
+        let mut tail = TailState::new(0);
+        tail.claims = Some(claims);
+        let assistant = json!({"type":"assistant","message":{"id":"sdk-response","content":[{"type":"text","text":"hello"}]}});
+        let echo = format!("{user}\n{assistant}\n");
+        assert!(tail.consume(echo.as_bytes()).is_empty());
+        user["uuid"] = json!("distinct-terminal-turn");
+        let mut assistant = assistant;
+        assistant["message"]["id"] = json!("terminal-response");
+        let fresh = format!("{user}\n{assistant}\n");
+        let items = tail.consume(fresh.as_bytes());
+        assert_eq!(items.len(), 2);
+        assert_user_text(&items[0], "same prompt");
+        assert_assistant_text(&items[1], "hello");
     }
 
     #[test]

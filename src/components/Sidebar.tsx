@@ -1,3 +1,7 @@
+import { sessionActivity } from '../store/activity'
+import { effectiveActivity } from '../lib/sessionActivity'
+import { openTaskBoard, showTaskBoard } from '../store/ui';
+import { Columns3 } from 'lucide-solid';
 import {
   Component,
   For,
@@ -116,6 +120,8 @@ function projectColor(id: string): string {
 // ---------------------------------------------------------------------------
 
 type TaskPhase =
+  | "waiting"
+  | "unknown"
   | "idle" // nothing happening
   | "running" // session actively running
   | "error" // session errored
@@ -124,7 +130,9 @@ type TaskPhase =
   | "conflicts" // PR has merge conflicts
   | "pr-merged"; // PR merged
 
-function taskPhase(taskId: string, sessionPhase: Record<string, "running" | "error" | undefined>): TaskPhase {
+function taskPhase(taskId: string, sessionPhase: Record<string, "running" | "error" | "waiting" | "unknown" | undefined>): TaskPhase {
+  if (sessionPhase[taskId] === "waiting") return "waiting";
+  if (sessionPhase[taskId] === "unknown") return "unknown";
   if (sessionPhase[taskId] === "running") return "running";
   if (sessionPhase[taskId] === "error") return "error";
   // Git/PR state from centralized store
@@ -140,6 +148,8 @@ function taskPhase(taskId: string, sessionPhase: Record<string, "running" | "err
 }
 
 const PHASE_CONFIG: Record<TaskPhase, { color: string; title: string }> = {
+  waiting: { color: "text-amber-400", title: "Input needed in terminal" },
+  unknown: { color: "text-text-dim", title: "Status unavailable" },
   idle: { color: "text-status-idle", title: "Idle" },
   running: { color: "text-text-muted", title: "Running" },
   error: { color: "text-status-error", title: "Error" },
@@ -237,12 +247,17 @@ export const Sidebar: Component = () => {
   })
 
   const sessionPhaseByTask = createMemo(() => {
-    const map: Record<string, "running" | "error" | undefined> = {}
+    const map: Record<string, "running" | "error" | "waiting" | "unknown" | undefined> = {}
     for (const s of sessions) {
-      if (s.status === "running") {
-        map[s.taskId] = "running"
-      } else if (s.status === "error" && map[s.taskId] !== "running") {
-        map[s.taskId] = "error"
+      if (s.closedAt) continue
+      const observed = effectiveActivity(s.status, false, sessionActivity[s.id]?.phase)
+      if (observed.approval) map[s.taskId] = "waiting"
+      else if (map[s.taskId] !== "waiting") {
+        if (observed.error) map[s.taskId] = "error"
+        else if (map[s.taskId] !== "error") {
+          if (observed.running) map[s.taskId] = "running"
+          else if (observed.unknown && map[s.taskId] !== "running") map[s.taskId] = "unknown"
+        }
       }
     }
     return map
@@ -428,6 +443,9 @@ export const Sidebar: Component = () => {
           </button>
         </div>
 
+        <button type="button" class="mx-2 my-1 px-2 py-2 flex items-center gap-2 rounded-md text-xs text-text-secondary hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent" classList={{ 'bg-surface-3': showTaskBoard() }} aria-pressed={showTaskBoard()} onClick={openTaskBoard}>
+          <Columns3 size={14} />Task board
+        </button>
         <GroupToolbar attention={otherAttention()} onAttention={jumpToAttention} />
         {/* Project + task list */}
         <div class="flex-1 overflow-y-auto overflow-x-hidden px-2 no-drag">

@@ -13,6 +13,9 @@ vi.mock('@choochmeque/tauri-plugin-notifications-api', () => ({
   onNotificationClicked: vi.fn(),
 }))
 
+const owned = vi.fn((_id: string) => true)
+vi.mock('./windowContext', () => ({ isTaskOwnedByThisWindow: (id: string) => owned(id) }))
+
 vi.mock('../store/ui', () => ({
   selectedTaskId: vi.fn(() => null),
   addToast: vi.fn(),
@@ -25,6 +28,7 @@ describe('notifications JS flow', () => {
   let now = 1_000_000
   beforeEach(() => {
     pluginSend.mockClear()
+    owned.mockReturnValue(true)
     removeAllActive.mockClear()
     // Jump well past the 1s throttle between tests
     now += 60_000
@@ -72,5 +76,18 @@ describe('notifications JS flow', () => {
     // No successful send means no id was returned to the caller; verify the
     // map wasn't left with a stale entry by sweeping a range of plausible ids.
     for (let i = 1; i < 50; i++) expect(consumePendingNav(i)).toBeUndefined()
+  })
+
+  test('skips tasks owned by another window so only one window notifies', async () => {
+    owned.mockReturnValue(false)
+    await notify({ title: 'T', body: 'B', taskId: 't-D', sessionId: 's-D' })
+    expect(pluginSend).not.toHaveBeenCalled()
+  })
+
+  test('ids do not start at 1, so separate windows do not collide', async () => {
+    await notify({ title: 'T', body: 'B', taskId: 't-E', sessionId: 's-E' })
+    const { id } = pluginSend.mock.calls[0][0] as { id: number }
+    expect(id).toBeGreaterThan(1000)
+    expect(id).toBeLessThanOrEqual(0x7fffffff)
   })
 })

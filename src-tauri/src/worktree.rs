@@ -1,3 +1,4 @@
+use crate::accounts::env::EnvPatch;
 use std::path::Path;
 use std::process::Command;
 
@@ -152,18 +153,26 @@ pub fn verun_env_vars(port_offset: i64, repo_path: &str) -> Vec<(String, String)
     vars
 }
 
-/// Run a shell command in the given directory with optional env vars.
+/// The env a task's shells, hooks and start command run with: Verun's vars
+/// (`verun_env_vars`) with the project's account env (`project_env_for`) merged
+/// over them, so a client project's `claude` follows the client's account. A
+/// project without accounts adds nothing.
+pub fn task_env(port_offset: i64, repo_path: &str, project_env: EnvPatch) -> EnvPatch {
+    let mut env = EnvPatch::from_vars(verun_env_vars(port_offset, repo_path));
+    env.merge(project_env);
+    env
+}
+
+/// Run a shell command in the given directory with `env` applied to it.
 /// Skips silently if the command is empty. Returns Err with stderr on failure.
-pub fn run_hook(cwd: &str, command: &str, env_vars: &[(String, String)]) -> Result<(), String> {
+pub fn run_hook(cwd: &str, command: &str, env: &EnvPatch) -> Result<(), String> {
     if command.is_empty() {
         return Ok(());
     }
 
     let mut cmd = Command::new("sh");
     cmd.args(["-c", command]).current_dir(cwd);
-    for (k, v) in env_vars {
-        cmd.env(k, v);
-    }
+    env.apply_to_std_command(&mut cmd);
 
     let output = cmd
         .output()
@@ -780,14 +789,14 @@ mod tests {
     #[test]
     fn run_hook_empty_is_noop() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(run_hook(dir.path().to_str().unwrap(), "", &[]).is_ok());
+        assert!(run_hook(dir.path().to_str().unwrap(), "", &EnvPatch::default()).is_ok());
     }
 
     #[test]
     fn run_hook_creates_file() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_str().unwrap();
-        run_hook(cwd, "echo hello > hook-test.txt", &[]).unwrap();
+        run_hook(cwd, "echo hello > hook-test.txt", &EnvPatch::default()).unwrap();
         let content = fs::read_to_string(dir.path().join("hook-test.txt")).unwrap();
         assert!(content.contains("hello"));
     }
@@ -795,7 +804,7 @@ mod tests {
     #[test]
     fn run_hook_fails_on_bad_command() {
         let dir = tempfile::tempdir().unwrap();
-        let result = run_hook(dir.path().to_str().unwrap(), "false", &[]);
+        let result = run_hook(dir.path().to_str().unwrap(), "false", &EnvPatch::default());
         assert!(result.is_err());
     }
 
@@ -803,7 +812,7 @@ mod tests {
     fn run_hook_runs_in_correct_dir() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_str().unwrap();
-        run_hook(cwd, "pwd > cwd-test.txt", &[]).unwrap();
+        run_hook(cwd, "pwd > cwd-test.txt", &EnvPatch::default()).unwrap();
         let content = fs::read_to_string(dir.path().join("cwd-test.txt")).unwrap();
         let canonical = fs::canonicalize(dir.path()).unwrap();
         assert_eq!(content.trim(), canonical.to_str().unwrap());
@@ -813,16 +822,29 @@ mod tests {
     fn run_hook_injects_env_vars() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_str().unwrap();
-        let vars = verun_env_vars(0, "/tmp/repo");
+        let env = EnvPatch::from_vars(verun_env_vars(0, "/tmp/repo"));
         run_hook(
             cwd,
             "echo $VERUN_PORT_0 $VERUN_REPO_PATH > env-test.txt",
-            &vars,
+            &env,
         )
         .unwrap();
         let content = fs::read_to_string(dir.path().join("env-test.txt")).unwrap();
         assert!(content.contains("10000"));
         assert!(content.contains("/tmp/repo"));
+    }
+
+    #[test]
+    fn run_hook_applies_env_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let env = EnvPatch {
+            remove: vec!["HOME".to_string()],
+            set: vec![("FOO".to_string(), "bar".to_string())],
+        };
+        run_hook(cwd, r#"printf '%s|%s' "${HOME-unset}" "$FOO" > out"#, &env).unwrap();
+        let content = fs::read_to_string(dir.path().join("out")).unwrap();
+        assert_eq!(content, "unset|bar");
     }
 
     #[test]
@@ -834,5 +856,35 @@ mod tests {
         assert_eq!(port_9.1, "10039");
         let repo = vars.iter().find(|(k, _)| k == "VERUN_REPO_PATH").unwrap();
         assert_eq!(repo.1, "/repo");
+    }
+
+    #[test]
+    fn task_env_without_accounts_is_the_verun_vars() {
+        assert_eq!(
+            task_env(3, "/repo", EnvPatch::default()),
+            EnvPatch::from_vars(verun_env_vars(3, "/repo"))
+        );
+    }
+
+    #[test]
+    fn task_env_adds_the_project_env_to_the_verun_vars() {
+        // What `project_env_for` returns for a project bound to a Claude
+        // account: the scrub list, and the account's dir, which is also scrubbed.
+        let project_env = EnvPatch {
+            remove: vec![
+                "ANTHROPIC_API_KEY".to_string(),
+                "CLAUDE_CONFIG_DIR".to_string(),
+            ],
+            set: vec![("CLAUDE_CONFIG_DIR".to_string(), "/acc/client".to_string())],
+        };
+
+        let env = task_env(3, "/repo", project_env);
+
+        let sets = |key: &str, value: &str| env.set.contains(&(key.to_string(), value.to_string()));
+        assert!(sets("VERUN_PORT_0", "10030"));
+        assert!(sets("VERUN_REPO_PATH", "/repo"));
+        assert!(sets("CLAUDE_CONFIG_DIR", "/acc/client"));
+        // The dir is set, so only the inherited key is left to remove.
+        assert_eq!(env.remove, vec!["ANTHROPIC_API_KEY".to_string()]);
     }
 }

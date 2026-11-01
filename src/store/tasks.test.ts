@@ -8,13 +8,15 @@ import type { Task, Session } from '../types'
 // loses it until the next refresh.
 
 let createTaskResolve: ((v: { task: Task; session: Session }) => void) | null = null
+let createTaskReject: ((e: unknown) => void) | null = null
 let listTasksResult: Task[] = []
 let archiveTaskResolve: (() => void) | null = null
 let archiveTaskReject: ((e: Error) => void) | null = null
 
 vi.mock('../lib/ipc', () => ({
-  createTask: vi.fn(() => new Promise<{ task: Task; session: Session }>((resolve) => {
+  createTask: vi.fn(() => new Promise<{ task: Task; session: Session }>((resolve, reject) => {
     createTaskResolve = resolve
+    createTaskReject = reject
   })),
   listTasks: vi.fn(() => Promise.resolve(listTasksResult)),
   deleteTask: vi.fn().mockResolvedValue(undefined),
@@ -30,7 +32,9 @@ vi.mock('../lib/ipc', () => ({
 // imports can otherwise finish after this suite, leaking rejected listeners.
 vi.mock('../lib/lsp', () => ({ stopLspClient: vi.fn().mockResolvedValue(undefined) }))
 
-import { tasks, setTasks, startTaskCreation, loadTasks, archiveTask } from './tasks'
+import { tasks, setTasks, startTaskCreation, retryTaskCreation, loadTasks, archiveTask, restoreTask, getTaskError, isTaskCreating } from './tasks'
+import { toasts, setToasts } from './ui'
+import * as ipc from '../lib/ipc'
 
 const makeTask = (overrides: Partial<Task> = {}): Task => ({
   id: 'task-real',
@@ -67,6 +71,7 @@ const makeSession = (): Session => ({
   agentType: 'claude',
   model: null,
   closedAt: null,
+  accountId: null,
 })
 
 describe('archiveTask', () => {
@@ -133,5 +138,100 @@ describe('startTaskCreation', () => {
 
     expect(tasks.length).toBe(1)
     expect(tasks[0].id).toBe('task-real')
+  })
+})
+
+// A task that could not be created stays in the sidebar as a failed row that
+// says why. An account problem is told in words, and also raised as its toast
+// with the way to fix it; the row never shows the backend's raw error string.
+describe('a task that fails to be created', () => {
+  const signedOut = 'ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a1","label":"Acme","projects":[],"message":null}'
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  beforeEach(() => {
+    setTasks([])
+    setToasts([])
+    createTaskResolve = null
+    createTaskReject = null
+    vi.clearAllMocks()
+  })
+
+  test('an account problem is told in words, with its toast, not as the raw error', async () => {
+    const id = startTaskCreation('project-1', 'main')
+
+    createTaskReject!(signedOut)
+    await settle()
+
+    expect(getTaskError(id)).toBe('Acme is signed out.')
+    expect(isTaskCreating(id)).toBe(false)
+    expect(toasts().map(t => ({ title: t.title, actions: t.actions?.map(a => a.label) }))).toEqual([
+      { title: 'Account signed out', actions: ['Log in'] },
+    ])
+  })
+
+  test('any other failure keeps its own text and raises no toast', async () => {
+    const id = startTaskCreation('project-1', 'main')
+
+    createTaskReject!('Project project-1 not found')
+    await settle()
+
+    expect(getTaskError(id)).toBe('Project project-1 not found')
+    expect(toasts()).toEqual([])
+  })
+
+  test('retrying a failed creation tells an account problem the same way', async () => {
+    const id = startTaskCreation('project-1', 'main')
+    createTaskReject!('Project project-1 not found')
+    await settle()
+    expect(toasts()).toEqual([])
+
+    retryTaskCreation(id, 'project-1', 'main')
+    createTaskReject!(signedOut)
+    await settle()
+
+    expect(getTaskError(id)).toBe('Acme is signed out.')
+    expect(toasts().map(t => t.title)).toEqual(['Account signed out'])
+  })
+})
+
+// Restoring runs the project's setup hook again, on the project's accounts. One
+// the keychain won't give a secret for fails the restore with an account error:
+// the task stays archived, and the user gets the toast that leads to the fix.
+describe('restoreTask', () => {
+  const secret = 'ACCOUNT_ERROR:{"kind":"secret","accountId":"a1","label":"Acme","projects":[],"message":"ANTHROPIC_API_KEY has no stored value"}'
+
+  beforeEach(() => {
+    setTasks([makeTask({ id: 'task-real', archived: true })])
+    setToasts([])
+    vi.mocked(ipc.restoreTask).mockReset()
+  })
+
+  test('a restored task is active again', async () => {
+    vi.mocked(ipc.restoreTask).mockResolvedValue(undefined)
+
+    await expect(restoreTask('task-real')).resolves.toBe(true)
+
+    expect(tasks[0].archived).toBe(false)
+    expect(toasts()).toEqual([])
+  })
+
+  test('a restore the account stopped resolves false, keeps the task archived and shows the toast', async () => {
+    vi.mocked(ipc.restoreTask).mockRejectedValue(secret)
+
+    await expect(restoreTask('task-real')).resolves.toBe(false)
+
+    expect(tasks[0].archived).toBe(true)
+    expect(toasts().map(t => ({ title: t.title, message: t.message }))).toEqual([
+      { title: 'Keychain error', message: "Couldn't read a secret for Acme from the keychain." },
+    ])
+  })
+
+  test('any other failure still rejects, with the task archived and no toast', async () => {
+    vi.mocked(ipc.restoreTask).mockRejectedValue('Worktree is gone')
+
+    await expect(restoreTask('task-real')).rejects.toBe('Worktree is gone')
+
+    expect(tasks[0].archived).toBe(true)
+    expect(toasts()).toEqual([])
   })
 })

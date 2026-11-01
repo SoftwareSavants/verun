@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, cleanup } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { buildPrMessage } from './GitActions'
@@ -55,6 +55,8 @@ function makeGitState(pr: TaskGitState['pr'] = null, overrides: Partial<TaskGitS
 }
 
 import { GitActions } from './GitActions'
+import { sessionById } from '../store/sessions'
+import { primeSkills } from '../store/commands'
 
 function makeGit(overrides: Partial<TaskGitState> = {}): TaskGitState {
   return {
@@ -81,6 +83,34 @@ describe('closed PR treated as no PR', () => {
     }))
     const { getByText } = render(() => <GitActions taskId="t-001" sessionId="s-001" />)
     expect(getByText('Create PR')).toBeTruthy()
+  })
+})
+
+describe('skill context', () => {
+  beforeEach(() => {
+    cleanup()
+    vi.mocked(primeSkills).mockClear()
+    taskGitMock.mockReturnValue(makeGitState())
+  })
+  afterEach(() => {
+    vi.mocked(sessionById).mockReturnValue(undefined)
+  })
+
+  const sessionOn = (accountId: string | null) =>
+    ({ id: 's-001', taskId: 't-001', agentType: 'claude', accountId }) as ReturnType<typeof sessionById>
+
+  test('skills are primed for the session account', () => {
+    vi.mocked(sessionById).mockReturnValue(sessionOn('a1'))
+    render(() => <GitActions taskId="t-001" sessionId="s-001" />)
+    expect(primeSkills).toHaveBeenCalledWith(
+      expect.objectContaining({ agentKind: 'claude', accountId: 'a1', taskId: 't-001' }),
+    )
+  })
+
+  test('a Default session primes skills with a null account', () => {
+    vi.mocked(sessionById).mockReturnValue(sessionOn(null))
+    render(() => <GitActions taskId="t-001" sessionId="s-001" />)
+    expect(primeSkills).toHaveBeenCalledWith(expect.objectContaining({ accountId: null }))
   })
 })
 

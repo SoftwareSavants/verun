@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 // ---------------------------------------------------------------------------
@@ -97,12 +97,14 @@ pub struct PolicyResult {
 /// - `worktree_path`: the task's worktree directory (for write scoping)
 /// - `repo_path`: the project's repo directory (for read scoping)
 /// - `trust_level`: the task's trust level
+/// - `claude_home`: the Claude home of the session's account (for read scoping)
 pub fn evaluate(
     tool_name: &str,
     tool_input: &serde_json::Value,
     worktree_path: &str,
     repo_path: &str,
     trust_level: TrustLevel,
+    claude_home: &Path,
 ) -> PolicyResult {
     // ExitPlanMode always requires approval — it's the plan review step
     if tool_name == "ExitPlanMode" {
@@ -156,7 +158,7 @@ pub fn evaluate(
     }
 
     match tool_name {
-        // Read-only tools — allowed within the project repo or ~/.claude
+        // Read-only tools - allowed within the project repo or the Claude home
         "Read" | "Glob" | "Grep" | "LSP" => {
             if let Some(path) = extract_path(tool_input) {
                 if is_path_within(&path, repo_path) {
@@ -164,10 +166,10 @@ pub fn evaluate(
                         decision: PolicyDecision::AutoAllow,
                         reason: format!("read within project repo: {path}"),
                     }
-                } else if is_within_claude_home(&path) {
+                } else if is_within_claude_home(&path, claude_home) {
                     PolicyResult {
                         decision: PolicyDecision::AutoAllow,
-                        reason: format!("read within ~/.claude: {path}"),
+                        reason: format!("read within Claude home: {path}"),
                     }
                 } else {
                     PolicyResult {
@@ -265,19 +267,16 @@ fn extract_path(input: &serde_json::Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// True if `path` is inside `$HOME/.claude` (skill caches, plugin assets, settings).
+/// True if `path` is inside `claude_home` (skill caches, plugin assets, settings).
 /// Reads are auto-allowed there so Claude can load its own skills/plugins without
 /// prompting on every file.
-fn is_within_claude_home(path: &str) -> bool {
-    let Some(home) = std::env::var_os("HOME") else {
-        return false;
-    };
-    let claude_dir = Path::new(&home).join(".claude");
-    is_path_within(path, &claude_dir.to_string_lossy())
+fn is_within_claude_home(path: &str, claude_home: &Path) -> bool {
+    is_path_within(path, &claude_home.to_string_lossy())
 }
 
 /// Check if a path is within a boundary directory.
-/// Canonicalizes both paths to resolve `..`, symlinks, etc.
+/// Canonicalizes both paths to resolve `..`, symlinks, etc. A path that can't
+/// be resolved is compared as given, by `is_lexically_within`.
 fn is_path_within(path: &str, boundary: &str) -> bool {
     let Ok(canonical_path) = std::fs::canonicalize(path) else {
         // If the path doesn't exist yet (e.g. Write to a new file),
@@ -290,15 +289,27 @@ fn is_path_within(path: &str, boundary: &str) -> bool {
                 }
             }
         }
-        // Can't resolve — be conservative, but check string prefix as fallback
-        return path.starts_with(boundary);
+        // Can't resolve - be conservative, but compare the paths as given
+        return is_lexically_within(path, boundary);
     };
 
     let Ok(canonical_boundary) = std::fs::canonicalize(boundary) else {
-        return path.starts_with(boundary);
+        return is_lexically_within(path, boundary);
     };
 
     canonical_path.starts_with(&canonical_boundary)
+}
+
+/// `is_path_within` for paths that can't be resolved on disk. It compares whole
+/// path components, not characters, so `/acc/a1x` is not inside `/acc/a1`.
+///
+/// A path with a `..` is never inside. Nothing resolved it, so where it lands
+/// is unknown (`/acc/a1/gone/../../a2` begins with `/acc/a1` and ends in
+/// `/acc/a2`), and a path that can't be placed can't be vouched for.
+fn is_lexically_within(path: &str, boundary: &str) -> bool {
+    let path = Path::new(path);
+    let climbs = path.components().any(|part| part == Component::ParentDir);
+    !climbs && path.starts_with(boundary)
 }
 
 /// AST-based deny-pattern analysis for bash commands.
@@ -697,6 +708,7 @@ mod tests {
 
     const WORKTREE: &str = "/tmp/project/.verun/worktrees/silly-penguin";
     const REPO: &str = "/tmp/project";
+    const CLAUDE_HOME: &str = "/tmp/claude-home";
 
     // -- Trust level overrides --
 
@@ -708,6 +720,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -724,6 +737,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -736,6 +750,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -748,6 +763,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Supervised,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -764,6 +780,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -776,6 +793,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -788,6 +806,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Supervised,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -796,15 +815,16 @@ mod tests {
 
     #[test]
     fn read_inside_repo_auto_allowed() {
-        // Use string prefix check since test paths don't exist on disk
+        // Use path prefix check since test paths don't exist on disk
         let result = evaluate(
             "Read",
             &json!({"file_path": "/tmp/project/src/main.rs"}),
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
-        // Will fall through to string prefix check since paths don't exist
+        // Will fall through to path prefix check since paths don't exist
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
 
@@ -816,22 +836,246 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
 
     #[test]
     fn read_in_claude_home_auto_allowed() {
-        let home = std::env::var("HOME").expect("HOME set");
-        let path = format!("{home}/.claude/plugins/cache/foo/bar.md");
+        // The home is whatever the session's account says, not $HOME/.claude.
         let result = evaluate(
             "Read",
-            &json!({ "file_path": path }),
+            &json!({ "file_path": format!("{CLAUDE_HOME}/settings.json") }),
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
+        assert!(result.reason.contains("Claude home"), "{}", result.reason);
+    }
+
+    #[test]
+    fn read_in_another_accounts_dir_requires_approval() {
+        // A session on account a2 must not read a1's files unprompted.
+        let result = evaluate(
+            "Read",
+            &json!({ "file_path": "/tmp/acc/a1/.claude.json" }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new("/tmp/acc/a2"),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn read_in_sibling_account_dir_not_auto_allowed() {
+        // `a1x` starts with the characters of `a1` but is another directory.
+        let result = evaluate(
+            "Read",
+            &json!({ "file_path": "/tmp/acc/a1x/secret" }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new("/tmp/acc/a1"),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn read_in_sibling_repo_with_shared_prefix_requires_approval() {
+        // Same string-prefix trap against the repo boundary.
+        let result = evaluate(
+            "Read",
+            &json!({ "file_path": "/tmp/project-other/src/main.rs" }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn write_in_sibling_worktree_with_shared_prefix_requires_approval() {
+        // `silly-penguin-2` is a different worktree from `silly-penguin`.
+        let result = evaluate(
+            "Edit",
+            &json!({ "file_path": format!("{WORKTREE}-2/src/lib.rs") }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn path_within_compares_whole_path_components() {
+        // None of these exist, so this is the fallback that compares the
+        // strings as given.
+        assert!(is_path_within("/tmp/acc/a1/skills/x", "/tmp/acc/a1"));
+        assert!(is_path_within("/tmp/acc/a1", "/tmp/acc/a1"));
+        assert!(is_path_within("/tmp/acc/a1/skills", "/tmp/acc/a1/"));
+        assert!(!is_path_within("/tmp/acc/a1x/secret", "/tmp/acc/a1"));
+        assert!(!is_path_within("/tmp/acc/a1x", "/tmp/acc/a1"));
+        assert!(!is_path_within("/tmp/acc", "/tmp/acc/a1"));
+    }
+
+    // -- A `..` that nothing can resolve never counts as inside --
+    //
+    // The paths below don't exist (or run through a folder that doesn't), so
+    // `canonicalize` fails and only the comparison of the paths as given is
+    // left. It must not read `a1/gone/../../a2` as a path inside `a1`.
+
+    #[test]
+    fn path_within_does_not_trust_a_parent_dir_it_cannot_resolve() {
+        assert!(!is_path_within(
+            "/tmp/acc/a1/gone/../../a2/secret",
+            "/tmp/acc/a1"
+        ));
+        assert!(!is_path_within("/tmp/acc/a1/../a2/secret", "/tmp/acc/a1"));
+        assert!(!is_path_within(
+            "/tmp/acc/a1/../../etc/passwd",
+            "/tmp/acc/a1"
+        ));
+        // Without the `..` the same paths are as before.
+        assert!(is_path_within("/tmp/acc/a1/gone/secret", "/tmp/acc/a1"));
+    }
+
+    #[test]
+    fn read_cannot_leave_the_claude_home_through_a_parent_dir() {
+        let result = evaluate(
+            "Read",
+            &json!({ "file_path": "/tmp/acc/a1/gone/../../a2/secret" }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new("/tmp/acc/a1"),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn read_cannot_leave_the_repo_through_a_parent_dir() {
+        let result = evaluate(
+            "Read",
+            &json!({ "file_path": format!("{REPO}/gone/../../etc/passwd") }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn write_cannot_leave_the_worktree_through_a_parent_dir() {
+        let result = evaluate(
+            "Edit",
+            &json!({ "file_path": format!("{WORKTREE}/gone/../../other-task/src/lib.rs") }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
+        );
+        assert_eq!(result.decision, PolicyDecision::RequireApproval);
+    }
+
+    // -- The same rules on real directories --
+    //
+    // These paths do resolve, which runs the other branches of
+    // `is_path_within`: the whole path is canonicalized when the file is
+    // there, its folder when it is not yet.
+
+    /// A Read of `path` by a session whose Claude home is `claude_home`. The
+    /// repo and worktree are fixtures that don't exist, so only the Claude
+    /// home rule can allow it.
+    fn read_with_home(path: &Path, claude_home: &Path) -> PolicyResult {
+        evaluate(
+            "Read",
+            &json!({ "file_path": path.to_string_lossy() }),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            claude_home,
+        )
+    }
+
+    #[test]
+    fn real_claude_home_does_not_cover_a_sibling_dir_with_the_same_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a1 = tmp.path().join("acc/a1");
+        let a1x = tmp.path().join("acc/a1x");
+        std::fs::create_dir_all(a1.join("skills/x")).unwrap();
+        std::fs::create_dir_all(a1x.join("skills")).unwrap();
+        std::fs::write(a1.join("skills/x/SKILL.md"), "").unwrap();
+        std::fs::write(a1x.join("secret"), "").unwrap();
+
+        // The file is there: the whole path is resolved.
+        let inside = read_with_home(&a1.join("skills/x/SKILL.md"), &a1);
+        assert_eq!(inside.decision, PolicyDecision::AutoAllow);
+        assert!(inside.reason.contains("Claude home"), "{}", inside.reason);
+        let sibling = read_with_home(&a1x.join("secret"), &a1);
+        assert_eq!(sibling.decision, PolicyDecision::RequireApproval);
+
+        // The file is not there yet, its folder is: the folder is resolved.
+        let inside = read_with_home(&a1.join("skills/x/new.md"), &a1);
+        assert_eq!(inside.decision, PolicyDecision::AutoAllow);
+        assert!(inside.reason.contains("Claude home"), "{}", inside.reason);
+        let sibling = read_with_home(&a1x.join("skills/new.md"), &a1);
+        assert_eq!(sibling.decision, PolicyDecision::RequireApproval);
+    }
+
+    #[test]
+    fn parent_dir_cannot_leave_a_real_claude_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a1 = tmp.path().join("acc/a1");
+        let a2 = tmp.path().join("acc/a2");
+        std::fs::create_dir_all(a1.join("skills")).unwrap();
+        std::fs::create_dir_all(&a2).unwrap();
+        std::fs::write(a2.join("secret"), "").unwrap();
+
+        // `skills` is there, so the OS folds the `..` away and a2 shows.
+        let through_existing = a1.join("skills/../../a2/secret");
+        // `gone` is not, so nothing folds the `..` away.
+        let through_missing = a1.join("gone/../../a2/secret");
+        for path in [through_existing, through_missing] {
+            let result = read_with_home(&path, &a1);
+            assert_eq!(
+                result.decision,
+                PolicyDecision::RequireApproval,
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_decide_by_their_target_for_a_real_claude_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a1 = tmp.path().join("acc/a1");
+        let a2 = tmp.path().join("acc/a2");
+        std::fs::create_dir_all(a1.join("skills")).unwrap();
+        std::fs::create_dir_all(&a2).unwrap();
+        std::fs::write(a2.join("secret"), "").unwrap();
+        // A link spelled inside a1 that leads to a2, and one from outside
+        // that leads into a1.
+        std::os::unix::fs::symlink(&a2, a1.join("skills/linked")).unwrap();
+        std::os::unix::fs::symlink(&a1, tmp.path().join("alias")).unwrap();
+
+        // The file is there: it is a2/secret, wherever it is spelled.
+        let there = read_with_home(&a1.join("skills/linked/secret"), &a1);
+        assert_eq!(there.decision, PolicyDecision::RequireApproval);
+        // The file is not there yet, its folder is.
+        let not_yet = read_with_home(&a1.join("skills/linked/new"), &a1);
+        assert_eq!(not_yet.decision, PolicyDecision::RequireApproval);
+        // Spelled outside a1, it is a1/skills.
+        let alias = read_with_home(&tmp.path().join("alias/skills"), &a1);
+        assert_eq!(alias.decision, PolicyDecision::AutoAllow);
     }
 
     #[test]
@@ -842,6 +1086,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -854,6 +1099,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -868,6 +1114,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -880,6 +1127,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -892,13 +1140,21 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
 
     #[test]
     fn write_no_path_requires_approval() {
-        let result = evaluate("Write", &json!({}), WORKTREE, REPO, TrustLevel::Normal);
+        let result = evaluate(
+            "Write",
+            &json!({}),
+            WORKTREE,
+            REPO,
+            TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
+        );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
 
@@ -912,6 +1168,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -924,6 +1181,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -936,6 +1194,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -948,6 +1207,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -960,6 +1220,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git push --force"));
@@ -973,6 +1234,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -985,6 +1247,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -997,6 +1260,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1009,6 +1273,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("curl/wget piped to shell"));
@@ -1022,6 +1287,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1034,6 +1300,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -1046,6 +1313,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1058,6 +1326,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1070,6 +1339,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1084,6 +1354,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllow);
     }
@@ -1098,6 +1369,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("MCP tool"));
@@ -1113,6 +1385,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1125,6 +1398,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1139,6 +1413,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
     }
@@ -1269,6 +1544,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -1585,6 +1861,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git branch delete"));
@@ -1598,6 +1875,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git branch force-delete"));
@@ -1611,6 +1889,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git worktree remove"));
@@ -1624,6 +1903,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::RequireApproval);
         assert!(result.reason.contains("git worktree prune"));
@@ -1637,6 +1917,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(result.decision, PolicyDecision::AutoAllowLogged);
     }
@@ -1671,6 +1952,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains("hard-blocked"));
@@ -1685,6 +1967,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains("hard-blocked"));
@@ -1698,6 +1981,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Supervised,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1710,6 +1994,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains("hard-blocked"));
@@ -1723,6 +2008,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::Normal,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains("hard-blocked"));
@@ -1736,6 +2022,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1750,6 +2037,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1762,6 +2050,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1774,6 +2063,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1793,6 +2083,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
         assert!(r.reason.contains(".verun"));
@@ -1806,6 +2097,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1818,6 +2110,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1830,6 +2123,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1842,6 +2136,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1856,6 +2151,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1868,6 +2164,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1880,6 +2177,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1892,6 +2190,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1904,6 +2203,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1916,6 +2216,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1930,6 +2231,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1942,6 +2244,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1954,6 +2257,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1966,6 +2270,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1978,6 +2283,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -1990,6 +2296,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -2004,6 +2311,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -2016,6 +2324,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -2028,6 +2337,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::RequireApproval);
     }
@@ -2042,6 +2352,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2054,6 +2365,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2066,6 +2378,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2078,6 +2391,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2090,6 +2404,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2102,6 +2417,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2114,6 +2430,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }
@@ -2126,6 +2443,7 @@ mod tests {
             WORKTREE,
             REPO,
             TrustLevel::FullAuto,
+            Path::new(CLAUDE_HOME),
         );
         assert_eq!(r.decision, PolicyDecision::AutoAllow);
     }

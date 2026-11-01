@@ -1,6 +1,11 @@
+mod accounts;
+mod activity;
 pub mod agent;
 mod blob;
+mod clipboard;
 mod bts_scaffold;
+mod claude_control;
+mod claude_home;
 mod claude_jsonl;
 mod claude_terminal;
 mod claude_transcript_tail;
@@ -25,9 +30,11 @@ mod snapshots;
 mod stream;
 mod task;
 mod terminal_links;
+mod transcript_source;
 mod tsgo_check;
 mod wakeup;
 mod watcher;
+mod workspace;
 mod worktree;
 
 use dashmap::DashMap;
@@ -42,6 +49,7 @@ pub type WindowTaskMap = DashMap<String, String>;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if activity::run_hook_if_requested() { return; }
     // macOS defaults RLIMIT_NOFILE soft to 256. With multiple tasks each
     // holding LSP + codex app-server + PTY + watcher FDs, a burst of
     // concurrent `git` spawns (e.g. sidebar refresh when a task is added)
@@ -69,6 +77,8 @@ pub fn run() {
                 .add_migrations("sqlite:verun.db", db::migrations())
                 .build(),
         )
+        .manage(activity::ActivityStore::default())
+        .manage(transcript_source::SourceRegistry::default())
         .manage(ipc::new_agent_cache())
         .manage(task::new_active_map())
         .manage(task::new_pending_approvals())
@@ -77,6 +87,7 @@ pub fn run() {
         .manage(task::new_setup_in_progress())
         .manage(task::new_hook_pty_map())
         .manage(pty::new_active_pty_map())
+        .manage(accounts::login::LoginGuard::default())
         .manage(claude_terminal::new_claude_terminal_map())
         .manage(cloud_import::CloudImportMap::default())
         .manage(watcher::new_file_watcher_map())
@@ -200,6 +211,17 @@ pub fn run() {
             app.manage(pool);
             app.manage(db_tx);
             app.manage(blob::AppDataDir(app_data_dir));
+            // Account secrets (API keys) live in the OS keychain, never SQLite.
+            // The service name carries the bundle id, so dev and prod builds
+            // keep separate secrets.
+            app.manage(accounts::Secrets(std::sync::Arc::new(
+                accounts::secrets::KeychainSecretStore::new(accounts::secrets::keychain_service(
+                    &app.config().identifier,
+                )),
+            )));
+            // A login or logout terminal ending sends the windows the accounts
+            // as they are then.
+            accounts::login::install_exit_listener(app.handle());
 
             #[cfg(unix)]
             {
@@ -322,6 +344,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            activity::session_activity_snapshot,
             // Projects
             ipc::add_project,
             ipc::gh_status,
@@ -338,6 +361,7 @@ pub fn run() {
             ipc::import_project_config,
             // Tasks
             ipc::create_task,
+            ipc::inspect_task_directory,
             ipc::begin_cloud_import,
             ipc::select_cloud_import,
             ipc::claude_cloud_availability,
@@ -363,6 +387,9 @@ pub fn run() {
             ipc::abort_message,
             ipc::interrupt_session,
             ipc::get_session_context_usage,
+            ipc::get_mcp_status,
+            ipc::authenticate_mcp_server,
+            ipc::reconnect_mcp_server,
             ipc::ask_side_question,
             ipc::get_active_sessions,
             ipc::respond_to_approval,
@@ -445,8 +472,16 @@ pub fn run() {
             ipc::claude_terminal_close,
             // Clipboard
             ipc::read_clipboard,
+            ipc::read_clipboard_paste,
             ipc::copy_image_to_clipboard,
             ipc::write_binary_file,
+            // Accounts
+            ipc::list_accounts,
+            ipc::create_account,
+            ipc::update_account,
+            ipc::remove_account,
+            ipc::set_project_account,
+            ipc::start_account_terminal,
             // Utility
             ipc::list_agent_skills,
             ipc::check_agent,
@@ -486,6 +521,7 @@ pub fn run() {
             ipc::disarm_all_steps,
             // Window management
             ipc::open_task_window,
+            ipc::focus_current_window,
             ipc::open_new_task_window,
             ipc::force_close_task_window,
             // Better-T-Stack scaffolding
@@ -498,6 +534,7 @@ pub fn run() {
             bts_scaffold::default_bootstrap_dir,
             // Blob store (attachments)
             ipc::upload_attachment,
+            ipc::upload_attachment_from_path,
             ipc::get_blob,
             ipc::get_storage_stats,
             ipc::run_blob_gc,

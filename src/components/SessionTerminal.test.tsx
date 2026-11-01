@@ -1,17 +1,20 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, fireEvent } from '@solidjs/testing-library'
 
 type Handler = (ev: { payload: { terminalId: string; exitCode: number | null } }) => void
 const ptyExitedHandlers: Handler[] = []
 type DropHandler = (ev: { payload: { paths: string[]; position?: { x: number; y: number } } }) => void
 const dropHandlers: DropHandler[] = []
+const dropTargets = new Map<DropHandler, string | undefined>()
+const webview = vi.hoisted(() => ({ label: 'main' }))
+vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ label: webview.label }) }))
 type OutputHandler = (ev: { payload: { terminalId: string; data: string; seq: number } }) => void
 const ptyOutputHandlers: OutputHandler[] = []
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn((event: string, handler: Handler | DropHandler | OutputHandler) => {
+  listen: vi.fn((event: string, handler: Handler | DropHandler | OutputHandler, options?: { target: { label: string } }) => {
     if (event === 'pty-exited') ptyExitedHandlers.push(handler as Handler)
-    if (event === 'tauri://drag-drop') dropHandlers.push(handler as DropHandler)
+    if (event === 'tauri://drag-drop') { dropHandlers.push(handler as DropHandler); dropTargets.set(handler as DropHandler, options?.target.label) }
     if (event === 'pty-output') ptyOutputHandlers.push(handler as OutputHandler)
     return Promise.resolve(() => {
       const a = ptyExitedHandlers.indexOf(handler as Handler)
@@ -45,6 +48,7 @@ vi.mock('./ShellTerminal', () => ({
 }))
 
 import { SessionTerminal } from './SessionTerminal'
+import { toasts, setToasts } from '../store/ui'
 
 async function flush() {
   await Promise.resolve()
@@ -52,10 +56,15 @@ async function flush() {
   await new Promise((r) => setTimeout(r, 0))
 }
 
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 beforeEach(() => {
+  webview.label = 'main'
+  vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([{ left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400 }] as unknown as DOMRectList)
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400 } as DOMRect)
   ptyExitedHandlers.length = 0
   dropHandlers.length = 0
   ptyOutputHandlers.length = 0
+  setToasts([])
   ipcMocks.claudeTerminalOpen.mockReset()
   ipcMocks.claudeTerminalClose.mockReset()
   ipcMocks.ptyWrite.mockReset()
@@ -74,15 +83,15 @@ describe('SessionTerminal', () => {
     expect(shell.getAttribute('data-terminal-id')).toBe('term-1')
   })
 
-  // Lock in that Claude terminal mode disables the manual Cmd+V intercept so
-  // xterm's native paste flow forwards the bracketed-paste sequence to the
-  // PTY. Claude Code's TUI then polls NSPasteboard itself for image bytes.
-  test('passes disableCmdVIntercept so xterm handles paste natively', async () => {
+  // Claude terminal mode uses the same Cmd+V path as other terminals: images
+  // and Finder files are pasted as paths, which Claude attaches reliably.
+  // Relying on Claude polling NSPasteboard after an empty paste was flaky.
+  test('does not disable the Cmd+V intercept', async () => {
     ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
     const { getByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
     const shell = getByTestId('shell-terminal')
-    expect(shell.getAttribute('data-disable-cmd-v')).toBe('true')
+    expect(shell.getAttribute('data-disable-cmd-v')).toBeNull()
   })
 
   test('shows a reconnect button when the matching pty-exited event fires', async () => {
@@ -124,6 +133,50 @@ describe('SessionTerminal', () => {
     const { findByText } = render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
     await findByText(/boom/)
+  })
+
+  // A signed-out or removed account is not a terminal fault: the user gets the
+  // account toast with a way to fix it, and Reconnect to try again afterwards.
+  describe('when the session\'s account cannot be used', () => {
+    const signedOut = 'ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a1","label":"Acme","projects":[],"message":null}'
+
+    test('shows the account toast instead of the raw error, and offers Reconnect', async () => {
+      ipcMocks.claudeTerminalOpen.mockRejectedValue(signedOut)
+      const { findByText, queryByText, queryByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
+      await flush()
+
+      expect(toasts().map(t => ({ title: t.title, message: t.message, actions: t.actions?.map(a => a.label) }))).toEqual([
+        { title: 'Account signed out', message: 'Acme is signed out.', actions: ['Log in'] },
+      ])
+      expect(queryByText(/ACCOUNT_ERROR/)).toBeNull()
+      expect(queryByTestId('shell-terminal')).toBeNull()
+      // Not left on "Starting Claude Code..." with nothing that can end it.
+      expect(queryByText(/starting claude code/i)).toBeNull()
+      await findByText(/reconnect/i)
+    })
+
+    test('Reconnect opens the terminal once the account works', async () => {
+      ipcMocks.claudeTerminalOpen
+        .mockRejectedValueOnce(signedOut)
+        .mockResolvedValueOnce({ terminalId: 'term-1', sessionId: 's-1' })
+      const { findByText, findByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
+      await flush()
+
+      fireEvent.click(await findByText(/reconnect/i))
+      await flush()
+
+      expect(ipcMocks.claudeTerminalOpen).toHaveBeenCalledTimes(2)
+      expect((await findByTestId('shell-terminal')).getAttribute('data-terminal-id')).toBe('term-1')
+    })
+
+    test('other errors still show their text and no toast', async () => {
+      ipcMocks.claudeTerminalOpen.mockRejectedValue('Session has no resumable id yet')
+      const { findByText } = render(() => <SessionTerminal sessionId="s-1" />)
+      await flush()
+
+      await findByText(/no resumable id/i)
+      expect(toasts()).toEqual([])
+    })
   })
 
   test('reconnecting after an exit clears the previous error state', async () => {
@@ -218,11 +271,8 @@ describe('SessionTerminal', () => {
     expect(ipcMocks.ptyWrite).toHaveBeenCalledWith('term-1', "'/tmp/a.png' '/tmp/My Pictures/b.png' ")
   })
 
-  // Regression: the previous implementation used a bbox hit-test against
-  // getBoundingClientRect (CSS px) vs Tauri's physical-px drop position,
-  // which silently dropped subsequent drops after layout shifts. Lock in
-  // that we forward every drop while the terminal is mounted.
-  test('drag-drop fires repeatedly without bbox gating', async () => {
+  // Repeated drops continue working without remounting the terminal.
+  test('drag-drop fires repeatedly in the visible terminal', async () => {
     ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
     render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
@@ -272,4 +322,41 @@ describe('SessionTerminal', () => {
     const shell = await findByTestId('shell-terminal')
     expect(shell.getAttribute('data-terminal-id')).toBe('term-2')
   })
+})
+
+test('a native drop targets only its own window, not another mounted session', async () => {
+  ipcMocks.claudeTerminalOpen.mockImplementation((id: string) => Promise.resolve({ terminalId: `term-${id}` }))
+  render(() => <SessionTerminal sessionId="one" />)
+  webview.label = 'detached'
+  render(() => <SessionTerminal sessionId="two" />)
+  await flush()
+  for (const handler of dropHandlers) {
+    if (!dropTargets.get(handler) || dropTargets.get(handler) === 'detached') handler({ payload: { paths: ['/tmp/image.png'] } })
+  }
+  expect(ipcMocks.ptyWrite.mock.calls).toEqual([['term-two', "'/tmp/image.png' "]])
+})
+test('hidden sessions and drops outside the terminal ignore attachments; physical coordinates respect display scale', async () => {
+  ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1' })
+  const view = render(() => <SessionTerminal sessionId="one" />)
+  await flush()
+  const root = view.container.firstElementChild as HTMLElement
+  const rects = vi.spyOn(root, 'getClientRects').mockReturnValue([] as unknown as DOMRectList)
+  dropHandlers[0]({ payload: { paths: ['/tmp/hidden.png'] } })
+  expect(ipcMocks.ptyWrite).not.toHaveBeenCalled()
+  rects.mockReturnValue([root.getBoundingClientRect()] as unknown as DOMRectList)
+  vi.stubGlobal('devicePixelRatio', 2)
+  dropHandlers[0]({ payload: { paths: ['/tmp/outside.png'], position: { x: 1200, y: 100 } } })
+  expect(ipcMocks.ptyWrite).not.toHaveBeenCalled()
+  dropHandlers[0]({ payload: { paths: ['/tmp/inside.png'], position: { x: 800, y: 600 } } })
+  expect(ipcMocks.ptyWrite).toHaveBeenCalledWith('term-1', "'/tmp/inside.png' ")
+})
+
+test('closing before async listener registration completes removes every listener', async () => {
+  ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1' })
+  const view = render(() => <SessionTerminal sessionId="one" />)
+  view.unmount()
+  await flush()
+  expect(dropHandlers).toHaveLength(0)
+  expect(ptyOutputHandlers).toHaveLength(0)
+  expect(ptyExitedHandlers).toHaveLength(0)
 })

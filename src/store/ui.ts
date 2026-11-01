@@ -1,6 +1,7 @@
 import { createSignal } from 'solid-js'
+import { emit } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import { registerWindowedTaskChecker } from '../lib/windowContext'
+import { isTaskWindow, registerWindowedTaskChecker } from '../lib/windowContext'
 import { pendingSessionNavForTask, selectedSessionForTask, setPendingSessionNavForTask, setSelectedSessionForTask, setTerminalOpenForTask, terminalOpenForTask } from './taskContext'
 import { openTaskWindow } from '../lib/ipc'
 
@@ -10,6 +11,7 @@ const savedTaskId = typeof localStorage !== 'undefined' ? localStorage.getItem('
 const [_selectedTaskId, _setSelectedTaskId] = createSignal<string | null>(savedTaskId)
 export const selectedTaskId = _selectedTaskId
 export function setSelectedTaskId(id: string | null) {
+  setShowTaskBoard(false)
   _setSelectedTaskId(id)
   if (id) localStorage.setItem('verun:selectedTaskId', id)
   else localStorage.removeItem('verun:selectedTaskId')
@@ -137,14 +139,15 @@ export function setRightPanelTab(tab: RightPanelTab) {
 // to focus its input even if it's already open.
 export const [focusSearchRequest, setFocusSearchRequest] = createSignal(0)
 
-export const [showNewTaskDialog, setShowNewTaskDialog] = createSignal(false)
-
-// Set to a project id to open the New Task dialog for that project. Shared
-// across Layout, Sidebar, and post-addProject flows so every entry point that
-// creates a project can open the dialog consistently.
+// The open draft belongs to this project. It creates no task until the first send.
+// All entry points share this state so navigation keeps the draft available.
 export const [newTaskProjectId, setNewTaskProjectId] = createSignal<string | null>(null)
 
 export function requestNewTaskForProject(projectId: string) {
+  setSelectedProjectId(projectId)
+  setSelectedTaskId(null)
+  setShowSettings(false)
+  setShowArchived(false)
   setNewTaskProjectId(projectId)
 }
 
@@ -169,9 +172,37 @@ export const [showCloneRepo, setShowCloneRepo] = createSignal(false)
 // instance bound to this signal.
 export const [setupProject, setSetupProject] = createSignal<import('../types').Project | null>(null)
 
+export const [showTaskBoard, setShowTaskBoard] = createSignal(false)
+export function openTaskBoard() {
+  setShowSettings(false)
+  setShowArchived(false)
+  setShowTaskBoard(true)
+}
+
 export const [showSettings, setShowSettings] = createSignal(false)
 export const [showArchived, setShowArchived] = createSignal(false)
 export const [showQuickOpen, setShowQuickOpen] = createSignal(false)
+
+// A section of Settings someone else wants shown (an account toast's "Log in"
+// goes to Accounts). SettingsPage selects it, then clears the request.
+export const [settingsSectionRequest, setSettingsSectionRequest] = createSignal<string | null>(null)
+
+/** What a task window sends to ask the main window to open Settings. */
+export const OPEN_SETTINGS_EVENT = 'open-settings'
+
+/**
+ * Open Settings, on `section` when given. Settings is a page of the main
+ * window, so a task window asks the main window to open it (appInit.ts
+ * listens) instead of flipping state nothing there renders.
+ */
+export function openSettings(section?: string): void {
+  if (isTaskWindow) {
+    void emit(OPEN_SETTINGS_EVENT, { section: section ?? null })
+    return
+  }
+  setShowSettings(true)
+  if (section) setSettingsSectionRequest(section)
+}
 
 export function showTerminal(): boolean {
   const tid = selectedTaskId()

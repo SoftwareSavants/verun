@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { waitFor } from '@solidjs/testing-library'
 const ipc = vi.hoisted(() => ({ selectCloudImport: vi.fn(), finishCloudImport: vi.fn(), beginCloudImport: vi.fn(), cancelCloudImport: vi.fn().mockResolvedValue(undefined), listTasks: vi.fn().mockResolvedValue([]) }))
-const ui = vi.hoisted(() => ({ selectedTaskId: vi.fn(() => 'elsewhere'), setSelectedTaskId: vi.fn(), setSelectedSessionIdForTask: vi.fn() }))
+const ui = vi.hoisted(() => ({ selectedTaskId: vi.fn(() => 'elsewhere'), setSelectedTaskId: vi.fn(), setSelectedSessionIdForTask: vi.fn(), addToast: vi.fn(), openSettings: vi.fn() }))
 vi.mock('../lib/ipc', () => ipc)
 vi.mock('./ui', () => ui)
 vi.mock('./sessions', () => ({ setSessions: vi.fn(), sessionsForTask: () => [], cleanupSessionStorage: vi.fn(), clearSessionContextsForTask: vi.fn() }))
@@ -63,4 +63,14 @@ test('retry refuses ambiguous titles instead of importing a different session', 
   await waitFor(() => expect(getTaskError(id)).toContain('duplicate title'))
   expect(ipc.selectCloudImport).toHaveBeenCalledTimes(1)
   expect(ipc.cancelCloudImport).toHaveBeenCalledWith('ambiguous')
+})
+test('a retry that meets an account problem says so in the row and raises the account toast', async () => {
+  ipc.selectCloudImport.mockRejectedValueOnce(new Error('CLI exited'))
+  ipc.beginCloudImport.mockRejectedValue('ACCOUNT_ERROR:{"kind":"signedOut","accountId":"a1","label":"Acme","projects":[],"message":null}')
+  const id = startCloudTaskImport('project', 'stale', choice)
+  await waitFor(() => expect(getTaskError(id)).toContain('CLI exited'))
+  expect(ui.addToast).not.toHaveBeenCalled()
+  retryCloudTaskImport(id)
+  await waitFor(() => expect(getTaskError(id)).toBe('Acme is signed out.'))
+  expect(ui.addToast).toHaveBeenCalledWith('Acme is signed out.', 'error', expect.objectContaining({ title: 'Account signed out' }))
 })

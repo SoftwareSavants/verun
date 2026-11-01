@@ -35,6 +35,7 @@ function session(overrides: Partial<Session> = {}): Session {
     agentType: 'claude',
     model: null,
     closedAt: null,
+    accountId: null,
     ...overrides,
   }
 }

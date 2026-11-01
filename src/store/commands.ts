@@ -11,6 +11,8 @@ export interface Command {
 /** Context needed to resolve skills for a given composer. */
 export interface SkillContext {
   agentKind: AgentType
+  /** The session's account (null/absent: Default) - skills live in its home, so it keys both caches. */
+  accountId?: string | null
   /** Repo root - coarse cache key and fallback scan root. */
   projectRoot: string
   /** Task id - fine cache key; skills differ per worktree. */
@@ -31,28 +33,32 @@ const byTask = new Map<string, AgentSkill[]>()
 const inFlight = new Set<string>()
 const [version, setVersion] = createSignal(0)
 
-const coarseKey = (agent: AgentType, projectRoot: string) => `${agent}|${projectRoot}`
-const taskKey = (taskId: string, agent: AgentType) => `${taskId}|${agent}`
+const accountPart = (accountId: string | null | undefined) => accountId ?? 'default'
+const coarseKey = (agent: AgentType, accountId: string | null | undefined, projectRoot: string) =>
+  `${agent}|${accountPart(accountId)}|${projectRoot}`
+// Starts with the task id: dropTaskSkills matches on that prefix.
+const taskKey = (taskId: string, agent: AgentType, accountId: string | null | undefined) =>
+  `${taskId}|${agent}|${accountPart(accountId)}`
 
 export function getSkills(ctx: SkillContext): AgentSkill[] {
   version()
   if (ctx.taskId) {
-    const fine = byTask.get(taskKey(ctx.taskId, ctx.agentKind))
+    const fine = byTask.get(taskKey(ctx.taskId, ctx.agentKind, ctx.accountId))
     if (fine) return fine
   }
-  return byKey.get(coarseKey(ctx.agentKind, ctx.projectRoot)) ?? []
+  return byKey.get(coarseKey(ctx.agentKind, ctx.accountId, ctx.projectRoot)) ?? []
 }
 
 export function hasSkill(name: string, ctx: SkillContext): boolean {
   return getSkills(ctx).some(s => s.name === name)
 }
 
-async function loadCoarse(agent: AgentType, projectRoot: string): Promise<void> {
-  const key = coarseKey(agent, projectRoot)
+async function loadCoarse(agent: AgentType, accountId: string | null | undefined, projectRoot: string): Promise<void> {
+  const key = coarseKey(agent, accountId, projectRoot)
   if (byKey.has(key) || inFlight.has(key)) return
   inFlight.add(key)
   try {
-    const skills = await ipc.listAgentSkills(agent, projectRoot)
+    const skills = await ipc.listAgentSkills(agent, projectRoot, accountId ?? null)
     byKey.set(key, skills)
     setVersion(v => v + 1)
   } catch (e) {
@@ -65,10 +71,10 @@ async function loadCoarse(agent: AgentType, projectRoot: string): Promise<void> 
 export function refreshTaskSkills(ctx: SkillContext): void {
   if (!ctx.taskId) return
   const scan = ctx.worktreePath ?? ctx.projectRoot
-  const key = taskKey(ctx.taskId, ctx.agentKind)
+  const key = taskKey(ctx.taskId, ctx.agentKind, ctx.accountId)
   if (inFlight.has(key)) return
   inFlight.add(key)
-  ipc.listAgentSkills(ctx.agentKind, scan)
+  ipc.listAgentSkills(ctx.agentKind, scan, ctx.accountId ?? null)
     .then(skills => {
       byTask.set(key, skills)
       setVersion(v => v + 1)
@@ -79,7 +85,7 @@ export function refreshTaskSkills(ctx: SkillContext): void {
 
 /** Ensure coarse cache is populated and kick off a background fine refresh. */
 export function primeSkills(ctx: SkillContext): void {
-  void loadCoarse(ctx.agentKind, ctx.projectRoot)
+  void loadCoarse(ctx.agentKind, ctx.accountId, ctx.projectRoot)
   refreshTaskSkills(ctx)
 }
 

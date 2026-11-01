@@ -73,6 +73,7 @@ const makeSession = (overrides: Partial<Session> = {}): Session => ({
   agentType: 'claude' as const,
   model: null,
   closedAt: null,
+  accountId: null,
   ...overrides,
 })
 

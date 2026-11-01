@@ -1,3 +1,4 @@
+import { editorFilePath, isExternalFile } from '../lib/editorFilePath'
 import { Component, createEffect, on, createSignal, Show, onCleanup, onMount } from 'solid-js'
 import { EditorView, keymap, lineNumbers, ViewPlugin, GutterMarker, gutterLineClass, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, hoverTooltip, tooltips, Decoration, type DecorationSet, type Tooltip } from '@codemirror/view'
 import { linter, forEachDiagnostic, type Diagnostic } from '@codemirror/lint'
@@ -1269,6 +1270,7 @@ export const CodeEditor: Component<Props> = (props) => {
   onCleanup(() => { unsubTabClose(); unsubTaskCleanup(); unsubBeforeActiveEditorChange() })
 
   const save = async () => {
+    if (isExternalFile(props.relativePath)) return
     try {
       const task = await ipc.getTask(props.taskId)
       if (task) {
@@ -1340,11 +1342,15 @@ export const CodeEditor: Component<Props> = (props) => {
       save,
     )
 
+    if (isExternalFile(path)) {
+      extensions.push(EditorState.readOnly.of(true), EditorView.editable.of(false))
+    }
+
     // Add LSP plugin with correct languageId for JS/TS files.
-    if (isLspSupported(path)) {
+    if (!isExternalFile(path) && isLspSupported(path)) {
       try {
         const client = await getLspClient(props.taskId, worktreePath)
-        const fileUri = `file://${worktreePath}/${path}`
+        const fileUri = `file://${editorFilePath(worktreePath, path)}`
         const ext = path.split('.').pop()?.toLowerCase() || ''
         const languageId = ext === 'tsx' ? 'typescriptreact'
           : ext === 'jsx' ? 'javascriptreact'
@@ -1380,7 +1386,7 @@ export const CodeEditor: Component<Props> = (props) => {
     }
 
     if (worktreePath) {
-      currentFileUri = `file://${worktreePath}/${path}`
+      currentFileUri = `file://${editorFilePath(worktreePath, path)}`
       registerEditorView(currentFileUri, editorView)
     }
 
@@ -1421,7 +1427,7 @@ export const CodeEditor: Component<Props> = (props) => {
       if (!task) return
       // Loading from disk — clear any stale editor state
       clearEditorStateCache(props.taskId, path)
-      const fullPath = `${task.worktreePath}/${path}`
+      const fullPath = editorFilePath(task.worktreePath, path)
       const text = await ipc.readTextFile(fullPath)
       currentContent = text
       setOriginalContent(text)
@@ -1532,7 +1538,7 @@ export const CodeEditor: Component<Props> = (props) => {
 
   const handleRevealInFinder = async () => {
     const task = await ipc.getTask(props.taskId)
-    if (task) ipc.openInFinder(`${task.worktreePath}/${props.relativePath}`)
+    if (task) ipc.openInFinder(editorFilePath(task.worktreePath, props.relativePath))
     setContextMenu(null)
   }
 

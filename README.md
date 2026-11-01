@@ -2,13 +2,15 @@
 
 The open-source workspace for parallel coding agents.
 
-Spin up multiple AI coding agents - each in its own isolated git worktree - and manage them from a single native app with a full editor, terminal, and git workflow built in. No account, no subscription, no data leaving your machine.
+Spin up multiple AI coding agents - in isolated git worktrees or existing folders - and manage them from a single native app with a full editor, terminal, and git workflow built in. No account, no subscription, no data leaving your machine.
 
 ![Verun screenshot](screenshot.png)
 
 ## Run agents in parallel
 
-Every task gets its own git worktree, branch, and set of ports - agents can't interfere with each other. Lifecycle hooks copy `.env` files, install dependencies, and start dev servers automatically so each agent starts ready to work. Define your setup once in a `.verun.json` and the whole team gets the same config.
+Task headers identify the owning project, including in detached windows. Terminal-mode Claude tasks are automatically named from their conversation.
+
+New tasks open as drafts. Write a prompt, pick a harness and model from the combined selector, choose where to run it below the composer, and send to start. Use a new worktree for an isolated branch and ports, the project folder to work in place, or any existing folder, including non-Git directories. Tasks sharing a folder see the same files; archiving or removing a direct-folder task preserves those files. For isolated worktrees, lifecycle hooks copy `.env` files, install dependencies, and start dev servers automatically so each agent starts ready to work. Define your setup once in a `.verun.json` and the whole team gets the same config.
 
 ## Multi-agent support
 
@@ -16,12 +18,17 @@ Pluggable agent backend with first-class support for Claude Code, Codex, Grok, a
 
 Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Astra.
 
+- **Multiple accounts per harness** - add several Claude, Codex, Gemini, Grok, or OpenCode logins (Cursor via API key) in Settings and bind each project to the account it should use; Default keeps behaving as before.
+
 ## Stay in control without babysitting
+
+- **Task board** - scan live Needs attention, Running, and Ready columns across projects and groups; search tasks, open a card, or reveal archived work. Columns follow agent activity automatically. Claude terminal sessions report activity through per-launch observer hooks; unavailable status is shown separately. Terminal detection is partial, and approvals stay in Claude.
 
 - **Steps** - queue follow-up prompts while an agent is working; arm them to auto-send on idle, or fire manually
 - **Side question (`/btw`)** - type `/btw <question>` mid-stream (or click the "Ask sideways" button that appears in the corner of the chat while Claude is working) to ask an ephemeral question - the answer shows in a floating panel and never enters conversation history
 - **Fork from any message** - hover any past reply to rewind the conversation in place, or branch into a new task with the worktree restored to the code as it was at that exact turn. Verun takes a git snapshot at every turn, so you can undo an entire direction - not just a line of code
 - **Tool approval** - configurable trust levels per task: supervised, normal, or full auto
+- **MCP servers** - answer MCP servers' questions in chat, and see servers that failed or need sign-in with one-click Sign in / Reconnect
 - **UI / Terminal toggle for Claude** - flip any Claude session into a real PTY running `claude --resume` to use the unmodified TUI, while history, fork, and search keep working because Verun tails the on-disk transcript. The mode is sticky per session with an app-wide default in Settings. On macOS, allow microphone access when prompted to use Claude Code's `/voice` dictation
 - **Notifications** - desktop alerts when an agent finishes, fails, or needs approval so you can context-switch away
 
@@ -36,7 +43,7 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 - **Problems panel** - project-wide type checking with click-to-navigate, one-click "ask agent to fix", and at most four background checker processes across all tasks
 - **Side-by-side diffs** - syntax-highlighted diffs for working-tree changes and individual commits
 - **Git workflow** - commit, push, create PR, merge, and inspect branch-scoped GitHub Actions/PR state without leaving the app; remote refresh is cached and only invalidated when relevant GitHub state changes
-- **Integrated terminal** - drop into any task's worktree with a built-in shell; click file paths to open task files at their line and column in the editor; bounded output buffers and parser backpressure keep noisy commands responsive while preserving recent scrollback across windows
+- **Integrated terminal** - drop into any task's worktree with a built-in shell; click wrapped file paths to open persistent editor tabs at their line and column, including read-only files outside the workspace; Cmd+V pastes images and Finder files as paths; bounded output buffers and parser backpressure keep noisy commands responsive while preserving recent scrollback across windows
 - **File tree & Quick Open** - browse files (gitignored entries shown dimmed like VS Code), fuzzy-find with CMD+P, preview media and markdown inline
 - **Workspace search** - Cmd+Shift+F content search across the task's worktree with case/whole-word/regex toggles and include/exclude globs, powered by embedded ripgrep
 - **Multi-window** - pop any task into its own window for side-by-side work across monitors

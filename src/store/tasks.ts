@@ -10,6 +10,7 @@ import { sessionsForTask, cleanupSessionStorage, clearSessionContextsForTask } f
 import { clearTaskContext } from './taskContext'
 import { clearTaskContextStorage } from './taskContextStorage'
 import { dropTaskSkills } from './commands'
+import { failureText, notifyAccountError } from '../lib/accountErrors'
 
 // Dynamic-imported on first use: static import would pull lib/lsp.ts's
 // module-level `listen(...)` side effects into test evaluation for any file
@@ -125,7 +126,7 @@ export function startTaskCreation(projectId: string, baseBranch: string, agentTy
     })
   }).catch(err => {
     removeCreating(placeholderId)
-    setTaskError(placeholderId, String(err))
+    setTaskError(placeholderId, failureText(err))
   })
 
   return placeholderId
@@ -204,7 +205,7 @@ async function runCloudTaskImport(id: string) {
       job.importId = null
     }
     phase('Import failed')
-    setTaskError(id, String(error).replace(/^Error: /, ''))
+    setTaskError(id, failureText(error, String(error).replace(/^Error: /, '')))
   } finally {
     job.running = false
     removeCreating(id)
@@ -239,7 +240,7 @@ export function retryTaskCreation(placeholderId: string, projectId: string, base
     })
   }).catch(err => {
     removeCreating(placeholderId)
-    setTaskError(placeholderId, String(err))
+    setTaskError(placeholderId, failureText(err))
   })
 }
 
@@ -300,9 +301,22 @@ export async function archiveTask(id: string, skipDestroyHook = false) {
   }
 }
 
-export async function restoreTask(id: string) {
-  await ipc.restoreTask(id)
+/**
+ * Restores an archived task. Resolves `true` once it is active again, and
+ * `false` when the project's accounts stopped it (restoring runs the setup hook
+ * on them): the user has been shown the account toast with a way to fix it, and
+ * the task stays archived. A caller that reports success has to check which.
+ * Any other error is thrown.
+ */
+export async function restoreTask(id: string): Promise<boolean> {
+  try {
+    await ipc.restoreTask(id)
+  } catch (e) {
+    if (notifyAccountError(e)) return false
+    throw e
+  }
   setTasks(t => t.id === id, 'archived', false)
+  return true
 }
 
 export async function updateTaskName(id: string, name: string) {

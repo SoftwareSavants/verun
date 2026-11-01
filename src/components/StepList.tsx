@@ -1,7 +1,7 @@
 import { Component, For, Show, createSignal } from 'solid-js'
 import { GripVertical, Play, Pause, X, ArrowUp, ListChecks, Zap, Paperclip, Brain } from 'lucide-solid'
 import { getSteps, removeStep, updateStep, reorderSteps, extractStep } from '../store/steps'
-import { sendMessage, sessionById } from '../store/sessions'
+import { sendStep, sessionById } from '../store/sessions'
 import { agents } from '../store/agents'
 import { clsx } from 'clsx'
 import { ModelSelector } from './ModelSelector'
@@ -42,12 +42,7 @@ export const StepList: Component<Props> = (props) => {
     if (!props.sessionId) return
     const step = extractStep(props.sessionId, stepId)
     if (!step) return
-    const attachments = step.attachmentsJson ? JSON.parse(step.attachmentsJson) : undefined
-    await sendMessage(
-      step.sessionId, step.message, attachments,
-      step.model ?? undefined, step.planMode ?? undefined,
-      step.thinkingMode ?? undefined, step.fastMode ?? undefined,
-    )
+    await sendStep(step)
   }
 
   const startEdit = (stepId: string, message: string) => {

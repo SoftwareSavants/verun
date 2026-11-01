@@ -1,6 +1,53 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 - 2026-10-26
+
+- Multiple accounts per harness: bind each project to its own Claude, Codex, Gemini, Grok or OpenCode login, or a Cursor API key, with per-account sign-in, identity, usage and sign-out handling
+- Claude transcript folders for long or symlinked worktree paths now resolve to the right slug, fixing resume and title lookup for those Default sessions
+- Read-policy path checks match whole path components, so sibling folders sharing a prefix are no longer auto-allowed
+- Default with an inherited CLAUDE_CONFIG_DIR reads skills from that dir, and ~/.claude reads are no longer auto-allowed
+- Session titles fall back to a plain title instead of borrowing another login: non-Claude sessions on added accounts get a plain title unless the project binds an added Claude account, and Default sessions still use Claude titling
+- Deleting a task waits at most 10 s on a locked keychain
+- Shells, hooks and dev servers in projects bound to an account lose inherited provider vars
+- Confirm dialogs no longer confirm when Enter is pressed on a focused Cancel or other button
+- A new session that fails to start (new-session menu, Cmd+T, /new-session, Retry in new session) shows an error toast instead of failing silently
+- Claude in Chrome "Enabled by default" is read from the session account's own Claude config
+
+## 0.14.6 - 2026-10-25
+
+- Tools the Claude CLI marks as needing a person are never auto-approved, even in Full auto, and their approval card shows the CLI's title/description with Deny as the keyboard default (#279)
+- MCP server questions (elicitations) show as an in-chat form or link instead of silently stalling the tool call (#279)
+- MCP servers that failed or need sign-in are shown above the composer with Sign in / Reconnect actions (#279)
+- Claude in Chrome tools now load in UI sessions when "Enabled by default" is on (Verun passes `--chrome`, since the CLI ignores that setting in stream-json mode) (#279)
+- Cmd+V in terminals pastes screenshots/copied images and Finder files as quoted paths, so image paste into Claude Code works reliably (#278)
+- File mentions with spaces in the path serialize as `@"path"` so drafts and sent messages keep them intact (#278)
+- Dropping or pasting documents into the chat composer inserts them as @-mentions; dropped images attach again (native drops never reached the DOM handler) (#278)
+- Clicking a desktop notification now focuses the right window and session instead of every open window switching tasks (each window sent its own notification with colliding IDs) (#278)
+
+## 0.14.5 - 2026-10-16
+
+- Terminal-to-chat transitions no longer ingest the same Claude user, assistant, and tool messages from both streaming and transcript sources (#277)
+
+- Claude terminal activity feeds the task board and sidebar through isolated observer hooks, with explicit unknown status and process-exit recovery
+
+- Live task board groups work by attention, running, ready, and archived states, with project/group filters and task search (#271)
+
+## 0.14.4 - 2026-10-14
+
+- Terminal file links validate file existence before becoming clickable, ignoring dotted prose and nonexistent paths.
+- Terminal file links no longer mistake bare website addresses for local files.
+- Task headers show the owning project in main and detached windows (#274)
+- Terminal-mode tasks receive transcript-based titles while preserving manual names (#275)
+- Wrapped terminal file links open persistent tabs, including read-only files outside the workspace (#273)
+
+## 0.14.3 - 2026-10-14
+
+- Terminal file drops target only the originating window and visible terminal, with scale-aware hit testing and reliable listener cleanup (#276)
+- Task draft selectors use compact controls; model search has a rounded field without redundant headings
+- New task composer combines harness and model selection in one dropdown with a harness sidebar and searchable models
+- Task drafts use a stable prompt/cloud switch, a tighter composer, and compact workspace details
+- New tasks open as drafts with workspace selection below the composer; sending the first message starts work in an isolated worktree, the project repository, or any existing folder
+- Existing-directory tasks preserve shared files on archive/delete and hide Git controls in non-Git folders
 
 - Muse Code (Meta) agent support via `muse serve` (MSP): streaming, tool calls, approvals, interrupt, resume, image attachments, and reasoning effort
 - Muse Code model picker lists the live catalog from `muse serve` (`model/list`), defaults to the host's model, flags Contributor tiers, and applies model switches mid-session

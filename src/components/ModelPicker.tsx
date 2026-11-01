@@ -2,30 +2,42 @@ import { Component, For, Show, createSignal, createEffect, createMemo, onCleanup
 import { Portal } from 'solid-js/web'
 import { Search } from 'lucide-solid'
 import { clsx } from 'clsx'
-import type { AgentType, ModelOption, AgentInfo } from '../types'
+import type { AccountSelection, AgentType, ModelOption, AgentInfo } from '../types'
 import { agents } from '../store/agents'
 import { sessions } from '../store/sessions'
 import { agentIcon, meetsVersionReq } from '../lib/agents'
+import { accountKey, agentRows, type AgentRow } from '../lib/accounts'
 import { registerDismissable } from '../lib/dismissable'
 import SvgIcon from './SvgIcon'
+import { AgentRowName } from './AgentRowName'
 import { UpdateRequiredDialog } from './UpdateRequiredDialog'
 
 // Cap visible models per provider so keyboard nav can hop between providers
 // with a few arrow presses; users expand on demand via the `Show N more` row.
 const COLLAPSE_LIMIT = 4
 
+// A harness with accounts is a group for each of them, each with its own models
+// and its own "Show N more". Every row carries the group it belongs to (`AgentRow`).
 type Row =
-  | { kind: 'model'; agent: AgentInfo; model?: ModelOption }
-  | { kind: 'more'; agent: AgentInfo; hidden: number }
+  | ({ kind: 'model'; model?: ModelOption } & AgentRow)
+  | ({ kind: 'more'; hidden: number } & AgentRow)
 
 interface Props {
   open: boolean
+  /** The project the session is for: its account for each harness is the one listed first. */
+  projectId?: string
   defaultAgent?: AgentType
   defaultModel?: string
+  /**
+   * The account the session the picker was opened from runs on: an account's id,
+   * or `null` for Default. Once its harness has accounts, "Current" goes to the
+   * group of that account only. Left out, it goes to every group of the harness.
+   */
+  defaultAccountId?: string | null
   title?: string
   placeholder?: string
   onClose: () => void
-  onPick: (agentType: AgentType, model?: string) => void | Promise<void>
+  onPick: (agentType: AgentType, model?: string, account?: AccountSelection) => void | Promise<void>
 }
 
 export const ModelPicker: Component<Props> = (props) => {
@@ -35,7 +47,7 @@ export const ModelPicker: Component<Props> = (props) => {
   // Snapshot of last-used-at per "{agent}:{model}", frozen when the picker
   // opens so model rows don't shuffle while the user is navigating.
   const [lru, setLru] = createSignal<Map<string, number>>(new Map())
-  // Per-agent expansion state. Reset on open.
+  // Per-group expansion state (keyed by `AgentRow.key`). Reset on open.
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set())
 
   const installed = createMemo(() => {
@@ -47,6 +59,15 @@ export const ModelPicker: Component<Props> = (props) => {
       return a.name.localeCompare(b.name)
     })
   })
+
+  const entries = createMemo(() => agentRows(installed(), props.projectId))
+
+  // Whether `entry` is the account of the session the picker was opened from. Only a
+  // harness with accounts has groups to tell apart, and only when the caller says which.
+  const isCurrentAccount = (entry: AgentRow) =>
+    !entry.choice
+    || props.defaultAccountId === undefined
+    || (entry.agent.id === props.defaultAgent && entry.choice.key === accountKey(entry.agent.id, props.defaultAccountId))
 
   // Sort models: pinned default first, then by LRU desc, then by original
   // declaration order as a stable fallback so sorts are deterministic.
@@ -70,25 +91,26 @@ export const ModelPicker: Component<Props> = (props) => {
   const rows = createMemo<Row[]>(() => {
     const out: Row[] = []
     const tokens = query().toLowerCase().split(/\s+/).filter(Boolean)
-    const match = (agent: AgentInfo, model?: ModelOption) => {
+    const match = (entry: AgentRow, model?: ModelOption) => {
       if (tokens.length === 0) return true
-      const hay = `${agent.id} ${agent.name} ${model?.label ?? ''} ${model?.id ?? ''} ${model?.description ?? ''}`.toLowerCase()
+      const hay = `${entry.agent.id} ${entry.name} ${model?.label ?? ''} ${model?.id ?? ''} ${model?.description ?? ''}`.toLowerCase()
       return tokens.every(t => hay.includes(t))
     }
-    for (const agent of installed()) {
+    for (const entry of entries()) {
+      const { agent } = entry
       if (agent.models.length === 0) {
-        if (match(agent, undefined)) out.push({ kind: 'model', agent })
+        if (match(entry, undefined)) out.push({ kind: 'model', ...entry })
         continue
       }
       // Filter first, slice second: when searching, the top-4 shown are the
       // top-4 *matches* from the full sorted list, not the first 4 in the list
       // that happen to match. Otherwise matches in the hidden tail disappear.
-      const matched = sortedModelsFor(agent).filter(m => match(agent, m))
-      const isExpanded = expanded().has(agent.id) || matched.length <= COLLAPSE_LIMIT
+      const matched = sortedModelsFor(agent).filter(m => match(entry, m))
+      const isExpanded = expanded().has(entry.key) || matched.length <= COLLAPSE_LIMIT
       const visible = isExpanded ? matched : matched.slice(0, COLLAPSE_LIMIT)
       const hidden = matched.length - visible.length
-      for (const m of visible) out.push({ kind: 'model', agent, model: m })
-      if (hidden > 0) out.push({ kind: 'more', agent, hidden })
+      for (const m of visible) out.push({ kind: 'model', ...entry, model: m })
+      if (hidden > 0) out.push({ kind: 'more', ...entry, hidden })
     }
     return out
   })
@@ -126,20 +148,20 @@ export const ModelPicker: Component<Props> = (props) => {
       setUpdateReq({ model: row.model, agent: row.agent })
       return
     }
-    void props.onPick(row.agent.id, row.model?.id)
+    void props.onPick(row.agent.id, row.model?.id, row.choice?.selection)
     props.onClose()
   }
 
-  const expandGroup = (agentId: string) => {
+  const expandGroup = (key: string) => {
     setExpanded(prev => {
       const next = new Set(prev)
-      next.add(agentId)
+      next.add(key)
       return next
     })
   }
 
   const activateRow = (row: Row) => {
-    if (row.kind === 'more') expandGroup(row.agent.id)
+    if (row.kind === 'more') expandGroup(row.key)
     else pick(row)
   }
 
@@ -172,13 +194,13 @@ export const ModelPicker: Component<Props> = (props) => {
 
   const grouped = createMemo(() => {
     const list = rows()
-    const groups: Array<{ agent: AgentInfo; rows: Array<{ row: Row; idx: number }> }> = []
-    const byAgentId = new Map<string, number>()
+    const groups: Array<{ entry: AgentRow; rows: Array<{ row: Row; idx: number }> }> = []
+    const byKey = new Map<string, number>()
     list.forEach((row, idx) => {
-      const gi = byAgentId.get(row.agent.id)
+      const gi = byKey.get(row.key)
       if (gi === undefined) {
-        byAgentId.set(row.agent.id, groups.length)
-        groups.push({ agent: row.agent, rows: [{ row, idx }] })
+        byKey.set(row.key, groups.length)
+        groups.push({ entry: row, rows: [{ row, idx }] })
       } else {
         groups[gi].rows.push({ row, idx })
       }
@@ -219,9 +241,12 @@ export const ModelPicker: Component<Props> = (props) => {
                   {(group, gi) => (
                     <div class={clsx(gi() > 0 && 'border-t border-outline/6')}>
                       <div class="sticky top-0 z-1 bg-surface-2/95 backdrop-blur-sm px-3 py-1.5 flex items-center gap-2">
-                        <SvgIcon svg={agentIcon(group.agent.id)} size={12} />
-                        <span class="text-[11px] font-semibold text-text-primary">{group.agent.name}</span>
-                        <Show when={group.agent.id === props.defaultAgent}>
+                        <SvgIcon svg={agentIcon(group.entry.agent.id)} size={12} />
+                        <AgentRowName row={group.entry} class="text-[11px] font-semibold text-text-primary" />
+                        <Show when={group.entry.detail}>
+                          <span class="text-[10px] text-text-dim truncate">{group.entry.detail}</span>
+                        </Show>
+                        <Show when={group.entry.agent.id === props.defaultAgent && isCurrentAccount(group.entry)}>
                           <span class="text-[9px] px-1 py-px rounded bg-accent/12 text-accent leading-tight uppercase tracking-wide">Current</span>
                         </Show>
                         <span class="flex-1" />
@@ -242,7 +267,7 @@ export const ModelPicker: Component<Props> = (props) => {
                                     ? 'bg-surface-3 text-text-primary'
                                     : 'text-text-dim hover:bg-surface-3 hover:text-text-primary',
                                 )}
-                                onClick={() => expandGroup(entry.row.agent.id)}
+                                onClick={() => expandGroup(entry.row.key)}
                                 onMouseEnter={() => setActiveIdx(entry.idx)}
                               >
                                 <span class="flex-1 italic">Show {entry.row.kind === 'more' ? entry.row.hidden : 0} more</span>
@@ -274,7 +299,7 @@ export const ModelPicker: Component<Props> = (props) => {
                                 <Show when={row.model?.description}>
                                   <span class="text-[10px] text-text-dim truncate">{row.model!.description}</span>
                                 </Show>
-                                <Show when={row.model && row.model.id === props.defaultModel}>
+                                <Show when={row.model && row.model.id === props.defaultModel && isCurrentAccount(row)}>
                                   <span class="text-[9px] px-1 py-px rounded bg-accent/12 text-accent leading-tight uppercase tracking-wide shrink-0">Current</span>
                                 </Show>
                               </div>

@@ -1,19 +1,21 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
-import { sendMessage, abortMessage, steerSession, createSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, sessionCosts, sessionTokens, rateLimitInfo, outputItems, tryDrainSteps, sessionById, updateSessionModel } from '../store/sessions'
+import { sendMessage, abortMessage, steerSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, respondToElicitation, sessionCosts, sessionTokens, outputItems, tryDrainSteps, sessionById, updateSessionModel, rateLimitFor, sendStep } from '../store/sessions'
 import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession, codexLivePlanForSession } from '../store/sessionContext'
-import { setSelectedSessionIdForTask, selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
-import { isSetupRunning, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
+import { selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
+import { isSetupRunning, setupFailed, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
 import { ModelSelector } from './ModelSelector'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
-import { openFile, setMainView } from '../store/editorView'
+import { openFile } from '../store/editorView'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import { primeSkills, type Command, type SkillContext } from '../store/commands'
 import { projectById } from '../store/projects'
 import { ArrowUp, Square, X, Plus, ShieldAlert, HelpCircle, Shield, ShieldCheck, ListChecks, Zap, Brain, Minimize2, Maximize2, Loader2, Activity, ListPlus, Check } from 'lucide-solid'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { clsx } from 'clsx'
 import type { AttachmentRef, TrustLevel, AgentType } from '../types'
 import { agents } from '../store/agents'
@@ -25,7 +27,15 @@ import { openSideQuestion } from '../store/sideQuestion'
 import { serializeAttachments, deserializeAttachments, uploadAttachments } from '../lib/binary'
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 import { decidePlanAction } from '../lib/planAction'
+import { isImagePath, mentionPathForFile } from '../lib/composerFiles'
+import { formatMention, parseMentions } from '../lib/mentions'
 import { decideQuestionKeyAction, QUESTION_SKIP_MESSAGE } from '../lib/questionKeyAction'
+import { decideApprovalKeyAction } from '../lib/approvalKeyAction'
+import { ELICITATION_TOOL_NAME } from '../lib/mcpElicitation'
+import { McpElicitationCard } from './McpElicitationCard'
+import { McpServerStatusBar } from './McpServerStatusBar'
+import { accountKey, inheritedSelection } from '../lib/accounts'
+import { openNewSession } from '../lib/newSession'
 
 interface Props {
   sessionId: string | null
@@ -94,11 +104,15 @@ function UsageChip(chipProps: { sessionId: string | null }) {
     const sid = chipProps.sessionId
     return sid ? sessionTokens[sid] : undefined
   }
-  const isClaudeSession = () => {
+  const session = () => {
     const sid = chipProps.sessionId
-    return sid ? sessionById(sid)?.agentType === 'claude' : false
+    return sid ? sessionById(sid) : undefined
   }
-  const rl = () => isClaudeSession() ? rateLimitInfo() : null
+  // Only Claude reports rate limits, and each Claude account has its own.
+  const rl = () => {
+    const s = session()
+    return s?.agentType === 'claude' ? rateLimitFor(accountKey(s.agentType, s.accountId)) : null
+  }
 
   const hasAnything = () => cost() > 0 || tokens() || rl()
   const hasCache = () => {
@@ -220,6 +234,16 @@ function UsageChip(chipProps: { sessionId: string | null }) {
   )
 }
 
+/**
+ * Why a task's queued prompt is waiting. It is queued while setup runs; one
+ * still queued once setup is over is one the session's account stopped.
+ */
+function queuedNote(taskId: string): string {
+  if (setupFailed(taskId)) return 'Setup failed. Prompt saved; retry setup or edit it.'
+  if (isSetupRunning(taskId)) return 'Message queued - will send when setup completes'
+  return 'Not sent. Prompt saved; once the account works, edit it to send.'
+}
+
 export const MessageInput: Component<Props> = (props) => {
   let fileInputRef!: HTMLInputElement
   let inputRef!: HTMLDivElement
@@ -245,7 +269,7 @@ export const MessageInput: Component<Props> = (props) => {
         text += (node.textContent ?? '').replace(/\u200B/g, '')
       } else if (node instanceof HTMLElement) {
         if (node.dataset.mention) {
-          text += `@${node.dataset.mention}`
+          text += formatMention(node.dataset.mention)
         } else if (node.tagName === 'BR') {
           text += '\n'
         } else {
@@ -266,18 +290,10 @@ export const MessageInput: Component<Props> = (props) => {
     if (!inputRef) return
     // Parse text into mixed text nodes + badge elements
     inputRef.innerHTML = ''
-    const mentionRe = /@([^\s]+)/g
-    let lastIndex = 0
-    for (const match of text.matchAll(mentionRe)) {
-      const start = match.index!
-      if (start > lastIndex) {
-        inputRef.appendChild(document.createTextNode(text.slice(lastIndex, start)))
-      }
-      inputRef.appendChild(wrapBadge(createMentionBadge(match[1])))
-      lastIndex = start + match[0].length
-    }
-    if (lastIndex < text.length) {
-      inputRef.appendChild(document.createTextNode(text.slice(lastIndex)))
+    for (const seg of parseMentions(text)) {
+      inputRef.appendChild(seg.type === 'mention'
+        ? wrapBadge(createMentionBadge(seg.value))
+        : document.createTextNode(seg.value))
     }
     autoResizeInput()
   }
@@ -325,7 +341,7 @@ export const MessageInput: Component<Props> = (props) => {
         offset += (node.textContent ?? '').replace(/\u200B/g, '').length
       } else if (node instanceof HTMLElement) {
         if (node.dataset.mention) {
-          offset += node.dataset.mention.length + 1 // @path
+          offset += formatMention(node.dataset.mention).length
         } else if (node.tagName === 'BR') {
           offset += 1
         } else {
@@ -428,6 +444,7 @@ export const MessageInput: Component<Props> = (props) => {
     if (!sess || !task || !project) return null
     return {
       agentKind: sess.agentType,
+      accountId: sess.accountId ?? null,
       projectRoot: project.repoPath,
       taskId: task.id,
       worktreePath: task.worktreePath,
@@ -591,10 +608,19 @@ export const MessageInput: Component<Props> = (props) => {
     const sid = props.sessionId
     if (!sid) return
     setPlanActionPending(true)
+    const planPath = planFilePathForSession(sid)
+    const wasPlanMode = planMode()
     setPlanFilePathForSession(sid, null)
     setPlanMode(false)
     try {
-      await sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+      const sent = await sendMessage(sid, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+      // false: the session's account stopped the send and sendMessage said why.
+      // The plan is still waiting to be approved.
+      if (!sent) {
+        setPlanFilePathForSession(sid, planPath)
+        setPlanModeForSession(sid, wasPlanMode)
+        setPlanActionPending(false)
+      }
     } catch (error) {
       setPlanActionPending(false)
       throw error
@@ -620,21 +646,36 @@ export const MessageInput: Component<Props> = (props) => {
           // the reason and continues the same turn. No separate sendMessage.
           await denyToolUse(action.requestId, action.sessionId, action.message)
           break
-        case 'sendFeedback':
+        case 'sendFeedback': {
+          const planPath = planFilePathForSession(action.sessionId)
           setPlanChanges('')
           setPlanFilePathForSession(action.sessionId, null)
-          await sendMessage(action.sessionId, action.message, undefined, currentModel(), true)
+          // false: the session's account stopped the send and sendMessage said
+          // why. The plan and the changes asked for stay as they were.
+          if (!await sendMessage(action.sessionId, action.message, undefined, currentModel(), true)) {
+            setPlanFilePathForSession(action.sessionId, planPath)
+            setPlanChanges(action.message)
+            setPlanActionPending(false)
+          }
           break
+        }
         case 'approve':
           setPlanMode(false)
           setPlanFilePathForSession(action.sessionId, null)
           await approveToolUse(action.requestId, action.sessionId)
           break
-        case 'sendImplementation':
+        case 'sendImplementation': {
+          const planPath = planFilePathForSession(action.sessionId)
+          const wasPlanMode = planMode()
           setPlanMode(false)
           setPlanFilePathForSession(action.sessionId, null)
-          await sendMessage(action.sessionId, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)
+          if (!await sendMessage(action.sessionId, 'The plan is approved. Please implement it now.', undefined, currentModel(), false)) {
+            setPlanFilePathForSession(action.sessionId, planPath)
+            setPlanModeForSession(action.sessionId, wasPlanMode)
+            setPlanActionPending(false)
+          }
           break
+        }
       }
     } catch (error) {
       setPlanActionPending(false)
@@ -642,13 +683,17 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
 
-  const handlePlanFeedback = () => {
+  const handlePlanFeedback = async () => {
     const text = planFeedback().trim()
     if (!text) return
     const sid = props.sessionId
     if (!sid) return
     setPlanFeedback('')
-    sendMessage(sid, text, undefined, currentModel(), true)
+    // false: the session's account stopped the send and sendMessage said why.
+    // The words come back, ahead of anything typed since.
+    if (!await sendMessage(sid, text, undefined, currentModel(), true)) {
+      setPlanFeedback([text, planFeedback()].filter(Boolean).join(' '))
+    }
   }
 
   const currentModel = (): string | undefined => {
@@ -684,6 +729,7 @@ export const MessageInput: Component<Props> = (props) => {
   }
 
   const isExitPlanMode = () => currentApproval()?.toolName === 'ExitPlanMode'
+  const isElicitation = () => currentApproval()?.toolName === ELICITATION_TOOL_NAME
   const [planFileContent, setPlanFileContent] = createSignal<string | null>(null)
   const [planFilePathSignal, setPlanFilePathSignal] = createSignal<string | null>(null)
 
@@ -877,8 +923,72 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
 
+  /** Insert @-mention badges at the caret (or at the end if the input isn't focused). */
+  const insertMentions = (filePaths: string[]) => {
+    if (!inputRef || filePaths.length === 0) return
+    const frag = document.createDocumentFragment()
+    for (const p of filePaths) {
+      frag.appendChild(wrapBadge(createMentionBadge(p)))
+      frag.appendChild(document.createTextNode(' '))
+    }
+    const tail = frag.lastChild!
+    const sel = window.getSelection()
+    const range = sel && sel.rangeCount > 0 && inputRef.contains(sel.getRangeAt(0).startContainer)
+      ? sel.getRangeAt(0)
+      : null
+    if (range) {
+      range.deleteContents()
+      range.insertNode(frag)
+    } else {
+      inputRef.appendChild(frag)
+    }
+    const after = document.createRange()
+    after.setStartAfter(tail)
+    after.collapse(true)
+    sel?.removeAllRanges()
+    sel?.addRange(after)
+    setMessageRaw(serializeInput())
+    autoResizeInput()
+    inputRef.focus()
+  }
+
+  /** Native file paths (drop / Finder paste): images attach, everything else becomes an @-mention. */
+  const addFilePaths = async (paths: string[]) => {
+    const images = paths.filter(isImagePath)
+    const others = paths.filter(p => !isImagePath(p))
+    const worktree = taskById(selectedTaskId() ?? '')?.worktreePath
+    insertMentions(others.map(p => mentionPathForFile(p, worktree)))
+    const refs = await Promise.all(images.map(async (p): Promise<AttachmentRef | null> => {
+      try {
+        const ref = await ipc.uploadAttachmentFromPath(p)
+        return { hash: ref.hash, mimeType: ref.mime, name: p.split('/').pop() ?? p, size: ref.size }
+      } catch {
+        return null
+      }
+    }))
+    const valid = refs.filter((a): a is AttachmentRef => a !== null)
+    if (valid.length > 0) setAttachments(prev => [...prev, ...valid])
+  }
+
   const removeAttachment = (index: number) => {
     setAttachments(prev => prev.filter((_, i) => i !== index))
+  }
+
+  /**
+   * Puts back what a send cleared from the composer of session `sid`, ahead of
+   * anything typed since. The user may have gone to another session while the
+   * send was out: its text goes back to the composer it came from, which shows
+   * it when that session is shown again.
+   */
+  const restoreComposer = (sid: string, text: string, atts: AttachmentRef[]) => {
+    const restored = [text, sessionMessages()[sid]].filter(Boolean).join('\n')
+    if (sid === props.sessionId) {
+      setMessage(restored)
+    } else {
+      setSessionMessages(prev => ({ ...prev, [sid]: restored }))
+    }
+    if (atts.length > 0) setSessionAttachments(prev => ({ ...prev, [sid]: [...atts, ...(prev[sid] ?? [])] }))
+    persistDraft(sid)
   }
 
   const handleSend = async () => {
@@ -914,9 +1024,17 @@ export const MessageInput: Component<Props> = (props) => {
     setAttachments([])
     setShowPalette(false)
     // Dismiss any persisted plan panel — the user has moved on from that plan.
-    if (planFilePathForSession(sid)) setPlanFilePathForSession(sid, null)
+    const planPath = planFilePathForSession(sid)
+    if (planPath) setPlanFilePathForSession(sid, null)
     try {
-      await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
+      const sent = await sendMessage(sid, msg, atts.length > 0 ? atts : undefined, currentModel(), planMode(), thinkingMode(), fastMode())
+      // false: the session's account stopped the send, and sendMessage said why
+      // and took the message back out of the chat. Give back what was cleared
+      // above, so the only copy of what the user wrote is not gone.
+      if (!sent) {
+        restoreComposer(sid, msg, atts)
+        if (planPath) setPlanFilePathForSession(sid, planPath)
+      }
     } catch (e) {
       console.error('Failed to send message:', e)
     } finally {
@@ -976,8 +1094,7 @@ export const MessageInput: Component<Props> = (props) => {
     if (steps.length === 0) return
     const step = extractStep(sid, steps[0].id)
     if (!step) return
-    const atts = step.attachmentsJson ? deserializeAttachments(step.attachmentsJson) : undefined
-    await sendMessage(sid, step.message, atts, step.model ?? undefined, step.planMode ?? undefined, step.thinkingMode ?? undefined, step.fastMode ?? undefined)
+    await sendStep(step)
   }
 
   const handleAppCommand = async (cmd: Command) => {
@@ -985,10 +1102,10 @@ export const MessageInput: Component<Props> = (props) => {
       case 'new-session': {
         const tid = selectedTaskId()
         if (tid) {
-          const currentAgent = sessionById(props.sessionId ?? '')?.agentType ?? 'claude' as AgentType
-          const session = await createSession(tid, currentAgent)
-          setSelectedSessionIdForTask(tid, session.id)
-          setMainView(tid, 'session')
+          // The new session runs where this one does: the same harness, and the
+          // same account, whatever the project uses by now.
+          const current = sessionById(props.sessionId ?? '')
+          await openNewSession(tid, current?.agentType ?? 'claude', undefined, current ? inheritedSelection(current.accountId) : undefined)
         }
         break
       }
@@ -1450,11 +1567,27 @@ export const MessageInput: Component<Props> = (props) => {
     const items = e.clipboardData?.items
     if (!items) return
     const files: File[] = []
+    let hasOtherFile = false
     for (const item of Array.from(items)) {
-      if (item.kind === 'file' && SUPPORTED_IMAGE_TYPES.has(item.type)) {
+      if (item.kind !== 'file') continue
+      if (SUPPORTED_IMAGE_TYPES.has(item.type)) {
         const file = item.getAsFile()
         if (file) files.push(file)
+      } else {
+        hasOtherFile = true
       }
+    }
+    // Documents copied in Finder: the webview only exposes their bytes, so
+    // ask Rust for the real paths and mention them.
+    if (hasOtherFile) {
+      e.preventDefault()
+      const clip = await ipc.readClipboardPaste().catch(() => null)
+      if (clip?.kind === 'files') {
+        await addFilePaths(clip.paths)
+        return
+      }
+      if (files.length > 0) await addFiles(files)
+      return
     }
     if (files.length > 0) {
       e.preventDefault()
@@ -1484,6 +1617,35 @@ export const MessageInput: Component<Props> = (props) => {
       if (inputRef) inputRef.scrollTop = inputRef.scrollHeight
     }
   }
+
+  // File drops arrive as native Tauri events (with paths) — the webview never
+  // sees them as DOM drops. Only the visible composer under the cursor reacts.
+  let composerRoot: HTMLDivElement | undefined
+  const isOverComposer = (position?: { x: number; y: number }) => {
+    if (!composerRoot?.getClientRects().length) return false
+    if (!position) return true
+    const scale = window.devicePixelRatio || 1
+    const x = position.x / scale
+    const y = position.y / scale
+    const rect = composerRoot.getBoundingClientRect()
+    return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
+  }
+  onMount(() => {
+    const target = { target: { kind: 'Webview' as const, label: getCurrentWebview().label } }
+    const unlisteners: Promise<UnlistenFn>[] = [
+      listen<{ paths: string[]; position?: { x: number; y: number } }>('tauri://drag-over', (ev) => {
+        setDragOver(isOverComposer(ev.payload.position))
+      }, target),
+      listen('tauri://drag-leave', () => setDragOver(false), target),
+      listen<{ paths: string[]; position?: { x: number; y: number } }>('tauri://drag-drop', (ev) => {
+        setDragOver(false)
+        const paths = ev.payload.paths ?? []
+        if (paths.length === 0 || !isOverComposer(ev.payload.position)) return
+        void addFilePaths(paths)
+      }, target),
+    ]
+    onCleanup(() => { for (const u of unlisteners) u.then(fn => fn()).catch(() => {}) })
+  })
 
   const handleDragOver = (e: DragEvent) => { e.preventDefault(); setDragOver(true) }
   const handleDragLeave = (e: DragEvent) => { e.preventDefault(); setDragOver(false) }
@@ -1519,6 +1681,15 @@ export const MessageInput: Component<Props> = (props) => {
       const approval = currentApproval()
       if (!approval) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
+
+      // MCP elicitation: the card owns its inputs; Escape dismisses.
+      if (isElicitation()) {
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          respondToElicitation(approval.requestId, approval.sessionId, 'cancel')
+        }
+        return
+      }
 
       // AskUserQuestion: number keys select options, Escape to skip.
       // When any input is focused (e.g. custom-answer field), printable keys
@@ -1569,17 +1740,17 @@ export const MessageInput: Component<Props> = (props) => {
       const active = document.activeElement
       const isInputFocused = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')
 
-      // Tool approval: Enter = Allow, Escape = Deny, y/n only when not typing
-      if (e.key === 'Enter' && !isInputFocused) {
+      // Tool approval: Enter = Allow, Escape = Deny, y/n only when not typing.
+      // Default-to-no approvals can only be allowed by clicking.
+      const keyAction = decideApprovalKeyAction({
+        key: e.key,
+        isInputFocused: !!isInputFocused,
+        defaultToNo: !!approval.prompt?.defaultToNo,
+      })
+      if (keyAction === 'allow') {
         e.preventDefault()
         approveToolUse(approval.requestId, approval.sessionId)
-      } else if (e.key === 'y' && !isInputFocused) {
-        e.preventDefault()
-        approveToolUse(approval.requestId, approval.sessionId)
-      } else if (e.key === 'Escape') {
-        e.preventDefault()
-        denyToolUse(approval.requestId, approval.sessionId)
-      } else if (e.key === 'n' && !isInputFocused) {
+      } else if (keyAction === 'deny') {
         e.preventDefault()
         denyToolUse(approval.requestId, approval.sessionId)
       }
@@ -1663,11 +1834,27 @@ export const MessageInput: Component<Props> = (props) => {
 
   return (
     <div
+      ref={composerRoot}
       class="px-4 pb-3 min-w-0"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      <Show when={props.sessionId}>
+        {(sid) => <McpServerStatusBar sessionId={sid()} />}
+      </Show>
+
+      {/* MCP server asking for input */}
+      <Show when={isElicitation() && currentApproval()} keyed>
+        {(approval) => (
+          <McpElicitationCard
+            approval={approval}
+            pendingCount={pendingCount()}
+            onRespond={(action, content) => respondToElicitation(approval.requestId, approval.sessionId, action, content)}
+          />
+        )}
+      </Show>
+
       {/* AskUserQuestion UI */}
       <Show when={isQuestion() && currentApproval()}>
         {(_approval) => {
@@ -1954,7 +2141,7 @@ export const MessageInput: Component<Props> = (props) => {
       </Show>
 
       {/* Tool approval overlay */}
-      <Show when={!isQuestion() && !isExitPlanMode() && currentApproval()}>
+      <Show when={!isQuestion() && !isExitPlanMode() && !isElicitation() && currentApproval()}>
         {(approval) => (
           <div class="bg-surface-1 border border-amber-500/30 rounded-xl p-3 mb-0">
             <div class="flex items-center justify-between mb-2">
@@ -1968,7 +2155,13 @@ export const MessageInput: Component<Props> = (props) => {
                 </Show>
               </div>
             </div>
-            <div class="text-sm font-medium text-text-primary mb-1">{approval().toolName}</div>
+            <div class="text-sm font-medium text-text-primary mb-1">{approval().prompt?.title ?? approval().prompt?.displayName ?? approval().toolName}</div>
+            <Show when={approval().prompt?.description}>
+              <div class="text-xs text-text-muted mb-1 whitespace-pre-wrap break-words">{approval().prompt?.description}</div>
+            </Show>
+            <Show when={approval().prompt?.requiresUserInteraction}>
+              <div class="text-[11px] text-amber-500 mb-1">Needs your decision — never auto-approved</div>
+            </Show>
             <Show when={formatToolInput(approval().toolInput)}>
               {(detail) => (
                 <pre class="text-[11px] text-text-muted font-mono bg-surface-2 rounded-lg p-2 mb-2 max-h-32 overflow-auto whitespace-pre-wrap break-all">
@@ -1981,13 +2174,13 @@ export const MessageInput: Component<Props> = (props) => {
                 class="flex-1 py-1.5 rounded-lg bg-status-running/15 text-status-running text-xs font-medium hover:bg-status-running/25 transition-colors"
                 onClick={() => approveToolUse(approval().requestId, approval().sessionId)}
               >
-                Allow <span class="text-text-dim ml-1">(Enter)</span>
+                Allow <Show when={!approval().prompt?.defaultToNo}><span class="text-text-dim ml-1">(Enter)</span></Show>
               </button>
               <button
                 class="flex-1 py-1.5 rounded-lg bg-status-error/15 text-status-error text-xs font-medium hover:bg-status-error/25 transition-colors"
                 onClick={() => denyToolUse(approval().requestId, approval().sessionId)}
               >
-                Deny <span class="text-text-dim ml-1">(Esc)</span>
+                Deny <span class="text-text-dim ml-1">{approval().prompt?.defaultToNo ? '(Enter/Esc)' : '(Esc)'}</span>
               </button>
             </div>
           </div>
@@ -2051,8 +2244,8 @@ export const MessageInput: Component<Props> = (props) => {
       {/* Queued message indicator (setup hook still running) */}
       <Show when={selectedTaskId() && queuedMessages[selectedTaskId()!]}>
         <div class="flex items-center gap-2 px-3 py-1.5 mb-1 text-xs text-text-dim bg-surface-1 rounded-lg border border-accent/10">
-          <Loader2 size={10} class="animate-spin text-accent shrink-0" />
-          <span class="truncate">Message queued — will send when setup completes</span>
+          <Show when={isSetupRunning(selectedTaskId()!)}><Loader2 size={10} class="animate-spin text-accent shrink-0" /></Show>
+          <span class="truncate">{queuedNote(selectedTaskId()!)}</span>
           <button
             class="ml-auto shrink-0 text-text-dim hover:text-text-muted transition-colors"
             onClick={() => {

@@ -26,7 +26,7 @@ vi.mock('./ui', () => ({
   markSessionUnread: vi.fn(),
 }))
 
-import { denyToolUse } from './sessions'
+import { denyToolUse, respondToElicitation } from './sessions'
 import * as ipc from '../lib/ipc'
 
 describe('denyToolUse with feedback message', () => {
@@ -54,5 +54,20 @@ describe('denyToolUse with feedback message', () => {
       undefined,
       'add error handling to step 3',
     )
+  })
+})
+
+describe('respondToElicitation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  test('maps accept/decline/cancel onto the approval channel', async () => {
+    await respondToElicitation('req_1', 's_1', 'accept', { name: 'Ada' })
+    expect(ipc.respondToApproval).toHaveBeenCalledWith('req_1', 'allow', { name: 'Ada' })
+    await respondToElicitation('req_2', 's_1', 'decline')
+    expect(ipc.respondToApproval).toHaveBeenCalledWith('req_2', 'deny', undefined)
+    await respondToElicitation('req_3', 's_1', 'cancel')
+    expect(ipc.respondToApproval).toHaveBeenCalledWith('req_3', 'cancel', undefined)
   })
 })

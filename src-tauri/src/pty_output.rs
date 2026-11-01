@@ -202,6 +202,10 @@ impl OutputBuffer {
     }
 
     /// Process EOF is independent of whether scrollback has been drained or closed.
+    pub fn exit_status(&self) -> Option<Option<u32>> {
+        self.state.lock().unwrap().finished
+    }
+
     pub fn has_exited(&self) -> bool {
         self.state.lock().unwrap().finished.is_some()
     }
@@ -212,6 +216,16 @@ mod tests {
     use super::*;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
+
+    #[test]
+    fn process_exit_is_available_before_renderer_acknowledgement() {
+        let output = OutputBuffer::default();
+        output.attach("main", 0);
+        output.push("pending");
+        output.finish(Some(7));
+        assert_eq!(output.take_exit(), None);
+        assert_eq!(output.exit_status(), Some(Some(7)));
+    }
 
     #[test]
     fn exited_process_is_distinct_from_closed_output_buffer() {

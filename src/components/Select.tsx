@@ -9,6 +9,7 @@ interface Props {
   label: string
   value: string
   options: Option[]
+  size?: 'default' | 'compact'
   disabled?: boolean
   onChange: (value: string) => void
 }
@@ -26,7 +27,7 @@ export function Select(props: Props) {
     const r = trigger.getBoundingClientRect()
     const below = window.innerHeight - r.bottom - 12
     const height = Math.min(240, Math.max(below, r.top - 12))
-    setRect({ left: r.left, top: below >= height ? r.bottom + 4 : r.top - height - 4, width: r.width, height })
+    setRect({ left: r.left, top: below >= height ? r.bottom + 4 : r.top - height - 4, width: props.size === 'compact' ? Math.max(176, r.width) : r.width, height })
     setActive(Math.max(0, props.options.findIndex(o => o.value === props.value && !o.disabled)))
     setOpen(true)
   }
@@ -63,10 +64,10 @@ export function Select(props: Props) {
     <button ref={trigger} id={props.id} type="button" role="combobox" aria-label={props.label}
       aria-expanded={open()} aria-haspopup="listbox" aria-controls={open() ? id : undefined}
       aria-activedescendant={open() ? `${id}-${active()}` : undefined} disabled={props.disabled}
-      class="input-base flex items-center gap-2 text-left cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+      class={`flex items-center gap-1.5 text-left cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${props.size === 'compact' ? 'max-w-56 rounded-md bg-surface-1 hover:bg-surface-2 px-2 py-1 text-xs text-text-secondary focus-visible:ring-2 focus-visible:ring-accent' : 'input-base'}`}
       onKeyDown={keyDown} onClick={() => open() ? close() : show()}>
       <span class="flex-1 truncate">{props.options.find(o => o.value === props.value)?.label ?? props.value}</span>
-      <ChevronDown size={14} class="text-text-dim shrink-0" />
+      <ChevronDown size={props.size === 'compact' ? 11 : 14} class="text-text-dim shrink-0" />
     </button>
     <Show when={open()}><Portal>
       <div class="fixed inset-0 z-[100]" onMouseDown={e => e.preventDefault()} onClick={close} />
