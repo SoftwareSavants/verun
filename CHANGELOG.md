@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Muse Code (Meta) agent support via `muse serve` (MSP): streaming, tool calls, approvals, interrupt, resume, image attachments, and reasoning effort
+- Muse Code model picker lists the live catalog from `muse serve` (`model/list`), defaults to the host's model, flags Contributor tiers, and applies model switches mid-session
+
 ## 0.15.0 - 2026-10-26
 
 - Multiple accounts per harness: bind each project to its own Claude, Codex, Gemini, Grok or OpenCode login, or a Cursor API key, with per-account sign-in, identity, usage and sign-out handling
@@ -48,9 +53,6 @@
 - Task drafts use a stable prompt/cloud switch, a tighter composer, and compact workspace details
 - New tasks open as drafts with workspace selection below the composer; sending the first message starts work in an isolated worktree, the project repository, or any existing folder
 - Existing-directory tasks preserve shared files on archive/delete and hide Git controls in non-Git folders
-
-- Muse Code (Meta) agent support via `muse serve` (MSP): streaming, tool calls, approvals, interrupt, resume, image attachments, and reasoning effort
-- Muse Code model picker lists the live catalog from `muse serve` (`model/list`), defaults to the host's model, flags Contributor tiers, and applies model switches mid-session
 
 ## 0.14.2 - 2026-10-12
 
