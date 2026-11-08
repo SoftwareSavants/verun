@@ -1,4 +1,4 @@
-import { Component, For, Show, Switch, Match, batch, createEffect, on, createSignal, onMount, onCleanup } from 'solid-js'
+import { Component, For, Show, Switch, Match, batch, createEffect, createMemo, on, createSignal, onMount, onCleanup } from 'solid-js'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
@@ -630,20 +630,28 @@ const thinkingScrollPositions = new Map<string, number>()
 const expandedTools = new Map<string, boolean>()
 const toolScrollPositions = new Map<string, { input: number; output: number }>()
 
-/** Format AskUserQuestion input as readable question list */
-function formatQuestions(input: string): string | null {
+/** Parse a tool's JSON input; undefined when it isn't JSON. */
+interface ToolInput { command?: string; file_path?: string; pattern?: string; path?: string; prompt?: string; questions?: unknown }
+
+function parseToolInput(input: string): ToolInput | undefined {
+  if (!input) return undefined
   try {
     const parsed = JSON.parse(input)
-    const qs = parsed?.questions
-    if (!Array.isArray(qs)) return null
-    return qs.map((q: { question: string; options?: Array<{ label: string }> }, i: number) => {
-      const opts = q.options?.map((o: { label: string }) => o.label).join(', ')
-      return `${i + 1}. ${q.question}${opts ? ` [${opts}]` : ''}`
-    }).join('\n')
-  } catch { return null }
+    return parsed && typeof parsed === 'object' ? parsed : undefined
+  } catch { return undefined }
 }
 
-const ToolBlockView: Component<{ id: string; tool: string; input: string; result?: { text: string; isError: boolean } }> = (props) => {
+/** Format AskUserQuestion input as readable question list */
+function formatQuestions(parsed: ToolInput | undefined): string | null {
+  const qs = parsed?.questions
+  if (!Array.isArray(qs)) return null
+  return qs.map((q: { question: string; options?: Array<{ label: string }> }, i: number) => {
+    const opts = q.options?.map((o: { label: string }) => o.label).join(', ')
+    return `${i + 1}. ${q.question}${opts ? ` [${opts}]` : ''}`
+  }).join('\n')
+}
+
+export const ToolBlockView: Component<{ id: string; tool: string; input: string; result?: { text: string; isError: boolean } }> = (props) => {
   const [expanded, setExpanded] = createSignal(expandedTools.get(props.id) ?? false)
   const toggle = () => {
     const next = !expanded()
@@ -652,33 +660,33 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
   }
   const hasResult = () => !!props.result
   const isQuestion = () => props.tool === 'AskUserQuestion'
+  // Parsed once per input, not per read: preview, summary and the question
+  // list all read it, and they re-run on every expand/collapse.
+  const parsedInput = createMemo(() => parseToolInput(props.input))
+  const questions = createMemo(() => isQuestion() ? formatQuestions(parsedInput()) : null)
 
   /** Strip worktree prefix to get a project-relative path */
   const relPath = (p: string) => p.replace(/^.*\.verun\/worktrees\/[^/]+\//, '')
 
   const preview = () => {
-    if (isQuestion()) {
-      const qs = formatQuestions(props.input)
-      if (qs) return qs.split('\n')[0].slice(0, 80)
-    }
-    if (props.input) {
-      try {
-        const parsed = JSON.parse(props.input)
-        const tool = props.tool
-        if (tool === 'Bash' && parsed.command) return parsed.command.slice(0, 80)
-        if ((tool === 'Read' || tool === 'Write' || tool === 'Edit') && parsed.file_path) return relPath(parsed.file_path)
-        if (tool === 'Grep' && parsed.pattern) return parsed.pattern.slice(0, 60)
-        if (tool === 'Glob' && parsed.pattern) return parsed.pattern.slice(0, 60)
-        if (tool === 'Agent' && parsed.prompt) return parsed.prompt.slice(0, 80)
-      } catch { /* not JSON, fall through */ }
+    const qs = questions()
+    if (qs) return qs.split('\n')[0].slice(0, 80)
+    const parsed = parsedInput()
+    if (parsed) {
+      const tool = props.tool
+      if (tool === 'Bash' && parsed.command) return parsed.command.slice(0, 80)
+      if ((tool === 'Read' || tool === 'Write' || tool === 'Edit') && parsed.file_path) return relPath(parsed.file_path)
+      if (tool === 'Grep' && parsed.pattern) return parsed.pattern.slice(0, 60)
+      if (tool === 'Glob' && parsed.pattern) return parsed.pattern.slice(0, 60)
+      if (tool === 'Agent' && parsed.prompt) return parsed.prompt.slice(0, 80)
     }
     return props.input?.split('\n')[0].slice(0, 60) || ''
   }
 
   const inputSummary = (): string => {
     if (!props.input) return ''
-    try {
-      const parsed = JSON.parse(props.input)
+    const parsed = parsedInput()
+    if (parsed) {
       const tool = props.tool
       if (tool === 'Bash' && parsed.command) return `$ ${parsed.command}`
       if (tool === 'Read' && parsed.file_path) return relPath(parsed.file_path)
@@ -687,12 +695,12 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
       if (tool === 'Grep') return `${parsed.pattern || ''}${parsed.path ? ` in ${parsed.path}` : ''}`
       if (tool === 'Glob' && parsed.pattern) return `${parsed.pattern}${parsed.path ? ` in ${parsed.path}` : ''}`
       if (tool === 'Agent' && parsed.prompt) return parsed.prompt.slice(0, 120)
-    } catch { /* not JSON */ }
+    }
     return props.input.split('\n')[0].slice(0, 100)
   }
 
   const hasExpandedContent = () => {
-    if (isQuestion() && formatQuestions(props.input)) return true
+    if (questions()) return true
     if (props.input) return true
     if (hasResult()) return true
     return false
@@ -716,9 +724,9 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
       </button>
       <Show when={expanded() && hasExpandedContent()}>
         <div class="pl-4 mt-1 border-l border-border-subtle">
-          <Show when={isQuestion() && formatQuestions(props.input)}>
+          <Show when={questions()}>
             <pre class="text-xs text-text-muted whitespace-pre-wrap font-mono leading-relaxed mb-1 max-h-40 overflow-y-auto">
-              {formatQuestions(props.input)}
+              {questions()}
             </pre>
           </Show>
           <Show when={!isQuestion() && inputSummary()}>

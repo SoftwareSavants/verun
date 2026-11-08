@@ -1,10 +1,10 @@
 import { describe, test, expect, vi, afterEach } from 'vitest'
-import { render, cleanup } from '@solidjs/testing-library'
+import { render, cleanup, fireEvent } from '@solidjs/testing-library'
 import { createStore, produce } from 'solid-js/store'
 
 vi.mock('../lib/ipc', () => ({}))
 
-import { ChatView } from './ChatView'
+import { ChatView, ToolBlockView } from './ChatView'
 import type { OutputItem } from '../types'
 
 // The transcript keeps rendering what the store holds as it streams, as it is
@@ -44,5 +44,21 @@ describe('ChatView transcript rendering', () => {
     const t = container.textContent ?? ''
     expect(t.indexOf('older')).toBeGreaterThanOrEqual(0)
     expect(t.indexOf('older')).toBeLessThan(t.indexOf('newer'))
+  })
+})
+
+describe('ToolBlockView', () => {
+  test('parses its input once across preview, expand and collapse', () => {
+    const parse = vi.spyOn(JSON, 'parse')
+    const { container } = render(() => (
+      <ToolBlockView id="tool-parse" tool="Bash" input='{"command":"ls -la"}' result={{ text: 'ok', isError: false }} />
+    ))
+    expect(container.textContent).toContain('ls -la')
+    const button = container.querySelector('button')!
+    fireEvent.click(button)
+    expect(container.textContent).toContain('$ ls -la')
+    fireEvent.click(button)
+    expect(parse.mock.calls.length).toBe(1)
+    parse.mockRestore()
   })
 })
