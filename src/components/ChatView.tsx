@@ -1,4 +1,4 @@
-import { Component, For, Show, Switch, Match, batch, createEffect, createMemo, on, createSignal, onMount, onCleanup } from 'solid-js'
+import { Component, For, Show, Switch, Match, batch, createEffect, createMemo, on, createSignal, onMount, onCleanup, untrack } from 'solid-js'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
@@ -47,8 +47,39 @@ function formatTokensWithCache(t: { input: number; output: number; cacheRead: nu
   return [inPart, outPart].filter(Boolean).join(' / ') + cacheStr
 }
 
-function renderMarkdownForTask(text: string, taskId?: string): string {
-  return renderMarkdown(text, getWorktreePath(taskId))
+/** `source`, updated at most once per animation frame while `live` - and
+ *  immediately once it isn't. */
+function frameThrottled(source: () => string, live: () => boolean): () => string {
+  const [value, setValue] = createSignal(untrack(source))
+  let frame = 0
+  createEffect(() => {
+    const next = source()
+    if (!live()) {
+      if (frame) { cancelAnimationFrame(frame); frame = 0 }
+      setValue(next)
+      return
+    }
+    if (frame) return
+    frame = requestAnimationFrame(() => {
+      frame = 0
+      setValue(untrack(source))
+    })
+  })
+  onCleanup(() => { if (frame) cancelAnimationFrame(frame) })
+  return value
+}
+
+/** An assistant message as markdown. Finished messages hit the render cache;
+ *  the streaming one re-parses at most once per frame. */
+const AssistantMarkdown: Component<{ text: string; streaming?: boolean; worktreePath?: string }> = (props) => {
+  const text = frameThrottled(() => props.text, () => !!props.streaming)
+  const html = createMemo(() => renderMarkdown(text(), props.worktreePath))
+  return (
+    <div
+      class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
+      innerHTML={html()}
+    />
+  )
 }
 
 interface Props {
@@ -1011,6 +1042,9 @@ export const ChatView: Component<Props> = (props) => {
   // Use a store for blocks so mutations are granular
   const [blocks, setBlocks] = createStore<DisplayBlock[]>([])
   let builder = createBlockBuilder()
+  // Memoised so a replaced tasks array doesn't re-render every message:
+  // only an actual path change does.
+  const worktreePath = createMemo(() => getWorktreePath(props.taskId))
 
   // Image viewer state
   const [viewerImage, setViewerImage] = createSignal<AttachmentRef | null>(null)
@@ -1412,10 +1446,7 @@ export const ChatView: Component<Props> = (props) => {
                   const b = block as AssistantBlock
                   return (
                     <div class="px-5 py-1">
-                      <div
-                        class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
-                        innerHTML={renderMarkdownForTask(b.text, props.taskId)}
-                      />
+                      <AssistantMarkdown text={b.text} streaming={b.isStreaming} worktreePath={worktreePath()} />
                       <Show when={b.isLastInTurn}>
                         <div class="flex items-center gap-2 mt-0.5">
                           <Show when={b.durationMs}>

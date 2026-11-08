@@ -1,6 +1,7 @@
 import { describe, test, expect, vi, afterEach } from 'vitest'
 import { render, cleanup, fireEvent } from '@solidjs/testing-library'
 import { createStore, produce } from 'solid-js/store'
+import { marked } from 'marked'
 
 vi.mock('../lib/ipc', () => ({}))
 
@@ -22,10 +23,11 @@ function setup(initial: OutputItem[]) {
 }
 
 describe('ChatView transcript rendering', () => {
-  test('streamed text extends the assistant block in place', () => {
+  test('streamed text extends the assistant block in place', async () => {
     const { container, setStore } = setup([user('hi'), text('Hello')])
     expect(container.textContent).toContain('Hello')
     setStore(produce(s => { s.items.push(text(' world')) }))
+    await new Promise(r => requestAnimationFrame(() => r(null)))
     expect(container.textContent).toContain('Hello world')
     expect(container.querySelectorAll('.prose-verun').length).toBe(1)
   })
@@ -44,6 +46,29 @@ describe('ChatView transcript rendering', () => {
     const t = container.textContent ?? ''
     expect(t.indexOf('older')).toBeGreaterThanOrEqual(0)
     expect(t.indexOf('older')).toBeLessThan(t.indexOf('newer'))
+  })
+})
+
+describe('streaming markdown', () => {
+  test('the streaming block re-renders at most once per frame', async () => {
+    const { container, setStore } = setup([user('q'), text('a0')])
+    const parse = vi.spyOn(marked, 'parse')
+    for (let i = 1; i <= 5; i++) setStore(produce(s => { s.items.push(text(` a${i}`)) }))
+    expect(parse.mock.calls.length).toBeLessThanOrEqual(1)
+    await new Promise(r => requestAnimationFrame(() => r(null)))
+    await new Promise(r => requestAnimationFrame(() => r(null)))
+    expect(container.textContent).toContain('a0 a1 a2 a3 a4 a5')
+    expect(parse.mock.calls.length).toBeLessThanOrEqual(2)
+    parse.mockRestore()
+  })
+
+  test('a finished block shows its full text straight away', () => {
+    const { container, setStore } = setup([user('q'), text('par')])
+    setStore(produce(s => {
+      s.items.push(text('tial'))
+      s.items.push({ kind: 'turnEnd', status: 'completed' } as OutputItem)
+    }))
+    expect(container.textContent).toContain('partial')
   })
 })
 
