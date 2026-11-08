@@ -162,10 +162,13 @@ impl Activity {
             _ => {}
         }
     }
+    /// Esc / Ctrl-C typed into the terminal. Claude fires no Stop hook for an
+    /// interrupt, but it lands back at its prompt: the user's turn. If work
+    /// actually continues, the next tool hook flips this back to Working.
     fn interrupt(&mut self) {
         if !self.ended {
             self.pending.clear();
-            self.phase = Phase::Unknown;
+            self.phase = Phase::Idle;
         }
     }
     fn release(&mut self) {
@@ -200,6 +203,9 @@ impl ActivityStore {
         activity.revision = store.0;
         store.1.insert(session.into(), activity.clone());
         activity
+    }
+    pub fn phase(&self, session: &str) -> Option<Phase> {
+        self.0.lock().unwrap().1.get(session).map(|s| s.phase)
     }
     pub fn snapshot(&self) -> Vec<Activity> {
         self.0.lock().unwrap().1.values().cloned().collect()
@@ -561,8 +567,10 @@ mod tests {
     fn interrupted_and_ended_launches_cannot_stay_busy() {
         let mut state = Activity::new("session", "launch");
         state.apply(&event("PermissionRequest", "a"));
+        // Esc / Ctrl-C lands Claude back at its prompt: the user's turn, not
+        // an unknown state. The next hook corrects it if work continues.
         state.interrupt();
-        assert_eq!(state.phase, Phase::Unknown);
+        assert_eq!(state.phase, Phase::Idle);
         assert!(state.pending.is_empty());
         state.apply(&event("UserPromptSubmit", ""));
         state.end(Some(1));

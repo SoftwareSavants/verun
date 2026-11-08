@@ -117,6 +117,16 @@ pub async fn open_claude_terminal(
         });
     }
 
+    // Only one live Claude process per session: an idle chat process is
+    // retired so it can't answer later from stale history and fork the
+    // transcript. A busy one blocks the switch.
+    {
+        use tauri::Manager;
+        if let Some(active) = app.try_state::<crate::task::ActiveMap>() {
+            crate::session_handover::hand_over_to_terminal(active.inner(), &session_id).await?;
+        }
+    }
+
     let validated = validate_session_for_terminal(pool, &session_id).await?;
     let task = validated.task;
     let resume_id_opt = validated.resume_id;

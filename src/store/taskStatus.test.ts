@@ -33,3 +33,18 @@ test('sidebar and board share one reading of session state', () => {
   setSessions([{ ...session, status: 'running', closedAt: 1 }])
   expect(taskStatus('t1').kind).toBe('idle')
 })
+
+test('an old crashed session does not flag a task whose newest session is healthy', () => {
+  const old = { ...session, id: 'old', status: 'error' as const, startedAt: 1 }
+  const fresh = { ...session, id: 'new', status: 'running' as const, startedAt: 2 }
+  setSessions([old, fresh])
+  expect(taskStatus('t1')).toMatchObject({ column: 'running', kind: 'running' })
+  setSessions([{ ...fresh, status: 'error' }, { ...old, status: 'idle' }])
+  expect(taskStatus('t1').kind).toBe('failed')
+})
+
+test('a question waiting in any session still needs you', () => {
+  setSessions([{ ...session, id: 'old', startedAt: 1 }, { ...session, id: 'new', startedAt: 2, status: 'running' }])
+  setPendingApprovals({ old: [{ requestId: 'r', sessionId: 'old', toolName: 'AskUserQuestion' } as ToolApprovalRequest] })
+  expect(taskStatus('t1').kind).toBe('input')
+})

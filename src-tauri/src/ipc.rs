@@ -1057,6 +1057,14 @@ pub async fn prewarm_session(
     if active.contains_key(&session_id) {
         return Ok(()); // already warm
     }
+    // A terminal owns this session; a chat process warmed now would miss its
+    // turns and fork the transcript on the next chat send.
+    if app
+        .try_state::<ClaudeTerminalMap>()
+        .is_some_and(|ct| ct.contains_key(&session_id))
+    {
+        return Ok(());
+    }
 
     let t = match db::get_task(pool.inner(), &session.task_id).await? {
         Some(t) => t,

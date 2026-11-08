@@ -27,6 +27,7 @@ mod policy;
 mod pty;
 mod pty_output;
 mod resource_monitor;
+mod session_handover;
 mod snapshots;
 mod stream;
 mod task;

@@ -9,18 +9,24 @@ import { taskBoardState, type TaskStatus } from '../lib/taskBoard'
 interface SessionRollup { running: boolean; error: boolean; approval: boolean; unknown: boolean }
 
 // Roll every open session up to its task once, shared by every caller.
+// Waiting and running count from any session. A failure counts only from the
+// task's newest session: an old crashed one that was never closed shouldn't
+// flag a task whose current session is fine.
 const sessionRollup = createRoot(() => createMemo(() => {
   const result = new Map<string, SessionRollup>()
+  const newest = new Map<string, { startedAt: number; error: boolean }>()
   for (const session of sessions) {
     if (session.closedAt) continue
     const state = result.get(session.taskId) ?? { running: false, error: false, approval: false, unknown: false }
     const observed = effectiveActivity(session.status, (pendingApprovals[session.id]?.length ?? 0) > 0, sessionActivity[session.id]?.phase)
     state.running ||= observed.running
-    state.error ||= observed.error
     state.approval ||= observed.approval
     state.unknown ||= observed.unknown
+    const latest = newest.get(session.taskId)
+    if (!latest || session.startedAt >= latest.startedAt) newest.set(session.taskId, { startedAt: session.startedAt, error: observed.error })
     result.set(session.taskId, state)
   }
+  for (const [taskId, latest] of newest) result.get(taskId)!.error = latest.error
   return result
 }))
 

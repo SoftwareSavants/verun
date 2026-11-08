@@ -137,6 +137,9 @@ export const Sidebar: Component = () => {
 
   // Everything blocked on the manager in the current scope, in sidebar order.
   const needsYouTasks = createMemo(() => visibleProjects(projects).flatMap(p => (activeTasksByProject()[p.id] || []).filter(t => needsYou(t.id))));
+  // Tasks we can't read (hooks unavailable, before Claude reports in) could be
+  // waiting too - surface them instead of letting them look quiet.
+  const unknownCount = createMemo(() => visibleProjects(projects).flatMap(p => activeTasksByProject()[p.id] || []).filter(t => taskStatus(t.id).kind === 'unknown').length);
   const floor = createMemo(() => ({ running: tasks.filter(t => !t.archived && taskStatus(t.id).kind === 'running').length }));
 
   const taskBindingById = createMemo(() => {
@@ -347,7 +350,7 @@ export const Sidebar: Component = () => {
         <GroupToolbar attention={otherAttention()} onAttention={jumpToAttention} />
         {/* Project + task list */}
         <div class="flex-1 overflow-y-auto overflow-x-hidden px-2 no-drag">
-          <Show when={!projectQuery().trim() && needsYouTasks().length > 0}>
+          <Show when={!projectQuery().trim() && (needsYouTasks().length > 0 || unknownCount() > 0)}>
             <section aria-label="Needs you" class="mb-2 pb-2 border-b-1 border-b-solid border-b-outline/8">
               <button type="button" class="w-full px-2 py-1 flex items-center gap-1.5 rounded text-[11px] font-semibold text-status-waiting hover:bg-surface-2"
                 aria-expanded={!queueCollapsed()} onClick={() => setQueueCollapsed(!queueCollapsed())}>
@@ -370,6 +373,14 @@ export const Sidebar: Component = () => {
                       </button>
                     );
                   }}</For>
+                  <Show when={unknownCount() > 0}>
+                    <button type="button" class="w-full pl-2 pr-2 py-1.5 flex items-center gap-2 text-left rounded-md text-[11px] text-text-muted hover:bg-surface-2 hover:text-text-primary"
+                      title="Claude's status can't be read for these tasks, so they may be waiting on you. Open the board to check them."
+                      onClick={openTaskBoard}>
+                      <TaskStatusIcon kind="unknown" label="Status unavailable" />
+                      <span class="flex-1">{unknownCount()} with unknown status</span>
+                    </button>
+                  </Show>
                 </div>
               </Show>
             </section>

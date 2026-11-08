@@ -10,6 +10,11 @@
 - Task board splits Ready into Idle, In review and Done, renames Needs attention to Needs you, shows a full count summary, and uses compact one-line cards with the branch in the tooltip
 - Sidebar and board read task status from one shared model, so the two can no longer disagree
 - Closing a task's Claude terminal no longer marks its session as crashed, so restored tasks don't show a false Error in Needs you
+- Switching a Claude session between chat and terminal view continues the same conversation instead of forking it: the other view's Claude process is retired first, and a switch is refused while that process is mid-turn
+- Esc or Ctrl-C in a Claude terminal now reads as Idle instead of Status unavailable
+- A desktop notification fires when a Claude terminal session starts waiting for input
+- Needs you lists how many tasks have an unknown status, linking to the board
+- A task's Error comes from its newest session, so an old crashed session left open no longer flags a healthy task
 - `ui-council` project skill: headless screenshots of the real app (`uilab.html`) judged blind and pairwise by Claude and Codex
 
 ## 0.15.0 - 2026-10-26
