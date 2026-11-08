@@ -31,6 +31,7 @@ mockIPC((cmd) => {
 }, { shouldMockEvents: true })
 
 if (params.get('fixture') === 'scale') (await import('./scale')).seedScale()
+if (params.get('fixture') === 'long') await (await import('./scale')).seedLongTranscript()
 
 await import('../index')
 

@@ -25,3 +25,18 @@ export function seedScale() {
     }
   }
 }
+
+// ?fixture=long: a realistic long-running session (~150 turns, a few thousand
+// output lines with markdown and code) on both demo sessions, to measure the
+// cost of opening and appending to big transcripts.
+export async function seedLongTranscript(turns = 25) {
+  const { DEMO_OUTPUT_LINES } = await import('../lib/seedData')
+  for (const [sessionId, base] of Object.entries(DEMO_OUTPUT_LINES)) {
+    const grown = []
+    let id = 1
+    for (let t = 0; t < turns; t++) {
+      for (const line of base) grown.push({ ...line, id: id++, sessionId, emittedAt: line.emittedAt + t * 3_600_000 })
+    }
+    DEMO_OUTPUT_LINES[sessionId] = grown
+  }
+}
