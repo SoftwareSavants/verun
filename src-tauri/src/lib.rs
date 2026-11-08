@@ -19,6 +19,7 @@ mod github;
 mod github_remote;
 mod handoff;
 mod ipc;
+mod keep_awake;
 mod lsp;
 mod markdown_skills;
 #[cfg(unix)]
@@ -80,6 +81,7 @@ pub fn run() {
                 .build(),
         )
         .manage(activity::ActivityStore::default())
+        .manage(keep_awake::KeepAwake::default())
         .manage(transcript_source::SourceRegistry::default())
         .manage(ipc::new_agent_cache())
         .manage(task::new_active_map())
@@ -347,6 +349,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             activity::session_activity_snapshot,
+            keep_awake::keep_awake_status,
+            keep_awake::keep_awake_set_agents_working,
+            keep_awake::keep_awake_set_manual,
+            keep_awake::keep_awake_clear_manual,
             // Projects
             ipc::add_project,
             ipc::gh_status,

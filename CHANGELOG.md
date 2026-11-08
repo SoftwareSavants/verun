@@ -15,6 +15,8 @@
 - A desktop notification fires when a Claude terminal session starts waiting for input
 - Needs you lists how many tasks have an unknown status, linking to the board
 - A task's Error comes from its newest session, so an old crashed session left open no longer flags a healthy task
+- Keep awake: the cup in the sidebar footer keeps the Mac awake while agents are working (not while they're idle or waiting on you), or keeps the screen on for 30 min to 4 hours or until turned off
+- Menus opened near a window edge stay on screen
 - `ui-council` project skill: headless screenshots of the real app (`uilab.html`) judged blind and pairwise by Claude and Codex
 
 ## 0.15.0 - 2026-10-26

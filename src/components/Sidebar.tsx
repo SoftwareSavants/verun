@@ -1,6 +1,7 @@
 import { openTaskBoard, showTaskBoard } from '../store/ui';
 import { taskStatus, needsYou } from '../store/taskStatus';
 import { TaskStatusIcon } from './TaskStatusIcon';
+import { KeepAwakeButton } from './KeepAwakeButton';
 import { projectColor } from '../lib/projectColor';
 import { Columns3 } from 'lucide-solid';
 import {
@@ -595,6 +596,7 @@ export const Sidebar: Component = () => {
           >
             <Settings size={14} />
           </button>
+          <div class="ml-auto"><KeepAwakeButton /></div>
         </div>
       </div>
 

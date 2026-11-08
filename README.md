@@ -37,6 +37,7 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 ## Full workspace, not just a launcher
 
 - **Needs you queue** - the sidebar pins every task waiting on input, failing CI, conflicting or errored at the top, with the reason on each row; every task shows a distinct status icon that matches the board.
+- **Keep awake** - Verun keeps your Mac awake while agents are working and lets it sleep once they're idle or waiting on you. Click the cup in the sidebar to keep the screen on for a set time or until you turn it off, sessions or not.
 - **Project groups** - organize repositories into collapsible sidebar sections, focus on one group, and search across every group without missing tasks that need attention.
 
 - **Continue from Claude cloud** - search cloud sessions directly in New Task and click one to import its conversation and code onto an independent local branch, without terminal steps. Imports run in the background with sidebar progress and retry. Requires Claude Code signed in with a Claude subscription.

@@ -721,3 +721,15 @@ export const inspectTaskDirectory = (path: string) => invoke<DirectoryInfo>('ins
 export function sessionActivitySnapshot(): Promise<import('./sessionActivity').SessionActivity[]> {
   return invoke('session_activity_snapshot')
 }
+
+// Keep awake (caffeinate)
+export const keepAwakeStatus = () =>
+  DEMO ? Promise.resolve({ agentsWorking: false, manualUntil: null, manualForever: false, active: false, keepsScreenOn: false } as import('./keepAwake').KeepAwakeStatus)
+    : invoke<import('./keepAwake').KeepAwakeStatus>('keep_awake_status')
+export const keepAwakeSetAgentsWorking = (working: boolean) =>
+  invoke<void>('keep_awake_set_agents_working', { working })
+/** `minutes: null` keeps the screen on until turned off. */
+export const keepAwakeSetManual = (minutes: number | null) =>
+  invoke<void>('keep_awake_set_manual', { minutes })
+export const keepAwakeClearManual = () =>
+  invoke<void>('keep_awake_clear_manual')
