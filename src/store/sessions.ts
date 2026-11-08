@@ -18,7 +18,11 @@ import {
   setPlanFilePathForSession,
 } from './sessionContext'
 
-const MAX_ITEMS_IN_MEMORY = 50_000
+export const MAX_ITEMS_IN_MEMORY = 50_000
+/** Output may run this far past the cap before it is trimmed back to it.
+ *  Trimming on every flush would copy the whole array each time and pin the
+ *  length at the cap. */
+export const OUTPUT_TRIM_CHUNK = 5_000
 
 export const [sessions, setSessions] = createStore<Session[]>([])
 export const [outputItems, setOutputItems] = createStore<Record<string, OutputItem[]>>({})
@@ -471,7 +475,7 @@ export async function initSessionListeners() {
       const existing = store[sessionId]
       if (existing) {
         existing.push(...items)
-        if (existing.length > MAX_ITEMS_IN_MEMORY) {
+        if (existing.length >= MAX_ITEMS_IN_MEMORY + OUTPUT_TRIM_CHUNK) {
           store[sessionId] = existing.slice(-MAX_ITEMS_IN_MEMORY)
         }
       } else {
