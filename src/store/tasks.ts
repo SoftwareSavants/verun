@@ -1,4 +1,4 @@
-import { createSignal } from 'solid-js'
+import { createMemo, createRoot, createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import type { Task, Session, AgentType } from '../types'
 import * as ipc from '../lib/ipc'
@@ -324,8 +324,15 @@ export async function updateTaskName(id: string, name: string) {
   ipc.renameTask(id, name)
 }
 
-export const taskById = (id: string) =>
-  tasks.find(t => t.id === id)
+// id -> task, rebuilt when the list changes. taskById is read for every task
+// from many memos (sidebar, board, status); a scan per call made that O(T^2).
+const taskIndex = createRoot(() => createMemo(() => {
+  const index = new Map<string, Task>()
+  for (const t of tasks) if (!index.has(t.id)) index.set(t.id, t)
+  return index
+}))
+
+export const taskById = (id: string) => taskIndex().get(id)
 
 /** Remove all localStorage keys associated with a task */
 export function cleanupTaskStorage(id: string) {

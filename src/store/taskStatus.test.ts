@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 import { produce } from 'solid-js/store'
 import { setSessions, setPendingApprovals } from './sessions'
 import { setTasks } from './tasks'
@@ -47,4 +47,18 @@ test('a question waiting in any session still needs you', () => {
   setSessions([{ ...session, id: 'old', startedAt: 1 }, { ...session, id: 'new', startedAt: 2, status: 'running' }])
   setPendingApprovals({ old: [{ requestId: 'r', sessionId: 'old', toolName: 'AskUserQuestion' } as ToolApprovalRequest] })
   expect(taskStatus('t1').kind).toBe('input')
+})
+
+test('reading every task is not quadratic: task lookup does not scan the list', () => {
+  const many = Array.from({ length: 300 }, (_, i) => ({ ...task, id: `t${i}`, archived: i === 7 }))
+  setTasks(many)
+  taskStatus('t0')
+  const find = vi.spyOn(Array.prototype, 'find')
+  try {
+    for (const t of many) taskStatus(t.id)
+    expect(find).not.toHaveBeenCalled()
+  } finally {
+    find.mockRestore()
+  }
+  expect(taskStatus('t7').kind).toBe('archived')
 })
