@@ -144,21 +144,90 @@ pub fn attribute(
     }
 }
 
+/// Live `ProcessSource`. Samples only Verun's own process tree (Verun plus
+/// every descendant: agent CLIs, PTYs, LSPs) instead of every process on the
+/// machine, which was the dominant cost of a sampling tick.
 pub struct SysinfoSource {
     sys: sysinfo::System,
+    root: u32,
+    /// Pids refreshed last tick, re-listed next tick so the ones that died
+    /// are dropped from `sys` instead of accumulating.
+    known: Vec<sysinfo::Pid>,
 }
 
 impl SysinfoSource {
     pub fn new() -> Self {
-        let mut sys = sysinfo::System::new();
+        let mut src = Self {
+            sys: sysinfo::System::new(),
+            root: std::process::id(),
+            known: Vec::new(),
+        };
         // First refresh primes the CPU baseline; subsequent snapshots compute deltas.
-        sys.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::All,
-            true,
-            sysinfo::ProcessRefreshKind::new().with_cpu().with_memory(),
-        );
-        Self { sys }
+        src.refresh();
+        src
     }
+
+    /// Refresh our tree and return its pids, or `None` when the tree could
+    /// not be discovered cheaply (non-macOS), in which case everything was
+    /// refreshed.
+    fn refresh(&mut self) -> Option<HashSet<u32>> {
+        let kind = sysinfo::ProcessRefreshKind::new().with_cpu().with_memory();
+        let Some(tree) = process_tree(self.root) else {
+            self.sys
+                .refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, kind);
+            return None;
+        };
+        let mut pids: Vec<sysinfo::Pid> =
+            tree.iter().map(|&p| sysinfo::Pid::from_u32(p)).collect();
+        let current = pids.clone();
+        pids.extend(self.known.iter().filter(|p| !tree.contains(&p.as_u32())));
+        self.sys
+            .refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&pids), true, kind);
+        self.known = current;
+        Some(tree)
+    }
+}
+
+/// `root` plus all its descendants, one `proc_listchildpids` call per node.
+#[cfg(target_os = "macos")]
+fn process_tree(root: u32) -> Option<HashSet<u32>> {
+    fn children(pid: u32) -> Vec<u32> {
+        let mut buf: Vec<libc::pid_t> = vec![0; 64];
+        loop {
+            let bytes = (buf.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+            // SAFETY: `buf` is valid for `bytes` bytes of writes.
+            let n = unsafe {
+                libc::proc_listchildpids(pid as libc::pid_t, buf.as_mut_ptr().cast(), bytes)
+            };
+            if n <= 0 {
+                return Vec::new();
+            }
+            let n = n as usize;
+            // A full buffer may be truncated: grow and ask again.
+            if n >= buf.len() && buf.len() < 1 << 16 {
+                buf.resize(buf.len() * 4, 0);
+                continue;
+            }
+            return buf[..n.min(buf.len())]
+                .iter()
+                .filter(|&&p| p > 0)
+                .map(|&p| p as u32)
+                .collect();
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(pid) = stack.pop() {
+        if seen.insert(pid) {
+            stack.extend(children(pid));
+        }
+    }
+    Some(seen)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_tree(_root: u32) -> Option<HashSet<u32>> {
+    None
 }
 
 impl Default for SysinfoSource {
@@ -167,14 +236,11 @@ impl Default for SysinfoSource {
 
 impl ProcessSource for SysinfoSource {
     fn snapshot(&mut self) -> Vec<ProcRow> {
-        self.sys.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::All,
-            true,
-            sysinfo::ProcessRefreshKind::new().with_cpu().with_memory(),
-        );
+        let tree = self.refresh();
         self.sys
             .processes()
             .iter()
+            .filter(|(pid, _)| tree.as_ref().is_none_or(|t| t.contains(&pid.as_u32())))
             .map(|(pid, p)| ProcRow {
                 pid: pid.as_u32(),
                 parent_pid: p.parent().map(|pp| pp.as_u32()),
@@ -187,6 +253,11 @@ impl ProcessSource for SysinfoSource {
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Sampling period while only the status-bar chip is showing usage.
+pub const IDLE_CADENCE_MS: u64 = 10_000;
+/// Sampling period while the activity monitor overlay is open.
+const OPEN_CADENCE_MS: u64 = 1_000;
 
 pub struct ResourceSampler {
     cadence: Arc<AtomicU64>,
@@ -233,7 +304,7 @@ impl ResourceSampler {
     where
         S: ProcessSource + Send + 'static,
     {
-        let cadence = Arc::new(AtomicU64::new(2000));
+        let cadence = Arc::new(AtomicU64::new(IDLE_CADENCE_MS));
         let notify = Arc::new(tokio::sync::Notify::new());
         let cadence_clone = cadence.clone();
         let notify_clone = notify.clone();
@@ -252,7 +323,16 @@ impl ResourceSampler {
                         std::collections::HashMap::new()
                     });
 
-                let snap = source.snapshot();
+                // sysinfo does blocking syscalls; keep them off the async workers.
+                let Ok((returned, snap)) = tauri::async_runtime::spawn_blocking(move || {
+                    let snap = source.snapshot();
+                    (source, snap)
+                })
+                .await
+                else {
+                    return;
+                };
+                source = returned;
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
@@ -280,7 +360,7 @@ impl ResourceSampler {
 
     pub fn set_overlay_open(&self, open: bool) {
         self.cadence
-            .store(if open { 1000 } else { 2000 }, Ordering::Relaxed);
+            .store(if open { OPEN_CADENCE_MS } else { IDLE_CADENCE_MS }, Ordering::Relaxed);
         self.notify.notify_one();
     }
 
@@ -294,7 +374,7 @@ impl ResourceSampler {
     #[cfg(test)]
     pub fn new_for_test() -> Self {
         Self {
-            cadence: Arc::new(AtomicU64::new(2000)),
+            cadence: Arc::new(AtomicU64::new(IDLE_CADENCE_MS)),
             notify: Arc::new(tokio::sync::Notify::new()),
             handle: None,
         }
@@ -324,9 +404,16 @@ pub async fn sample_now(
 ) -> Sample {
     // SysinfoSource::new() already primes the CPU baseline; wait the
     // minimum interval before the second refresh so CPU% has a delta.
-    let mut src = SysinfoSource::new();
+    let src = tauri::async_runtime::spawn_blocking(SysinfoSource::new)
+        .await
+        .unwrap_or_default();
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    let snap = src.snapshot();
+    let snap = tauri::async_runtime::spawn_blocking(move || {
+        let mut src = src;
+        src.snapshot()
+    })
+    .await
+    .unwrap_or_default();
 
     let active_pairs = task_root_pids(active, lsp_map, pty_map);
     let task_ids: Vec<String> = active_pairs.iter().map(|(t, _)| t.clone()).collect();
@@ -494,10 +581,24 @@ mod tests {
         assert!(me.rss_bytes > 0, "self process RSS should be > 0");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sysinfo_source_samples_only_our_own_process_tree() {
+        let mut child = std::process::Command::new("/bin/sleep").arg("5").spawn().unwrap();
+        let mut src = SysinfoSource::new();
+        let pids: HashSet<u32> = src.snapshot().iter().map(|r| r.pid).collect();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(pids.contains(&std::process::id()));
+        assert!(pids.contains(&child.id()), "spawned child must be sampled");
+        assert!(!pids.contains(&1), "launchd is not ours and must not be sampled");
+    }
+
     #[test]
     fn sampler_cadence_defaults_to_idle() {
         let s = ResourceSampler::new_for_test();
-        assert_eq!(s.cadence_ms(), 2000);
+        assert_eq!(s.cadence_ms(), IDLE_CADENCE_MS);
+        assert_eq!(IDLE_CADENCE_MS, 10_000);
     }
 
     #[test]
@@ -506,6 +607,6 @@ mod tests {
         s.set_overlay_open(true);
         assert_eq!(s.cadence_ms(), 1000);
         s.set_overlay_open(false);
-        assert_eq!(s.cadence_ms(), 2000);
+        assert_eq!(s.cadence_ms(), IDLE_CADENCE_MS);
     }
 }

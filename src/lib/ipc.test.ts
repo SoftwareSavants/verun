@@ -61,6 +61,14 @@ describe('ipc', () => {
     expect(typeof ipc.getStorageStats).toBe('function')
   })
 
+  test('getBlob reads the raw ArrayBuffer body as bytes', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(new Uint8Array([137, 80, 78, 71]).buffer)
+    const bytes = await ipc.getBlob('h1')
+    expect(invoke).toHaveBeenCalledWith('get_blob', { hash: 'h1' })
+    expect(bytes).toBeInstanceOf(Uint8Array)
+    expect(Array.from(bytes)).toEqual([137, 80, 78, 71])
+  })
+
   describe('account selection', () => {
     test('createSession passes the account selection', async () => {
       vi.mocked(invoke).mockResolvedValueOnce({ id: 's1' })

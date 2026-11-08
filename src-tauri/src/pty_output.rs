@@ -117,29 +117,20 @@ impl OutputBuffer {
         if state.closed || state.in_flight.is_some() {
             return None;
         }
-        let (snapshot, written) = state.buffer.snapshot();
+        let written = state.buffer.total_written();
         if state.cursor >= written {
             return None;
         }
-        let start = written - snapshot.len() as u64;
-        let omitted = state.cursor < start;
-        let mut offset = state.cursor.saturating_sub(start) as usize;
-        // Defensive for an invalid frontend checkpoint; normal checkpoints
-        // always come from a UTF-8-aligned snapshot or batch boundary.
-        while !snapshot.is_char_boundary(offset) {
-            offset += 1;
-        }
+        // Read only the next window; materializing the whole 256 KB replay
+        // buffer every flush tick was the dominant cost per attached terminal.
+        let omitted = state.cursor < state.buffer.start();
         let mut data = if omitted {
             "\x1b[0m\r\n[Verun: earlier output omitted while terminal was not open]\r\n".to_owned()
         } else {
             String::new()
         };
-        let mut end = (offset + BATCH_BYTES - data.len()).min(snapshot.len());
-        while !snapshot.is_char_boundary(end) {
-            end -= 1;
-        }
-        data.push_str(&snapshot[offset..end]);
-        let seq = start + end as u64;
+        let (chunk, seq) = state.buffer.read_from(state.cursor, BATCH_BYTES - data.len());
+        data.push_str(&chunk);
         state.sequence += 1;
         let sequence = state.sequence;
         state.in_flight = Some((sequence, seq));

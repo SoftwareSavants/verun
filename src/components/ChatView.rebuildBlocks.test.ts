@@ -2,6 +2,34 @@ import { describe, test, expect } from 'vitest'
 import { rebuildBlocks, turnHasProgress } from './ChatView'
 import type { OutputItem } from '../types'
 
+describe('rebuildBlocks with backend-merged deltas', () => {
+  test('one merged delta per run renders the same blocks as per-token deltas', () => {
+    // stream.rs merges adjacent text/thinking deltas before emitting and
+    // persisting; the blocks must not depend on how a run was split.
+    const tool = { kind: 'toolStart', tool: 'Read', input: '{}' } as OutputItem
+    const perToken: OutputItem[] = [
+      { kind: 'userMessage', text: 'hi', timestamp: 1 } as OutputItem,
+      { kind: 'thinking', text: 'Let ' } as OutputItem,
+      { kind: 'thinking', text: 'me see' } as OutputItem,
+      { kind: 'text', text: 'Hel' } as OutputItem,
+      { kind: 'text', text: 'lo' } as OutputItem,
+      tool,
+      { kind: 'text', text: 'Do' } as OutputItem,
+      { kind: 'text', text: 'ne' } as OutputItem,
+      { kind: 'turnEnd', status: 'completed' } as OutputItem,
+    ]
+    const merged: OutputItem[] = [
+      perToken[0],
+      { kind: 'thinking', text: 'Let me see' } as OutputItem,
+      { kind: 'text', text: 'Hello' } as OutputItem,
+      tool,
+      { kind: 'text', text: 'Done' } as OutputItem,
+      perToken[8],
+    ]
+    expect(rebuildBlocks(merged)).toEqual(rebuildBlocks(perToken))
+  })
+})
+
 describe('rebuildBlocks turnEnd rendering', () => {
   test('error turnEnd (no prior errorMessage) renders a single error block with the message', () => {
     const items: OutputItem[] = [

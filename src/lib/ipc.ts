@@ -659,9 +659,9 @@ export const uploadAttachment = (mime: string, data: Uint8Array): Promise<BlobRe
 export const uploadAttachmentFromPath = (path: string): Promise<BlobRef> =>
   invoke<BlobRef>('upload_attachment_from_path', { path })
 
+// Raw IPC body (tauri::ipc::Response): arrives as an ArrayBuffer, not a JSON number array.
 export const getBlob = (hash: string): Promise<Uint8Array> =>
-  invoke<number[] | Uint8Array>('get_blob', { hash })
-    .then(b => b instanceof Uint8Array ? b : new Uint8Array(b))
+  invoke<ArrayBuffer>('get_blob', { hash }).then(b => new Uint8Array(b))
 
 export const getStorageStats = (): Promise<StorageStats> =>
   invoke<StorageStats>('get_storage_stats')
