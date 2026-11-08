@@ -9,6 +9,7 @@
 - Sidebar task rows are single-line, with one distinct icon per state (needs input, error, CI failing, conflicts, running, idle, PR open, merged) instead of near-identical circles and pulsing edges
 - Task board splits Ready into Idle, In review and Done, renames Needs attention to Needs you, shows a full count summary, and uses compact one-line cards with the branch in the tooltip
 - Sidebar and board read task status from one shared model, so the two can no longer disagree
+- Closing a task's Claude terminal no longer marks its session as crashed, so restored tasks don't show a false Error in Needs you
 - `ui-council` project skill: headless screenshots of the real app (`uilab.html`) judged blind and pairwise by Claude and Codex
 
 ## 0.15.0 - 2026-10-26

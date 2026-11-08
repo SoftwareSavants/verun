@@ -174,7 +174,10 @@ impl Activity {
         self.phase = Phase::Ended;
     }
     fn end(&mut self, code: Option<u32>) {
-        if self.ended && self.phase == Phase::Failed {
+        // The first outcome wins: a late PTY exit report must not turn a clean
+        // SessionEnd or a deliberate close (release) into a crash, and a late
+        // SessionEnd must not mask a real crash.
+        if self.ended {
             return;
         }
         self.pending.clear();
@@ -502,6 +505,17 @@ mod tests {
         let mut state = Activity::new("s", "l");
         state.end(Some(1));
         state.release();
+        assert_eq!(state.phase, Phase::Ended);
+    }
+
+    #[test]
+    fn closing_terminal_before_its_exit_is_reported_does_not_fake_a_crash() {
+        // Verun drops the bridge first, then kills the PTY; the reader thread
+        // reports the kill afterwards with no exit code.
+        let mut state = Activity::new("s", "l");
+        state.apply(&event("Stop", ""));
+        state.release();
+        state.end(None);
         assert_eq!(state.phase, Phase::Ended);
     }
 
