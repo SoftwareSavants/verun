@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste, AccountSelection, AccountsSnapshot, NewAccountInput, UpdateAccountInput, AccountTerminal, AccountTerminalAction } from '../types'
+import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste, AccountSelection, AccountsSnapshot, NewAccountInput, UpdateAccountInput, AccountTerminal, AccountTerminalAction, SessionHandoff } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
 
@@ -104,6 +104,10 @@ export const stopHook = (taskId: string) =>
 // Sessions
 export const createSession = (taskId: string, agentType: string, model?: string, account?: AccountSelection) =>
   invoke<Session>('create_session', { taskId, agentType, model, account: account ?? null })
+
+/** Start a session on another harness in the same task, seeded from `sourceSessionId`. Returns the new session and the handoff packet to draft into its composer. */
+export const createSessionHandoff = (sourceSessionId: string, targetAgentType: AgentType, model?: string, account?: AccountSelection) =>
+  invoke<SessionHandoff>('create_session_handoff', { sourceSessionId, targetAgentType, model: model ?? null, account: account ?? null })
 
 export const sendMessage = (sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean) =>
   invoke<void>('send_message', { sessionId, message, attachments, model, planMode, thinkingMode, fastMode })

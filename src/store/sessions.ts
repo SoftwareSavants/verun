@@ -1,6 +1,6 @@
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection } from '../types'
+import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection, AgentType } from '../types'
 import { setSessionMcpServers } from './mcpServers'
 import { ELICITATION_TOOL_NAME, parseElicitation } from '../lib/mcpElicitation'
 import { setTasks, taskById } from './tasks'
@@ -10,6 +10,7 @@ import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
 import { notifyAccountError } from '../lib/accountErrors'
 import { deserializeAttachments } from '../lib/binary'
+import { clearDraft, saveDraftAttachments } from './sessionDrafts'
 import {
   appendCodexLivePlanDelta,
   clearCodexLivePlan,
@@ -85,6 +86,24 @@ export async function createSession(taskId: string, agentType: string, model?: s
   return session
 }
 
+/** A session started by handing another one off: it has a parent but, unlike a fork, no fork point. */
+export const isHandoffSession = (s: Pick<Session, 'parentSessionId' | 'forkedAtMessageUuid'>) =>
+  !!s.parentSessionId && !s.forkedAtMessageUuid
+
+/**
+ * Hand `sourceSessionId` off to another harness in the same task. The target
+ * session starts idle with the handoff packet attached in its composer, so the
+ * user can add their own context before sending.
+ */
+export async function handOffSession(sourceSessionId: string, targetAgentType: AgentType, model?: string, account?: AccountSelection): Promise<Session> {
+  const { session, attachment } = await ipc.createSessionHandoff(sourceSessionId, targetAgentType, model, account)
+  setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
+  seedSessionAggregates(session)
+  setOutputItems(session.id, [])
+  saveDraftAttachments(session.id, [attachment])
+  return session
+}
+
 export async function reopenSession(sessionId: string): Promise<Session> {
   const session = await ipc.reopenSession(sessionId)
   // Rust broadcasts session-created on reopen (mirrors createSession); same
@@ -109,12 +128,14 @@ export function updateSessionModel(sessionId: string, model: string | null) {
  */
 export async function sendMessage(sessionId: string, message: string, attachments?: AttachmentRef[], model?: string, planMode?: boolean, thinkingMode?: boolean, fastMode?: boolean): Promise<boolean> {
   const images = attachments?.filter(a => a.mimeType.startsWith('image/'))
+  const files = attachments?.filter(a => !a.mimeType.startsWith('image/'))
 
   const item: OutputItem = {
     kind: 'userMessage',
     text: message,
     timestamp: Date.now(),
     ...(images && images.length > 0 ? { images } : {}),
+    ...(files && files.length > 0 ? { files } : {}),
   }
 
   setOutputItems(produce(store => {
@@ -346,19 +367,20 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
   // Our synthetic user message
   if (type === 'verun_user_message') {
     const rawAtts = v.attachments
-    const images: AttachmentRef[] | undefined = Array.isArray(rawAtts)
+    const refs: AttachmentRef[] = Array.isArray(rawAtts)
       ? rawAtts
           .filter((a): a is Record<string, unknown> => typeof a === 'object' && a !== null)
           .filter(a => typeof (a as { hash?: unknown }).hash === 'string'
-            && typeof (a as { mimeType?: unknown }).mimeType === 'string'
-            && (a as { mimeType: string }).mimeType.startsWith('image/'))
+            && typeof (a as { mimeType?: unknown }).mimeType === 'string')
           .map(a => ({
             hash: String(a.hash),
             mimeType: String(a.mimeType),
             name: String(a.name ?? ''),
             size: Number(a.size ?? 0),
           }))
-      : undefined
+      : []
+    const images = refs.filter(a => a.mimeType.startsWith('image/'))
+    const files = refs.filter(a => !a.mimeType.startsWith('image/'))
     // ScheduleWakeup-fired turns persist the model's `reason` so the chat
     // renders a wakeup marker instead of a user bubble on reload (issue #230).
     const wakeupReason = typeof v.wakeup_reason === 'string'
@@ -368,7 +390,8 @@ function parseNdjsonLine(line: string, emittedAt?: number): OutputItem[] | null 
       kind: 'userMessage',
       text: v.text as string,
       timestamp: emittedAt,
-      ...(images && images.length > 0 ? { images } : {}),
+      ...(images.length > 0 ? { images } : {}),
+      ...(files.length > 0 ? { files } : {}),
       ...(wakeupReason !== undefined ? { wakeupReason } : {}),
     }]
   }
@@ -659,6 +682,5 @@ export function clearSessionContextsForTask(taskId: string) {
 }
 
 export function cleanupSessionStorage(sessionId: string) {
-  localStorage.removeItem(`verun:draft-msg:${sessionId}`)
-  localStorage.removeItem(`verun:draft-att:${sessionId}`)
+  clearDraft(sessionId)
 }

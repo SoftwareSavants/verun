@@ -17,6 +17,7 @@ mod file_search;
 mod git_ops;
 mod github;
 mod github_remote;
+mod handoff;
 mod ipc;
 mod lsp;
 mod markdown_skills;
@@ -379,6 +380,7 @@ pub fn run() {
             ipc::stop_hook,
             // Sessions
             ipc::create_session,
+            ipc::create_session_handoff,
             ipc::send_message,
             ipc::prewarm_session,
             ipc::update_session_model,

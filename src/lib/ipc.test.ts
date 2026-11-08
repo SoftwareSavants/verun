@@ -73,6 +73,28 @@ describe('ipc', () => {
       })
     })
 
+    test('createSessionHandoff passes source, target, model and account', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ session: { id: 's2' }, attachment: { hash: 'h' } })
+      await ipc.createSessionHandoff('s1', 'codex', 'gpt-5', { kind: 'account', id: 'a1' })
+      expect(invoke).toHaveBeenCalledWith('create_session_handoff', {
+        sourceSessionId: 's1',
+        targetAgentType: 'codex',
+        model: 'gpt-5',
+        account: { kind: 'account', id: 'a1' },
+      })
+    })
+
+    test('createSessionHandoff sends model and account null by default', async () => {
+      vi.mocked(invoke).mockResolvedValueOnce({ session: { id: 's2' }, attachment: { hash: 'h' } })
+      await ipc.createSessionHandoff('s1', 'gemini')
+      expect(invoke).toHaveBeenCalledWith('create_session_handoff', {
+        sourceSessionId: 's1',
+        targetAgentType: 'gemini',
+        model: null,
+        account: null,
+      })
+    })
+
     test('createSession sends account null by default', async () => {
       vi.mocked(invoke).mockResolvedValueOnce({ id: 's1' })
       await ipc.createSession('t1', 'claude', 'opus')

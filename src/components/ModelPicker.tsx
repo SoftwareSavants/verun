@@ -34,6 +34,8 @@ interface Props {
    * group of that account only. Left out, it goes to every group of the harness.
    */
   defaultAccountId?: string | null
+  /** Harnesses not to offer, e.g. the one a session is being handed off from. */
+  excludeAgents?: AgentType[]
   title?: string
   placeholder?: string
   onClose: () => void
@@ -51,7 +53,7 @@ export const ModelPicker: Component<Props> = (props) => {
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set())
 
   const installed = createMemo(() => {
-    const list = agents.filter(a => a.installed)
+    const list = agents.filter(a => a.installed && !props.excludeAgents?.includes(a.id))
     const def = props.defaultAgent ?? 'claude'
     return [...list].sort((a, b) => {
       if (a.id === def && b.id !== def) return -1

@@ -3,6 +3,7 @@ import { clsx } from "clsx";
 import {
   AlertCircle,
   Archive,
+  ArrowRightLeft,
   ChevronDown,
   ClipboardCopy,
   FolderOpen,
@@ -59,6 +60,8 @@ import { projectById, projects } from "../store/projects";
 import {
   abortMessage,
   closeSession,
+  handOffSession,
+  isHandoffSession,
   loadOutputLines,
   loadSessions,
   outputItems,
@@ -68,6 +71,8 @@ import {
   sessionsForTask,
 } from "../store/sessions";
 import { sessionViewMode } from "../store/sessionViewMode";
+import { agents } from "../store/agents";
+import { openModelPicker } from "../store/modelPicker";
 import { isSetupRunning, setupError, setupFailed } from "../store/setup";
 import { sideQuestionPanelData } from "../store/sideQuestion";
 import { loadSteps } from "../store/steps";
@@ -110,7 +115,7 @@ import {
   terminalHeight,
   toggleTerminal,
 } from "../store/ui";
-import type { AccountSelection, Session } from "../types";
+import type { AccountSelection, AgentType, Session } from "../types";
 import { AGENT_DISPLAY_NAMES } from "../types";
 import { AccountDot } from "./AccountDot";
 import { ChatView } from "./ChatView";
@@ -341,6 +346,40 @@ export const TaskPanel: Component = () => {
     taskId: string;
   } | null>(null);
   const closeTabMenu = () => setTabMenu(null);
+
+  // Session tab context menu: hand the session off to another harness.
+  const [sessionMenu, setSessionMenu] = createSignal<{
+    x: number;
+    y: number;
+    session: Session;
+  } | null>(null);
+  const handoffTargets = (source: Session) =>
+    agents.filter((a) => a.installed && a.id !== source.agentType);
+  const handleHandoff = async (
+    source: Session,
+    target: AgentType,
+    model?: string,
+    account?: AccountSelection,
+  ) => {
+    try {
+      const session = await handOffSession(source.id, target, model, account);
+      setSelectedSessionIdForTask(source.taskId, session.id);
+      setMainView(source.taskId, "session");
+    } catch (e) {
+      addToast(`Handoff failed: ${String(e)}`, "error");
+    }
+  };
+  const openHandoffPicker = (source: Session) =>
+    openModelPicker({
+      title: `Hand off ${sessionLabel(source)} to…`,
+      placeholder: "Search harnesses and models…",
+      projectId: taskById(source.taskId)?.projectId,
+      excludeAgents: [source.agentType],
+      onPick: (agent, model, account) =>
+        handleHandoff(source, agent, model, account),
+    });
+  const sessionLabel = (s: Session) =>
+    s.name || AGENT_DISPLAY_NAMES[s.agentType];
 
   const handleNewSession = async (
     agentType: string,
@@ -742,6 +781,14 @@ export const TaskPanel: Component = () => {
                               setSelectedSessionIdForTask(t().id, session.id);
                               setMainView(t().id, "session");
                             }}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              setSessionMenu({
+                                x: e.clientX,
+                                y: e.clientY,
+                                session,
+                              });
+                            }}
                           >
                             <SvgIcon
                               svg={agentIcon(session.agentType)}
@@ -751,6 +798,21 @@ export const TaskPanel: Component = () => {
                               accountId={session.accountId}
                               size={6}
                             />
+                            <Show when={isHandoffSession(session)}>
+                              <span
+                                class="text-text-dim flex"
+                                title={`Handed off from ${(() => {
+                                  const parent = sessionById(
+                                    session.parentSessionId!,
+                                  );
+                                  return parent
+                                    ? sessionLabel(parent)
+                                    : "another session";
+                                })()}`}
+                              >
+                                <ArrowRightLeft size={9} />
+                              </span>
+                            </Show>
                             <span>
                               {session.name ||
                                 AGENT_DISPLAY_NAMES[session.agentType]}
@@ -1011,6 +1073,30 @@ export const TaskPanel: Component = () => {
                       if (path) forceCloseTab(t().id, path);
                     }}
                     onCancel={() => cancelCloseTab(t().id)}
+                  />
+
+                  {/* Session tab context menu */}
+                  <ContextMenu
+                    open={!!sessionMenu()}
+                    onClose={() => setSessionMenu(null)}
+                    pos={
+                      sessionMenu()
+                        ? { x: sessionMenu()!.x, y: sessionMenu()!.y }
+                        : undefined
+                    }
+                    minWidth="min-w-44"
+                    items={(() => {
+                      const menu = sessionMenu();
+                      if (!menu) return [];
+                      return [
+                        {
+                          label: "Hand off\u2026",
+                          icon: ArrowRightLeft,
+                          disabled: handoffTargets(menu.session).length === 0,
+                          action: () => openHandoffPicker(menu.session),
+                        },
+                      ];
+                    })()}
                   />
 
                   {/* File tab context menu */}

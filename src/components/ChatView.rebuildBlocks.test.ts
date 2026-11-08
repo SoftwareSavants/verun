@@ -210,3 +210,12 @@ describe('turnHasProgress (mid-turn vs first-shot detection for retry)', () => {
     expect(turnHasProgress(items, 2)).toBe(false)
   })
 })
+
+describe('rebuildBlocks user attachments', () => {
+  test('a user message carries its files to the block', () => {
+    const file = { hash: 'h', mimeType: 'text/markdown', name: 'Handoff.md', size: 1 }
+    const blocks = rebuildBlocks([{ kind: 'userMessage', text: '', timestamp: 1, files: [file] } as OutputItem])
+    const user = blocks.find(b => b.type === 'user') as { files?: unknown[] }
+    expect(user.files).toEqual([file])
+  })
+})

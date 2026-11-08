@@ -868,6 +868,31 @@ pub async fn create_session(
     task::create_session(&app, db_tx.inner(), task_id, agent_type, model, account_id).await
 }
 
+/// Hand a session off to another harness in the same task. Creates the target
+/// session (idle) and returns the handoff packet for the UI to draft into its
+/// composer, so the user can add instructions before sending.
+#[tauri::command]
+pub async fn create_session_handoff(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    source_session_id: String,
+    target_agent_type: String,
+    model: Option<String>,
+    account: Option<AccountSelection>,
+) -> Result<crate::handoff::SessionHandoff, String> {
+    crate::handoff::create_session_handoff(
+        &app,
+        pool.inner(),
+        db_tx.inner(),
+        &source_session_id,
+        &target_agent_type,
+        model,
+        account.as_ref(),
+    )
+    .await
+}
+
 /// Fork an existing session at a specific assistant message uuid into a new
 /// session inside the SAME task. The worktree is unchanged.
 #[tauri::command]

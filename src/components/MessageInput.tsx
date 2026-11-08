@@ -23,8 +23,10 @@ import * as ipc from '../lib/ipc'
 import { Popover } from './Popover'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
+import { FileChip } from './FileChip'
 import { openSideQuestion } from '../store/sideQuestion'
 import { serializeAttachments, deserializeAttachments, uploadAttachments } from '../lib/binary'
+import { clearDraft, loadDraftAttachments, loadDraftMessage, saveDraftAttachments, saveDraftMessage } from '../store/sessionDrafts'
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 import { decidePlanAction } from '../lib/planAction'
 import { isImagePath, mentionPathForFile } from '../lib/composerFiles'
@@ -386,16 +388,13 @@ export const MessageInput: Component<Props> = (props) => {
     draftSaveTimer = setTimeout(() => {
       const msg = sessionMessages()[sid] ?? ''
       const atts = sessionAttachments()[sid] ?? []
-      if (msg) localStorage.setItem(`verun:draft-msg:${sid}`, msg)
-      else localStorage.removeItem(`verun:draft-msg:${sid}`)
-      if (atts.length > 0) localStorage.setItem(`verun:draft-att:${sid}`, serializeAttachments(atts))
-      else localStorage.removeItem(`verun:draft-att:${sid}`)
+      saveDraftMessage(sid, msg)
+      saveDraftAttachments(sid, atts)
     }, 500)
   }
   const clearPersistedDraft = (sid: string) => {
     if (draftSaveTimer) clearTimeout(draftSaveTimer)
-    localStorage.removeItem(`verun:draft-msg:${sid}`)
-    localStorage.removeItem(`verun:draft-att:${sid}`)
+    clearDraft(sid)
   }
 
   const setMessageRaw = (v: string) => {
@@ -530,14 +529,12 @@ export const MessageInput: Component<Props> = (props) => {
     }
     prevSessionId = sid
     if (!sessionMessages()[sid]) {
-      const savedMsg = localStorage.getItem(`verun:draft-msg:${sid}`)
+      const savedMsg = loadDraftMessage(sid)
       if (savedMsg) setSessionMessages(prev => ({ ...prev, [sid]: savedMsg }))
     }
     if (!sessionAttachments()[sid]?.length) {
-      try {
-        const savedAtt = localStorage.getItem(`verun:draft-att:${sid}`)
-        if (savedAtt) setSessionAttachments(prev => ({ ...prev, [sid]: deserializeAttachments(savedAtt) }))
-      } catch { /* ignore corrupt data */ }
+      const savedAtt = loadDraftAttachments(sid)
+      if (savedAtt.length > 0) setSessionAttachments(prev => ({ ...prev, [sid]: savedAtt }))
     }
     // Sync the contenteditable DOM to the restored draft
     if (inputRef) {
@@ -2335,15 +2332,11 @@ export const MessageInput: Component<Props> = (props) => {
           <div class="flex gap-2 px-3 pt-2 pb-1 overflow-x-auto">
             <For each={attachments()}>
               {(att, i) => (
-                <div class="relative shrink-0 group">
-                  <Show
-                    when={att.mimeType.startsWith('image/')}
-                    fallback={
-                      <div class="w-16 h-16 rounded-lg bg-surface-2 border border-border flex items-center justify-center">
-                        <span class="text-[10px] text-text-dim truncate max-w-14 px-1">{att.name}</span>
-                      </div>
-                    }
-                  >
+                <Show
+                  when={att.mimeType.startsWith('image/')}
+                  fallback={<div class="shrink-0 self-end"><FileChip file={att} onRemove={() => removeAttachment(i())} /></div>}
+                >
+                  <div class="relative shrink-0 group">
                     <button
                       type="button"
                       class="block cursor-pointer"
@@ -2357,14 +2350,14 @@ export const MessageInput: Component<Props> = (props) => {
                         class="w-16 h-16 object-cover rounded-xl border border-border transition-all duration-150 hover:border-border-active hover:brightness-110 hover:scale-[1.03]"
                       />
                     </button>
-                  </Show>
-                  <button
-                    class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-surface-3 border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={() => removeAttachment(i())}
-                  >
-                    <X size={10} class="text-text-muted" />
-                  </button>
-                </div>
+                    <button
+                      class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-surface-3 border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={() => removeAttachment(i())}
+                    >
+                      <X size={10} class="text-text-muted" />
+                    </button>
+                  </div>
+                </Show>
               )}
             </For>
           </div>

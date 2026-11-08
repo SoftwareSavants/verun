@@ -19,6 +19,7 @@ vi.mock('../lib/ipc', () => ({
   listSteps: vi.fn().mockResolvedValue([]),
   syncSessionStatuses: vi.fn().mockResolvedValue(undefined),
   createSession: vi.fn(),
+  createSessionHandoff: vi.fn(),
   getOutputLines: vi.fn().mockResolvedValue([]),
   clearSession: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
@@ -30,7 +31,7 @@ vi.mock('../lib/notifications', () => ({
   notify: vi.fn(),
 }))
 
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, reopenSession, sendMessage, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, rateLimitFor, setRateLimitByAccount, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, handOffSession, isHandoffSession, reopenSession, sendMessage, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, rateLimitFor, setRateLimitByAccount, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
 import * as ipc from '../lib/ipc'
 import { setTasks } from './tasks'
 import { toasts, setToasts } from './ui'
@@ -881,5 +882,70 @@ describe('rate limits per account', () => {
     listenCallbacks.get('rate-limit-info')!({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 7 }) })
     dispose()
     expect(seen).toEqual([null, 7])
+  })
+})
+
+describe('handOffSession', () => {
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    localStorage.clear()
+    vi.mocked(ipc.createSessionHandoff).mockReset()
+  })
+
+  const packet = { hash: 'h-packet', mimeType: 'text/markdown', name: 'Handoff from Claude Code.md', size: 42 }
+
+  test('adds the target session and attaches the packet to its empty composer', async () => {
+    const target = makeSession({ id: 's-target', taskId: 't-001', agentType: 'codex', parentSessionId: 's-src', forkedAtMessageUuid: null })
+    vi.mocked(ipc.createSessionHandoff).mockResolvedValue({ session: target, attachment: packet, includedTurns: 1, omittedTurns: 0, transcriptPath: null })
+    const result = await handOffSession('s-src', 'codex')
+    expect(ipc.createSessionHandoff).toHaveBeenCalledWith('s-src', 'codex', undefined, undefined)
+    expect(result.id).toBe('s-target')
+    expect(sessions.filter(s => s.id === 's-target').length).toBe(1)
+    expect(JSON.parse(localStorage.getItem('verun:draft-att:s-target')!)).toEqual([packet])
+    expect(localStorage.getItem('verun:draft-msg:s-target')).toBeNull()
+  })
+})
+
+describe('isHandoffSession', () => {
+  test('a child with a parent but no fork point is a handoff', () => {
+    expect(isHandoffSession(makeSession({ parentSessionId: 'p', forkedAtMessageUuid: null }))).toBe(true)
+  })
+  test('a fork is not a handoff', () => {
+    expect(isHandoffSession(makeSession({ parentSessionId: 'p', forkedAtMessageUuid: 'm1' }))).toBe(false)
+  })
+  test('a fresh session is not a handoff', () => {
+    expect(isHandoffSession(makeSession({ parentSessionId: null, forkedAtMessageUuid: null }))).toBe(false)
+  })
+})
+
+describe('non-image attachments in user messages', () => {
+  const file = { hash: 'h-md', mimeType: 'text/markdown', name: 'Handoff from Claude Code.md', size: 10 }
+  const image = { hash: 'h-png', mimeType: 'image/png', name: 'a.png', size: 3 }
+
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    vi.mocked(ipc.getOutputLines).mockReset()
+    vi.mocked(ipc.sendMessage).mockReset()
+    vi.mocked(ipc.sendMessage).mockResolvedValue(undefined)
+  })
+
+  test('a reloaded user message keeps files apart from images', async () => {
+    vi.mocked(ipc.getOutputLines).mockResolvedValue([
+      { id: 1, sessionId: 's-files', line: JSON.stringify({ type: 'verun_user_message', text: 'go', attachments: [file, image] }), emittedAt: 100 },
+    ])
+    await loadOutputLines('s-files')
+    const item = outputItems['s-files'][0] as Extract<OutputItem, { kind: 'userMessage' }>
+    expect(item.images).toEqual([image])
+    expect(item.files).toEqual([file])
+  })
+
+  test('a sent message shows its files right away', async () => {
+    setSessions([makeSession({ id: 's-send', taskId: 't-001' })])
+    await sendMessage('s-send', 'go', [file])
+    const item = outputItems['s-send'].find(i => i.kind === 'userMessage') as Extract<OutputItem, { kind: 'userMessage' }>
+    expect(item.files).toEqual([file])
+    expect(item.images).toBeUndefined()
   })
 })

@@ -282,6 +282,17 @@ export interface StorageStats {
   unreferencedCount: number;
 }
 
+/** Result of `create_session_handoff`: the new session plus the packet for its first message. */
+export interface SessionHandoff {
+  session: Session;
+  /** The handoff packet, stored as a markdown file to attach to the first message. */
+  attachment: AttachmentRef;
+  includedTurns: number;
+  omittedTurns: number;
+  /** Full transcript of the source session, written for the target agent to read. */
+  transcriptPath: string | null;
+}
+
 // Structured output items from Claude's stream-json protocol
 
 export interface PlanStep {
@@ -312,6 +323,8 @@ export type OutputItem =
       kind: "userMessage";
       text: string;
       images?: AttachmentRef[];
+      /** Non-image attachments (e.g. a handoff packet), shown as file chips. */
+      files?: AttachmentRef[];
       timestamp?: number;
       /**
        * Set when this turn was synthesised by Verun's wakeup scheduler

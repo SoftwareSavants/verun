@@ -83,6 +83,15 @@ describe('<ModelPicker />', () => {
     expect(container.querySelector('input')).toBeNull()
   })
 
+  test('excludeAgents hides those harnesses, e.g. the source of a handoff', () => {
+    const { baseElement } = render(() => (
+      <ModelPicker open={true} excludeAgents={['claude']} onClose={() => {}} onPick={() => {}} />
+    ))
+    const texts = Array.from(baseElement.querySelectorAll('button[data-pick-row]')).map(r => r.textContent ?? '')
+    expect(texts.some(t => t.includes('GPT-5'))).toBe(true)
+    expect(texts.some(t => t.includes('Sonnet') || t.includes('Opus'))).toBe(false)
+  })
+
   test('caps each provider to 4 visible models and surfaces a "Show N more" row for the rest', () => {
     const { baseElement } = render(() => (
       <ModelPicker open={true} onClose={() => {}} onPick={() => {}} />
