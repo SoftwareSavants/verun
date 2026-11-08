@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Recent now lists Claude Code sessions started outside Verun in the task's folder (or the project's main checkout) and continues them in Verun with their history, across the Default and added Claude accounts
+
 ## 0.16.0 - 2026-11-08
 
 - Chat no longer freezes on send or session open: blocks build incrementally per flush, rendered markdown is cached, the streaming message re-renders at most once per frame, and task status lookups are O(1)

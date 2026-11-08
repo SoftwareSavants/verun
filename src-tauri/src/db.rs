@@ -636,6 +636,12 @@ pub enum DbWrite {
         lines: Vec<(String, i64)>,
         done: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
+    /// A session that arrives with history (e.g. adopted from outside Verun).
+    InsertSessionWithLines {
+        session: Box<Session>,
+        lines: Vec<(String, i64)>,
+        done: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     // Projects
     InsertProject(Project),
     UpdateProjectBaseBranch {
@@ -945,6 +951,36 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
                     .collect();
                 log_refcount_err(
                     "incr InsertTaskWithSession",
+                    crate::blob::incr_refs(pool, &hashes).await,
+                );
+            }
+            let _ = done.send(result.map_err(|e: sqlx::Error| e.to_string()));
+        }
+        DbWrite::InsertSessionWithLines {
+            session: s,
+            lines,
+            done,
+        } => {
+            let result = async {
+                let mut tx = pool.begin().await?;
+                sqlx::query("INSERT INTO sessions (id, task_id, name, resume_session_id, status, started_at, agent_type, model, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    .bind(&s.id).bind(&s.task_id).bind(&s.name).bind(&s.resume_session_id)
+                    .bind(&s.status).bind(s.started_at).bind(&s.agent_type).bind(&s.model)
+                    .bind(&s.account_id)
+                    .execute(&mut *tx).await?;
+                for (line, at) in &lines {
+                    sqlx::query("INSERT INTO output_lines (session_id, line, emitted_at) VALUES (?, ?, ?)")
+                        .bind(&s.id).bind(line).bind(at).execute(&mut *tx).await?;
+                }
+                tx.commit().await
+            }.await;
+            if result.is_ok() {
+                let hashes: Vec<String> = lines
+                    .iter()
+                    .flat_map(|(line, _)| crate::blob::extract_hashes_from_output_line(line))
+                    .collect();
+                log_refcount_err(
+                    "incr InsertSessionWithLines",
                     crate::blob::incr_refs(pool, &hashes).await,
                 );
             }
@@ -1644,6 +1680,16 @@ pub async fn set_unnamed_task_title(pool: &SqlitePool, id: &str, title: &str) ->
     sqlx::query("UPDATE tasks SET name = ? WHERE id = ? AND (name IS NULL OR trim(name) = '')")
         .bind(title).bind(id).execute(pool).await
         .map(|result| result.rows_affected() > 0).map_err(|e| e.to_string())
+}
+
+/// Every Claude/agent session id Verun already tracks, so outside listings skip them.
+pub async fn list_resume_session_ids(pool: &SqlitePool) -> Result<Vec<String>, String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT resume_session_id FROM sessions WHERE resume_session_id IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
 }
 
 pub async fn get_task(pool: &SqlitePool, id: &str) -> Result<Option<Task>, String> {

@@ -190,6 +190,12 @@ export const forkSessionToNewTask = (
     worktreeState,
   })
 
+export const listOutsideSessions = (taskId: string) =>
+  DEMO ? Promise.resolve([] as import('../types').OutsideSession[])
+    : invoke<import('../types').OutsideSession[]>('list_outside_sessions', { taskId })
+export const adoptOutsideSession = (taskId: string, session: import('../types').OutsideSession) =>
+  invoke<Session>('adopt_outside_session', { taskId, session })
+
 export const getOutputLines = (
   sessionId: string,
   limit?: number,

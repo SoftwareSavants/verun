@@ -65,6 +65,16 @@ export interface Session {
   accountId: string | null;
 }
 
+/** A Claude Code session started outside Verun in a task's folder. */
+export interface OutsideSession {
+  agentType: AgentType
+  resumeId: string
+  title: string
+  updatedAt: number
+  sourceCwd: string
+  accountId: string | null
+}
+
 export interface OutputLine {
   id: number;
   sessionId: string;

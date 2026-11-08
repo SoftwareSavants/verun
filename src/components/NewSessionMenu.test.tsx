@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen, within } from '@solidjs/testing-lib
 // account (`Claude Code · Acme`, with its color), and the session starts on the
 // account of the row it was picked in. Recent lists the closed sessions of the
 // task, each with the account it ran on.
-vi.mock('../lib/ipc', () => ({ listClosedSessions: vi.fn(() => Promise.resolve([])) }))
+vi.mock('../lib/ipc', () => ({ listClosedSessions: vi.fn(() => Promise.resolve([])), listOutsideSessions: vi.fn(() => Promise.resolve([])) }))
 // The harness icons are images titled with the harness; a row is named by its text.
 vi.mock('./SvgIcon', () => ({ default: () => <span data-testid="agent-icon" /> }))
 vi.mock('../store/agents', () => ({
@@ -321,6 +321,29 @@ describe('<NewSessionMenu />', () => {
       ])
 
       expect(rows.map((r) => within(r).queryByRole('img')?.getAttribute('title') ?? null)).toEqual(['Beta · me@beta.dev', null, 'Acme · dev@acme.com'])
+    })
+  })
+
+  describe('sessions started outside Verun', () => {
+    const outside = (overrides = {}) => ({ agentType: 'claude', resumeId: 'r1', title: 'Fix the flaky login test', updatedAt: Date.now() - 60_000, sourceCwd: '/repo', accountId: null, ...overrides })
+
+    test('Recent lists them under their own heading, even with no closed sessions, and picking one continues it', async () => {
+      vi.mocked(ipc.listOutsideSessions).mockResolvedValueOnce([outside()] as never)
+      const onAdopt = vi.fn().mockResolvedValue(undefined)
+      render(() => <NewSessionMenu taskId="t1" projectId="p1" onCreate={onCreate} onReopen={vi.fn()} onAdopt={onAdopt} />)
+      fireEvent.click(screen.getByTitle('New Session'))
+      fireEvent.mouseEnter(await screen.findByRole('button', { name: /Recent/ }))
+
+      expect(screen.getByText('Started outside Verun')).toBeTruthy()
+      fireEvent.click(screen.getByTitle('Continue this session in Verun'))
+      expect(onAdopt).toHaveBeenCalledWith(expect.objectContaining({ resumeId: 'r1' }))
+    })
+
+    test('without an adopt handler they are not offered', async () => {
+      vi.mocked(ipc.listOutsideSessions).mockResolvedValueOnce([outside()] as never)
+      show({ onReopen: vi.fn() })
+      await Promise.resolve()
+      expect(screen.queryByRole('button', { name: /Recent/ })).toBeNull()
     })
   })
 })

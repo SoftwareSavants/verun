@@ -66,6 +66,7 @@ import {
   loadSessions,
   outputItems,
   reopenSession,
+  adoptOutsideSession,
   sessionById,
   sessionCosts,
   sessionsForTask,
@@ -115,7 +116,7 @@ import {
   terminalHeight,
   toggleTerminal,
 } from "../store/ui";
-import type { AccountSelection, AgentType, Session } from "../types";
+import type { AccountSelection, AgentType, OutsideSession, Session } from "../types";
 import { AGENT_DISPLAY_NAMES } from "../types";
 import { AccountDot } from "./AccountDot";
 import { ChatView } from "./ChatView";
@@ -382,6 +383,18 @@ export const TaskPanel: Component = () => {
     const tid = selectedTaskId();
     if (!tid) return;
     await openNewSession(tid, agentType, model, account);
+  };
+
+  const handleAdoptSession = async (outside: OutsideSession) => {
+    const tid = selectedTaskId();
+    if (!tid) return;
+    try {
+      const session = await adoptOutsideSession(tid, outside);
+      setSelectedSessionIdForTask(tid, session.id);
+      setMainView(tid, "session");
+    } catch (e) {
+      addToast(`Couldn't continue that session: ${e}`, "error");
+    }
   };
 
   const handleReopenSession = async (sessionId: string) => {
@@ -763,6 +776,7 @@ export const TaskPanel: Component = () => {
                       }
                       onCreate={handleNewSession}
                       onReopen={handleReopenSession}
+                      onAdopt={handleAdoptSession}
                     />
                     {/* Session tabs */}
                     <For each={taskSessions()}>

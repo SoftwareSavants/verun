@@ -1,6 +1,6 @@
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection, AgentType } from '../types'
+import type { OutsideSession, Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection, AgentType } from '../types'
 import { setSessionMcpServers } from './mcpServers'
 import { ELICITATION_TOOL_NAME, parseElicitation } from '../lib/mcpElicitation'
 import { setTasks, taskById } from './tasks'
@@ -105,6 +105,15 @@ export async function handOffSession(sourceSessionId: string, targetAgentType: A
   seedSessionAggregates(session)
   setOutputItems(session.id, [])
   saveDraftAttachments(session.id, [attachment])
+  return session
+}
+
+/** Continue a Claude session started outside Verun, history included. */
+export async function adoptOutsideSession(taskId: string, outside: OutsideSession): Promise<Session> {
+  const session = await ipc.adoptOutsideSession(taskId, outside)
+  // Rust broadcasts session-created too; dedup against it landing first.
+  setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
+  seedSessionAggregates(session)
   return session
 }
 

@@ -1339,6 +1339,25 @@ pub async fn list_closed_sessions(
 /// Reopen a closed session - flip its status back to 'idle' and broadcast
 /// `session-created` so every window restores the tab.
 #[tauri::command]
+pub async fn list_outside_sessions(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<Vec<crate::outside_sessions::OutsideSession>, String> {
+    crate::outside_sessions::list_for_task(pool.inner(), &task_id).await
+}
+
+#[tauri::command]
+pub async fn adopt_outside_session(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    task_id: String,
+    session: crate::outside_sessions::OutsideSession,
+) -> Result<Session, String> {
+    crate::outside_sessions::adopt(&app, pool.inner(), db_tx.inner(), &task_id, &session).await
+}
+
+#[tauri::command]
 pub async fn reopen_session(
     app: AppHandle,
     pool: State<'_, SqlitePool>,

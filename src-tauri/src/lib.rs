@@ -25,6 +25,7 @@ mod markdown_skills;
 #[cfg(unix)]
 pub mod mcp;
 mod policy;
+mod outside_sessions;
 mod pty;
 mod pty_output;
 mod resource_monitor;
@@ -406,6 +407,8 @@ pub fn run() {
             ipc::list_sessions,
             ipc::list_closed_sessions,
             ipc::reopen_session,
+            ipc::list_outside_sessions,
+            ipc::adopt_outside_session,
             ipc::get_session,
             ipc::get_output_lines,
             ipc::fork_session_in_task,
