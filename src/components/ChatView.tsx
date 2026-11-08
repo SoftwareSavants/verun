@@ -7,6 +7,7 @@ import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDo
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
+import { FileChip } from './FileChip'
 import { Popover } from './Popover'
 import { parseMentions } from '../lib/mentions'
 import * as ipc from '../lib/ipc'
@@ -67,6 +68,7 @@ interface UserBlock {
   type: 'user'
   text: string
   images?: AttachmentRef[]
+  files?: AttachmentRef[]
 }
 interface AssistantBlock {
   type: 'assistant'
@@ -177,7 +179,7 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         if (item.wakeupReason !== undefined) {
           blocks.push({ type: 'wakeup', prompt: item.text, reason: item.wakeupReason || undefined })
         } else {
-          blocks.push({ type: 'user', text: item.text, images: item.images })
+          blocks.push({ type: 'user', text: item.text, images: item.images, files: item.files })
         }
         break
       case 'transcriptUserMessage':
@@ -1267,6 +1269,11 @@ export const ChatView: Component<Props> = (props) => {
                               </button>
                             )}
                           </For>
+                        </div>
+                      </Show>
+                      <Show when={b.files && b.files.length > 0}>
+                        <div class="flex flex-wrap justify-end gap-1 max-w-[75%]">
+                          <For each={b.files || []}>{(file) => <FileChip file={file} />}</For>
                         </div>
                       </Show>
                       <Show when={b.text}>

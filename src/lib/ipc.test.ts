@@ -74,7 +74,7 @@ describe('ipc', () => {
     })
 
     test('createSessionHandoff passes source, target, model and account', async () => {
-      vi.mocked(invoke).mockResolvedValueOnce({ session: { id: 's2' }, draft: 'x' })
+      vi.mocked(invoke).mockResolvedValueOnce({ session: { id: 's2' }, attachment: { hash: 'h' } })
       await ipc.createSessionHandoff('s1', 'codex', 'gpt-5', { kind: 'account', id: 'a1' })
       expect(invoke).toHaveBeenCalledWith('create_session_handoff', {
         sourceSessionId: 's1',
@@ -85,7 +85,7 @@ describe('ipc', () => {
     })
 
     test('createSessionHandoff sends model and account null by default', async () => {
-      vi.mocked(invoke).mockResolvedValueOnce({ session: { id: 's2' }, draft: 'x' })
+      vi.mocked(invoke).mockResolvedValueOnce({ session: { id: 's2' }, attachment: { hash: 'h' } })
       await ipc.createSessionHandoff('s1', 'gemini')
       expect(invoke).toHaveBeenCalledWith('create_session_handoff', {
         sourceSessionId: 's1',

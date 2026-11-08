@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::accounts::{service::resolve_new_session_account, AccountSelection};
 use crate::db::{self, DbWriteTx, Session, Task};
+use crate::task::AttachmentRef;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Turn {
@@ -57,7 +58,11 @@ pub struct Packet {
 #[serde(rename_all = "camelCase")]
 pub struct SessionHandoff {
     pub session: Session,
-    pub draft: String,
+    /// The packet, stored as a markdown file to attach to the first message.
+    pub attachment: AttachmentRef,
+    /// The packet text, for callers that send it themselves (MCP).
+    #[serde(skip)]
+    pub packet: String,
     pub included_turns: usize,
     pub omitted_turns: usize,
     pub transcript_path: Option<String>,
@@ -489,6 +494,23 @@ pub async fn prepare_handoff(
     })
 }
 
+/// Store the packet in the blob store as a markdown file, ready to attach.
+pub async fn store_packet(
+    pool: &SqlitePool,
+    app_data_dir: &Path,
+    source_agent: &str,
+    packet: &str,
+) -> Result<AttachmentRef, String> {
+    const MIME: &str = "text/markdown";
+    let blob = crate::blob::write_blob(pool, app_data_dir, MIME, packet.as_bytes()).await?;
+    Ok(AttachmentRef {
+        hash: blob.hash,
+        mime_type: MIME.into(),
+        name: format!("Handoff from {}.md", display_name(source_agent)),
+        size: blob.size,
+    })
+}
+
 /// Create the handoff session for real: resolve its account the way a new
 /// session's is, persist it, and tell every window. The packet is returned
 /// for the caller to draft (UI) or send (MCP); it is not stored.
@@ -511,11 +533,8 @@ pub async fn create_session_handoff(
         resolve_new_session_account(pool, &task.project_id, target_agent_type, account)
             .await
             .map_err(|e| e.to_ipc())?;
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("app data dir: {e}"))?
-        .join("handoffs");
+    let app_data_dir = app.state::<crate::blob::AppDataDir>().0.clone();
+    let dir = app_data_dir.join("handoffs");
     let prepared = prepare_handoff(
         pool,
         source_session_id,
@@ -525,6 +544,13 @@ pub async fn create_session_handoff(
         &dir,
     )
     .await?;
+    let attachment = store_packet(
+        pool,
+        &app_data_dir,
+        &source.agent_type,
+        &prepared.packet.text,
+    )
+    .await?;
     db_tx
         .send(db::DbWrite::CreateSession(prepared.session.clone()))
         .await
@@ -532,7 +558,8 @@ pub async fn create_session_handoff(
     let _ = app.emit("session-created", &prepared.session);
     Ok(SessionHandoff {
         session: prepared.session,
-        draft: prepared.packet.text,
+        attachment,
+        packet: prepared.packet.text,
         included_turns: prepared.packet.included_turns,
         omitted_turns: prepared.packet.omitted_turns,
         transcript_path: prepared
@@ -833,6 +860,22 @@ mod tests {
                 .unwrap();
             assert!(h.transcript_path.is_none());
             assert!(h.packet.text.contains("No conversation was recorded"));
+        }
+
+        #[tokio::test]
+        async fn packet_is_stored_as_a_markdown_attachment() {
+            let pool = seeded(vec![]).await;
+            let dir = tempfile::tempdir().unwrap();
+            let r = store_packet(&pool, dir.path(), "claude", "# Packet\nbody")
+                .await
+                .unwrap();
+            assert_eq!(r.mime_type, "text/markdown");
+            assert_eq!(r.name, "Handoff from Claude Code.md");
+            assert_eq!(r.size, 13);
+            let bytes = crate::blob::read_blob_bytes(dir.path(), &r.hash)
+                .await
+                .unwrap();
+            assert_eq!(bytes, b"# Packet\nbody");
         }
 
         #[tokio::test]

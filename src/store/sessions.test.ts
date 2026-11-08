@@ -893,14 +893,17 @@ describe('handOffSession', () => {
     vi.mocked(ipc.createSessionHandoff).mockReset()
   })
 
-  test('adds the target session and seeds its composer with the packet', async () => {
+  const packet = { hash: 'h-packet', mimeType: 'text/markdown', name: 'Handoff from Claude Code.md', size: 42 }
+
+  test('adds the target session and attaches the packet to its empty composer', async () => {
     const target = makeSession({ id: 's-target', taskId: 't-001', agentType: 'codex', parentSessionId: 's-src', forkedAtMessageUuid: null })
-    vi.mocked(ipc.createSessionHandoff).mockResolvedValue({ session: target, draft: 'HANDOFF PACKET', includedTurns: 1, omittedTurns: 0, transcriptPath: null })
+    vi.mocked(ipc.createSessionHandoff).mockResolvedValue({ session: target, attachment: packet, includedTurns: 1, omittedTurns: 0, transcriptPath: null })
     const result = await handOffSession('s-src', 'codex')
     expect(ipc.createSessionHandoff).toHaveBeenCalledWith('s-src', 'codex', undefined, undefined)
     expect(result.id).toBe('s-target')
     expect(sessions.filter(s => s.id === 's-target').length).toBe(1)
-    expect(localStorage.getItem('verun:draft-msg:s-target')).toBe('HANDOFF PACKET')
+    expect(JSON.parse(localStorage.getItem('verun:draft-att:s-target')!)).toEqual([packet])
+    expect(localStorage.getItem('verun:draft-msg:s-target')).toBeNull()
   })
 })
 
@@ -913,5 +916,36 @@ describe('isHandoffSession', () => {
   })
   test('a fresh session is not a handoff', () => {
     expect(isHandoffSession(makeSession({ parentSessionId: null, forkedAtMessageUuid: null }))).toBe(false)
+  })
+})
+
+describe('non-image attachments in user messages', () => {
+  const file = { hash: 'h-md', mimeType: 'text/markdown', name: 'Handoff from Claude Code.md', size: 10 }
+  const image = { hash: 'h-png', mimeType: 'image/png', name: 'a.png', size: 3 }
+
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    vi.mocked(ipc.getOutputLines).mockReset()
+    vi.mocked(ipc.sendMessage).mockReset()
+    vi.mocked(ipc.sendMessage).mockResolvedValue(undefined)
+  })
+
+  test('a reloaded user message keeps files apart from images', async () => {
+    vi.mocked(ipc.getOutputLines).mockResolvedValue([
+      { id: 1, sessionId: 's-files', line: JSON.stringify({ type: 'verun_user_message', text: 'go', attachments: [file, image] }), emittedAt: 100 },
+    ])
+    await loadOutputLines('s-files')
+    const item = outputItems['s-files'][0] as Extract<OutputItem, { kind: 'userMessage' }>
+    expect(item.images).toEqual([image])
+    expect(item.files).toEqual([file])
+  })
+
+  test('a sent message shows its files right away', async () => {
+    setSessions([makeSession({ id: 's-send', taskId: 't-001' })])
+    await sendMessage('s-send', 'go', [file])
+    const item = outputItems['s-send'].find(i => i.kind === 'userMessage') as Extract<OutputItem, { kind: 'userMessage' }>
+    expect(item.files).toEqual([file])
+    expect(item.images).toBeUndefined()
   })
 })

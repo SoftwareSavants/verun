@@ -23,6 +23,7 @@ import * as ipc from '../lib/ipc'
 import { Popover } from './Popover'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
+import { FileChip } from './FileChip'
 import { openSideQuestion } from '../store/sideQuestion'
 import { serializeAttachments, deserializeAttachments, uploadAttachments } from '../lib/binary'
 import { clearDraft, loadDraftAttachments, loadDraftMessage, saveDraftAttachments, saveDraftMessage } from '../store/sessionDrafts'
@@ -2331,15 +2332,11 @@ export const MessageInput: Component<Props> = (props) => {
           <div class="flex gap-2 px-3 pt-2 pb-1 overflow-x-auto">
             <For each={attachments()}>
               {(att, i) => (
-                <div class="relative shrink-0 group">
-                  <Show
-                    when={att.mimeType.startsWith('image/')}
-                    fallback={
-                      <div class="w-16 h-16 rounded-lg bg-surface-2 border border-border flex items-center justify-center">
-                        <span class="text-[10px] text-text-dim truncate max-w-14 px-1">{att.name}</span>
-                      </div>
-                    }
-                  >
+                <Show
+                  when={att.mimeType.startsWith('image/')}
+                  fallback={<div class="shrink-0 self-end"><FileChip file={att} onRemove={() => removeAttachment(i())} /></div>}
+                >
+                  <div class="relative shrink-0 group">
                     <button
                       type="button"
                       class="block cursor-pointer"
@@ -2353,14 +2350,14 @@ export const MessageInput: Component<Props> = (props) => {
                         class="w-16 h-16 object-cover rounded-xl border border-border transition-all duration-150 hover:border-border-active hover:brightness-110 hover:scale-[1.03]"
                       />
                     </button>
-                  </Show>
-                  <button
-                    class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-surface-3 border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={() => removeAttachment(i())}
-                  >
-                    <X size={10} class="text-text-muted" />
-                  </button>
-                </div>
+                    <button
+                      class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-surface-3 border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={() => removeAttachment(i())}
+                    >
+                      <X size={10} class="text-text-muted" />
+                    </button>
+                  </div>
+                </Show>
               )}
             </For>
           </div>

@@ -134,7 +134,7 @@ describe('<TaskPanel /> session handoff', () => {
   test('Hand off opens the harness picker without the source harness, and the pick hands off', async () => {
     vi.mocked(ipc.createSessionHandoff).mockResolvedValue({
       session: makeSession({ id: 's2', agentType: 'codex', parentSessionId: 's1' }),
-      draft: 'packet', includedTurns: 0, omittedTurns: 0, transcriptPath: null,
+      attachment: { hash: 'h', mimeType: 'text/markdown', name: 'Handoff from Claude Code.md', size: 1 }, includedTurns: 0, omittedTurns: 0, transcriptPath: null,
     })
     const tab = await show([makeSession({ id: 's1', agentType: 'claude', accountId: 'a1' })])
     fireEvent.contextMenu(tab('s1').getByText('Claude Code'))

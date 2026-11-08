@@ -285,7 +285,8 @@ export interface StorageStats {
 /** Result of `create_session_handoff`: the new session plus the packet for its first message. */
 export interface SessionHandoff {
   session: Session;
-  draft: string;
+  /** The handoff packet, stored as a markdown file to attach to the first message. */
+  attachment: AttachmentRef;
   includedTurns: number;
   omittedTurns: number;
   /** Full transcript of the source session, written for the target agent to read. */
@@ -322,6 +323,8 @@ export type OutputItem =
       kind: "userMessage";
       text: string;
       images?: AttachmentRef[];
+      /** Non-image attachments (e.g. a handoff packet), shown as file chips. */
+      files?: AttachmentRef[];
       timestamp?: number;
       /**
        * Set when this turn was synthesised by Verun's wakeup scheduler

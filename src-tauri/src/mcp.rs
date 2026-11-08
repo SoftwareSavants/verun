@@ -906,13 +906,22 @@ fn tool_schema_handoff_session() -> Value {
     })
 }
 
-/// The first message of a handoff session: the packet, plus the source
-/// agent's note when it left one.
-fn handoff_message(packet: String, note: Option<String>) -> String {
-    match note.as_deref().map(str::trim) {
-        Some(n) if !n.is_empty() => format!("{packet}\nNote from the previous agent: {n}\n"),
-        _ => packet,
-    }
+/// The first turn of a handoff session: the source agent's note as the
+/// message, with the packet attached (as the UI sends it).
+fn handoff_first_turn(
+    attachment: &crate::task::AttachmentRef,
+    packet: &str,
+    note: Option<String>,
+) -> (String, Vec<crate::task::Attachment>) {
+    let message = note.map(|n| n.trim().to_string()).unwrap_or_default();
+    let packet = crate::task::Attachment {
+        hash: attachment.hash.clone(),
+        name: attachment.name.clone(),
+        mime_type: attachment.mime_type.clone(),
+        data: packet.as_bytes().to_vec(),
+        size: attachment.size,
+    };
+    (message, vec![packet])
 }
 
 async fn tool_handoff_session(ctx: &McpContext, args: Value) -> Result<String, JsonRpcError> {
@@ -1726,6 +1735,7 @@ async fn deliver_first_message(
     task: &crate::db::Task,
     session: &crate::db::Session,
     message: String,
+    attachments: Vec<crate::task::Attachment>,
 ) -> Result<(), String> {
     use tauri::Manager;
 
@@ -1749,6 +1759,7 @@ async fn deliver_first_message(
         pending_ctrl.inner().clone(),
         crate::task::SendMessageParams {
             trust_level,
+            attachments,
             ..send_params_for_new_session(task, session, repo_path, message)
         },
     )
@@ -1780,13 +1791,9 @@ async fn perform_handoff_session(
     let task = db::get_task(pool.inner(), &handoff.session.task_id)
         .await?
         .ok_or_else(|| format!("Task '{}' not found.", handoff.session.task_id))?;
-    let delivered = match deliver_first_message(
-        app,
-        &task,
-        &handoff.session,
-        handoff_message(handoff.draft, note),
-    )
-    .await
+    let (message, attachments) = handoff_first_turn(&handoff.attachment, &handoff.packet, note);
+    let delivered = match deliver_first_message(app, &task, &handoff.session, message, attachments)
+        .await
     {
         Ok(()) => true,
         Err(e) => {
@@ -1844,7 +1851,7 @@ async fn perform_create_session(
 
     let mut delivered = false;
     if let Some(msg) = initial_message {
-        match deliver_first_message(app, &task, &session, msg).await {
+        match deliver_first_message(app, &task, &session, msg, Vec::new()).await {
             Ok(()) => delivered = true,
             Err(e) => eprintln!("[verun-mcp] create_session: initial_message failed: {e}"),
         }
@@ -5681,11 +5688,21 @@ mod tests {
     }
 
     #[test]
-    fn handoff_message_appends_the_note() {
-        assert_eq!(handoff_message("PACKET".into(), None), "PACKET");
-        assert_eq!(handoff_message("PACKET".into(), Some("  ".into())), "PACKET");
-        let m = handoff_message("PACKET".into(), Some("focus on tests".into()));
-        assert!(m.starts_with("PACKET"));
-        assert!(m.contains("Note from the previous agent: focus on tests"));
+    fn handoff_first_turn_attaches_the_packet_and_sends_the_note() {
+        let attachment = crate::task::AttachmentRef {
+            hash: "h1".into(),
+            mime_type: "text/markdown".into(),
+            name: "Handoff from Claude Code.md".into(),
+            size: 6,
+        };
+        let (msg, atts) = handoff_first_turn(&attachment, "PACKET", Some("  focus on tests ".into()));
+        assert_eq!(msg, "focus on tests");
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0].hash, "h1");
+        assert_eq!(atts[0].name, "Handoff from Claude Code.md");
+        assert_eq!(atts[0].mime_type, "text/markdown");
+        assert_eq!(atts[0].data, b"PACKET");
+        let (msg, _) = handoff_first_turn(&attachment, "PACKET", None);
+        assert_eq!(msg, "");
     }
 }

@@ -1414,6 +1414,55 @@ pub struct Attachment {
     pub size: i64,
 }
 
+/// A user turn as an agent receives it. Text attachments (e.g. a handoff
+/// packet) are inlined into the prompt, because no harness takes them as
+/// files; images stay attachments. The chat keeps showing the message and the
+/// attachment chips: this is only the wire form.
+pub(crate) struct AgentPrompt {
+    pub text: String,
+    pub images: Vec<Attachment>,
+}
+
+fn is_text_mime(mime: &str) -> bool {
+    mime.starts_with("text/") || mime == "application/json"
+}
+
+pub(crate) fn agent_prompt(message: &str, attachments: &[Attachment]) -> AgentPrompt {
+    let mut parts: Vec<String> = Vec::new();
+    if !message.trim().is_empty() {
+        parts.push(message.to_string());
+    }
+    let mut images = Vec::new();
+    for a in attachments {
+        if a.mime_type.starts_with("image/") {
+            images.push(a.clone());
+        } else if is_text_mime(&a.mime_type) {
+            let body = String::from_utf8_lossy(&a.data);
+            parts.push(format!(
+                "<attachment name=\"{}\">\n{}\n</attachment>",
+                a.name,
+                body.trim_end()
+            ));
+        }
+        // Other binaries: no harness takes them, so they are left out.
+    }
+    AgentPrompt {
+        text: parts.join("\n\n"),
+        images,
+    }
+}
+
+impl AgentPrompt {
+    /// The images as `data:` URLs, for the RPC harnesses.
+    pub fn image_data_urls(&self) -> Vec<String> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        self.images
+            .iter()
+            .map(|a| format!("data:{};base64,{}", a.mime_type, STANDARD.encode(&a.data)))
+            .collect()
+    }
+}
+
 /// Wire shape for attachments — what the frontend sends in `send_message`
 /// and what is persisted as JSON in `verun_user_message` NDJSON lines and
 /// `Step.attachments_json`. Bytes live in the blob store, addressed by
@@ -1637,7 +1686,8 @@ pub async fn send_message(
                 send_set_permission_mode,
                 send_set_model,
             } => {
-                let user_bytes = agent.encode_stream_user_message(&message, &attachments)?;
+                let prompt = agent_prompt(&message, &attachments);
+                let user_bytes = agent.encode_stream_user_message(&prompt.text, &prompt.images)?;
                 if agent.kind() == AgentKind::Claude {
                     crate::transcript_source::claim_input(&app, &session_id, &user_bytes);
                 }
@@ -1751,27 +1801,14 @@ pub async fn send_message(
                 );
 
                 let effort = effort_from_flags(thinking_mode, fast_mode);
-                let image_urls: Vec<String> = attachments
-                    .iter()
-                    .filter_map(|a| {
-                        if a.mime_type.starts_with("image/") {
-                            use base64::{engine::general_purpose::STANDARD, Engine as _};
-                            Some(format!(
-                                "data:{};base64,{}",
-                                a.mime_type,
-                                STANDARD.encode(&a.data)
-                            ))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                let prompt = agent_prompt(&message, &attachments);
+                let image_urls = prompt.image_data_urls();
                 let turn_id = rpc::next_request_id(&next_id);
                 let turn_bytes = agent.rpc_encode_turn(
                     turn_id,
                     &crate::agent::RpcTurnParams {
                         session_id: &thread_id,
-                        prompt: &message,
+                        prompt: &prompt.text,
                         image_urls: &image_urls,
                         trust_level,
                         model: model.as_deref(),
@@ -2431,7 +2468,7 @@ async fn spawn_rpc_session(
         trust_level,
         worktree_path: &worktree_path,
         repo_path: &repo_path,
-        message: &message,
+        message: &agent_prompt(&message, &attachments).text,
         verun_mcp_config_path: mcp_config_path.as_deref(),
         chrome_enabled: false,
     });
@@ -2579,27 +2616,14 @@ async fn spawn_rpc_session(
     // -- 3. turn/start (unless prewarming) --
     if !prewarm {
         let effort = effort_from_flags(thinking_mode, fast_mode);
-        let image_urls: Vec<String> = attachments
-            .iter()
-            .filter_map(|a| {
-                if a.mime_type.starts_with("image/") {
-                    use base64::{engine::general_purpose::STANDARD, Engine as _};
-                    Some(format!(
-                        "data:{};base64,{}",
-                        a.mime_type,
-                        STANDARD.encode(&a.data)
-                    ))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let prompt = agent_prompt(&message, &attachments);
+        let image_urls = prompt.image_data_urls();
         let turn_id = rpc::next_request_id(&next_id);
         let turn_bytes = agent.rpc_encode_turn(
             turn_id,
             &crate::agent::RpcTurnParams {
                 session_id: &thread_id,
-                prompt: &message,
+                prompt: &prompt.text,
                 image_urls: &image_urls,
                 trust_level,
                 model: model.as_deref(),
@@ -2991,7 +3015,7 @@ pub async fn spawn_session_process(
         trust_level,
         worktree_path: &worktree_path,
         repo_path: &repo_path,
-        message: &message,
+        message: &agent_prompt(&message, &attachments).text,
         verun_mcp_config_path: mcp_config_path.as_deref(),
         chrome_enabled,
     };
@@ -3037,7 +3061,8 @@ pub async fn spawn_session_process(
                 .ok_or_else(|| "Failed to capture stdin".to_string())?;
 
             if !prewarm {
-                let bytes = agent.encode_stream_user_message(&message, &attachments)?;
+                let prompt = agent_prompt(&message, &attachments);
+                let bytes = agent.encode_stream_user_message(&prompt.text, &prompt.images)?;
                 if agent.kind() == AgentKind::Claude {
                     crate::transcript_source::claim_input(&app, &session_id, &bytes);
                 }
@@ -4477,6 +4502,59 @@ fn run_git_ignoring_env(cwd: &std::path::Path, args: &[&str]) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Agent prompt (text attachments inlined) --
+
+    fn att(name: &str, mime: &str, data: &[u8]) -> Attachment {
+        Attachment {
+            hash: format!("h-{name}"),
+            name: name.into(),
+            mime_type: mime.into(),
+            data: data.to_vec(),
+            size: data.len() as i64,
+        }
+    }
+
+    #[test]
+    fn agent_prompt_without_attachments_is_the_message() {
+        let p = agent_prompt("hello", &[]);
+        assert_eq!(p.text, "hello");
+        assert!(p.images.is_empty());
+    }
+
+    #[test]
+    fn agent_prompt_inlines_text_attachments_after_the_message() {
+        let p = agent_prompt(
+            "focus on the tests",
+            &[att("handoff.md", "text/markdown", b"# Packet\nbody")],
+        );
+        assert!(p.text.starts_with("focus on the tests\n\n"), "{}", p.text);
+        assert!(p.text.contains("<attachment name=\"handoff.md\">\n# Packet\nbody\n</attachment>"), "{}", p.text);
+        assert!(p.images.is_empty(), "text attachments are not sent as files");
+    }
+
+    #[test]
+    fn agent_prompt_with_only_an_attachment_is_just_the_attachment() {
+        let p = agent_prompt("  ", &[att("notes.txt", "text/plain", b"x")]);
+        assert!(p.text.starts_with("<attachment name=\"notes.txt\">"), "{}", p.text);
+    }
+
+    #[test]
+    fn agent_prompt_keeps_images_and_drops_other_binaries() {
+        let p = agent_prompt(
+            "look",
+            &[
+                att("a.png", "image/png", &[1, 2]),
+                att("b.json", "application/json", b"{}"),
+                att("c.pdf", "application/pdf", &[0]),
+            ],
+        );
+        assert_eq!(p.images.len(), 1);
+        assert_eq!(p.images[0].name, "a.png");
+        assert!(p.text.contains("<attachment name=\"b.json\">\n{}\n</attachment>"));
+        assert!(!p.text.contains("c.pdf"));
+        assert_eq!(p.image_data_urls(), vec!["data:image/png;base64,AQI=".to_string()]);
+    }
     use crate::accounts::env::{account_env, env_change, EnvChange};
     use crate::accounts::secrets::MemorySecretStore;
     use crate::accounts::AccountError;
