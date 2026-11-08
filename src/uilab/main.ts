@@ -15,6 +15,9 @@ try {
 const FIXED: Record<string, unknown> = {
   default_bootstrap_dir: '/Users/dev/code',
   pty_list_for_task: [],
+  ensure_quick_project: { id: 'quick-tasks', name: 'Quick tasks', repoPath: '/Users/dev', baseBranch: '', setupHook: '', destroyHook: '', startCommand: '', autoStart: false, createdAt: 1, defaultAgentType: 'claude' },
+  inspect_task_directory: { path: '/Users/dev', isGit: false, branch: '' },
+  get_repo_info: { root: '/Users/dev/verun', currentBranch: 'main', branches: ['main', 'develop', 'release/0.16'] },
   // One agent blocked on the user, so "needs me" is represented on the floor.
   session_activity_snapshot: [{
     sessionId: 'demo-sess-perf-1', launch: 'uilab', revision: 1, phase: 'waiting',

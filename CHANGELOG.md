@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Quick tasks: run an agent in any folder (home, a non-git dir, a parent of several repos) without adding a project, from the sidebar + menu or Cmd+Opt+N
+- New task composer keeps agent, location, base branch and chat/terminal choice in one row, names the checked-out branch and says "no isolation" for Project folder, and shows whether the task opens in chat or the terminal
 - A new task in terminal view starts Claude in the terminal with its prompt, instead of also sending it through a chat process, which duplicated the conversation (#277)
 - Recent now lists Claude Code sessions started outside Verun in the task's folder (or the project's main checkout) and continues them in Verun with their history, across the Default and added Claude accounts
 
