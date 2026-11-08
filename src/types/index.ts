@@ -282,6 +282,16 @@ export interface StorageStats {
   unreferencedCount: number;
 }
 
+/** Result of `create_session_handoff`: the new session plus the packet for its first message. */
+export interface SessionHandoff {
+  session: Session;
+  draft: string;
+  includedTurns: number;
+  omittedTurns: number;
+  /** Full transcript of the source session, written for the target agent to read. */
+  transcriptPath: string | null;
+}
+
 // Structured output items from Claude's stream-json protocol
 
 export interface PlanStep {

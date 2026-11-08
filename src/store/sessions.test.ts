@@ -19,6 +19,7 @@ vi.mock('../lib/ipc', () => ({
   listSteps: vi.fn().mockResolvedValue([]),
   syncSessionStatuses: vi.fn().mockResolvedValue(undefined),
   createSession: vi.fn(),
+  createSessionHandoff: vi.fn(),
   getOutputLines: vi.fn().mockResolvedValue([]),
   clearSession: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
@@ -30,7 +31,7 @@ vi.mock('../lib/notifications', () => ({
   notify: vi.fn(),
 }))
 
-import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, reopenSession, sendMessage, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, rateLimitFor, setRateLimitByAccount, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
+import { sessions, setSessions, outputItems, setOutputItems, sessionsForTask, sessionById, initSessionListeners, initSessionWindowFocusRefresh, loadSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, clearOutputItems, closeSession, createSession, handOffSession, isHandoffSession, reopenSession, sendMessage, clearSessionContextsForTask, sessionCosts, setSessionCosts, sessionTokens, setSessionTokens, rateLimitFor, setRateLimitByAccount, INITIAL_OUTPUT_LINES_LIMIT, OLDER_OUTPUT_PAGE_SIZE } from './sessions'
 import * as ipc from '../lib/ipc'
 import { setTasks } from './tasks'
 import { toasts, setToasts } from './ui'
@@ -881,5 +882,36 @@ describe('rate limits per account', () => {
     listenCallbacks.get('rate-limit-info')!({ payload: makeRateLimit({ accountKey: 'a1', resetsAt: 7 }) })
     dispose()
     expect(seen).toEqual([null, 7])
+  })
+})
+
+describe('handOffSession', () => {
+  beforeEach(() => {
+    setSessions([])
+    setOutputItems({})
+    localStorage.clear()
+    vi.mocked(ipc.createSessionHandoff).mockReset()
+  })
+
+  test('adds the target session and seeds its composer with the packet', async () => {
+    const target = makeSession({ id: 's-target', taskId: 't-001', agentType: 'codex', parentSessionId: 's-src', forkedAtMessageUuid: null })
+    vi.mocked(ipc.createSessionHandoff).mockResolvedValue({ session: target, draft: 'HANDOFF PACKET', includedTurns: 1, omittedTurns: 0, transcriptPath: null })
+    const result = await handOffSession('s-src', 'codex')
+    expect(ipc.createSessionHandoff).toHaveBeenCalledWith('s-src', 'codex', undefined, undefined)
+    expect(result.id).toBe('s-target')
+    expect(sessions.filter(s => s.id === 's-target').length).toBe(1)
+    expect(localStorage.getItem('verun:draft-msg:s-target')).toBe('HANDOFF PACKET')
+  })
+})
+
+describe('isHandoffSession', () => {
+  test('a child with a parent but no fork point is a handoff', () => {
+    expect(isHandoffSession(makeSession({ parentSessionId: 'p', forkedAtMessageUuid: null }))).toBe(true)
+  })
+  test('a fork is not a handoff', () => {
+    expect(isHandoffSession(makeSession({ parentSessionId: 'p', forkedAtMessageUuid: 'm1' }))).toBe(false)
+  })
+  test('a fresh session is not a handoff', () => {
+    expect(isHandoffSession(makeSession({ parentSessionId: null, forkedAtMessageUuid: null }))).toBe(false)
   })
 })

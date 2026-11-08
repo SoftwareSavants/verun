@@ -155,6 +155,17 @@ impl AgentKind {
         }
     }
 
+    /// The kind named `s`, or `None` for a name Verun doesn't know (unlike
+    /// `parse`, which falls back to Claude).
+    pub fn try_parse(s: &str) -> Option<Self> {
+        Self::all().iter().copied().find(|k| k.as_str() == s)
+    }
+
+    /// Every agent type name, for schemas and error messages.
+    pub fn names() -> Vec<&'static str> {
+        Self::all().iter().map(|k| k.as_str()).collect()
+    }
+
     pub fn all() -> &'static [AgentKind] {
         &[
             Self::Claude,

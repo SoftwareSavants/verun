@@ -1,6 +1,6 @@
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection } from '../types'
+import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection, AgentType } from '../types'
 import { setSessionMcpServers } from './mcpServers'
 import { ELICITATION_TOOL_NAME, parseElicitation } from '../lib/mcpElicitation'
 import { setTasks, taskById } from './tasks'
@@ -10,6 +10,7 @@ import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
 import { notifyAccountError } from '../lib/accountErrors'
 import { deserializeAttachments } from '../lib/binary'
+import { clearDraft, saveDraftMessage } from './sessionDrafts'
 import {
   appendCodexLivePlanDelta,
   clearCodexLivePlan,
@@ -82,6 +83,24 @@ export async function createSession(taskId: string, agentType: string, model?: s
   setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
   seedSessionAggregates(session)
   setOutputItems(session.id, [])
+  return session
+}
+
+/** A session started by handing another one off: it has a parent but, unlike a fork, no fork point. */
+export const isHandoffSession = (s: Pick<Session, 'parentSessionId' | 'forkedAtMessageUuid'>) =>
+  !!s.parentSessionId && !s.forkedAtMessageUuid
+
+/**
+ * Hand `sourceSessionId` off to another harness in the same task. The target
+ * session starts idle with the handoff packet drafted in its composer, so the
+ * user can add instructions before sending.
+ */
+export async function handOffSession(sourceSessionId: string, targetAgentType: AgentType, model?: string, account?: AccountSelection): Promise<Session> {
+  const { session, draft } = await ipc.createSessionHandoff(sourceSessionId, targetAgentType, model, account)
+  setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
+  seedSessionAggregates(session)
+  setOutputItems(session.id, [])
+  saveDraftMessage(session.id, draft)
   return session
 }
 
@@ -659,6 +678,5 @@ export function clearSessionContextsForTask(taskId: string) {
 }
 
 export function cleanupSessionStorage(sessionId: string) {
-  localStorage.removeItem(`verun:draft-msg:${sessionId}`)
-  localStorage.removeItem(`verun:draft-att:${sessionId}`)
+  clearDraft(sessionId)
 }

@@ -13,6 +13,7 @@ vi.mock('../lib/ipc', async (importOriginal) => ({
   getOutputLines: vi.fn(() => Promise.resolve([])),
   listSteps: vi.fn(() => Promise.resolve([])),
   prewarmSession: vi.fn(() => Promise.resolve()),
+  createSessionHandoff: vi.fn(),
 }))
 vi.mock('../lib/lsp', () => ({ getLspClient: vi.fn(() => Promise.resolve()) }))
 vi.mock('../lib/newSession', () => ({ openNewSession: vi.fn() }))
@@ -22,7 +23,11 @@ vi.mock('./SvgIcon', () => ({ default: () => <span data-testid="agent-icon" /> }
 vi.mock('./ChatView', () => ({ ChatView: () => null }))
 vi.mock('./ClaudeViewToggle', () => ({ ClaudeViewToggle: () => null }))
 vi.mock('./ConfirmDialog', () => ({ ConfirmDialog: () => null }))
-vi.mock('./ContextMenu', () => ({ ContextMenu: () => null }))
+// Open menus render their items as plain buttons, so a test can pick one.
+vi.mock('./ContextMenu', () => ({
+  ContextMenu: (p: { open: boolean; items: { label?: string; action?: () => void }[] }) =>
+    <>{p.open ? p.items.filter(i => i.label).map(i => <button data-menu-item onClick={() => i.action?.()}>{i.label}</button>) : null}</>,
+}))
 vi.mock('./FileViewer', () => ({ FileViewer: () => null }))
 vi.mock('./GitActions', () => ({ GitActions: () => null, hasGitActionsContent: () => false }))
 vi.mock('./MessageInput', () => ({ MessageInput: () => null }))
@@ -37,12 +42,15 @@ vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }))
 
 import { TaskPanel } from './TaskPanel'
 import { applySnapshot } from '../store/accounts'
+import { setAgents } from '../store/agents'
+import * as ipc from '../lib/ipc'
+import { fireEvent, screen } from '@solidjs/testing-library'
 import { setSessions } from '../store/sessions'
 import { setTasks } from '../store/tasks'
 import { setSelectedTaskId } from '../store/ui'
 import { makeAccount, makeIdentity, makeSnapshot } from '../test/accountFixtures'
 import { makeSession } from '../test/sessionFixtures'
-import type { Session, Task } from '../types'
+import type { AgentInfo, Session, Task } from '../types'
 
 const task: Task = {
   id: 't1', projectId: 'p1', name: 'Task', worktreePath: '/work/t1', branch: 'funny-branch', createdAt: 0, mergeBaseSha: null,
@@ -71,6 +79,7 @@ afterEach(() => {
   setSessions([])
   setTasks([])
   setSelectedTaskId(null)
+  setAgents([])
 })
 
 describe('<TaskPanel /> session tabs', () => {
@@ -102,5 +111,53 @@ describe('<TaskPanel /> session tabs', () => {
     expect(tab('s1').getByRole('img').getAttribute('title')).toBe('Beta · me@beta.dev')
     expect(tab('s2').queryByRole('img')).toBeNull()
     expect(tab('s3').getByRole('img').getAttribute('title')).toBe('Acme · dev@acme.com')
+  })
+})
+
+const agent = (id: AgentInfo['id'], name: string, installed = true) => ({ id, name, installed, models: [] }) as unknown as AgentInfo
+
+describe('<TaskPanel /> session handoff', () => {
+  beforeEach(() => {
+    setAgents([agent('claude', 'Claude Code'), agent('codex', 'Codex'), agent('gemini', 'Gemini CLI'), agent('cursor', 'Cursor', false)])
+  })
+
+  test('right-clicking a session tab offers every other installed harness', async () => {
+    const tab = await show([makeSession({ id: 's1', agentType: 'claude' })])
+    fireEvent.contextMenu(tab('s1').getByText('Claude Code'))
+
+    const labels = screen.getAllByRole('button').filter(b => b.hasAttribute('data-menu-item')).map(b => b.textContent)
+    expect(labels).toContain('Hand off to Codex')
+    expect(labels).toContain('Hand off to Gemini CLI')
+    expect(labels).not.toContain('Hand off to Claude Code')
+    expect(labels).not.toContain('Hand off to Cursor')
+  })
+
+  test('picking a harness creates the handoff from that session', async () => {
+    vi.mocked(ipc.createSessionHandoff).mockResolvedValue({
+      session: makeSession({ id: 's2', agentType: 'codex', parentSessionId: 's1' }),
+      draft: 'packet', includedTurns: 0, omittedTurns: 0, transcriptPath: null,
+    })
+    const tab = await show([makeSession({ id: 's1', agentType: 'claude' })])
+    fireEvent.contextMenu(tab('s1').getByText('Claude Code'))
+    fireEvent.click(screen.getByText('Hand off to Codex'))
+
+    await waitFor(() => expect(ipc.createSessionHandoff).toHaveBeenCalledWith('s1', 'codex', undefined, undefined))
+  })
+
+  test('a handoff session tab names the session it came from', async () => {
+    const tab = await show([
+      makeSession({ id: 's1', agentType: 'claude', name: 'Original' }),
+      makeSession({ id: 's2', agentType: 'codex', parentSessionId: 's1' }),
+    ])
+    expect(tab('s2').getByTitle('Handed off from Original')).toBeTruthy()
+    expect(tab('s1').queryByTitle(/Handed off from/)).toBeNull()
+  })
+
+  test('a fork is not marked as a handoff', async () => {
+    const tab = await show([
+      makeSession({ id: 's1', agentType: 'claude' }),
+      makeSession({ id: 's2', agentType: 'claude', parentSessionId: 's1', forkedAtMessageUuid: 'm1' }),
+    ])
+    expect(tab('s2').queryByTitle(/Handed off from/)).toBeNull()
   })
 })

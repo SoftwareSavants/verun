@@ -2,6 +2,7 @@ import { produce } from 'solid-js/store'
 import type { AccountSelection, AgentType } from '../types'
 import * as ipc from '../lib/ipc'
 import { setTasks } from './tasks'
+import { clearDraft, saveDraftMessage } from './sessionDrafts'
 import { setSessions, setOutputItems, sendMessage, updateSessionModel } from './sessions'
 import { isSetupRunning, queueMessage, setupFailed } from './setup'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setSelectedSessionIdForTask, setShowArchived, addToast } from './ui'
@@ -25,7 +26,7 @@ export async function startDraftTask(input: DraftTaskInput) {
   setOutputItems(session.id, [])
   if (input.model) updateSessionModel(session.id, input.model)
   // Retain the prompt if setup or the agent fails to start.
-  localStorage.setItem(`verun:draft-msg:${session.id}`, input.message)
+  saveDraftMessage(session.id, input.message)
   const selectTask = () => {
     if (selectedTaskId() !== previousSelection) return
     setSelectedProjectId(task.projectId)
@@ -36,7 +37,7 @@ export async function startDraftTask(input: DraftTaskInput) {
   if (setupFailed(task.id)) { selectTask(); return }
   if (isSetupRunning(task.id)) {
     queueMessage(task.id, { sessionId: session.id, message: input.message, model: input.model })
-    localStorage.removeItem(`verun:draft-msg:${session.id}`)
+    clearDraft(session.id)
     selectTask()
     return
   }
@@ -45,7 +46,7 @@ export async function startDraftTask(input: DraftTaskInput) {
     // with its toast. The agent did not start, so the prompt stays, as when it
     // fails below.
     if (await sendMessage(session.id, input.message, undefined, input.model)) {
-      localStorage.removeItem(`verun:draft-msg:${session.id}`)
+      clearDraft(session.id)
     }
   } catch (error) {
     // Creation succeeded: never create a duplicate task when sending fails.

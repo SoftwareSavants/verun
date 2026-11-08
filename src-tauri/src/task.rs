@@ -1348,7 +1348,7 @@ pub async fn archive_task(
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
-fn new_session(
+pub(crate) fn new_session(
     task_id: String,
     agent_type: String,
     model: Option<String>,

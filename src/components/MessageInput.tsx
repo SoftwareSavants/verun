@@ -25,6 +25,7 @@ import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
 import { openSideQuestion } from '../store/sideQuestion'
 import { serializeAttachments, deserializeAttachments, uploadAttachments } from '../lib/binary'
+import { clearDraft, loadDraftAttachments, loadDraftMessage, saveDraftAttachments, saveDraftMessage } from '../store/sessionDrafts'
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 import { decidePlanAction } from '../lib/planAction'
 import { isImagePath, mentionPathForFile } from '../lib/composerFiles'
@@ -386,16 +387,13 @@ export const MessageInput: Component<Props> = (props) => {
     draftSaveTimer = setTimeout(() => {
       const msg = sessionMessages()[sid] ?? ''
       const atts = sessionAttachments()[sid] ?? []
-      if (msg) localStorage.setItem(`verun:draft-msg:${sid}`, msg)
-      else localStorage.removeItem(`verun:draft-msg:${sid}`)
-      if (atts.length > 0) localStorage.setItem(`verun:draft-att:${sid}`, serializeAttachments(atts))
-      else localStorage.removeItem(`verun:draft-att:${sid}`)
+      saveDraftMessage(sid, msg)
+      saveDraftAttachments(sid, atts)
     }, 500)
   }
   const clearPersistedDraft = (sid: string) => {
     if (draftSaveTimer) clearTimeout(draftSaveTimer)
-    localStorage.removeItem(`verun:draft-msg:${sid}`)
-    localStorage.removeItem(`verun:draft-att:${sid}`)
+    clearDraft(sid)
   }
 
   const setMessageRaw = (v: string) => {
@@ -530,14 +528,12 @@ export const MessageInput: Component<Props> = (props) => {
     }
     prevSessionId = sid
     if (!sessionMessages()[sid]) {
-      const savedMsg = localStorage.getItem(`verun:draft-msg:${sid}`)
+      const savedMsg = loadDraftMessage(sid)
       if (savedMsg) setSessionMessages(prev => ({ ...prev, [sid]: savedMsg }))
     }
     if (!sessionAttachments()[sid]?.length) {
-      try {
-        const savedAtt = localStorage.getItem(`verun:draft-att:${sid}`)
-        if (savedAtt) setSessionAttachments(prev => ({ ...prev, [sid]: deserializeAttachments(savedAtt) }))
-      } catch { /* ignore corrupt data */ }
+      const savedAtt = loadDraftAttachments(sid)
+      if (savedAtt.length > 0) setSessionAttachments(prev => ({ ...prev, [sid]: savedAtt }))
     }
     // Sync the contenteditable DOM to the restored draft
     if (inputRef) {

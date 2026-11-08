@@ -119,6 +119,13 @@ pub enum McpAction {
         initial_message: Option<String>,
         reply: oneshot::Sender<Result<CreateSessionOutcome, String>>,
     },
+    HandoffSession {
+        source_session_id: String,
+        target_agent_type: String,
+        model: Option<String>,
+        note: Option<String>,
+        reply: oneshot::Sender<Result<HandoffOutcome, String>>,
+    },
 }
 
 /// Result returned by the worker after a successful `SpawnTask`. Carries
@@ -166,6 +173,17 @@ pub struct CreateSessionOutcome {
     pub initial_message_delivered: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct HandoffOutcome {
+    pub task_id: String,
+    pub session_id: String,
+    pub agent_type: String,
+    pub included_turns: usize,
+    pub omitted_turns: usize,
+    pub transcript_path: Option<String>,
+    pub delivered: bool,
+}
+
 pub async fn dispatch(ctx: &McpContext, req: JsonRpcRequest) -> JsonRpcResponse {
     let id = req.id.clone();
     let result = match req.method.as_str() {
@@ -211,6 +229,7 @@ fn tools_list_result() -> Value {
             tool_schema_read_task_output(),
             tool_schema_send_message(),
             tool_schema_create_session(),
+            tool_schema_handoff_session(),
             tool_schema_spawn_task(),
             tool_schema_app_start(),
             tool_schema_app_stop(),
@@ -265,6 +284,7 @@ async fn handle_tools_call(ctx: &McpContext, params: Value) -> Result<Value, Jso
         "verun_read_task_output" => tool_read_task_output(ctx, arguments).await?,
         "verun_send_message" => tool_send_message(ctx, arguments).await?,
         "verun_create_session" => tool_create_session(ctx, arguments).await?,
+        "verun_handoff_session" => tool_handoff_session(ctx, arguments).await?,
         "verun_spawn_task" => tool_spawn_task(ctx, arguments).await?,
         "verun_app_start" => tool_app_start(ctx, arguments).await?,
         "verun_app_stop" => tool_app_stop(ctx, arguments).await?,
@@ -709,7 +729,7 @@ fn tool_schema_spawn_task() -> Value {
                 },
                 "agent_type": {
                     "type": "string",
-                    "enum": ["claude", "codex", "cursor", "gemini", "opencode"],
+                    "enum": crate::agent::AgentKind::names(),
                     "default": "claude",
                     "description": "Which agent CLI runs in the new session."
                 },
@@ -735,7 +755,7 @@ fn tool_schema_create_session() -> Value {
                 },
                 "agent_type": {
                     "type": "string",
-                    "enum": ["claude", "codex", "cursor", "gemini", "opencode"],
+                    "enum": crate::agent::AgentKind::names(),
                     "description": "Optional. Agent runtime for the new session. Defaults to the task's existing agent_type, falling back to the project default."
                 },
                 "model": {
@@ -787,14 +807,12 @@ async fn tool_create_session(ctx: &McpContext, args: Value) -> Result<String, Js
                 .unwrap_or_else(|| "claude".into()),
         },
     };
-    if !matches!(
-        agent_type.as_str(),
-        "claude" | "codex" | "cursor" | "gemini" | "opencode"
-    ) {
+    if crate::agent::AgentKind::try_parse(&agent_type).is_none() {
         return Err(JsonRpcError {
             code: E_INVALID_PARAMS,
             message: format!(
-                "verun_create_session: unknown agent_type '{agent_type}'. Valid values: claude, codex, cursor, gemini, opencode."
+                "verun_create_session: unknown agent_type '{agent_type}'. Valid values: {}.",
+                crate::agent::AgentKind::names().join(", ")
             ),
         });
     }
@@ -858,6 +876,134 @@ async fn tool_create_session(ctx: &McpContext, args: Value) -> Result<String, Js
     serde_json::to_string(&payload).map_err(internal)
 }
 
+fn tool_schema_handoff_session() -> Value {
+    json!({
+        "name": "verun_handoff_session",
+        "description": "Hand the current work off to a different agent harness (e.g. from Claude to Codex) inside the same Verun task: same worktree, same branch, files as they are now. Verun starts a new session on the target harness and sends it a handoff prompt built from the source session's conversation and the worktree's git state, plus a file with the full transcript. Use it when another harness is better suited, or you are running out of context. The source session is left as it is; stop working once you hand off, so the two agents don't edit the same files at once. Defaults to the latest session of the caller's task. Returns the new session_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_agent_type": {
+                    "type": "string",
+                    "enum": crate::agent::AgentKind::names(),
+                    "description": "Harness to hand off to. Must differ from the source session's."
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional. Session to hand off. Defaults to the latest session of the caller's task."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional. Model for the new session."
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional. Extra instructions for the receiving agent, appended to the handoff prompt."
+                }
+            },
+            "required": ["target_agent_type"]
+        }
+    })
+}
+
+/// The first message of a handoff session: the packet, plus the source
+/// agent's note when it left one.
+fn handoff_message(packet: String, note: Option<String>) -> String {
+    match note.as_deref().map(str::trim) {
+        Some(n) if !n.is_empty() => format!("{packet}\nNote from the previous agent: {n}\n"),
+        _ => packet,
+    }
+}
+
+async fn tool_handoff_session(ctx: &McpContext, args: Value) -> Result<String, JsonRpcError> {
+    let invalid = |message: String| JsonRpcError {
+        code: E_INVALID_PARAMS,
+        message,
+    };
+    let target = args
+        .get("target_agent_type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| invalid("verun_handoff_session: 'target_agent_type' is required.".into()))?
+        .to_string();
+    if crate::agent::AgentKind::try_parse(&target).is_none() {
+        return Err(invalid(format!(
+            "verun_handoff_session: unknown agent_type '{target}'. Valid values: {}.",
+            crate::agent::AgentKind::names().join(", ")
+        )));
+    }
+
+    let source = match args.get("session_id").and_then(|v| v.as_str()) {
+        Some(id) => db::get_session(&ctx.pool, id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| {
+                invalid(format!(
+                    "Session '{id}' not found. Use verun_list_sessions to discover valid session IDs."
+                ))
+            })?,
+        None => {
+            let task_id = ctx.caller_task_id.as_deref().ok_or_else(|| {
+                invalid(
+                    "verun_handoff_session: 'session_id' is required when VERUN_TASK_ID is not set in the MCP session."
+                        .into(),
+                )
+            })?;
+            db::latest_session_for_task(&ctx.pool, task_id)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| invalid(format!("Task '{task_id}' has no sessions to hand off.")))?
+        }
+    };
+    if source.agent_type == target {
+        return Err(invalid(format!(
+            "verun_handoff_session: session '{}' already runs on {target}; hand off to a different harness, or use verun_create_session for a fresh session on the same one.",
+            source.id
+        )));
+    }
+
+    let actions = ctx.actions.as_ref().ok_or_else(|| JsonRpcError {
+        code: E_INTERNAL,
+        message: "verun_handoff_session: server is not configured to perform side-effect actions."
+            .into(),
+    })?;
+    let (reply_tx, reply_rx) = oneshot::channel();
+    actions
+        .send(McpAction::HandoffSession {
+            source_session_id: source.id.clone(),
+            target_agent_type: target,
+            model: args.get("model").and_then(|v| v.as_str()).map(String::from),
+            note: args.get("note").and_then(|v| v.as_str()).map(String::from),
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|e| JsonRpcError {
+            code: E_INTERNAL,
+            message: format!("verun_handoff_session: action queue closed: {e}"),
+        })?;
+    let outcome = reply_rx
+        .await
+        .map_err(|e| JsonRpcError {
+            code: E_INTERNAL,
+            message: format!("verun_handoff_session: worker dropped reply: {e}"),
+        })?
+        .map_err(|e| JsonRpcError {
+            code: E_INTERNAL,
+            message: e,
+        })?;
+
+    let payload = json!({
+        "task_id": outcome.task_id,
+        "source_session_id": source.id,
+        "session_id": outcome.session_id,
+        "agent": outcome.agent_type,
+        "included_turns": outcome.included_turns,
+        "omitted_turns": outcome.omitted_turns,
+        "transcript_path": outcome.transcript_path,
+        "delivered": outcome.delivered,
+    });
+    serde_json::to_string(&payload).map_err(internal)
+}
+
 async fn tool_spawn_task(ctx: &McpContext, args: Value) -> Result<String, JsonRpcError> {
     let project_id = match args.get("project_id").and_then(|v| v.as_str()) {
         Some(p) => p.to_string(),
@@ -890,14 +1036,12 @@ async fn tool_spawn_task(ctx: &McpContext, args: Value) -> Result<String, JsonRp
         .and_then(|v| v.as_str())
         .unwrap_or("claude")
         .to_string();
-    if !matches!(
-        agent_type.as_str(),
-        "claude" | "codex" | "cursor" | "gemini" | "opencode"
-    ) {
+    if crate::agent::AgentKind::try_parse(&agent_type).is_none() {
         return Err(JsonRpcError {
             code: E_INVALID_PARAMS,
             message: format!(
-                "verun_spawn_task: unknown agent_type '{agent_type}'. Valid values: claude, codex, cursor, gemini, opencode."
+                "verun_spawn_task: unknown agent_type '{agent_type}'. Valid values: {}.",
+                crate::agent::AgentKind::names().join(", ")
             ),
         });
     }
@@ -1261,6 +1405,23 @@ pub async fn run_action_worker(app: tauri::AppHandle, mut rx: mpsc::Receiver<Mcp
                     perform_create_session(&app, task_id, agent_type, model, initial_message).await;
                 let _ = reply.send(result);
             }
+            McpAction::HandoffSession {
+                source_session_id,
+                target_agent_type,
+                model,
+                note,
+                reply,
+            } => {
+                let result = perform_handoff_session(
+                    &app,
+                    &source_session_id,
+                    &target_agent_type,
+                    model,
+                    note,
+                )
+                .await;
+                let _ = reply.send(result);
+            }
         }
     }
 }
@@ -1558,6 +1719,92 @@ async fn perform_app_stop(app: &tauri::AppHandle, task_id: &str) -> Result<AppSt
     })
 }
 
+/// Send the first message of a session just created over MCP, as an
+/// external turn with the task's trust level.
+async fn deliver_first_message(
+    app: &tauri::AppHandle,
+    task: &crate::db::Task,
+    session: &crate::db::Session,
+    message: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+
+    let pool = app.state::<SqlitePool>();
+    let db_tx = app.state::<crate::db::DbWriteTx>();
+    let active = app.state::<crate::task::ActiveMap>();
+    let pending = app.state::<crate::task::PendingApprovals>();
+    let pending_meta = app.state::<crate::task::PendingApprovalMeta>();
+    let pending_ctrl = app.state::<crate::task::PendingControlResponses>();
+    // The task already exists, so unlike a fresh one its trust level may
+    // not be the default.
+    let trust_level =
+        crate::policy::TrustLevel::from_str(&db::get_trust_level(pool.inner(), &task.id).await?);
+    let repo_path = db::get_repo_path_for_task(pool.inner(), &task.id).await?;
+    crate::task::send_message(
+        app.clone(),
+        db_tx.inner(),
+        active.inner().clone(),
+        pending.inner().clone(),
+        pending_meta.inner().clone(),
+        pending_ctrl.inner().clone(),
+        crate::task::SendMessageParams {
+            trust_level,
+            ..send_params_for_new_session(task, session, repo_path, message)
+        },
+    )
+    .await
+}
+
+async fn perform_handoff_session(
+    app: &tauri::AppHandle,
+    source_session_id: &str,
+    target_agent_type: &str,
+    model: Option<String>,
+    note: Option<String>,
+) -> Result<HandoffOutcome, String> {
+    use tauri::Manager;
+
+    let pool = app.state::<SqlitePool>();
+    let db_tx = app.state::<crate::db::DbWriteTx>();
+    // MCP callers don't pick an account: the project's for the target harness.
+    let handoff = crate::handoff::create_session_handoff(
+        app,
+        pool.inner(),
+        db_tx.inner(),
+        source_session_id,
+        target_agent_type,
+        model,
+        None,
+    )
+    .await?;
+    let task = db::get_task(pool.inner(), &handoff.session.task_id)
+        .await?
+        .ok_or_else(|| format!("Task '{}' not found.", handoff.session.task_id))?;
+    let delivered = match deliver_first_message(
+        app,
+        &task,
+        &handoff.session,
+        handoff_message(handoff.draft, note),
+    )
+    .await
+    {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("[verun-mcp] handoff_session: first message failed: {e}");
+            false
+        }
+    };
+    Ok(HandoffOutcome {
+        task_id: task.id,
+        session_id: handoff.session.id,
+        agent_type: handoff.session.agent_type,
+        included_turns: handoff.included_turns,
+        omitted_turns: handoff.omitted_turns,
+        transcript_path: handoff.transcript_path,
+        delivered,
+    })
+}
+
 async fn perform_create_session(
     app: &tauri::AppHandle,
     task_id: String,
@@ -1597,30 +1844,7 @@ async fn perform_create_session(
 
     let mut delivered = false;
     if let Some(msg) = initial_message {
-        let active = app.state::<crate::task::ActiveMap>();
-        let pending = app.state::<crate::task::PendingApprovals>();
-        let pending_meta = app.state::<crate::task::PendingApprovalMeta>();
-        let pending_ctrl = app.state::<crate::task::PendingControlResponses>();
-        // The task already exists, so unlike a fresh one its trust level may
-        // not be the default.
-        let trust_level = crate::policy::TrustLevel::from_str(
-            &db::get_trust_level(pool.inner(), &task.id).await?,
-        );
-        let repo_path = db::get_repo_path_for_task(pool.inner(), &task.id).await?;
-        let result = crate::task::send_message(
-            app.clone(),
-            db_tx.inner(),
-            active.inner().clone(),
-            pending.inner().clone(),
-            pending_meta.inner().clone(),
-            pending_ctrl.inner().clone(),
-            crate::task::SendMessageParams {
-                trust_level,
-                ..send_params_for_new_session(&task, &session, repo_path, msg)
-            },
-        )
-        .await;
-        match result {
+        match deliver_first_message(app, &task, &session, msg).await {
             Ok(()) => delivered = true,
             Err(e) => eprintln!("[verun-mcp] create_session: initial_message failed: {e}"),
         }
@@ -3579,6 +3803,9 @@ mod tests {
                     McpAction::CreateSession { reply, .. } => {
                         let _ = reply.send(Err("not supported by this test worker".into()));
                     }
+                    McpAction::HandoffSession { reply, .. } => {
+                        let _ = reply.send(Err("not supported by this test worker".into()));
+                    }
                 }
             }
         });
@@ -3989,6 +4216,9 @@ mod tests {
                         let _ = reply.send(Err("not supported by this test worker".into()));
                     }
                     McpAction::CreateSession { reply, .. } => {
+                        let _ = reply.send(Err("not supported by this test worker".into()));
+                    }
+                    McpAction::HandoffSession { reply, .. } => {
                         let _ = reply.send(Err("not supported by this test worker".into()));
                     }
                 }
@@ -4426,6 +4656,9 @@ mod tests {
                         let _ = reply.send(Err("not supported".into()));
                     }
                     McpAction::CreateSession { reply, .. } => {
+                        let _ = reply.send(Err("not supported".into()));
+                    }
+                    McpAction::HandoffSession { reply, .. } => {
                         let _ = reply.send(Err("not supported".into()));
                     }
                 }
@@ -5048,6 +5281,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_session_accepts_every_harness_verun_supports() {
+        for kind in crate::agent::AgentKind::all() {
+            let pool = pool_with_schema().await;
+            process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
+                .await
+                .unwrap();
+            process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
+                .await
+                .unwrap();
+            let (tx, mut rx) = mpsc::channel::<McpAction>(1);
+            tokio::spawn(async move {
+                if let Some(McpAction::CreateSession { task_id, agent_type, model, reply, .. }) = rx.recv().await {
+                    let _ = reply.send(Ok(CreateSessionOutcome {
+                        task_id,
+                        session_id: "s-new".into(),
+                        agent_type,
+                        model,
+                        initial_message_delivered: false,
+                    }));
+                }
+            });
+            let ctx = McpContext { pool, caller_task_id: Some("t-a".into()), actions: Some(tx) };
+            let resp = dispatch(&ctx, call_create_session(json!({ "agent_type": kind.as_str() }))).await;
+            assert!(resp.error.is_none(), "{}: {:?}", kind.as_str(), resp.error);
+        }
+    }
+
+    #[test]
+    fn create_session_schema_lists_every_harness() {
+        let schema = tool_schema_create_session();
+        let listed: Vec<&str> = schema["inputSchema"]["properties"]["agent_type"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for kind in crate::agent::AgentKind::all() {
+            assert!(listed.contains(&kind.as_str()), "missing {}", kind.as_str());
+        }
+        let spawn = tool_schema_spawn_task();
+        let listed: Vec<&str> = spawn["inputSchema"]["properties"]["agent_type"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for kind in crate::agent::AgentKind::all() {
+            assert!(listed.contains(&kind.as_str()), "spawn missing {}", kind.as_str());
+        }
+        let handoff = tool_schema_handoff_session();
+        let listed: Vec<&str> = handoff["inputSchema"]["properties"]["target_agent_type"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for kind in crate::agent::AgentKind::all() {
+            assert!(listed.contains(&kind.as_str()), "handoff missing {}", kind.as_str());
+        }
+    }
+
+    #[tokio::test]
     async fn create_session_empty_initial_message_rejected() {
         let pool = pool_with_schema().await;
         process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
@@ -5212,5 +5507,185 @@ mod tests {
         assert_eq!(params.agent_type, "codex");
         assert!(params.external);
         assert_eq!(params.wakeup_reason, None);
+    }
+
+    // -- verun_handoff_session --
+
+    fn call_handoff(args: Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/call".into(),
+            params: json!({ "name": "verun_handoff_session", "arguments": args }),
+        }
+    }
+
+    /// Task `t-a` with a Claude session `s-prev` and, newer, `s-latest`.
+    async fn handoff_ctx(actions: Option<mpsc::Sender<McpAction>>) -> McpContext {
+        let pool = pool_with_schema().await;
+        process_write(&pool, DbWrite::InsertProject(project("p-1", "App One")))
+            .await
+            .unwrap();
+        process_write(&pool, DbWrite::InsertTask(task("t-a", "p-1", "alpha", 1000)))
+            .await
+            .unwrap();
+        for (id, at) in [("s-prev", 1500), ("s-latest", 1600)] {
+            process_write(&pool, DbWrite::CreateSession(session(id, "t-a", at)))
+                .await
+                .unwrap();
+        }
+        McpContext {
+            pool,
+            caller_task_id: Some("t-a".into()),
+            actions,
+        }
+    }
+
+    type CapturedHandoffs =
+        std::sync::Arc<tokio::sync::Mutex<Vec<(String, String, Option<String>)>>>;
+
+    /// A worker that answers every handoff and records what it was asked.
+    fn handoff_worker() -> (mpsc::Sender<McpAction>, CapturedHandoffs) {
+        let (tx, mut rx) = mpsc::channel::<McpAction>(2);
+        let seen: CapturedHandoffs = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let seen_w = seen.clone();
+        tokio::spawn(async move {
+            while let Some(a) = rx.recv().await {
+                if let McpAction::HandoffSession {
+                    source_session_id,
+                    target_agent_type,
+                    note,
+                    reply,
+                    ..
+                } = a
+                {
+                    seen_w
+                        .lock()
+                        .await
+                        .push((source_session_id, target_agent_type.clone(), note));
+                    let _ = reply.send(Ok(HandoffOutcome {
+                        task_id: "t-a".into(),
+                        session_id: "s-new".into(),
+                        agent_type: target_agent_type,
+                        included_turns: 3,
+                        omitted_turns: 1,
+                        transcript_path: Some("/data/handoffs/s-new.md".into()),
+                        delivered: true,
+                    }));
+                }
+            }
+        });
+        (tx, seen)
+    }
+
+    #[tokio::test]
+    async fn tools_list_includes_verun_handoff_session() {
+        let ctx = handoff_ctx(None).await;
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/list".into(),
+            params: json!({}),
+        };
+        let tools = dispatch(&ctx, req).await.result.unwrap()["tools"]
+            .as_array()
+            .cloned()
+            .unwrap();
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == "verun_handoff_session")
+            .expect("tool listed");
+        assert_eq!(tool["inputSchema"]["required"], json!(["target_agent_type"]));
+    }
+
+    #[tokio::test]
+    async fn handoff_requires_a_target() {
+        let (tx, _) = handoff_worker();
+        let ctx = handoff_ctx(Some(tx)).await;
+        let err = dispatch(&ctx, call_handoff(json!({}))).await.error.unwrap();
+        assert_eq!(err.code, E_INVALID_PARAMS);
+        assert!(err.message.contains("target_agent_type"));
+    }
+
+    #[tokio::test]
+    async fn handoff_rejects_unknown_and_same_harness() {
+        let (tx, _) = handoff_worker();
+        let ctx = handoff_ctx(Some(tx)).await;
+        let err = dispatch(&ctx, call_handoff(json!({ "target_agent_type": "bogus" })))
+            .await
+            .error
+            .unwrap();
+        assert_eq!(err.code, E_INVALID_PARAMS);
+        assert!(err.message.contains("unknown agent_type"));
+        let err = dispatch(&ctx, call_handoff(json!({ "target_agent_type": "claude" })))
+            .await
+            .error
+            .unwrap();
+        assert_eq!(err.code, E_INVALID_PARAMS);
+        assert!(err.message.contains("different harness"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn handoff_defaults_to_the_latest_session_of_the_caller_task() {
+        let (tx, seen) = handoff_worker();
+        let ctx = handoff_ctx(Some(tx)).await;
+        let resp = dispatch(
+            &ctx,
+            call_handoff(json!({ "target_agent_type": "codex", "note": "focus on tests" })),
+        )
+        .await;
+        let payload: Value =
+            serde_json::from_str(resp.result.unwrap()["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(payload["session_id"], "s-new");
+        assert_eq!(payload["source_session_id"], "s-latest");
+        assert_eq!(payload["agent"], "codex");
+        assert_eq!(payload["delivered"], true);
+        assert_eq!(payload["transcript_path"], "/data/handoffs/s-new.md");
+        assert_eq!(
+            seen.lock().await.as_slice(),
+            &[(
+                "s-latest".to_string(),
+                "codex".to_string(),
+                Some("focus on tests".to_string())
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn handoff_uses_an_explicit_session() {
+        let (tx, seen) = handoff_worker();
+        let ctx = handoff_ctx(Some(tx)).await;
+        let resp = dispatch(
+            &ctx,
+            call_handoff(json!({ "target_agent_type": "gemini", "session_id": "s-prev" })),
+        )
+        .await;
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+        assert_eq!(seen.lock().await[0].0, "s-prev");
+    }
+
+    #[tokio::test]
+    async fn handoff_unknown_session_is_a_helpful_error() {
+        let (tx, _) = handoff_worker();
+        let ctx = handoff_ctx(Some(tx)).await;
+        let err = dispatch(
+            &ctx,
+            call_handoff(json!({ "target_agent_type": "codex", "session_id": "s-nope" })),
+        )
+        .await
+        .error
+        .unwrap();
+        assert_eq!(err.code, E_INVALID_PARAMS);
+        assert!(err.message.contains("verun_list_sessions"));
+    }
+
+    #[test]
+    fn handoff_message_appends_the_note() {
+        assert_eq!(handoff_message("PACKET".into(), None), "PACKET");
+        assert_eq!(handoff_message("PACKET".into(), Some("  ".into())), "PACKET");
+        let m = handoff_message("PACKET".into(), Some("focus on tests".into()));
+        assert!(m.starts_with("PACKET"));
+        assert!(m.contains("Note from the previous agent: focus on tests"));
     }
 }

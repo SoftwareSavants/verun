@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Session handoff across harnesses: right-click a session tab and pick "Hand off to ..." to start a linked session on another agent in the same worktree, with a handoff prompt (recent conversation, branch commits, uncommitted files, full-transcript file) drafted in its composer; agents can do the same with the new `verun_handoff_session` MCP tool
+- `verun_create_session` and `verun_spawn_task` MCP tools now accept Grok; their agent lists come from the harness registry instead of a hardcoded copy
+
 ## 0.15.0 - 2026-10-26
 
 - Multiple accounts per harness: bind each project to its own Claude, Codex, Gemini, Grok or OpenCode login, or a Cursor API key, with per-account sign-in, identity, usage and sign-out handling
