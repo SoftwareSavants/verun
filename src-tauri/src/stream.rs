@@ -1566,8 +1566,8 @@ fn process_github_remote_invalidation(
 /// Stream stdout from the claude process, parse NDJSON events, emit
 /// structured items to frontend, persist to DB, and return all captured lines.
 ///
-/// Text and thinking deltas are emitted immediately for real-time feel.
-/// Other items are batched with a short flush interval.
+/// Items are batched per `FLUSH_INTERVAL`; adjacent text/thinking deltas are
+/// merged in the batch, so each flush is one event and one DB row.
 ///
 /// When a `control_request` (tool approval) is detected, we emit it to the
 /// frontend and block until the user responds via `respond_to_approval`.
@@ -1614,7 +1614,9 @@ pub async fn stream_and_capture(
     let mut pending_github_invalidations: Vec<Vec<String>> = Vec::new();
 
     loop {
-        let deadline = tokio::time::sleep(FLUSH_INTERVAL);
+        // Flush on a fixed cadence from the last flush, so a steady stream of
+        // lines that skip the post-line flush check cannot starve it.
+        let deadline = tokio::time::sleep_until((last_flush + FLUSH_INTERVAL).into());
         tokio::pin!(deadline);
 
         tokio::select! {
@@ -1642,9 +1644,7 @@ pub async fn stream_and_capture(
                             Err(e) => {
                                 eprintln!("[verun][stream][{session_id}] JSON parse error: {e}");
                                 // Keep the raw line visible in the UI rather than silently dropping it
-                                let items = vec![OutputItem::Raw { text: line.clone() }];
-                                for item in &items { buffer.push(item.clone()); }
-                                persist_items(&db_tx, &session_id, &items, &mut total_persisted);
+                                buffer.push(OutputItem::Raw { text: line.clone() });
                                 continue;
                             }
                         };
@@ -1676,7 +1676,12 @@ pub async fn stream_and_capture(
                             continue;
                         }
 
-                        // Intercept control_request for tool approval
+                        // Intercept control_request for tool approval. Flush first so
+                        // the text leading up to the tool call lands before the prompt.
+                        if msg_type == "control_request" {
+                            flush_buffer(&app, &session_id, &mut buffer, &db_tx, &mut total_persisted);
+                            last_flush = Instant::now();
+                        }
                         if let Some(cr) = handle_control_request(
                             &app, &session_id, &task_id, &v, &stdin,
                             &pending_approvals, &pending_approval_meta,
@@ -1685,8 +1690,7 @@ pub async fn stream_and_capture(
                         ).await {
                             if cr.handled {
                                 if let Some(tool_start) = cr.tool_start {
-                                    buffer.push(tool_start.clone());
-                                    persist_items(&db_tx, &session_id, &[tool_start], &mut total_persisted);
+                                    buffer.push(tool_start);
                                 }
                                 continue;
                             }
@@ -1740,8 +1744,6 @@ pub async fn stream_and_capture(
                         // Parse NDJSON into structured items (already have Value — no re-parse)
                         let items = if display_owned { parse_sdk_event_value(&v) } else { Vec::new() };
 
-                        // Emit text/thinking deltas immediately for real-time streaming
-                        let mut has_immediate = false;
                         let mut is_turn_end = false;
                         for item in &items {
                             if let Some(scopes) = process_github_remote_invalidation(
@@ -1768,29 +1770,26 @@ pub async fn stream_and_capture(
                                     .send(DbWrite::InsertScheduledWakeup(w))
                                     .await;
                             }
-                            match item {
-                                OutputItem::Text { .. } | OutputItem::Thinking { .. } => {
-                                    if !buffer.is_empty() {
-                                        flush_buffer(&app, &session_id, &mut buffer);
-                                    }
-                                    emit_item(&app, &session_id, item.clone());
-                                    has_immediate = true;
-                                }
-                                OutputItem::TurnEnd { error: ref err, .. } => {
-                                    is_turn_end = true;
-                                    if err.is_some() {
-                                        last_error.clone_from(err);
-                                    }
-                                    buffer.push(item.clone());
-                                }
-                                _ => {
-                                    buffer.push(item.clone());
+                            if let OutputItem::TurnEnd { error: ref err, .. } = item {
+                                is_turn_end = true;
+                                if err.is_some() {
+                                    last_error.clone_from(err);
                                 }
                             }
                         }
+                        for item in items {
+                            push_coalesced(&mut buffer, item);
+                        }
 
-                        // Persist pre-parsed items (agent-format-agnostic)
-                        persist_items(&db_tx, &session_id, &items, &mut total_persisted);
+                        // Deltas are batched per FLUSH_INTERVAL (merged in the buffer)
+                        // and persisted with the flush. On turn end we ALWAYS flush so
+                        // TurnEnd reaches the frontend before the session goes idle and
+                        // before any turn-snapshot marker - otherwise the marker walks
+                        // back to find an assistant block that hasn't been created yet.
+                        if is_turn_end || last_flush.elapsed() >= FLUSH_INTERVAL {
+                            flush_buffer(&app, &session_id, &mut buffer, &db_tx, &mut total_persisted);
+                            last_flush = Instant::now();
+                        }
 
                         // Commit the deferred resume id once a turn has completed —
                         // by this point the agent (e.g. Codex) has written its
@@ -1843,17 +1842,6 @@ pub async fn stream_and_capture(
                             busy.store(false, Ordering::SeqCst);
                         }
 
-                        // Flush buffer. On turn end we ALWAYS flush so the TurnEnd
-                        // event reaches the frontend before any subsequent turn-snapshot
-                        // marker — otherwise the marker walks back to find an assistant
-                        // block that hasn't been created yet.
-                        if !buffer.is_empty()
-                            && (has_immediate || is_turn_end || last_flush.elapsed() >= FLUSH_INTERVAL)
-                        {
-                            flush_buffer(&app, &session_id, &mut buffer);
-                            last_flush = Instant::now();
-                        }
-
                         // Fire-and-forget: snapshot the worktree and persist a turn_snapshots
                         // row keyed to the latest assistant message uuid in the on-disk JSONL.
                         // Used by the "fork from this message" feature. We deliberately do
@@ -1882,16 +1870,14 @@ pub async fn stream_and_capture(
                     Err(_) => break,
                 }
             }
-            _ = &mut deadline => {
-                if !buffer.is_empty() {
-                    flush_buffer(&app, &session_id, &mut buffer);
-                    last_flush = Instant::now();
-                }
+            _ = &mut deadline, if !buffer.is_empty() => {
+                flush_buffer(&app, &session_id, &mut buffer, &db_tx, &mut total_persisted);
+                last_flush = Instant::now();
             }
         }
     }
 
-    flush_buffer(&app, &session_id, &mut buffer);
+    flush_buffer(&app, &session_id, &mut buffer, &db_tx, &mut total_persisted);
     StreamResult { error: last_error }
 }
 
@@ -1933,7 +1919,9 @@ pub async fn stream_and_capture_rpc(
     let mut pending_github_invalidations: Vec<Vec<String>> = Vec::new();
 
     loop {
-        let deadline = tokio::time::sleep(FLUSH_INTERVAL);
+        // Flush on a fixed cadence from the last flush, so a steady stream of
+        // lines that skip the post-line flush check cannot starve it.
+        let deadline = tokio::time::sleep_until((last_flush + FLUSH_INTERVAL).into());
         tokio::pin!(deadline);
 
         tokio::select! {
@@ -1961,7 +1949,6 @@ pub async fn stream_and_capture_rpc(
                             .map(|it| patch_turn_end_with_usage(it, &last_token_usage))
                             .map(|it| persist_plan_if_ready(it, &worktree_path))
                             .collect();
-                        let mut has_immediate = false;
                         let mut is_turn_end = false;
 
                         for item in &items {
@@ -1977,28 +1964,20 @@ pub async fn stream_and_capture_rpc(
                                     },
                                 );
                             }
-                            match item {
-                                OutputItem::Text { .. }
-                                | OutputItem::Thinking { .. }
-                                | OutputItem::CodexPlanDelta { .. } => {
-                                    if !buffer.is_empty() {
-                                        flush_buffer(&app, &session_id, &mut buffer);
-                                    }
-                                    emit_item(&app, &session_id, item.clone());
-                                    has_immediate = true;
+                            if let OutputItem::TurnEnd { error: ref err, .. } = item {
+                                is_turn_end = true;
+                                if err.is_some() {
+                                    last_error.clone_from(err);
                                 }
-                                OutputItem::TurnEnd { error: ref err, .. } => {
-                                    is_turn_end = true;
-                                    if err.is_some() {
-                                        last_error.clone_from(err);
-                                    }
-                                    buffer.push(item.clone());
-                                }
-                                _ => buffer.push(item.clone()),
                             }
                         }
-
-                        persist_items(&db_tx, &session_id, &items, &mut total_persisted);
+                        for item in items {
+                            push_coalesced(&mut buffer, item);
+                        }
+                        if is_turn_end || last_flush.elapsed() >= FLUSH_INTERVAL {
+                            flush_buffer(&app, &session_id, &mut buffer, &db_tx, &mut total_persisted);
+                            last_flush = Instant::now();
+                        }
 
                         if is_turn_end {
                             let (status, error) = turn_end_session_status(&last_error);
@@ -2024,14 +2003,6 @@ pub async fn stream_and_capture_rpc(
                             busy.store(false, Ordering::SeqCst);
                         }
 
-                        if !buffer.is_empty()
-                            && (has_immediate
-                                || is_turn_end
-                                || last_flush.elapsed() >= FLUSH_INTERVAL)
-                        {
-                            flush_buffer(&app, &session_id, &mut buffer);
-                            last_flush = Instant::now();
-                        }
                     }
                     crate::agent::rpc::RpcEvent::ServerRequest {
                         id,
@@ -2079,6 +2050,8 @@ pub async fn stream_and_capture_rpc(
                         // per-request data (e.g. permission option ids) here
                         // that the response encoder needs.
                         let responder_entry_input = entry.tool_input.clone();
+                        flush_buffer(&app, &session_id, &mut buffer, &db_tx, &mut total_persisted);
+                        last_flush = Instant::now();
                         let _ = app.emit("tool-approval-request", ToolApprovalEvent {
                             request_id: request_id.clone(),
                             session_id: session_id.clone(),
@@ -2142,16 +2115,14 @@ pub async fn stream_and_capture_rpc(
                     }
                 }
             }
-            _ = &mut deadline => {
-                if !buffer.is_empty() {
-                    flush_buffer(&app, &session_id, &mut buffer);
-                    last_flush = Instant::now();
-                }
+            _ = &mut deadline, if !buffer.is_empty() => {
+                flush_buffer(&app, &session_id, &mut buffer, &db_tx, &mut total_persisted);
+                last_flush = Instant::now();
             }
         }
     }
 
-    flush_buffer(&app, &session_id, &mut buffer);
+    flush_buffer(&app, &session_id, &mut buffer, &db_tx, &mut total_persisted);
     StreamResult { error: last_error }
 }
 
@@ -2395,22 +2366,42 @@ async fn handle_control_request(
     }
 }
 
-fn emit_item(app: &AppHandle, session_id: &str, item: OutputItem) {
-    let _ = app.emit(
-        "session-output",
-        SessionOutputEvent {
-            session_id: session_id.to_string(),
-            items: vec![item],
-        },
-    );
+/// Queue an item for the next flush, merging a streaming delta into the
+/// previous item when it continues the same run (text after text, thinking
+/// after thinking, plan delta after a delta of the same plan item). Every
+/// consumer concatenates such runs (ChatView `rebuildBlocks`, the handoff
+/// transcript builder, the Codex live-plan buffer), so one merged item is
+/// equivalent to the tokens it replaces - but costs one event, one store
+/// push and one DB row per flush instead of one per token.
+fn push_coalesced(buffer: &mut Vec<OutputItem>, item: OutputItem) {
+    match (buffer.last_mut(), item) {
+        (Some(OutputItem::Text { text: acc }), OutputItem::Text { text })
+        | (Some(OutputItem::Thinking { text: acc }), OutputItem::Thinking { text }) => {
+            acc.push_str(&text)
+        }
+        (
+            Some(OutputItem::CodexPlanDelta { item_id: acc_id, delta: acc }),
+            OutputItem::CodexPlanDelta { item_id, delta },
+        ) if *acc_id == item_id => acc.push_str(&delta),
+        (_, item) => buffer.push(item),
+    }
 }
 
-fn flush_buffer(app: &AppHandle, session_id: &str, buffer: &mut Vec<OutputItem>) {
+/// Emit the queued items as one `session-output` event and persist them as
+/// one `verun_items` row.
+fn flush_buffer(
+    app: &AppHandle,
+    session_id: &str,
+    buffer: &mut Vec<OutputItem>,
+    db_tx: &DbWriteTx,
+    total_persisted: &mut usize,
+) {
     if buffer.is_empty() {
         return;
     }
 
     let items = std::mem::take(buffer);
+    persist_items(db_tx, session_id, &items, total_persisted);
     let _ = app.emit(
         "session-output",
         SessionOutputEvent {
@@ -3118,6 +3109,48 @@ mod tests {
         assert_eq!(json["rateLimitType"], "");
         assert_eq!(json["overageStatus"], "");
         assert_eq!(json["isUsingOverage"], false);
+    }
+
+    fn text(t: &str) -> OutputItem {
+        OutputItem::Text { text: t.into() }
+    }
+    fn thinking(t: &str) -> OutputItem {
+        OutputItem::Thinking { text: t.into() }
+    }
+    fn plan_delta(id: &str, d: &str) -> OutputItem {
+        OutputItem::CodexPlanDelta { item_id: id.into(), delta: d.into() }
+    }
+    fn pushed(items: Vec<OutputItem>) -> serde_json::Value {
+        let mut buffer = Vec::new();
+        for item in items {
+            push_coalesced(&mut buffer, item);
+        }
+        serde_json::to_value(&buffer).unwrap()
+    }
+
+    #[test]
+    fn adjacent_text_and_thinking_deltas_merge_into_one_item() {
+        assert_eq!(
+            pushed(vec![thinking("Let "), thinking("me"), text("Hel"), text("lo"), text("!")]),
+            serde_json::to_value(vec![thinking("Let me"), text("Hello!")]).unwrap()
+        );
+    }
+
+    #[test]
+    fn deltas_do_not_merge_across_other_items() {
+        let tool = OutputItem::ToolStart { tool: "Read".into(), input: "{}".into() };
+        assert_eq!(
+            pushed(vec![text("a"), tool.clone(), text("b"), text("c")]),
+            serde_json::to_value(vec![text("a"), tool, text("bc")]).unwrap()
+        );
+    }
+
+    #[test]
+    fn codex_plan_deltas_merge_only_within_the_same_plan_item() {
+        assert_eq!(
+            pushed(vec![plan_delta("p1", "<pro"), plan_delta("p1", "posed"), plan_delta("p2", "x")]),
+            serde_json::to_value(vec![plan_delta("p1", "<proposed"), plan_delta("p2", "x")]).unwrap()
+        );
     }
 
     #[test]

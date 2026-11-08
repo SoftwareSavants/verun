@@ -152,7 +152,10 @@ impl KeepAwake {
                 let wait = deadline.saturating_sub(now_ms());
                 inner.timer = Some(tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
-                    app.state::<KeepAwake>().apply(&app);
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        app.state::<KeepAwake>().apply(&app);
+                    })
+                    .await;
                 }));
             }
         }
@@ -165,26 +168,35 @@ pub fn keep_awake_status(state: tauri::State<'_, KeepAwake>) -> KeepAwakeStatus 
     state.status()
 }
 
+/// Run `f` against the managed state off the main thread: reconciling kills,
+/// reaps and spawns `caffeinate`, which must never stall the UI.
+async fn off_main(app: AppHandle, f: impl FnOnce(&AppHandle, &KeepAwake) + Send + 'static) {
+    let _ = tauri::async_runtime::spawn_blocking(move || f(&app, &app.state::<KeepAwake>())).await;
+}
+
 /// Called by the frontend when "any agent working" flips.
 #[tauri::command]
-pub fn keep_awake_set_agents_working(app: AppHandle, state: tauri::State<'_, KeepAwake>, working: bool) {
-    state.0.lock().unwrap().auto_working = working;
-    state.apply(&app);
+pub async fn keep_awake_set_agents_working(app: AppHandle, working: bool) {
+    off_main(app, move |app, state| {
+        state.0.lock().unwrap().auto_working = working;
+        state.apply(app);
+    })
+    .await;
 }
 
 /// `minutes: None` keeps the screen on until turned off.
 #[tauri::command]
-pub fn keep_awake_set_manual(app: AppHandle, state: tauri::State<'_, KeepAwake>, minutes: Option<u32>) {
+pub async fn keep_awake_set_manual(app: AppHandle, minutes: Option<u32>) {
     let manual = match minutes {
         Some(m) => Manual::Until(now_ms() + u64::from(m) * 60_000),
         None => Manual::Forever,
     };
-    state.set_manual(&app, manual);
+    off_main(app, move |app, state| state.set_manual(app, manual)).await;
 }
 
 #[tauri::command]
-pub fn keep_awake_clear_manual(app: AppHandle, state: tauri::State<'_, KeepAwake>) {
-    state.set_manual(&app, Manual::Off);
+pub async fn keep_awake_clear_manual(app: AppHandle) {
+    off_main(app, |app, state| state.set_manual(app, Manual::Off)).await;
 }
 
 #[cfg(test)]

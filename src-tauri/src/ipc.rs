@@ -3946,9 +3946,17 @@ pub async fn upload_attachment_from_path(
 /// Read bytes back from the blob store. The frontend calls this lazily when
 /// rendering an attached image so the chat-view restore path doesn't load
 /// every blob up front.
+///
+/// Returns a raw IPC body so the webview gets an `ArrayBuffer` instead of a
+/// JSON array of numbers (a 2 MB screenshot was ~7 MB of JSON to parse).
 #[tauri::command]
-pub async fn get_blob(app_data: State<'_, AppDataDir>, hash: String) -> Result<Vec<u8>, String> {
-    blob::read_blob_bytes(&app_data.0, &hash).await
+pub async fn get_blob(
+    app_data: State<'_, AppDataDir>,
+    hash: String,
+) -> Result<tauri::ipc::Response, String> {
+    blob::read_blob_bytes(&app_data.0, &hash)
+        .await
+        .map(tauri::ipc::Response::new)
 }
 
 /// Aggregate counts and byte totals for the Storage Breakdown UI.

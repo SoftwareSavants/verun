@@ -1,12 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 - 2026-11-08
 
 - Chat no longer freezes on send or session open: blocks build incrementally per flush, rendered markdown is cached, the streaming message re-renders at most once per frame, and task status lookups are O(1)
 - Chat keeps updating in very long sessions (past 50k output items) instead of freezing at the in-memory cap
-
-## 0.16.0 - 2026-11-08
-
+- Sending a message no longer freezes the window: keep-awake starts and stops `caffeinate` off the main thread
+- Streaming text and thinking tokens are merged per 30 ms flush, so a turn is a handful of chat items and DB rows instead of one per token
+- Attached terminals send only new output each tick instead of rebuilding the 256 KB scrollback
+- Activity monitor samples only Verun's own process tree, off the async runtime, every 10 s while the overlay is closed
+- Images load as raw bytes instead of a JSON number array
 - Session handoff across harnesses: right-click a session tab, pick "Hand off…", then the target harness, model and account. Verun starts a linked session on it in the same worktree with the handoff packet (recent conversation, branch commits, uncommitted files, full-transcript path) attached to its composer, so you can add your own context before sending; agents can do the same with the new `verun_handoff_session` MCP tool
 - Text attachments: non-image files attached to a message are shown as file chips and inlined into the prompt for every harness
 - `verun_create_session` and `verun_spawn_task` MCP tools now accept Grok; their agent lists come from the harness registry instead of a hardcoded copy
