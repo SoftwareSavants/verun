@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Chat no longer freezes on send or session open: blocks build incrementally per flush, rendered markdown is cached, the streaming message re-renders at most once per frame, and task status lookups are O(1)
+- Chat keeps updating in very long sessions (past 50k output items) instead of freezing at the in-memory cap
+
 ## 0.16.0 - 2026-11-08
 
 - Session handoff across harnesses: right-click a session tab, pick "Hand off…", then the target harness, model and account. Verun starts a linked session on it in the same worktree with the handoff packet (recent conversation, branch commits, uncommitted files, full-transcript path) attached to its composer, so you can add your own context before sending; agents can do the same with the new `verun_handoff_session` MCP tool
