@@ -21,8 +21,6 @@ vi.mock('./tasks', () => ({
 }))
 vi.mock('./ui', () => ({
   markTaskUnread: vi.fn(),
-  markTaskAttention: vi.fn(),
-  clearTaskAttention: vi.fn(),
   markSessionUnread: vi.fn(),
 }))
 

@@ -47,6 +47,7 @@ export default defineConfig({
         idle:    c('status-idle'),
         done:    c('status-done'),
         error:   c('status-error'),
+        waiting: c('status-waiting'),
       },
       text: {
         primary:   c('text-primary'),
@@ -67,9 +68,9 @@ export default defineConfig({
   },
   safelist: [
     'btn', 'btn-primary', 'btn-ghost', 'btn-danger', 'menu-item', 'input-base', 'section-title',
-    // Sidebar task phase icons - dynamically applied
-    'text-status-idle', 'text-status-running', 'text-status-done', 'text-status-error',
-    'text-text-muted', 'text-amber-400', 'text-emerald-400', 'text-purple-400', 'text-red-400',
+    // Task status icons - dynamically applied
+    'text-status-idle', 'text-status-running', 'text-status-done', 'text-status-error', 'text-status-waiting',
+    'text-text-muted', 'text-text-dim', 'text-purple-400',
     'animate-spin', 'border-l-2',
   ],
   shortcuts: [
@@ -109,6 +110,7 @@ export default defineConfig({
           --status-idle:    #52525b; --status-idle-rgb:    82 82 91;
           --status-done:    #60a5fa; --status-done-rgb:    96 165 250;
           --status-error:   #f87171; --status-error-rgb:   248 113 113;
+          --status-waiting: #fbbf24; --status-waiting-rgb: 251 191 36;
 
           --text-primary:   #e4e4e7; --text-primary-rgb:   228 228 231;
           --text-secondary: #a1a1aa; --text-secondary-rgb: 161 161 170;
@@ -149,6 +151,7 @@ export default defineConfig({
           --status-idle:    #71717a; --status-idle-rgb:    113 113 122;
           --status-done:    #2563eb; --status-done-rgb:    37 99 235;
           --status-error:   #dc2626; --status-error-rgb:   220 38 38;
+          --status-waiting: #92400e; --status-waiting-rgb: 146 64 14;
         }
 
         /* Density: a single multiplier feeds root font-size and therefore
@@ -184,29 +187,6 @@ export default defineConfig({
         }
         .tab-unread-pulse {
           animation: tabUnreadPulse 3s ease-in-out infinite;
-        }
-
-        /* Sidebar task tile indicator — inset left-edge strip (matches the
-           selected-state visual language). Hover pauses animation at the
-           high-intensity color so the affordance is obvious. */
-        @keyframes taskAttentionPulse {
-          0%, 100% { box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.2); }
-          50%      { box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.5); }
-        }
-        .task-attention-pulse { animation: taskAttentionPulse 2s ease-in-out infinite; }
-        .task-attention-pulse:hover {
-          animation: none;
-          box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.6);
-        }
-
-        @keyframes taskUnreadPulse {
-          0%, 100% { box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.25); }
-          50%      { box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.55); }
-        }
-        .task-unread-pulse { animation: taskUnreadPulse 2.5s ease-in-out infinite; }
-        .task-unread-pulse:hover {
-          animation: none;
-          box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.65);
         }
 
         /* Side question panel enter animation - one-shot keyframe that fires

@@ -24,7 +24,7 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 
 ## Stay in control without babysitting
 
-- **Task board** - scan live Needs attention, Running, and Ready columns across projects and groups; search tasks, open a card, or reveal archived work. Columns follow agent activity automatically. Claude terminal sessions report activity through per-launch observer hooks; unavailable status is shown separately. Terminal detection is partial, and approvals stay in Claude.
+- **Task board** - scan live Needs you, Running, Idle, In review and Done columns across projects and groups; search tasks, open a card, or reveal archived work. Columns follow agent activity automatically. Claude terminal sessions report activity through per-launch observer hooks; unavailable status is shown separately. Terminal detection is partial, and approvals stay in Claude.
 
 - **Steps** - queue follow-up prompts while an agent is working; arm them to auto-send on idle, or fire manually
 - **Side question (`/btw`)** - type `/btw <question>` mid-stream (or click the "Ask sideways" button that appears in the corner of the chat while Claude is working) to ask an ephemeral question - the answer shows in a floating panel and never enters conversation history
@@ -36,6 +36,7 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 
 ## Full workspace, not just a launcher
 
+- **Needs you queue** - the sidebar pins every task waiting on input, failing CI, conflicting or errored at the top, with the reason on each row; every task shows a distinct status icon that matches the board.
 - **Project groups** - organize repositories into collapsible sidebar sections, focus on one group, and search across every group without missing tasks that need attention.
 
 - **Continue from Claude cloud** - search cloud sessions directly in New Task and click one to import its conversation and code onto an independent local branch, without terminal steps. Imports run in the background with sidebar progress and retry. Requires Claude Code signed in with a Claude subscription.

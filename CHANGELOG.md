@@ -5,6 +5,11 @@
 - Session handoff across harnesses: right-click a session tab, pick "Hand off…", then the target harness, model and account. Verun starts a linked session on it in the same worktree with the handoff packet (recent conversation, branch commits, uncommitted files, full-transcript path) attached to its composer, so you can add your own context before sending; agents can do the same with the new `verun_handoff_session` MCP tool
 - Text attachments: non-image files attached to a message are shown as file chips and inlined into the prompt for every harness
 - `verun_create_session` and `verun_spawn_task` MCP tools now accept Grok; their agent lists come from the harness registry instead of a hardcoded copy
+- Sidebar pins a collapsible "Needs you" queue of tasks waiting on input, failing CI, conflicting or errored, with the reason on each row and a needs-you count on Task board
+- Sidebar task rows are single-line, with one distinct icon per state (needs input, error, CI failing, conflicts, running, idle, PR open, merged) instead of near-identical circles and pulsing edges
+- Task board splits Ready into Idle, In review and Done, renames Needs attention to Needs you, shows a full count summary, and uses compact one-line cards with the branch in the tooltip
+- Sidebar and board read task status from one shared model, so the two can no longer disagree
+- `ui-council` project skill: headless screenshots of the real app (`uilab.html`) judged blind and pairwise by Claude and Codex
 
 ## 0.15.0 - 2026-10-26
 

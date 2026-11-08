@@ -35,8 +35,6 @@ vi.mock('./tasks', () => ({
 }))
 const ui = vi.hoisted(() => ({
   markTaskUnread: vi.fn(),
-  markTaskAttention: vi.fn(),
-  clearTaskAttention: vi.fn(),
   markSessionUnread: vi.fn(),
   addToast: vi.fn(),
   openSettings: vi.fn(),

@@ -4,7 +4,7 @@ import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, Attac
 import { setSessionMcpServers } from './mcpServers'
 import { ELICITATION_TOOL_NAME, parseElicitation } from '../lib/mcpElicitation'
 import { setTasks, taskById } from './tasks'
-import { markTaskUnread, markTaskAttention, clearTaskAttention, markSessionUnread } from './ui'
+import { markTaskUnread, markSessionUnread } from './ui'
 import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps, restoreStep } from './steps'
 import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
@@ -253,16 +253,6 @@ function removeApproval(requestId: string, sessionId: string) {
       if (list.length === 0) delete store[sessionId]
     }
   }))
-  // Clear attention indicator if no more pending approvals for this task
-  const session = sessions.find(s => s.id === sessionId)
-  if (session) {
-    const taskSessions = sessions.filter(s => s.taskId === session.taskId)
-    const hasRemaining = taskSessions.some(s => {
-      const approvals = pendingApprovals[s.id]
-      return approvals && approvals.length > 0
-    })
-    if (!hasRemaining) clearTaskAttention(session.taskId)
-  }
 }
 
 export async function closeSession(sessionId: string) {
@@ -570,10 +560,9 @@ export async function initSessionListeners() {
         store[req.sessionId] = [req]
       }
     }))
-    // Mark task as needing attention + OS notification
+    // OS notification. "Needs you" itself is derived from pendingApprovals (store/taskStatus).
     const session = sessions.find(s => s.id === req.sessionId)
     if (session) {
-      markTaskAttention(session.taskId)
       const displayName = session.name || taskById(session.taskId)?.name || 'Task'
       const isQuestion = req.toolName === 'AskUserQuestion'
       const isElicitation = req.toolName === ELICITATION_TOOL_NAME

@@ -1,13 +1,12 @@
-import { sessionActivity } from '../store/activity'
-import { effectiveActivity } from '../lib/sessionActivity'
 import { openTaskBoard, showTaskBoard } from '../store/ui';
+import { taskStatus, needsYou } from '../store/taskStatus';
+import { TaskStatusIcon } from './TaskStatusIcon';
+import { projectColor } from '../lib/projectColor';
 import { Columns3 } from 'lucide-solid';
 import {
   Component,
   For,
   Show,
-  Switch,
-  Match,
   createSignal,
   createMemo,
   createEffect,
@@ -15,7 +14,7 @@ import {
   onMount,
   onCleanup,
 } from "solid-js";
-import { taskGit, refreshTaskGit } from "../store/git";
+import { refreshTaskGit } from "../store/git";
 import { newTaskIds } from "../lib/taskDiff";
 import { GroupHeading, GroupToolbar } from './ProjectGroups';
 import { Dialog } from './Dialog';
@@ -43,7 +42,6 @@ import {
   showArchived,
   setShowArchived,
   isTaskUnread,
-  isTaskAttention,
   clearTaskIndicators,
   setAddProjectPath,
   setShowBtsBuilder,
@@ -54,7 +52,7 @@ import {
   focusOrSelectTask,
   setShowTerminal,
 } from "../store/ui";
-import { sessions, loadSessions } from "../store/sessions";
+import { loadSessions } from "../store/sessions";
 import { isStartCommandRunning, spawnStartCommand, stopStartCommand } from "../store/terminals";
 import { isSetupRunning } from "../store/setup";
 import { deleteProject, projectById } from "../store/projects";
@@ -67,15 +65,12 @@ import {
   Plus,
   FolderOpen,
   Trash2,
-  Loader2,
-  Circle,
-  AlertCircle,
-  GitPullRequest,
-  GitMerge,
-  CircleX,
   Archive,
   Settings,
   Play,
+  LoaderCircle,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-solid";
 import { clsx } from "clsx";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -83,115 +78,21 @@ import { listen } from "@tauri-apps/api/event";
 import * as ipc from "../lib/ipc";
 import { ExternalLink, GitBranch } from "lucide-solid";
 
-// ---------------------------------------------------------------------------
-// Per-project chip color — deterministic hash → palette index. Subtle bg
-// (low alpha) + saturated text for legibility against the dark sidebar.
-// ---------------------------------------------------------------------------
-
-const PROJECT_COLORS = [
-  '#ef4444', // red
-  '#f97316', // orange
-  '#f59e0b', // amber
-  '#eab308', // yellow
-  '#84cc16', // lime
-  '#22c55e', // green
-  '#10b981', // emerald
-  '#14b8a6', // teal
-  '#06b6d4', // cyan
-  '#0ea5e9', // sky
-  '#3b82f6', // blue
-  '#6366f1', // indigo
-  '#8b5cf6', // violet
-  '#a855f7', // purple
-  '#d946ef', // fuchsia
-  '#ec4899', // pink
-  '#f43f5e', // rose
-  '#78716c', // stone
-] as const;
-
-function projectColor(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  return PROJECT_COLORS[hash % PROJECT_COLORS.length];
-}
-
-// ---------------------------------------------------------------------------
-// Composite task status — richer than just session status
-// ---------------------------------------------------------------------------
-
-type TaskPhase =
-  | "waiting"
-  | "unknown"
-  | "idle" // nothing happening
-  | "running" // session actively running
-  | "error" // session errored
-  | "pr-open" // PR created and open
-  | "ci-failed" // PR has failing CI checks
-  | "conflicts" // PR has merge conflicts
-  | "pr-merged"; // PR merged
-
-function taskPhase(taskId: string, sessionPhase: Record<string, "running" | "error" | "waiting" | "unknown" | undefined>): TaskPhase {
-  if (sessionPhase[taskId] === "waiting") return "waiting";
-  if (sessionPhase[taskId] === "unknown") return "unknown";
-  if (sessionPhase[taskId] === "running") return "running";
-  if (sessionPhase[taskId] === "error") return "error";
-  // Git/PR state from centralized store
-  const git = taskGit(taskId);
-  if (git.pr) {
-    if (git.pr.mergeable === "CONFLICTING") return "conflicts";
-    if (git.checks.some(c => c.status === "FAILURE" || c.status === "ERROR")) return "ci-failed";
-    if (git.pr.state === "MERGED") return "pr-merged";
-    if (git.pr.state === "OPEN") return "pr-open";
-  }
-
-  return "idle";
-}
-
-const PHASE_CONFIG: Record<TaskPhase, { color: string; title: string }> = {
-  waiting: { color: "text-amber-400", title: "Input needed in terminal" },
-  unknown: { color: "text-text-dim", title: "Status unavailable" },
-  idle: { color: "text-status-idle", title: "Idle" },
-  running: { color: "text-text-muted", title: "Running" },
-  error: { color: "text-status-error", title: "Error" },
-  "pr-open": { color: "text-emerald-400", title: "PR open" },
-  "ci-failed": { color: "text-red-400", title: "CI failing" },
-  conflicts: { color: "text-amber-400", title: "Merge conflicts" },
-  "pr-merged": { color: "text-purple-400", title: "Merged" },
-};
-
-const PhaseIcon: Component<{ phase: TaskPhase }> = (props) => {
-  const size = 12;
-  return (
-    <Switch fallback={<Circle size={size} />}>
-      <Match when={props.phase === "running"}>
-        <Loader2 size={size} class="animate-spin" />
-      </Match>
-      <Match when={props.phase === "error"}>
-        <AlertCircle size={size} />
-      </Match>
-      <Match when={props.phase === "pr-open"}>
-        <GitPullRequest size={size} />
-      </Match>
-      <Match when={props.phase === "ci-failed"}>
-        <CircleX size={size} />
-      </Match>
-      <Match when={props.phase === "conflicts"}>
-        <CircleX size={size} />
-      </Match>
-      <Match when={props.phase === "pr-merged"}>
-        <GitMerge size={size} />
-      </Match>
-    </Switch>
-  );
-};
-
 interface MenuPos {
   x: number;
   y: number;
 }
 type MenuItem = ContextMenuItem;
 
+const QUEUE_COLLAPSED_KEY = 'verun:needsYouCollapsed';
+const readQueueCollapsed = () => { try { return localStorage.getItem(QUEUE_COLLAPSED_KEY) === 'true' } catch { return false } };
+
 export const Sidebar: Component = () => {
+  const [queueCollapsed, setQueueCollapsedSignal] = createSignal(readQueueCollapsed());
+  const setQueueCollapsed = (v: boolean) => {
+    setQueueCollapsedSignal(v);
+    try { localStorage.setItem(QUEUE_COLLAPSED_KEY, String(v)) } catch { /* ignore */ }
+  };
   const [contextMenu, setContextMenu] = createSignal<{
     pos: MenuPos;
     items: MenuItem[];
@@ -208,7 +109,7 @@ export const Sidebar: Component = () => {
   const [moveTarget, setMoveTarget] = createSignal('ungrouped');
   const [groupError, setGroupError] = createSignal('');
   const sections = createMemo(() => projectSections(projects));
-  const attentionTasks = (groupId: string) => tasks.filter(t => !t.archived && projectGroup(t.projectId) === groupId && isTaskAttention(t.id));
+  const attentionTasks = (groupId: string) => tasks.filter(t => !t.archived && projectGroup(t.projectId) === groupId && needsYou(t.id));
   const otherAttention = createMemo(() => groupState().scope === 'all' ? [] :
     [...groupState().groups, { id: 'ungrouped', name: 'Ungrouped' }]
       .filter(g => g.id !== groupState().scope)
@@ -234,6 +135,10 @@ export const Sidebar: Component = () => {
     return byProject
   })
 
+  // Everything blocked on the manager in the current scope, in sidebar order.
+  const needsYouTasks = createMemo(() => visibleProjects(projects).flatMap(p => (activeTasksByProject()[p.id] || []).filter(t => needsYou(t.id))));
+  const floor = createMemo(() => ({ running: tasks.filter(t => !t.archived && taskStatus(t.id).kind === 'running').length }));
+
   const taskBindingById = createMemo(() => {
     const map: Record<string, number | null> = {}
     let idx = 0
@@ -241,23 +146,6 @@ export const Sidebar: Component = () => {
       for (const t of activeTasksByProject()[p.id] || []) {
         map[t.id] = idx < 9 ? idx : null
         idx++
-      }
-    }
-    return map
-  })
-
-  const sessionPhaseByTask = createMemo(() => {
-    const map: Record<string, "running" | "error" | "waiting" | "unknown" | undefined> = {}
-    for (const s of sessions) {
-      if (s.closedAt) continue
-      const observed = effectiveActivity(s.status, false, sessionActivity[s.id]?.phase)
-      if (observed.approval) map[s.taskId] = "waiting"
-      else if (map[s.taskId] !== "waiting") {
-        if (observed.error) map[s.taskId] = "error"
-        else if (map[s.taskId] !== "error") {
-          if (observed.running) map[s.taskId] = "running"
-          else if (observed.unknown && map[s.taskId] !== "running") map[s.taskId] = "unknown"
-        }
       }
     }
     return map
@@ -419,10 +307,22 @@ export const Sidebar: Component = () => {
 
       <div class="h-full bg-surface-1 flex flex-col overflow-hidden">
         {/* Header — also serves as titlebar drag region */}
-        <div class="px-2 pt-10 pb-1.5 flex items-center justify-between drag-region" data-tauri-drag-region>
-          <span class="text-[10px] font-semibold uppercase tracking-wider text-text-muted px-1 no-drag">Projects</span>
+        <div class="px-2 pt-10 pb-1.5 flex items-center gap-1 drag-region" data-tauri-drag-region>
+          <button type="button" class="flex-1 min-w-0 px-2 py-1.5 flex items-center gap-2 rounded-md text-xs text-text-secondary hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent no-drag" classList={{ 'bg-surface-3 text-text-primary': showTaskBoard() }} aria-pressed={showTaskBoard()} onClick={openTaskBoard}>
+            <Columns3 size={14} class="shrink-0" /><span class="flex-1 text-left">Task board</span>
+            <Show when={needsYouTasks().length > 0}>
+              <span class="flex items-center gap-1 text-[11px] font-medium tabular-nums text-status-waiting" title={`${needsYouTasks().length} need you`}>
+                <TaskStatusIcon kind="input" size={11} label="Need you" />{needsYouTasks().length}
+              </span>
+            </Show>
+            <Show when={floor().running > 0}>
+              <span class="flex items-center gap-1 text-[11px] tabular-nums text-text-dim" title={`${floor().running} running`}>
+                <LoaderCircle size={11} class="animate-spin" />{floor().running}
+              </span>
+            </Show>
+          </button>
           <button
-            class="p-1 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors no-drag"
+            class="p-1.5 rounded-md text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors no-drag"
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
               setContextMenu({
@@ -438,17 +338,42 @@ export const Sidebar: Component = () => {
               });
             }}
             title="Add Project (⌘O)"
+            aria-label="Add project"
           >
             <Plus size={14} />
           </button>
         </div>
 
-        <button type="button" class="mx-2 my-1 px-2 py-2 flex items-center gap-2 rounded-md text-xs text-text-secondary hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent" classList={{ 'bg-surface-3': showTaskBoard() }} aria-pressed={showTaskBoard()} onClick={openTaskBoard}>
-          <Columns3 size={14} />Task board
-        </button>
         <GroupToolbar attention={otherAttention()} onAttention={jumpToAttention} />
         {/* Project + task list */}
         <div class="flex-1 overflow-y-auto overflow-x-hidden px-2 no-drag">
+          <Show when={!projectQuery().trim() && needsYouTasks().length > 0}>
+            <section aria-label="Needs you" class="mb-2 pb-2 border-b-1 border-b-solid border-b-outline/8">
+              <button type="button" class="w-full px-2 py-1 flex items-center gap-1.5 rounded text-[11px] font-semibold text-status-waiting hover:bg-surface-2"
+                aria-expanded={!queueCollapsed()} onClick={() => setQueueCollapsed(!queueCollapsed())}>
+                <Show when={queueCollapsed()} fallback={<ChevronDown size={12} />}><ChevronRight size={12} /></Show>
+                <span class="flex-1 text-left">Needs you</span>
+                <span class="tabular-nums">{needsYouTasks().length}</span>
+              </button>
+              <Show when={!queueCollapsed()}>
+                <div>
+                  <For each={needsYouTasks()}>{(task) => {
+                    const status = () => taskStatus(task.id);
+                    return (
+                      <button type="button" class="w-full pl-2 pr-2 py-1.5 flex items-center gap-2 text-left rounded-md hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent"
+                        classList={{ 'bg-surface-2': selectedTaskId() === task.id }}
+                        title={`${task.name || 'New task'}\n${projectById(task.projectId)?.name ?? ''} · ${status().label}`}
+                        onClick={() => { revealProject(task.projectId); focusOrSelectTask(task); }}>
+                        <TaskStatusIcon kind={status().kind} label={status().label} />
+                        <span class="flex-1 min-w-0 text-xs text-text-primary truncate">{task.name || 'New task'}</span>
+                        <span class={clsx('shrink-0 text-[10px] font-medium', status().kind === 'input' ? 'text-status-waiting' : 'text-status-error')}>{status().label}</span>
+                      </button>
+                    );
+                  }}</For>
+                </div>
+              </Show>
+            </section>
+          </Show>
           <Show when={projectQuery().trim()}>
             <p class="text-[10px] text-text-dim px-2 py-1">Results from all groups</p>
             <For each={visibleProjects(projects)}>{project => <button class="w-full px-2 py-2 text-left rounded-md hover:bg-surface-2" onClick={() => reveal(project.id)}>
@@ -466,7 +391,7 @@ export const Sidebar: Component = () => {
               <Show when={section.projects.length === 0}><p class="px-2 py-2 text-[11px] text-text-dim">No projects yet. Right-click a project to move it here.</p></Show>
           <For each={section.projects}>
             {(project) => (
-              <div class="mb-3">
+              <div class="mb-2">
                 <div
                   class="w-full text-left px-2 py-1 rounded-md flex items-center justify-between group cursor-pointer min-w-0 hover:bg-surface-2"
                   onContextMenu={(e) => showProjectMenu(e, project.id)}
@@ -481,7 +406,7 @@ export const Sidebar: Component = () => {
                     >
                       {project.name.charAt(0)}
                     </span>
-                    <span class="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">
+                    <span class="text-[11px] font-semibold text-text-primary truncate">
                       {project.name}
                     </span>
                   </span>
@@ -512,53 +437,47 @@ export const Sidebar: Component = () => {
                   <div class="mt-1 flex flex-col gap-0.5">
                     <For each={activeTasksByProject()[project.id] || []}>
                       {(task) => {
-                        const phase = () => taskPhase(task.id, sessionPhaseByTask());
-                        const config = () => PHASE_CONFIG[phase()];
+                        const status = () => taskStatus(task.id);
                         const creating = () => isTaskCreating(task.id);
                         const archiving = () => isTaskArchiving(task.id);
                         const hasError = () => !!getTaskError(task.id);
-                        const attention = () => isTaskAttention(task.id);
-                        const unread = () => !attention() && isTaskUnread(task.id);
-                        const hasIndicator = () => attention() || unread();
+                        const unread = () => isTaskUnread(task.id);
                         const disabled = () => creating() || archiving();
                         const windowed = () => isTaskWindowed(task.id);
                         const bindingIdx = () => taskBindingIndex(task.id);
+                        const cloudPhase = () => getCloudTaskPhase(task.id);
 
                         const handleClick = () => focusOrSelectTask(task);
 
                         const isSelected = () => !windowed() && selectedTaskId() === task.id;
+                        const tooltip = () => windowed() ? 'Open in separate window — click to focus'
+                          : `${task.name || 'New task'}\n${task.branch} · ${hasError() ? 'Setup failed' : cloudPhase() ?? status().label}`;
 
                         return (
                           <div
                             class={clsx(
-                              "group/task relative pl-3 pr-2 py-1.5 rounded-md flex items-center gap-2 cursor-pointer",
+                              "group/task relative pl-2 pr-2 py-1.5 rounded-md flex items-center gap-2 cursor-pointer",
                               isSelected()
                                 ? "bg-surface-2"
                                 : "hover:bg-surface-2",
-                              !isSelected() && attention() && "task-attention-pulse",
-                              !isSelected() && !attention() && unread() && "task-unread-pulse",
                               archiving() && "opacity-50 pointer-events-none",
-                              windowed() && "opacity-50",
+                              windowed() && "opacity-60",
                             )}
-                            style={isSelected() ? { 'box-shadow': 'inset 2px 0 0 #2d6e4f' } : undefined}
+                            style={isSelected() ? { 'box-shadow': 'inset 2px 0 0 rgb(var(--accent-rgb))' } : undefined}
                             onClick={handleClick}
                             onDblClick={() => { if (!disabled() && !hasError()) ipc.openTaskWindow(task.id, task.name || undefined) }}
                             onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
-                            title={windowed() ? 'Open in separate window — click to focus' : archiving() ? 'Archiving…' : creating() ? (getCloudTaskPhase(task.id) ?? 'Setting up…') : hasError() ? 'Setup failed' : config().title}
+                            title={tooltip()}
                           >
-                            <span
-                              class={clsx("shrink-0", disabled() ? 'text-accent' : hasError() ? 'text-status-error' : config().color)}
-                            >
-                              {disabled() ? <Loader2 size={12} class="animate-spin" /> : hasError() ? <AlertCircle size={12} /> : <PhaseIcon phase={phase()} />}
-                            </span>
-                            <div class={clsx("flex-1 min-w-0", bindingIdx() !== null && "pr-4")}>
+                            <TaskStatusIcon kind={hasError() ? 'failed' : status().kind} label={hasError() ? 'Setup failed' : status().label} />
+                            <div class={clsx("flex-1 min-w-0 flex items-center gap-1.5", bindingIdx() !== null && "pr-5")}>
                               <Show when={renamingTaskId() === task.id} fallback={
-                                <div class={clsx(
+                                <span class={clsx(
                                   "text-xs truncate",
-                                  hasIndicator() || isSelected() ? "text-text-primary font-medium" : "text-text-secondary"
+                                  unread() || isSelected() ? "text-text-primary font-medium" : "text-text-secondary"
                                 )}>
                                   {task.name || "New task"}
-                                </div>
+                                </span>
                               }>
                                 <input
                                   class="text-xs bg-bg-secondary text-text-primary border border-border-active rounded px-1 py-0 w-full outline-none"
@@ -581,18 +500,20 @@ export const Sidebar: Component = () => {
                                   onClick={(e) => e.stopPropagation()}
                                 />
                               </Show>
-                              <div class={clsx("text-[10px] truncate flex items-center gap-1", hasIndicator() || isSelected() ? "text-text-muted" : "text-text-dim")}>
-                                <Show when={task.parentTaskId}>
-                                  <GitBranch size={9} class="shrink-0 text-text-dim/70" />
-                                </Show>
-                                {getCloudTaskPhase(task.id) ?? task.branch}
-                                <Show when={isStartCommandRunning(task.id)}>
-                                  <Play size={9} class="shrink-0 text-green-400 fill-green-400 animate-pulse" />
-                                </Show>
-                                <Show when={isTaskWindowed(task.id)}>
-                                  <ExternalLink size={9} class="shrink-0 text-accent/60" />
-                                </Show>
-                              </div>
+                              <Show when={task.parentTaskId}>
+                                <GitBranch size={10} class="shrink-0 text-text-dim" aria-label="Forked task" />
+                              </Show>
+                              <Show when={isStartCommandRunning(task.id)}>
+                                <span class="shrink-0 flex items-center gap-0.5 px-1 rounded text-[9px] leading-[14px] text-text-muted ring-1 ring-outline/10" title="App running">
+                                  <Play size={7} class="fill-current" />app
+                                </span>
+                              </Show>
+                              <Show when={windowed()}>
+                                <ExternalLink size={10} class="shrink-0 text-text-dim" aria-label="Open in separate window" />
+                              </Show>
+                              <Show when={cloudPhase()}>
+                                <span class="text-[10px] text-text-dim truncate">{cloudPhase()}</span>
+                              </Show>
                             </div>
                             <Show when={hasError() && getCloudTaskPhase(task.id)}>
                               <button class="btn-ghost text-xs" onClick={e => { e.stopPropagation(); retryCloudTaskImport(task.id) }}>Retry</button>

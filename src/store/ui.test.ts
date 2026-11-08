@@ -17,9 +17,7 @@ import {
   focusOrSelectTask,
   markTaskWindowed,
   markTaskUnread,
-  markTaskAttention,
   isTaskUnread,
-  isTaskAttention,
   clearTaskIndicators,
   selectedTaskId,
   setSelectedTaskId,
@@ -106,12 +104,6 @@ describe('unread / attention indicators vs detached windows', () => {
     expect(isTaskUnread('t-win')).toBe(false)
     markTaskUnread('t-win')
     expect(isTaskUnread('t-win')).toBe(false)
-  })
-
-  test('markTaskAttention skips when the task is open in a detached window', () => {
-    markTaskWindowed('t-win', true)
-    markTaskAttention('t-win')
-    expect(isTaskAttention('t-win')).toBe(false)
   })
 
   test('markTaskUnread still marks the task once the detached window has closed', () => {
