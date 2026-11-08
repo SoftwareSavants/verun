@@ -724,6 +724,16 @@ pub(crate) struct FreshDiscoverySink {
     pub session_id: String,
 }
 
+/// Delay before the `attempt`-th transcript-dir listing: 200 ms doubling up to
+/// 2 s, so a fresh terminal the user never types into stops listing the dir
+/// five times a second forever.
+fn fresh_session_poll_delay(attempt: u32) -> std::time::Duration {
+    const BASE_MS: u64 = 200;
+    const MAX_MS: u64 = 2_000;
+    let ms = BASE_MS.saturating_mul(1u64 << attempt.min(16));
+    std::time::Duration::from_millis(ms.min(MAX_MS))
+}
+
 /// Spawn a watcher that polls `projects_dir` for a new session UUID
 /// (relative to `baseline_ids`), persists+emits when found, then starts a
 /// `spawn_transcript_tail` on the discovered file. Returns the watcher
@@ -736,9 +746,10 @@ fn spawn_fresh_session_watcher_and_tail(
     sink: FreshDiscoverySink,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+        let mut attempt: u32 = 0;
         let new_id = loop {
-            interval.tick().await;
+            tokio::time::sleep(fresh_session_poll_delay(attempt)).await;
+            attempt = attempt.saturating_add(1);
             let current = list_session_ids(&projects_dir).await;
             if let Some(id) = current.difference(&baseline_ids).next().cloned() {
                 break id;
@@ -860,6 +871,16 @@ async fn run_tail_driver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_session_poll_backs_off_to_two_seconds() {
+        use std::time::Duration;
+        assert_eq!(fresh_session_poll_delay(0), Duration::from_millis(200));
+        assert_eq!(fresh_session_poll_delay(1), Duration::from_millis(400));
+        assert_eq!(fresh_session_poll_delay(3), Duration::from_millis(1600));
+        assert_eq!(fresh_session_poll_delay(4), Duration::from_millis(2000));
+        assert_eq!(fresh_session_poll_delay(u32::MAX), Duration::from_millis(2000));
+    }
 
     #[test]
     fn naming_uses_real_terminal_prompts_not_commands_or_metadata() {

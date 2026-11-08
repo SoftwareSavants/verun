@@ -25,6 +25,10 @@
 - Keep awake: the cup in the sidebar footer keeps the Mac awake while agents are working (not while they're idle or waiting on you), or keeps the screen on for 30 min to 4 hours or until turned off
 - Menus opened near a window edge stay on screen
 - `ui-council` project skill: headless screenshots of the real app (`uilab.html`) judged blind and pairwise by Claude and Codex
+- Lower resource use on task switch: the tsgo language server starts only when the editor or Problems panel needs it, with at most 2 alive (least recently used stopped); the project-wide typecheck now reruns on file changes
+- Only the selected task (and tasks in their own window) keep a file watcher; other tasks refresh git when a session turn ends, local git refreshes are throttled to once per second per task, and window focus refreshes GitHub state for the selected task only
+- The terminal panel (xterm + shell) mounts only after it is first opened for a task; hidden terminals stop receiving output and only the 6 most recently used hidden xterms are kept, the rest redraw from the replay buffer (#109)
+- Fresh Claude terminal sessions poll for their transcript with backoff (up to 2 s) instead of every 200 ms
 
 ## 0.15.0 - 2026-10-26
 

@@ -495,6 +495,11 @@ export const openInApp = (path: string, app: string) =>
 export const ptyListen = (terminalId: string, afterSeq: number) =>
   invoke<void>('pty_listen', { terminalId, afterSeq })
 
+/** Stop streaming a terminal's output to this window (its view unmounted).
+ *  `ptyListen` resumes from the xterm's checkpoint via the replay buffer. */
+export const ptyUnlisten = (terminalId: string) =>
+  invoke<void>('pty_unlisten', { terminalId })
+
 export const ptyAck = (terminalId: string, sequence: number) =>
   invoke<void>('pty_ack', { terminalId, sequence })
 

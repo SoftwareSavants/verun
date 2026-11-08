@@ -2625,6 +2625,20 @@ pub fn pty_listen(
     Ok(())
 }
 
+/// Stop streaming a terminal's output to this window (its xterm view was
+/// unmounted). Output keeps accumulating in the bounded replay buffer;
+/// `pty_listen` resumes from the xterm's checkpoint.
+#[tauri::command]
+pub fn pty_unlisten(
+    window: tauri::WebviewWindow,
+    pty_map: State<'_, ActivePtyMap>,
+    terminal_id: String,
+) {
+    if let Some(handle) = pty_map.get(&terminal_id) {
+        handle.output.detach(window.label());
+    }
+}
+
 #[tauri::command]
 pub fn pty_ack(
     window: tauri::WebviewWindow,

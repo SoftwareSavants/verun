@@ -70,6 +70,50 @@ const localDebounceResolvers = new Map<string, Array<() => void>>()
 const remoteTrackedTasks = new Set<string>()
 
 const LOCAL_DEBOUNCE_MS = 150
+// Each local refresh is ~8-10 git subprocesses. Whatever the trigger (watcher
+// event, user action, force), run at most one per task per second.
+const LOCAL_THROTTLE_MS = 1000
+const lastLocalStart = new Map<string, number>()
+const localTrailingTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const localWaiters = new Map<string, Array<() => void>>()
+
+function runLocal(taskId: string) {
+  const waiters = localWaiters.get(taskId) ?? []
+  localWaiters.delete(taskId)
+  lastLocalStart.set(taskId, Date.now())
+  const p = refreshLocal(taskId).finally(() => {
+    inflightLocal.delete(taskId)
+    waiters.forEach(r => r())
+  })
+  inflightLocal.set(taskId, p)
+}
+
+function scheduleLocal(taskId: string) {
+  if (localTrailingTimers.has(taskId) || !localWaiters.get(taskId)?.length) return
+  const last = lastLocalStart.get(taskId)
+  const wait = last === undefined ? 0 : Math.max(0, last + LOCAL_THROTTLE_MS - Date.now())
+  if (wait === 0 && !inflightLocal.has(taskId)) {
+    runLocal(taskId)
+    return
+  }
+  localTrailingTimers.set(taskId, setTimeout(() => {
+    localTrailingTimers.delete(taskId)
+    const inflight = inflightLocal.get(taskId)
+    if (inflight) inflight.then(() => scheduleLocal(taskId))
+    else scheduleLocal(taskId)
+  }, wait))
+}
+
+/** Leading + trailing throttle. Resolves once a refresh that started after
+ *  this call has finished, so callers still see post-mutation state. */
+function throttledLocal(taskId: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const waiters = localWaiters.get(taskId) ?? []
+    waiters.push(resolve)
+    localWaiters.set(taskId, waiters)
+    scheduleLocal(taskId)
+  })
+}
 
 function ensureKey(taskId: string) {
   if (!gitStates[taskId]) {
@@ -137,14 +181,7 @@ export async function refreshTaskGit(
 
   if (local) {
     if (force) {
-      const existing = inflightLocal.get(taskId)
-      if (existing) {
-        promises.push(existing)
-      } else {
-        const p = refreshLocal(taskId).finally(() => inflightLocal.delete(taskId))
-        inflightLocal.set(taskId, p)
-        promises.push(p)
-      }
+      promises.push(throttledLocal(taskId))
     } else {
       const p = new Promise<void>((resolve) => {
         const existing = localDebounceTimers.get(taskId)
@@ -155,14 +192,7 @@ export async function refreshTaskGit(
           localDebounceTimers.delete(taskId)
           const resolvers = localDebounceResolvers.get(taskId) ?? []
           localDebounceResolvers.delete(taskId)
-          const inflight = inflightLocal.get(taskId)
-          if (inflight) {
-            await inflight
-          } else {
-            const fetch = refreshLocal(taskId).finally(() => inflightLocal.delete(taskId))
-            inflightLocal.set(taskId, fetch)
-            await fetch
-          }
+          await throttledLocal(taskId)
           resolvers.forEach(r => r())
         }, LOCAL_DEBOUNCE_MS)
         localDebounceTimers.set(taskId, timer)
@@ -203,6 +233,12 @@ export function invalidateRemote(taskId: string): void {
 /** Remove a task's state entirely (on task deletion). */
 export function clearTaskGitState(taskId: string): void {
   remoteTrackedTasks.delete(taskId)
+  lastLocalStart.delete(taskId)
+  const trailing = localTrailingTimers.get(taskId)
+  if (trailing) clearTimeout(trailing)
+  localTrailingTimers.delete(taskId)
+  localWaiters.get(taskId)?.forEach(r => r())
+  localWaiters.delete(taskId)
   setGitStates(produce(s => { delete s[taskId] }))
 }
 
@@ -243,10 +279,12 @@ export async function initGitListeners(): Promise<void> {
 
 export function initWindowFocusRefresh(): void {
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      for (const taskId of remoteTrackedTasks) {
-        refreshTaskGit(taskId, { local: false, remote: true, force: true })
-      }
+    if (document.visibilityState !== 'visible') return
+    // Only the task on screen, and within the remote TTL a refocus is free.
+    // Other tasks catch up when selected (GitActions refreshes on mount).
+    const taskId = selectedTaskId()
+    if (taskId && remoteTrackedTasks.has(taskId)) {
+      refreshTaskGit(taskId, { local: false, remote: true })
     }
   })
 }

@@ -472,6 +472,7 @@ pub fn run() {
             ipc::resolve_terminal_file,
             ipc::pty_listen,
             ipc::pty_ack,
+            ipc::pty_unlisten,
             ipc::pty_write,
             ipc::pty_resize,
             ipc::pty_close,
