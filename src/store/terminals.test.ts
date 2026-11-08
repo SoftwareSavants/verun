@@ -12,6 +12,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 vi.mock('../lib/ipc', () => ({
   ptyListen: vi.fn().mockResolvedValue(undefined),
+  ptyUnlisten: vi.fn().mockResolvedValue(undefined),
   ptyAck: vi.fn().mockResolvedValue(undefined),
   ptyListForTask: vi.fn().mockResolvedValue([]),
   ptySpawn: vi.fn(),
@@ -41,6 +42,9 @@ import {
   resumeTerminalOutput,
   keepTerminalAfterExit,
   releaseKeptTerminal,
+  rejoinXterm,
+  releaseXterm,
+  MAX_LIVE_XTERMS,
 } from './terminals'
 import { toasts, setToasts } from './ui'
 import type { PtyListEntry, PtyOutputEvent } from '../types'
@@ -552,5 +556,56 @@ describe('spawning on a project whose accounts cannot be read', () => {
     await spawnStartCommand('t-1', 'pnpm dev')
 
     expect(titles()).toEqual(['Keychain error'])
+  })
+})
+
+// Issue #109: every xterm (with its WebGL context and 10k-line scrollback) used
+// to live forever. Hidden ones are detached from the Rust output stream and
+// only the most recently used few are kept; the rest are disposed and redraw
+// from the Rust replay buffer when viewed again.
+describe('xterm lifecycle', () => {
+  const fit = () => ({ fit: vi.fn() } as any)
+
+  test('unmounting a terminal view detaches its output subscription', () => {
+    registerXterm('lc-detach', fakeXterm() as any, fit())
+    releaseXterm('lc-detach')
+    expect(ipc.ptyUnlisten).toHaveBeenCalledWith('lc-detach')
+    vi.mocked(ipc.ptyListen).mockClear()
+    rejoinXterm('lc-detach')
+    expect(ipc.ptyListen).toHaveBeenCalledWith('lc-detach', 0)
+  })
+
+  test('keeps only the most recently used hidden xterms alive', () => {
+    const total = MAX_LIVE_XTERMS + 2
+    const terms = Array.from({ length: total }, () => fakeXterm())
+    terms.forEach((t, i) => {
+      registerXterm(`lc-${i}`, t as any, fit())
+      markSeqWritten(`lc-${i}`, 100)
+    })
+    // All mounted: nothing is evicted.
+    expect(terms.every(t => t.dispose.mock.calls.length === 0)).toBe(true)
+    terms.forEach((_, i) => releaseXterm(`lc-${i}`))
+    expect(terms[0].dispose).toHaveBeenCalledOnce()
+    expect(terms[1].dispose).toHaveBeenCalledOnce()
+    expect(terms[2].dispose).not.toHaveBeenCalled()
+    expect(getXtermEntry('lc-0')).toBeUndefined()
+    expect(getXtermEntry(`lc-${total - 1}`)).toBeDefined()
+
+    // A disposed xterm redraws everything from the replay buffer.
+    vi.mocked(ipc.ptyListen).mockClear()
+    registerXterm('lc-0', fakeXterm() as any, fit())
+    expect(ipc.ptyListen).toHaveBeenCalledWith('lc-0', 0)
+    for (let i = 0; i < total; i++) releaseXterm(`lc-${i}`)
+  })
+
+  test('never evicts a mounted xterm', () => {
+    const mounted = fakeXterm()
+    registerXterm('lc-mounted', mounted as any, fit())
+    for (let i = 0; i < MAX_LIVE_XTERMS + 2; i++) {
+      registerXterm(`lc-m-${i}`, fakeXterm() as any, fit())
+      releaseXterm(`lc-m-${i}`)
+    }
+    expect(mounted.dispose).not.toHaveBeenCalled()
+    releaseXterm('lc-mounted')
   })
 })

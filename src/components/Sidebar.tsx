@@ -16,6 +16,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { taskGit, refreshTaskGit } from "../store/git";
+import { syncWatchedWorktrees } from "../store/worktreeWatch";
 import { newTaskIds } from "../lib/taskDiff";
 import { GroupHeading, GroupToolbar } from './ProjectGroups';
 import { Dialog } from './Dialog';
@@ -308,11 +309,19 @@ export const Sidebar: Component = () => {
         for (const id of newTaskIds(prevIds, currIds)) {
           loadSessions(id);
           refreshTaskGit(id);
-          ipc.watchWorktree(id);
         }
       },
     ),
   );
+
+  // Watch only worktrees on screen: the selected task and tasks open in their
+  // own window. Others refresh git on session turn end (see worktreeWatch).
+  createEffect(() => {
+    const ids = tasks.filter(t => isTaskWindowed(t.id)).map(t => t.id);
+    const selected = selectedTaskId();
+    if (selected) ids.push(selected);
+    syncWatchedWorktrees(ids);
+  });
 
 
   const showProjectMenu = (e: MouseEvent, projectId: string) => {

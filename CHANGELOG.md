@@ -5,6 +5,10 @@
 - Session handoff across harnesses: right-click a session tab, pick "Hand off…", then the target harness, model and account. Verun starts a linked session on it in the same worktree with the handoff packet (recent conversation, branch commits, uncommitted files, full-transcript path) attached to its composer, so you can add your own context before sending; agents can do the same with the new `verun_handoff_session` MCP tool
 - Text attachments: non-image files attached to a message are shown as file chips and inlined into the prompt for every harness
 - `verun_create_session` and `verun_spawn_task` MCP tools now accept Grok; their agent lists come from the harness registry instead of a hardcoded copy
+- Lower resource use on task switch: the tsgo language server starts only when the editor or Problems panel needs it, with at most 2 alive (least recently used stopped); the project-wide typecheck now reruns on file changes
+- Only the selected task (and tasks in their own window) keep a file watcher; other tasks refresh git when a session turn ends, local git refreshes are throttled to once per second per task, and window focus refreshes GitHub state for the selected task only
+- The terminal panel (xterm + shell) mounts only after it is first opened for a task; hidden terminals stop receiving output and only the 6 most recently used hidden xterms are kept, the rest redraw from the replay buffer (#109)
+- Fresh Claude terminal sessions poll for their transcript with backoff (up to 2 s) instead of every 200 ms
 
 ## 0.15.0 - 2026-10-26
 

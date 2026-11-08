@@ -5,7 +5,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebglAddon } from '@xterm/addon-webgl'
-import { registerXterm, getXtermEntry, consumeInitialReplay, markSeqWritten, resumeTerminalOutput } from '../store/terminals'
+import { registerXterm, getXtermEntry, consumeInitialReplay, markSeqWritten, rejoinXterm, releaseXterm } from '../store/terminals'
 import type { XtermEntry } from '../store/terminals'
 import * as ipc from '../lib/ipc'
 import { isMac, modPressed } from '../lib/platform'
@@ -259,7 +259,7 @@ export const ShellTerminal: Component<Props> = (props) => {
     const existing = getXtermEntry(props.terminalId)
 
     if (existing) {
-      resumeTerminalOutput(props.terminalId)
+      rejoinXterm(props.terminalId)
       const el = existing.term.element
       if (el) terminalRef.appendChild(el)
       searchAddonRef = existing.searchAddon
@@ -384,6 +384,9 @@ export const ShellTerminal: Component<Props> = (props) => {
   })
 
   onCleanup(() => {
+    // Hidden xterms stop parsing output; the store may dispose this one later
+    // (LRU) and a remount redraws it from the Rust replay buffer.
+    releaseXterm(props.terminalId)
     resizeObserver?.disconnect()
     resultsDisposable?.dispose()
     unsubAppearance?.()
