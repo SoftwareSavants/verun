@@ -14,6 +14,8 @@ export interface ModelPickerRequest {
    * of that account only. Left out, it goes to every group of the harness.
    */
   defaultAccountId?: string | null
+  /** Harnesses not to offer, e.g. the one a session is being handed off from. */
+  excludeAgents?: AgentType[]
   /** `account` is the choice of the row picked; a harness without accounts has none. */
   onPick: (agentType: AgentType, model?: string, account?: AccountSelection) => void | Promise<void>
 }

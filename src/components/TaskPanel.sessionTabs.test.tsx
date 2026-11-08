@@ -25,8 +25,8 @@ vi.mock('./ClaudeViewToggle', () => ({ ClaudeViewToggle: () => null }))
 vi.mock('./ConfirmDialog', () => ({ ConfirmDialog: () => null }))
 // Open menus render their items as plain buttons, so a test can pick one.
 vi.mock('./ContextMenu', () => ({
-  ContextMenu: (p: { open: boolean; items: { label?: string; action?: () => void }[] }) =>
-    <>{p.open ? p.items.filter(i => i.label).map(i => <button data-menu-item onClick={() => i.action?.()}>{i.label}</button>) : null}</>,
+  ContextMenu: (p: { open: boolean; items: { label?: string; disabled?: boolean; action?: () => void }[] }) =>
+    <>{p.open ? p.items.filter(i => i.label).map(i => <button data-menu-item disabled={i.disabled} onClick={() => i.action?.()}>{i.label}</button>) : null}</>,
 }))
 vi.mock('./FileViewer', () => ({ FileViewer: () => null }))
 vi.mock('./GitActions', () => ({ GitActions: () => null, hasGitActionsContent: () => false }))
@@ -43,6 +43,7 @@ vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }))
 import { TaskPanel } from './TaskPanel'
 import { applySnapshot } from '../store/accounts'
 import { setAgents } from '../store/agents'
+import { closeModelPicker, modelPickerRequest } from '../store/modelPicker'
 import * as ipc from '../lib/ipc'
 import { fireEvent, screen } from '@solidjs/testing-library'
 import { setSessions } from '../store/sessions'
@@ -80,6 +81,7 @@ afterEach(() => {
   setTasks([])
   setSelectedTaskId(null)
   setAgents([])
+  closeModelPicker()
 })
 
 describe('<TaskPanel /> session tabs', () => {
@@ -121,27 +123,36 @@ describe('<TaskPanel /> session handoff', () => {
     setAgents([agent('claude', 'Claude Code'), agent('codex', 'Codex'), agent('gemini', 'Gemini CLI'), agent('cursor', 'Cursor', false)])
   })
 
-  test('right-clicking a session tab offers every other installed harness', async () => {
+  test('right-clicking a session tab offers one Hand off item', async () => {
     const tab = await show([makeSession({ id: 's1', agentType: 'claude' })])
     fireEvent.contextMenu(tab('s1').getByText('Claude Code'))
 
     const labels = screen.getAllByRole('button').filter(b => b.hasAttribute('data-menu-item')).map(b => b.textContent)
-    expect(labels).toContain('Hand off to Codex')
-    expect(labels).toContain('Hand off to Gemini CLI')
-    expect(labels).not.toContain('Hand off to Claude Code')
-    expect(labels).not.toContain('Hand off to Cursor')
+    expect(labels).toEqual(['Hand off\u2026'])
   })
 
-  test('picking a harness creates the handoff from that session', async () => {
+  test('Hand off opens the harness picker without the source harness, and the pick hands off', async () => {
     vi.mocked(ipc.createSessionHandoff).mockResolvedValue({
       session: makeSession({ id: 's2', agentType: 'codex', parentSessionId: 's1' }),
       draft: 'packet', includedTurns: 0, omittedTurns: 0, transcriptPath: null,
     })
+    const tab = await show([makeSession({ id: 's1', agentType: 'claude', accountId: 'a1' })])
+    fireEvent.contextMenu(tab('s1').getByText('Claude Code'))
+    fireEvent.click(screen.getByText('Hand off\u2026'))
+
+    const req = modelPickerRequest()
+    expect(req).not.toBeNull()
+    expect(req!.excludeAgents).toEqual(['claude'])
+    expect(req!.projectId).toBe('p1')
+    await req!.onPick('codex', 'gpt-5', { kind: 'account', id: 'c1' })
+    expect(ipc.createSessionHandoff).toHaveBeenCalledWith('s1', 'codex', 'gpt-5', { kind: 'account', id: 'c1' })
+  })
+
+  test('with no other harness installed the item is disabled', async () => {
+    setAgents([agent('claude', 'Claude Code')])
     const tab = await show([makeSession({ id: 's1', agentType: 'claude' })])
     fireEvent.contextMenu(tab('s1').getByText('Claude Code'))
-    fireEvent.click(screen.getByText('Hand off to Codex'))
-
-    await waitFor(() => expect(ipc.createSessionHandoff).toHaveBeenCalledWith('s1', 'codex', undefined, undefined))
+    expect(screen.getByText('Hand off\u2026').hasAttribute('disabled')).toBe(true)
   })
 
   test('a handoff session tab names the session it came from', async () => {

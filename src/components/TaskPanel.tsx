@@ -72,6 +72,7 @@ import {
 } from "../store/sessions";
 import { sessionViewMode } from "../store/sessionViewMode";
 import { agents } from "../store/agents";
+import { openModelPicker } from "../store/modelPicker";
 import { isSetupRunning, setupError, setupFailed } from "../store/setup";
 import { sideQuestionPanelData } from "../store/sideQuestion";
 import { loadSteps } from "../store/steps";
@@ -354,15 +355,29 @@ export const TaskPanel: Component = () => {
   } | null>(null);
   const handoffTargets = (source: Session) =>
     agents.filter((a) => a.installed && a.id !== source.agentType);
-  const handleHandoff = async (source: Session, target: AgentType) => {
+  const handleHandoff = async (
+    source: Session,
+    target: AgentType,
+    model?: string,
+    account?: AccountSelection,
+  ) => {
     try {
-      const session = await handOffSession(source.id, target);
+      const session = await handOffSession(source.id, target, model, account);
       setSelectedSessionIdForTask(source.taskId, session.id);
       setMainView(source.taskId, "session");
     } catch (e) {
       addToast(`Handoff failed: ${String(e)}`, "error");
     }
   };
+  const openHandoffPicker = (source: Session) =>
+    openModelPicker({
+      title: `Hand off ${sessionLabel(source)} to…`,
+      placeholder: "Search harnesses and models…",
+      projectId: taskById(source.taskId)?.projectId,
+      excludeAgents: [source.agentType],
+      onPick: (agent, model, account) =>
+        handleHandoff(source, agent, model, account),
+    });
   const sessionLabel = (s: Session) =>
     s.name || AGENT_DISPLAY_NAMES[s.agentType];
 
@@ -1073,21 +1088,14 @@ export const TaskPanel: Component = () => {
                     items={(() => {
                       const menu = sessionMenu();
                       if (!menu) return [];
-                      const targets = handoffTargets(menu.session);
-                      if (targets.length === 0)
-                        return [
-                          {
-                            label: "No other harness installed",
-                            icon: ArrowRightLeft,
-                            disabled: true,
-                            action: () => {},
-                          },
-                        ];
-                      return targets.map((a) => ({
-                        label: `Hand off to ${a.name}`,
-                        icon: ArrowRightLeft,
-                        action: () => handleHandoff(menu.session, a.id),
-                      }));
+                      return [
+                        {
+                          label: "Hand off\u2026",
+                          icon: ArrowRightLeft,
+                          disabled: handoffTargets(menu.session).length === 0,
+                          action: () => openHandoffPicker(menu.session),
+                        },
+                      ];
                     })()}
                   />
 
