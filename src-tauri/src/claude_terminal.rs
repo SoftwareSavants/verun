@@ -104,6 +104,7 @@ pub async fn open_claude_terminal(
     session_id: String,
     rows: u16,
     cols: u16,
+    initial_prompt: Option<String>,
 ) -> Result<OpenClaudeTerminalResult, String> {
     // Drop a previously-open handle whose PTY has died (Ctrl+D, /exit, crash)
     // so we spawn a fresh one instead of returning an id that no longer works.
@@ -195,6 +196,8 @@ pub async fn open_claude_terminal(
         }
         _ => command,
     };
+    // A new task in terminal view starts its conversation here, not in a chat process.
+    let command = with_initial_prompt(&command, initial_prompt.as_deref());
     // Last, so the whole command - `--settings` included - runs inside the
     // account's script.
     let (command, pty_env) = pty_command_and_env(&command, env_vars, &account_env);
@@ -680,6 +683,15 @@ pub(crate) enum ClaudeSpawnMode {
 /// a full id like "claude-sonnet-4-6"); when set, threads it through as
 /// `--model <name>` so the TUI honors the per-session model the same way
 /// our SDK-backed UI mode does.
+/// Append the task's first prompt so `claude` starts the conversation itself.
+/// Must come last (after `--settings`), behind `--` so a leading `-` isn't a flag.
+pub(crate) fn with_initial_prompt(command: &str, prompt: Option<&str>) -> String {
+    match prompt.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => format!("{command} -- {}", shell_quote(p)),
+        None => command.to_string(),
+    }
+}
+
 pub(crate) fn build_claude_shell_command(
     mode: ClaudeSpawnMode,
     id: &str,
@@ -1421,6 +1433,16 @@ mod tests {
         // watching <claude home>/projects/<encoded-cwd>/ for a new file).
         let cmd = build_claude_shell_command(ClaudeSpawnMode::Fresh, "ignored", None);
         assert_eq!(cmd, "exec claude");
+    }
+
+    #[test]
+    fn initial_prompt_goes_last_after_a_flag_terminator_and_is_quoted() {
+        assert_eq!(with_initial_prompt("exec claude --settings '{}'", None), "exec claude --settings '{}'");
+        assert_eq!(with_initial_prompt("exec claude", Some("  ")), "exec claude");
+        assert_eq!(
+            with_initial_prompt("exec claude --settings '{}'", Some("-fix it's $(x)")),
+            "exec claude --settings '{}' -- '-fix it'\\''s $(x)'"
+        );
     }
 
     #[test]

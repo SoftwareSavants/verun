@@ -5,6 +5,8 @@ import { setTasks } from './tasks'
 import { clearDraft, saveDraftMessage } from './sessionDrafts'
 import { setSessions, setOutputItems, sendMessage, updateSessionModel } from './sessions'
 import { isSetupRunning, queueMessage, setupFailed } from './setup'
+import { sessionViewMode } from './sessionViewMode'
+import { firstPromptTarget, setPendingTerminalPrompt } from '../lib/terminalMode'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setSelectedSessionIdForTask, setShowArchived, addToast } from './ui'
 
 export interface DraftTaskInput {
@@ -35,6 +37,13 @@ export async function startDraftTask(input: DraftTaskInput) {
     setShowArchived(false)
   }
   if (setupFailed(task.id)) { selectTask(); return }
+  // Terminal view: the terminal starts Claude with the prompt when it opens.
+  if (firstPromptTarget(input.agentType, sessionViewMode(session.id)) === 'terminal') {
+    setPendingTerminalPrompt(session.id, input.message)
+    clearDraft(session.id)
+    selectTask()
+    return
+  }
   if (isSetupRunning(task.id)) {
     queueMessage(task.id, { sessionId: session.id, message: input.message, model: input.model })
     clearDraft(session.id)

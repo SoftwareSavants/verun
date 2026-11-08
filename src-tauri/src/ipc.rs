@@ -2741,6 +2741,7 @@ pub async fn claude_terminal_open(
     session_id: String,
     rows: u16,
     cols: u16,
+    initial_prompt: Option<String>,
 ) -> Result<OpenClaudeTerminalResult, String> {
     claude_terminal::open_claude_terminal(
         app,
@@ -2752,6 +2753,7 @@ pub async fn claude_terminal_open(
         session_id,
         rows,
         cols,
+        initial_prompt,
     )
     .await
 }

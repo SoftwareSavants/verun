@@ -529,8 +529,8 @@ export interface OpenClaudeTerminalResult {
   terminalId: string
   sessionId: string
 }
-export const claudeTerminalOpen = (sessionId: string, rows: number, cols: number) =>
-  invoke<OpenClaudeTerminalResult>('claude_terminal_open', { sessionId, rows, cols })
+export const claudeTerminalOpen = (sessionId: string, rows: number, cols: number, initialPrompt?: string) =>
+  invoke<OpenClaudeTerminalResult>('claude_terminal_open', { sessionId, rows, cols, initialPrompt: initialPrompt ?? null })
 
 export const claudeTerminalClose = (sessionId: string) =>
   invoke<void>('claude_terminal_close', { sessionId })

@@ -28,3 +28,24 @@ export function terminalPasteText(clip: ClipboardPaste): string {
   if (clip.kind === 'image') return formatDroppedPathsForTerminal([clip.path])
   return clip.text
 }
+
+/**
+ * A new task's first prompt goes where the user will watch it. In terminal view
+ * it starts `claude` itself; sending it through a chat process too would run a
+ * second Claude on the same session and fork the conversation (#277).
+ */
+export function firstPromptTarget(agentType: string, viewMode: 'ui' | 'terminal'): 'terminal' | 'chat' {
+  return agentType === 'claude' && viewMode === 'terminal' ? 'terminal' : 'chat'
+}
+
+const pendingTerminalPrompts = new Map<string, string>()
+/** Hold a prompt for the session's terminal to start with when it opens. */
+export function setPendingTerminalPrompt(sessionId: string, prompt: string) {
+  pendingTerminalPrompts.set(sessionId, prompt)
+}
+/** The held prompt, once: a reopened terminal must not resend it. */
+export function takePendingTerminalPrompt(sessionId: string): string | undefined {
+  const prompt = pendingTerminalPrompts.get(sessionId)
+  pendingTerminalPrompts.delete(sessionId)
+  return prompt
+}

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A new task in terminal view starts Claude in the terminal with its prompt, instead of also sending it through a chat process, which duplicated the conversation (#277)
 - Recent now lists Claude Code sessions started outside Verun in the task's folder (or the project's main checkout) and continues them in Verun with their history, across the Default and added Claude accounts
 
 ## 0.16.0 - 2026-11-08
