@@ -1338,6 +1338,15 @@ pub async fn list_closed_sessions(
 
 /// Reopen a closed session - flip its status back to 'idle' and broadcast
 /// `session-created` so every window restores the tab.
+/// The reserved project quick tasks live under, created on first use.
+#[tauri::command]
+pub async fn ensure_quick_project(
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+) -> Result<Project, String> {
+    crate::quick_tasks::ensure(pool.inner(), db_tx.inner()).await
+}
+
 #[tauri::command]
 pub async fn list_outside_sessions(
     pool: State<'_, SqlitePool>,

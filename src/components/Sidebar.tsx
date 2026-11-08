@@ -2,6 +2,7 @@ import { openTaskBoard, showTaskBoard } from '../store/ui';
 import { taskStatus, needsYou } from '../store/taskStatus';
 import { TaskStatusIcon } from './TaskStatusIcon';
 import { KeepAwakeButton } from './KeepAwakeButton';
+import { openQuickTask } from '../store/quickTasks';
 import { projectColor } from '../lib/projectColor';
 import { Columns3 } from 'lucide-solid';
 import {
@@ -347,6 +348,7 @@ export const Sidebar: Component = () => {
                   },
                   onCreateNew: () => setShowBtsBuilder(true),
                   onCloneRepo: () => setShowCloneRepo(true),
+                  onQuickTask: () => { void openQuickTask() },
                 }),
               });
             }}

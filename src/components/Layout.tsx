@@ -4,6 +4,7 @@ import { visibleProjects } from '../store/projectGroups'
 import { Component, Show, onMount, onCleanup, createSignal, createEffect } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { Sidebar } from './Sidebar'
+import { openQuickTask } from '../store/quickTasks'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, settingsSectionForShortcut, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
@@ -90,6 +91,11 @@ export const Layout: Component = () => {
       if (modPressed(e) && e.key === 'o') {
         e.preventDefault()
         pickAndAddProject()
+      }
+      if (modPressed(e) && e.altKey && e.code === 'KeyN') {
+        e.preventDefault()
+        void openQuickTask()
+        return
       }
       if (modPressed(e) && e.shiftKey && (e.key === 'n' || e.key === 'N')) {
         e.preventDefault()

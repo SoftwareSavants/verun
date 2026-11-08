@@ -27,6 +27,7 @@ pub mod mcp;
 mod policy;
 mod outside_sessions;
 mod pty;
+mod quick_tasks;
 mod pty_output;
 mod resource_monitor;
 mod session_handover;
@@ -408,6 +409,7 @@ pub fn run() {
             ipc::list_closed_sessions,
             ipc::reopen_session,
             ipc::list_outside_sessions,
+            ipc::ensure_quick_project,
             ipc::adopt_outside_session,
             ipc::get_session,
             ipc::get_output_lines,

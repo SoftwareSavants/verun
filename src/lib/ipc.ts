@@ -190,6 +190,8 @@ export const forkSessionToNewTask = (
     worktreeState,
   })
 
+export const ensureQuickProject = () => invoke<Project>('ensure_quick_project')
+
 export const listOutsideSessions = (taskId: string) =>
   DEMO ? Promise.resolve([] as import('../types').OutsideSession[])
     : invoke<import('../types').OutsideSession[]>('list_outside_sessions', { taskId })
