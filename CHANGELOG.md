@@ -1,14 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 - 2026-11-09
 
 - Quick tasks: run an agent in any folder (home, a non-git dir, a parent of several repos) without adding a project, from the sidebar + menu or Cmd+Opt+N
 - New task composer keeps agent, location, base branch and chat/terminal choice in one row, names the checked-out branch and says "no isolation" for Project folder, and shows whether the task opens in chat or the terminal
 - A new task in terminal view starts Claude in the terminal with its prompt, instead of also sending it through a chat process, which duplicated the conversation (#277)
 - Recent now lists Claude Code sessions started outside Verun in the task's folder (or the project's main checkout) and continues them in Verun with their history, across the Default and added Claude accounts
-
-## 0.16.0 - 2026-11-08
-
 - Chat no longer freezes on send or session open: blocks build incrementally per flush, rendered markdown is cached, the streaming message re-renders at most once per frame, and task status lookups are O(1)
 - Chat keeps updating in very long sessions (past 50k output items) instead of freezing at the in-memory cap
 - Sending a message no longer freezes the window: keep-awake starts and stops `caffeinate` off the main thread
