@@ -190,6 +190,14 @@ export const forkSessionToNewTask = (
     worktreeState,
   })
 
+export const ensureQuickProject = () => invoke<Project>('ensure_quick_project')
+
+export const listOutsideSessions = (taskId: string) =>
+  DEMO ? Promise.resolve([] as import('../types').OutsideSession[])
+    : invoke<import('../types').OutsideSession[]>('list_outside_sessions', { taskId })
+export const adoptOutsideSession = (taskId: string, session: import('../types').OutsideSession) =>
+  invoke<Session>('adopt_outside_session', { taskId, session })
+
 export const getOutputLines = (
   sessionId: string,
   limit?: number,
@@ -495,6 +503,11 @@ export const openInApp = (path: string, app: string) =>
 export const ptyListen = (terminalId: string, afterSeq: number) =>
   invoke<void>('pty_listen', { terminalId, afterSeq })
 
+/** Stop streaming a terminal's output to this window (its view unmounted).
+ *  `ptyListen` resumes from the xterm's checkpoint via the replay buffer. */
+export const ptyUnlisten = (terminalId: string) =>
+  invoke<void>('pty_unlisten', { terminalId })
+
 export const ptyAck = (terminalId: string, sequence: number) =>
   invoke<void>('pty_ack', { terminalId, sequence })
 
@@ -518,8 +531,8 @@ export interface OpenClaudeTerminalResult {
   terminalId: string
   sessionId: string
 }
-export const claudeTerminalOpen = (sessionId: string, rows: number, cols: number) =>
-  invoke<OpenClaudeTerminalResult>('claude_terminal_open', { sessionId, rows, cols })
+export const claudeTerminalOpen = (sessionId: string, rows: number, cols: number, initialPrompt?: string) =>
+  invoke<OpenClaudeTerminalResult>('claude_terminal_open', { sessionId, rows, cols, initialPrompt: initialPrompt ?? null })
 
 export const claudeTerminalClose = (sessionId: string) =>
   invoke<void>('claude_terminal_close', { sessionId })
@@ -659,9 +672,9 @@ export const uploadAttachment = (mime: string, data: Uint8Array): Promise<BlobRe
 export const uploadAttachmentFromPath = (path: string): Promise<BlobRef> =>
   invoke<BlobRef>('upload_attachment_from_path', { path })
 
+// Raw IPC body (tauri::ipc::Response): arrives as an ArrayBuffer, not a JSON number array.
 export const getBlob = (hash: string): Promise<Uint8Array> =>
-  invoke<number[] | Uint8Array>('get_blob', { hash })
-    .then(b => b instanceof Uint8Array ? b : new Uint8Array(b))
+  invoke<ArrayBuffer>('get_blob', { hash }).then(b => new Uint8Array(b))
 
 export const getStorageStats = (): Promise<StorageStats> =>
   invoke<StorageStats>('get_storage_stats')
@@ -721,3 +734,15 @@ export const inspectTaskDirectory = (path: string) => invoke<DirectoryInfo>('ins
 export function sessionActivitySnapshot(): Promise<import('./sessionActivity').SessionActivity[]> {
   return invoke('session_activity_snapshot')
 }
+
+// Keep awake (caffeinate)
+export const keepAwakeStatus = () =>
+  DEMO ? Promise.resolve({ agentsWorking: false, manualUntil: null, manualForever: false, active: false, keepsScreenOn: false } as import('./keepAwake').KeepAwakeStatus)
+    : invoke<import('./keepAwake').KeepAwakeStatus>('keep_awake_status')
+export const keepAwakeSetAgentsWorking = (working: boolean) =>
+  invoke<void>('keep_awake_set_agents_working', { working })
+/** `minutes: null` keeps the screen on until turned off. */
+export const keepAwakeSetManual = (minutes: number | null) =>
+  invoke<void>('keep_awake_set_manual', { minutes })
+export const keepAwakeClearManual = () =>
+  invoke<void>('keep_awake_clear_manual')

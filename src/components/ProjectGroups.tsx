@@ -1,5 +1,5 @@
 import { For, Show, createSignal, type Component } from 'solid-js'
-import { AlertCircle, Check, ChevronDown, ChevronRight, Pencil, Plus, Search, Trash2, X } from 'lucide-solid'
+import { AlertCircle, Check, ChevronDown, ChevronRight, FolderPlus, Pencil, Search, Trash2, X } from 'lucide-solid'
 import { Select } from './Select'
 import { addGroup, deleteGroup, groupState, projectQuery, renameGroup, setGroupScope, setProjectQuery, toggleGroup } from '../store/projectGroups'
 
@@ -35,7 +35,7 @@ export const GroupToolbar: Component<{
     <div class="flex items-center gap-1 mb-2">
       <div class="flex-1 min-w-0"><Select label="Project group" value={groupState().scope} onChange={setGroupScope}
         options={[{ value: 'all', label: 'All projects' }, ...groupState().groups.map(g => ({ value: g.id, label: g.name })), { value: 'ungrouped', label: 'Ungrouped' }]} /></div>
-      <button class="btn-ghost p-1.5 shrink-0" title="New group" aria-label="New group" onClick={() => setAdding(true)}><Plus size={14} /></button>
+      <button class="btn-ghost p-1.5 shrink-0" title="New group" aria-label="New group" onClick={() => setAdding(true)}><FolderPlus size={14} /></button>
     </div>
     <Show when={adding()}><GroupNameEditor onClose={() => setAdding(false)} /></Show>
     <div class="relative">

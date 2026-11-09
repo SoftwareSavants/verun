@@ -61,7 +61,6 @@ export function consumePendingSessionNav(taskId: string | null = selectedTaskId(
 // Both are persisted to localStorage so they survive reloads.
 
 const UNREAD_KEY = 'verun:unreadTasks'
-const ATTENTION_KEY = 'verun:attentionTasks'
 
 function loadSet(key: string): Set<string> {
   try {
@@ -75,33 +74,20 @@ function persistSet(key: string, set: Set<string>) {
 }
 
 const [_unreadTaskIds, _setUnreadTaskIds] = createSignal<Set<string>>(loadSet(UNREAD_KEY))
-const [_attentionTaskIds, _setAttentionTaskIds] = createSignal<Set<string>>(loadSet(ATTENTION_KEY))
 
 export const isTaskUnread = (id: string) => _unreadTaskIds().has(id)
-export const isTaskAttention = (id: string) => _attentionTaskIds().has(id)
 
 export function markTaskUnread(taskId: string) {
   if (taskId === selectedTaskId()) return
   // The task is already visible to the user in its own detached window,
-  // so flagging unread/attention here would just leave a stale badge in
+  // so flagging it unread here would just leave a stale badge in
   // the sidebar once they close it.
   if (_windowedTaskIds().has(taskId)) return
   _setUnreadTaskIds(prev => { const s = new Set(prev); s.add(taskId); persistSet(UNREAD_KEY, s); return s })
 }
 
-export function markTaskAttention(taskId: string) {
-  if (taskId === selectedTaskId()) return
-  if (_windowedTaskIds().has(taskId)) return
-  _setAttentionTaskIds(prev => { const s = new Set(prev); s.add(taskId); persistSet(ATTENTION_KEY, s); return s })
-}
-
-export function clearTaskAttention(taskId: string) {
-  _setAttentionTaskIds(prev => { const s = new Set(prev); s.delete(taskId); persistSet(ATTENTION_KEY, s); return s })
-}
-
 export function clearTaskIndicators(taskId: string) {
   _setUnreadTaskIds(prev => { const s = new Set(prev); s.delete(taskId); persistSet(UNREAD_KEY, s); return s })
-  _setAttentionTaskIds(prev => { const s = new Set(prev); s.delete(taskId); persistSet(ATTENTION_KEY, s); return s })
 }
 
 // Unread indicators for session tabs (in-memory only, no persistence needed)

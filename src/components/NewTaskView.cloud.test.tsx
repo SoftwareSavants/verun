@@ -101,7 +101,7 @@ test('source switch keeps the draft and clearly indicates the active mode', asyn
   fireEvent.input(screen.getByRole('textbox', { name: 'Task prompt' }), { target: { value: 'Keep my draft' } })
   fireEvent.click(cloud)
   expect(cloud.getAttribute('aria-pressed')).toBe('true')
-  expect(screen.getByRole('heading', { name: 'Start a task' })).toBeTruthy()
+  expect(screen.getByRole('heading', { name: 'What should the agent do?' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Write a prompt' }))
   expect((screen.getByRole('textbox', { name: 'Task prompt' }) as HTMLTextAreaElement).value).toBe('Keep my draft')
   expect(cloud.getAttribute('aria-pressed')).toBe('false')

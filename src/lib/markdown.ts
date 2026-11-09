@@ -55,8 +55,28 @@ export interface RenderOptions {
   fileDir?: string
 }
 
+// Rendered HTML by (worktree, dir, text). Finished chat messages re-render
+// whenever their view does - the cache makes that a lookup instead of a
+// marked + DOMParser pass. Bounded LRU; Map keeps insertion order.
+const RENDER_CACHE_MAX = 500
+const renderCache = new Map<string, string>()
+
 export function renderMarkdown(text: string, opts?: string | RenderOptions): string {
   const options: RenderOptions = typeof opts === 'string' ? { worktreePath: opts } : (opts ?? {})
+  const key = `${options.worktreePath ?? ''}\0${options.fileDir ?? ''}\0${text}`
+  const hit = renderCache.get(key)
+  if (hit !== undefined) {
+    renderCache.delete(key)
+    renderCache.set(key, hit)
+    return hit
+  }
+  const html = renderMarkdownUncached(text, options)
+  renderCache.set(key, html)
+  if (renderCache.size > RENDER_CACHE_MAX) renderCache.delete(renderCache.keys().next().value!)
+  return html
+}
+
+function renderMarkdownUncached(text: string, options: RenderOptions): string {
   const raw = marked.parse(text, { async: false }) as string
 
   const parser = new DOMParser()

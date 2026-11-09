@@ -12,10 +12,12 @@ export type ContextMenuItem =
       disabled?: boolean
     }
   | { separator: true }
+  | { heading: string }
 
 interface Props {
   open: boolean
   pos?: { x: number; y: number }
+  placement?: 'below' | 'above'
   items: ContextMenuItem[]
   onClose: () => void
   minWidth?: string
@@ -26,13 +28,16 @@ export const ContextMenu: Component<Props> = (props) => (
     open={props.open}
     onClose={props.onClose}
     pos={props.pos}
+    placement={props.placement}
     class={`py-1 ${props.minWidth ?? 'min-w-32'}`}
   >
     <For each={props.items}>
       {(item) => (
         <Show
-          when={!('separator' in item)}
-          fallback={<div class="my-1 h-px bg-outline/8" />}
+          when={!('separator' in item) && !('heading' in item)}
+          fallback={'heading' in item
+            ? <div class="px-2.5 pt-1.5 pb-0.5 text-[10px] font-medium text-text-dim">{item.heading}</div>
+            : <div class="my-1 h-px bg-outline/8" />}
         >
           {(() => {
             const action = item as Extract<ContextMenuItem, { label: string }>

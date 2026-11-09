@@ -1,5 +1,5 @@
-import { Component, For, Show, Switch, Match, createEffect, on, createSignal, onMount, onCleanup } from 'solid-js'
-import { createStore, produce, reconcile } from 'solid-js/store'
+import { Component, For, Show, Switch, Match, batch, createEffect, createMemo, on, createSignal, onMount, onCleanup, untrack } from 'solid-js'
+import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { OutputItem, SessionStatus, AttachmentRef } from '../types'
@@ -47,8 +47,39 @@ function formatTokensWithCache(t: { input: number; output: number; cacheRead: nu
   return [inPart, outPart].filter(Boolean).join(' / ') + cacheStr
 }
 
-function renderMarkdownForTask(text: string, taskId?: string): string {
-  return renderMarkdown(text, getWorktreePath(taskId))
+/** `source`, updated at most once per animation frame while `live` - and
+ *  immediately once it isn't. */
+function frameThrottled(source: () => string, live: () => boolean): () => string {
+  const [value, setValue] = createSignal(untrack(source))
+  let frame = 0
+  createEffect(() => {
+    const next = source()
+    if (!live()) {
+      if (frame) { cancelAnimationFrame(frame); frame = 0 }
+      setValue(next)
+      return
+    }
+    if (frame) return
+    frame = requestAnimationFrame(() => {
+      frame = 0
+      setValue(untrack(source))
+    })
+  })
+  onCleanup(() => { if (frame) cancelAnimationFrame(frame) })
+  return value
+}
+
+/** An assistant message as markdown. Finished messages hit the render cache;
+ *  the streaming one re-parses at most once per frame. */
+const AssistantMarkdown: Component<{ text: string; streaming?: boolean; worktreePath?: string }> = (props) => {
+  const text = frameThrottled(() => props.text, () => !!props.streaming)
+  const html = createMemo(() => renderMarkdown(text(), props.worktreePath))
+  return (
+    <div
+      class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
+      innerHTML={html()}
+    />
+  )
 }
 
 interface Props {
@@ -113,6 +144,11 @@ interface ErrorBlock {
   raw?: string
   /** Turn marker so retry picks the right user message. */
   turnIndex: number
+  /** The user message that started this turn, resent by retry. */
+  retryText?: string
+  /** Whether the turn produced assistant work (text, thinking, tools) before
+   *  the error - retry then says "continue" instead of redoing everything. */
+  hasProgress: boolean
 }
 interface PlanBlock {
   type: 'plan'
@@ -125,22 +161,67 @@ interface DiffBlock {
 }
 type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock | WakeupBlock | ErrorBlock | PlanBlock | DiffBlock
 
-export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
-  const blocks: DisplayBlock[] = []
-  let currentText = ''
-  let currentThinking = ''
+export interface BlockBuilder {
+  /** Blocks built so far. Owned by the builder - copy before handing to a store. */
+  readonly blocks: DisplayBlock[]
+  /** True when `items` is the array this builder has been fed, grown only at
+   *  the end. False after a replace, shrink or prepend: rebuild from scratch. */
+  canExtend(items: readonly OutputItem[]): boolean
+  /** Fold in `items` past those already seen. Returns the indexes of blocks
+   *  that were added or changed. */
+  append(items: readonly OutputItem[]): Set<number>
+}
 
-  const flushText = () => {
-    if (currentText) {
-      blocks.push({ type: 'assistant', text: currentText })
-      currentText = ''
+/**
+ * Builds display blocks from output items incrementally, so a streaming flush
+ * costs the items it adds, not the whole transcript. Feeding a transcript in
+ * any number of appends yields the same blocks as feeding it once.
+ */
+export function createBlockBuilder(): BlockBuilder {
+  const blocks: DisplayBlock[] = []
+  let seen = 0
+  let firstItem: OutputItem | undefined
+  let lastItem: OutputItem | undefined
+  let dirty = new Set<number>()
+
+  // The assistant/thinking block that consecutive deltas extend. Always the last block.
+  let openText: AssistantBlock | null = null
+  let openThinking: ThinkingBlock | null = null
+  let toolCounter = 0
+  let thinkingCounter = 0
+  let turnStartTs: number | undefined
+  let turnIndex = 0
+  let turnUserText: string | undefined
+  let turnProgress = false
+  // Track whether this turn has already produced an error block so we can
+  // drop the duplicate turnEnd-derived bubble (synthetic assistant + result
+  // both carry the same provider error).
+  let turnHasError = false
+  let planIdx = -1
+  let diffIdx = -1
+  // The in-progress turn's last assistant block is marked streaming at the
+  // end of each append; undone before the next one so later items see the
+  // blocks as a full rebuild would.
+  let streamingMark: { index: number; isLastInTurn?: boolean; isStreaming?: boolean } | null = null
+
+  const push = (b: DisplayBlock) => {
+    blocks.push(b)
+    dirty.add(blocks.length - 1)
+  }
+  const touch = (b: DisplayBlock) => {
+    // Mutated blocks are near the end; search backwards.
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      if (blocks[i] === b) { dirty.add(i); return }
     }
   }
-  const flushThinking = () => {
-    if (currentThinking) {
-      blocks.push({ type: 'thinking', id: `thinking-${thinkingCounter++}`, text: currentThinking })
-      currentThinking = ''
-    }
+  const flushText = () => { openText = null }
+  const flushThinking = () => { openThinking = null }
+  const startTurn = (text: string) => {
+    flushText(); flushThinking()
+    turnIndex += 1
+    turnHasError = false
+    turnUserText = text
+    turnProgress = false
   }
 
   const lastOpenTool = (): ToolBlock | undefined => {
@@ -152,52 +233,59 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
     return undefined
   }
 
-  let toolCounter = 0
-  let thinkingCounter = 0
-  let turnStartTs: number | undefined
-  let turnIndex = 0
-  // Track whether this turn has already produced an error block so we can
-  // drop the duplicate turnEnd-derived bubble (synthetic assistant + result
-  // both carry the same provider error).
-  let turnHasError = false
+  const setFlag = (b: AssistantBlock, key: 'isLastInTurn' | 'isStreaming', value: boolean | undefined) => {
+    if (value === undefined) delete b[key]
+    else b[key] = value
+  }
 
-  for (const item of items) {
+  const fold = (item: OutputItem) => {
     switch (item.kind) {
       case 'text':
         flushThinking()
-        currentText += item.text
+        turnProgress = true
+        if (openText) {
+          openText.text += item.text
+          dirty.add(blocks.length - 1)
+        } else if (item.text) {
+          openText = { type: 'assistant', text: item.text }
+          push(openText)
+        }
         break
       case 'thinking':
         flushText()
-        currentThinking += item.text
+        turnProgress = true
+        if (openThinking) {
+          openThinking.text += item.text
+          dirty.add(blocks.length - 1)
+        } else if (item.text) {
+          openThinking = { type: 'thinking', id: `thinking-${thinkingCounter++}`, text: item.text }
+          push(openThinking)
+        }
         break
       case 'userMessage':
-        flushText(); flushThinking()
+        startTurn(item.text)
         turnStartTs = item.timestamp
-        turnIndex += 1
-        turnHasError = false
         if (item.wakeupReason !== undefined) {
-          blocks.push({ type: 'wakeup', prompt: item.text, reason: item.wakeupReason || undefined })
+          push({ type: 'wakeup', prompt: item.text, reason: item.wakeupReason || undefined })
         } else {
-          blocks.push({ type: 'user', text: item.text, images: item.images, files: item.files })
+          push({ type: 'user', text: item.text, images: item.images, files: item.files })
         }
         break
       case 'transcriptUserMessage':
-        flushText(); flushThinking()
-        turnIndex += 1
-        turnHasError = false
+        startTurn(item.text)
         if (item.isMeta) {
-          blocks.push({ type: 'wakeup', prompt: item.text })
+          push({ type: 'wakeup', prompt: item.text })
         } else {
-          blocks.push({ type: 'user', text: item.text })
+          push({ type: 'user', text: item.text })
         }
         break
       case 'errorMessage':
         flushText(); flushThinking()
-        blocks.push({ type: 'error', message: item.message, raw: item.raw, turnIndex })
+        push({ type: 'error', message: item.message, raw: item.raw, turnIndex, retryText: turnUserText, hasProgress: turnProgress })
         turnHasError = true
         break
       case 'toolStart': {
+        turnProgress = true
         // Hide ExitPlanMode from the chat — it's shown as a dedicated plan overlay
         if (item.tool === 'ExitPlanMode') break
         flushText(); flushThinking()
@@ -207,25 +295,30 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         const lastBlock = blocks[blocks.length - 1]
         if (lastBlock && lastBlock.type === 'tool' && !lastBlock.result && lastBlock.tool === item.tool
             && (!item.input || !lastBlock.input || item.input === lastBlock.input)) {
-          if (item.input && !lastBlock.input) lastBlock.input = item.input
+          if (item.input && !lastBlock.input) {
+            lastBlock.input = item.input
+            dirty.add(blocks.length - 1)
+          }
         } else {
-          blocks.push({ type: 'tool', id: `tool-${toolCounter++}`, tool: item.tool, input: item.input, result: undefined })
+          push({ type: 'tool', id: `tool-${toolCounter++}`, tool: item.tool, input: item.input, result: undefined })
         }
         break
       }
       case 'toolResult': {
+        turnProgress = true
         flushText(); flushThinking()
         const openTool = lastOpenTool()
         if (openTool) {
           openTool.result = { text: item.text, isError: item.isError }
+          touch(openTool)
         } else {
-          blocks.push({ type: 'tool', id: `tool-${toolCounter++}`, tool: 'Tool', input: '', result: { text: item.text, isError: item.isError } })
+          push({ type: 'tool', id: `tool-${toolCounter++}`, tool: 'Tool', input: '', result: { text: item.text, isError: item.isError } })
         }
         break
       }
       case 'system':
         flushText(); flushThinking()
-        blocks.push({ type: 'system', text: item.text })
+        push({ type: 'system', text: item.text })
         break
       case 'turnEnd': {
         flushText(); flushThinking()
@@ -236,15 +329,16 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
           : undefined
         // Mark the last assistant block in this turn
         for (let i = blocks.length - 1; i >= 0; i--) {
-          if (blocks[i].type === 'assistant') {
-            const ab = blocks[i] as AssistantBlock
-            ab.isLastInTurn = true
-            if (durationMs) ab.durationMs = durationMs
-            if (turnCost) ab.turnCost = turnCost
-            if (turnTokens) ab.turnTokens = turnTokens
+          const b = blocks[i]
+          if (b.type === 'assistant') {
+            b.isLastInTurn = true
+            if (durationMs) b.durationMs = durationMs
+            if (turnCost) b.turnCost = turnCost
+            if (turnTokens) b.turnTokens = turnTokens
+            dirty.add(i)
             break
           }
-          if (blocks[i].type === 'user' || blocks[i].type === 'wakeup') break
+          if (b.type === 'user' || b.type === 'wakeup') break
         }
         // Render rules:
         //   - completed         → no bubble (happy path)
@@ -254,11 +348,11 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         //   - other non-success → show the status as a system bubble
         if (item.error) {
           if (!turnHasError) {
-            blocks.push({ type: 'error', message: item.error, raw: undefined, turnIndex })
+            push({ type: 'error', message: item.error, raw: undefined, turnIndex, retryText: turnUserText, hasProgress: turnProgress })
             turnHasError = true
           }
         } else if (item.status !== 'completed' && item.status !== 'interrupted') {
-          blocks.push({ type: 'system', text: `Turn ended: ${item.status}` })
+          push({ type: 'system', text: `Turn ended: ${item.status}` })
         }
         turnStartTs = undefined
         break
@@ -266,10 +360,14 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
       case 'turnSnapshot': {
         // Attach the message uuid to the most recent assistant block, walking
         // back past tools/thinking. This is the stable id for "fork from here".
+        // Text still streaming into an open block isn't part of the finished
+        // message, so skip it.
         for (let i = blocks.length - 1; i >= 0; i--) {
           const b = blocks[i]
+          if (b === openText || b === openThinking) continue
           if (b.type === 'assistant') {
-            ;(b as AssistantBlock).messageUuid = item.messageUuid
+            b.messageUuid = item.messageUuid
+            dirty.add(i)
             break
           }
           if (b.type === 'user' || b.type === 'wakeup') break
@@ -278,22 +376,26 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
       }
       case 'planUpdate': {
         flushText(); flushThinking()
-        const existing = blocks.find(b => b.type === 'plan') as PlanBlock | undefined
+        const existing = planIdx >= 0 ? blocks[planIdx] as PlanBlock : undefined
         if (existing) {
           existing.items = item.items
           if (item.explanation) existing.explanation = item.explanation
+          dirty.add(planIdx)
         } else {
-          blocks.push({ type: 'plan', items: item.items, explanation: item.explanation })
+          push({ type: 'plan', items: item.items, explanation: item.explanation })
+          planIdx = blocks.length - 1
         }
         break
       }
       case 'diffUpdate': {
         flushText(); flushThinking()
-        const existing = blocks.find(b => b.type === 'diff') as DiffBlock | undefined
+        const existing = diffIdx >= 0 ? blocks[diffIdx] as DiffBlock : undefined
         if (existing) {
           existing.diff = item.diff
+          dirty.add(diffIdx)
         } else {
-          blocks.push({ type: 'diff', diff: item.diff })
+          push({ type: 'diff', diff: item.diff })
+          diffIdx = blocks.length - 1
         }
         break
       }
@@ -307,19 +409,61 @@ export function rebuildBlocks(items: OutputItem[]): DisplayBlock[] {
         break
     }
   }
-  flushText(); flushThinking()
-  // Mark the last assistant block in an in-progress turn (no turnEnd yet)
-  if (turnStartTs !== undefined) {
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      if (blocks[i].type === 'assistant') {
-        (blocks[i] as AssistantBlock).isLastInTurn = true
-        ;(blocks[i] as AssistantBlock).isStreaming = true
-        break
+
+  return {
+    blocks,
+    canExtend(items) {
+      if (items.length < seen) return false
+      if (seen === 0) return true
+      return items[0] === firstItem && items[seen - 1] === lastItem
+    },
+    append(items) {
+      dirty = new Set()
+      if (items.length <= seen) return dirty
+      if (streamingMark) {
+        const b = blocks[streamingMark.index] as AssistantBlock
+        setFlag(b, 'isLastInTurn', streamingMark.isLastInTurn)
+        setFlag(b, 'isStreaming', streamingMark.isStreaming)
+        dirty.add(streamingMark.index)
+        streamingMark = null
       }
-      if (blocks[i].type === 'user' || blocks[i].type === 'wakeup') break
-    }
+      for (let i = seen; i < items.length; i++) fold(items[i])
+      if (seen === 0) firstItem = items[0]
+      seen = items.length
+      lastItem = items[seen - 1]
+      // Mark the last assistant block in an in-progress turn (no turnEnd yet)
+      if (turnStartTs !== undefined) {
+        for (let i = blocks.length - 1; i >= 0; i--) {
+          const b = blocks[i]
+          if (b.type === 'assistant') {
+            streamingMark = { index: i, isLastInTurn: b.isLastInTurn, isStreaming: b.isStreaming }
+            b.isLastInTurn = true
+            b.isStreaming = true
+            dirty.add(i)
+            break
+          }
+          if (b.type === 'user' || b.type === 'wakeup') break
+        }
+      }
+      return dirty
+    },
   }
-  return blocks
+}
+
+export function rebuildBlocks(items: readonly OutputItem[]): DisplayBlock[] {
+  const builder = createBlockBuilder()
+  builder.append(items)
+  return builder.blocks
+}
+
+/** A copy of `b` sharing nothing mutable with the builder, safe to reconcile into a store. */
+function cloneBlock(b: DisplayBlock): DisplayBlock {
+  switch (b.type) {
+    case 'tool': return { ...b, result: b.result && { ...b.result } }
+    case 'assistant': return { ...b, turnTokens: b.turnTokens && { ...b.turnTokens } }
+    case 'plan': return { ...b, items: b.items.map(s => ({ ...s })) }
+    default: return { ...b }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -517,20 +661,28 @@ const thinkingScrollPositions = new Map<string, number>()
 const expandedTools = new Map<string, boolean>()
 const toolScrollPositions = new Map<string, { input: number; output: number }>()
 
-/** Format AskUserQuestion input as readable question list */
-function formatQuestions(input: string): string | null {
+/** Parse a tool's JSON input; undefined when it isn't JSON. */
+interface ToolInput { command?: string; file_path?: string; pattern?: string; path?: string; prompt?: string; questions?: unknown }
+
+function parseToolInput(input: string): ToolInput | undefined {
+  if (!input) return undefined
   try {
     const parsed = JSON.parse(input)
-    const qs = parsed?.questions
-    if (!Array.isArray(qs)) return null
-    return qs.map((q: { question: string; options?: Array<{ label: string }> }, i: number) => {
-      const opts = q.options?.map((o: { label: string }) => o.label).join(', ')
-      return `${i + 1}. ${q.question}${opts ? ` [${opts}]` : ''}`
-    }).join('\n')
-  } catch { return null }
+    return parsed && typeof parsed === 'object' ? parsed : undefined
+  } catch { return undefined }
 }
 
-const ToolBlockView: Component<{ id: string; tool: string; input: string; result?: { text: string; isError: boolean } }> = (props) => {
+/** Format AskUserQuestion input as readable question list */
+function formatQuestions(parsed: ToolInput | undefined): string | null {
+  const qs = parsed?.questions
+  if (!Array.isArray(qs)) return null
+  return qs.map((q: { question: string; options?: Array<{ label: string }> }, i: number) => {
+    const opts = q.options?.map((o: { label: string }) => o.label).join(', ')
+    return `${i + 1}. ${q.question}${opts ? ` [${opts}]` : ''}`
+  }).join('\n')
+}
+
+export const ToolBlockView: Component<{ id: string; tool: string; input: string; result?: { text: string; isError: boolean } }> = (props) => {
   const [expanded, setExpanded] = createSignal(expandedTools.get(props.id) ?? false)
   const toggle = () => {
     const next = !expanded()
@@ -539,33 +691,33 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
   }
   const hasResult = () => !!props.result
   const isQuestion = () => props.tool === 'AskUserQuestion'
+  // Parsed once per input, not per read: preview, summary and the question
+  // list all read it, and they re-run on every expand/collapse.
+  const parsedInput = createMemo(() => parseToolInput(props.input))
+  const questions = createMemo(() => isQuestion() ? formatQuestions(parsedInput()) : null)
 
   /** Strip worktree prefix to get a project-relative path */
   const relPath = (p: string) => p.replace(/^.*\.verun\/worktrees\/[^/]+\//, '')
 
   const preview = () => {
-    if (isQuestion()) {
-      const qs = formatQuestions(props.input)
-      if (qs) return qs.split('\n')[0].slice(0, 80)
-    }
-    if (props.input) {
-      try {
-        const parsed = JSON.parse(props.input)
-        const tool = props.tool
-        if (tool === 'Bash' && parsed.command) return parsed.command.slice(0, 80)
-        if ((tool === 'Read' || tool === 'Write' || tool === 'Edit') && parsed.file_path) return relPath(parsed.file_path)
-        if (tool === 'Grep' && parsed.pattern) return parsed.pattern.slice(0, 60)
-        if (tool === 'Glob' && parsed.pattern) return parsed.pattern.slice(0, 60)
-        if (tool === 'Agent' && parsed.prompt) return parsed.prompt.slice(0, 80)
-      } catch { /* not JSON, fall through */ }
+    const qs = questions()
+    if (qs) return qs.split('\n')[0].slice(0, 80)
+    const parsed = parsedInput()
+    if (parsed) {
+      const tool = props.tool
+      if (tool === 'Bash' && parsed.command) return parsed.command.slice(0, 80)
+      if ((tool === 'Read' || tool === 'Write' || tool === 'Edit') && parsed.file_path) return relPath(parsed.file_path)
+      if (tool === 'Grep' && parsed.pattern) return parsed.pattern.slice(0, 60)
+      if (tool === 'Glob' && parsed.pattern) return parsed.pattern.slice(0, 60)
+      if (tool === 'Agent' && parsed.prompt) return parsed.prompt.slice(0, 80)
     }
     return props.input?.split('\n')[0].slice(0, 60) || ''
   }
 
   const inputSummary = (): string => {
     if (!props.input) return ''
-    try {
-      const parsed = JSON.parse(props.input)
+    const parsed = parsedInput()
+    if (parsed) {
       const tool = props.tool
       if (tool === 'Bash' && parsed.command) return `$ ${parsed.command}`
       if (tool === 'Read' && parsed.file_path) return relPath(parsed.file_path)
@@ -574,12 +726,12 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
       if (tool === 'Grep') return `${parsed.pattern || ''}${parsed.path ? ` in ${parsed.path}` : ''}`
       if (tool === 'Glob' && parsed.pattern) return `${parsed.pattern}${parsed.path ? ` in ${parsed.path}` : ''}`
       if (tool === 'Agent' && parsed.prompt) return parsed.prompt.slice(0, 120)
-    } catch { /* not JSON */ }
+    }
     return props.input.split('\n')[0].slice(0, 100)
   }
 
   const hasExpandedContent = () => {
-    if (isQuestion() && formatQuestions(props.input)) return true
+    if (questions()) return true
     if (props.input) return true
     if (hasResult()) return true
     return false
@@ -603,9 +755,9 @@ const ToolBlockView: Component<{ id: string; tool: string; input: string; result
       </button>
       <Show when={expanded() && hasExpandedContent()}>
         <div class="pl-4 mt-1 border-l border-border-subtle">
-          <Show when={isQuestion() && formatQuestions(props.input)}>
+          <Show when={questions()}>
             <pre class="text-xs text-text-muted whitespace-pre-wrap font-mono leading-relaxed mb-1 max-h-40 overflow-y-auto">
-              {formatQuestions(props.input)}
+              {questions()}
             </pre>
           </Show>
           <Show when={!isQuestion() && inputSummary()}>
@@ -745,41 +897,6 @@ const savedScrollPositions = new Map<string, { scrollTop: number; autoScroll: bo
 // Error banner with retry actions
 // ---------------------------------------------------------------------------
 
-/** Walk `output` and return the text of the user message that started the
- *  given 1-based turn. Retry always resends the correct message even for
- *  historical error blocks further up the transcript. */
-function userMessageForTurn(output: OutputItem[], turnIndex: number): string | undefined {
-  let seen = 0
-  for (const item of output) {
-    if (item.kind === 'userMessage') {
-      seen += 1
-      if (seen === turnIndex) return item.text
-    }
-  }
-  return undefined
-}
-
-/** True if the given 1-based turn produced any assistant work (text,
- *  thinking, tool call, tool result) before its error fired. Used to
- *  decide whether retry should resend the original prompt or just say
- *  "continue" so Claude picks up mid-loop instead of redoing everything. */
-export function turnHasProgress(output: OutputItem[], turnIndex: number): boolean {
-  let seen = 0
-  for (const item of output) {
-    if (item.kind === 'userMessage') {
-      seen += 1
-      continue
-    }
-    if (seen !== turnIndex) continue
-    if (item.kind === 'errorMessage') return false
-    if (item.kind === 'text' || item.kind === 'thinking'
-        || item.kind === 'toolStart' || item.kind === 'toolResult') {
-      return true
-    }
-  }
-  return false
-}
-
 /** Pretty-print a JSON blob if parseable, else return as-is. Keeps the raw
  *  details panel readable regardless of what the CLI sent. */
 function prettyJson(raw?: string): string {
@@ -790,8 +907,10 @@ function prettyJson(raw?: string): string {
 export const ErrorBlockView: Component<{
   message: string
   raw?: string
-  turnIndex: number
-  output: OutputItem[]
+  /** The user message that started the failed turn. */
+  retryText?: string
+  /** The turn did work before failing - retry says "continue" instead. */
+  hasProgress?: boolean
   sessionId?: string | null
   taskId?: string
   agentType?: string
@@ -800,8 +919,8 @@ export const ErrorBlockView: Component<{
   const [retrying, setRetrying] = createSignal(false)
   const [showDetails, setShowDetails] = createSignal(false)
   const [copiedRaw, setCopiedRaw] = createSignal(false)
-  const retryMessage = () => userMessageForTurn(props.output, props.turnIndex)
-  const hasProgress = () => turnHasProgress(props.output, props.turnIndex)
+  const retryMessage = () => props.retryText
+  const hasProgress = () => !!props.hasProgress
 
   const modeArgs = (): [string | undefined, boolean | undefined, boolean | undefined, boolean | undefined] => {
     const sid = props.sessionId
@@ -922,7 +1041,10 @@ export const ChatView: Component<Props> = (props) => {
 
   // Use a store for blocks so mutations are granular
   const [blocks, setBlocks] = createStore<DisplayBlock[]>([])
-  let lastItemCount = 0
+  let builder = createBlockBuilder()
+  // Memoised so a replaced tasks array doesn't re-render every message:
+  // only an actual path change does.
+  const worktreePath = createMemo(() => getWorktreePath(props.taskId))
 
   // Image viewer state
   const [viewerImage, setViewerImage] = createSignal<AttachmentRef | null>(null)
@@ -1084,22 +1206,48 @@ export const ChatView: Component<Props> = (props) => {
   })
 
   // Each ChatView instance is keyed on sessionId by TaskPanel, so it only ever
-  // sees a single session's output for its lifetime. Rebuild blocks whenever
-  // the output length changes.
+  // sees a single session's output for its lifetime. Blocks are built
+  // incrementally: a flush folds in only the items it appended and touches
+  // only the blocks those changed. A replaced, shrunk or prepended output
+  // (older page, trim, removed message) rebuilds from scratch.
+  //
+  // Keyed on the last item as well as the length: once the store trims old
+  // items the length can stay put while the content moves on.
   createEffect(on(
-    () => props.output.length,
-    (len) => {
+    () => {
+      const len = props.output.length
+      return [len, len ? props.output[len - 1] : undefined] as const
+    },
+    () => {
+      const output = unwrap(props.output)
+      const len = output.length
       if (len === 0) {
-        if (lastItemCount !== 0) {
+        if (blocks.length !== 0 || builder.blocks.length !== 0) {
+          builder = createBlockBuilder()
           setBlocks([])
-          lastItemCount = 0
         }
         return
       }
-      if (len !== lastItemCount) {
-        const newBlocks = rebuildBlocks(props.output)
-        setBlocks(reconcile(newBlocks, { merge: true }))
-        lastItemCount = len
+      let changed: boolean
+      if (builder.canExtend(output)) {
+        const dirty = builder.append(output)
+        changed = dirty.size > 0
+        if (changed) {
+          batch(() => {
+            for (const i of [...dirty].sort((a, b) => a - b)) {
+              const copy = cloneBlock(builder.blocks[i])
+              if (i < blocks.length) setBlocks(i, reconcile(copy, { merge: true }))
+              else setBlocks(i, copy)
+            }
+          })
+        }
+      } else {
+        builder = createBlockBuilder()
+        builder.append(output)
+        setBlocks(reconcile(builder.blocks.map(cloneBlock), { merge: true }))
+        changed = true
+      }
+      if (changed) {
         if (showSearch() && searchQuery()) {
           requestAnimationFrame(() => refreshHighlights())
         }
@@ -1298,10 +1446,7 @@ export const ChatView: Component<Props> = (props) => {
                   const b = block as AssistantBlock
                   return (
                     <div class="px-5 py-1">
-                      <div
-                        class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
-                        innerHTML={renderMarkdownForTask(b.text, props.taskId)}
-                      />
+                      <AssistantMarkdown text={b.text} streaming={b.isStreaming} worktreePath={worktreePath()} />
                       <Show when={b.isLastInTurn}>
                         <div class="flex items-center gap-2 mt-0.5">
                           <Show when={b.durationMs}>
@@ -1366,8 +1511,8 @@ export const ChatView: Component<Props> = (props) => {
                     <ErrorBlockView
                       message={b.message}
                       raw={b.raw}
-                      turnIndex={b.turnIndex}
-                      output={props.output}
+                      retryText={b.retryText}
+                      hasProgress={b.hasProgress}
                       sessionId={props.sessionId}
                       taskId={props.taskId}
                       agentType={props.agentType}

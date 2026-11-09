@@ -66,6 +66,46 @@ impl PtyBuffer {
     pub fn total_written(&self) -> u64 {
         self.total_written
     }
+
+    /// Stream offset of the oldest byte still retained.
+    pub fn start(&self) -> u64 {
+        self.total_written - self.byte_len as u64
+    }
+
+    /// Up to `max` bytes starting at stream offset `from` (clamped to the
+    /// oldest retained byte), plus the stream offset just past them. Copies
+    /// only the requested window - never the whole replay buffer - and never
+    /// splits a multibyte char at either end.
+    pub fn read_from(&self, from: u64, max: usize) -> (String, u64) {
+        let mut pos = from.max(self.start());
+        let mut out = String::new();
+        let mut chunk_start = self.start();
+        for chunk in &self.chunks {
+            let chunk_end = chunk_start + chunk.len() as u64;
+            if chunk_end > pos {
+                let mut lo = (pos - chunk_start) as usize;
+                while !chunk.is_char_boundary(lo) {
+                    lo += 1;
+                }
+                let room = max - out.len();
+                let mut hi = (lo + room).min(chunk.len());
+                while !chunk.is_char_boundary(hi) {
+                    hi -= 1;
+                }
+                if hi <= lo {
+                    // Out of room, or the next char does not fit in it.
+                    break;
+                }
+                out.push_str(&chunk[lo..hi]);
+                pos = chunk_start + hi as u64;
+                if hi < chunk.len() || out.len() >= max {
+                    break;
+                }
+            }
+            chunk_start = chunk_end;
+        }
+        (out, pos)
+    }
 }
 
 pub struct PtyHandle {
@@ -587,6 +627,27 @@ pub(crate) fn insert_test_pty(map: &ActivePtyMap, terminal_id: &str, output: Arc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_from_returns_only_the_requested_window_across_chunks() {
+        let mut buf = PtyBuffer::new(10);
+        buf.append("aaaa");
+        buf.append("bbbb");
+        buf.append("cccc"); // evicts "aaaa"; retained stream offsets 4..12
+        assert_eq!(buf.read_from(6, 4), ("bbcc".to_string(), 10));
+        assert_eq!(buf.read_from(10, 100), ("cc".to_string(), 12));
+        // An evicted cursor resumes at the oldest retained byte.
+        assert_eq!(buf.read_from(0, 3), ("bbb".to_string(), 7));
+        assert_eq!(buf.read_from(12, 5), (String::new(), 12));
+    }
+
+    #[test]
+    fn read_from_never_splits_a_multibyte_char() {
+        let mut buf = PtyBuffer::new(100);
+        buf.append("a🙂b"); // 🙂 occupies offsets 1..5
+        assert_eq!(buf.read_from(0, 3), ("a".to_string(), 1));
+        assert_eq!(buf.read_from(2, 10), ("b".to_string(), 6));
+    }
 
     #[test]
     fn buffer_retains_full_content_below_cap() {

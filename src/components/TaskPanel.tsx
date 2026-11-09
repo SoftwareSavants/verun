@@ -28,6 +28,7 @@ import {
   createSignal,
   on,
   onCleanup,
+  untrack,
 } from "solid-js";
 import cursorIcon from "../assets/icons/cursor.svg?raw";
 import finderIcon from "../assets/icons/finder.svg?raw";
@@ -36,7 +37,6 @@ import zedIcon from "../assets/icons/zed.svg?raw";
 import { agentIcon } from "../lib/agents";
 import { getFileIcon } from "../lib/fileIcons";
 import * as ipc from "../lib/ipc";
-import { getLspClient } from "../lib/lsp";
 import { openNewSession } from "../lib/newSession";
 import { fileManagerName } from "../lib/platform";
 import { canUseTerminalView } from "../lib/terminalMode";
@@ -66,6 +66,7 @@ import {
   loadSessions,
   outputItems,
   reopenSession,
+  adoptOutsideSession,
   sessionById,
   sessionCosts,
   sessionsForTask,
@@ -115,7 +116,7 @@ import {
   terminalHeight,
   toggleTerminal,
 } from "../store/ui";
-import type { AccountSelection, AgentType, Session } from "../types";
+import type { AccountSelection, AgentType, OutsideSession, Session } from "../types";
 import { AGENT_DISPLAY_NAMES } from "../types";
 import { AccountDot } from "./AccountDot";
 import { ChatView } from "./ChatView";
@@ -271,16 +272,9 @@ export const TaskPanel: Component = () => {
             setSelectedSessionIdForTask(taskId, null);
           }
         }
-        // Start LSP eagerly so project-wide diagnostics populate the problems
-        // panel without waiting for the user to open a file in the editor.
-        // Wait until setup is done — node_modules must exist for tsgo to resolve
-        // dependencies correctly.
-        if (!isSetupRunning(taskId) && !setupFailed(taskId)) {
-          const t = taskById(taskId);
-          if (t?.worktreePath) {
-            getLspClient(taskId, t.worktreePath).catch(() => {});
-          }
-        }
+        // The LSP is not started here: the editor and the Problems panel
+        // start it on demand (see ProblemsPanel), so merely viewing a task
+        // doesn't leave a tsgo process running for it.
       }
     }),
   );
@@ -391,6 +385,18 @@ export const TaskPanel: Component = () => {
     await openNewSession(tid, agentType, model, account);
   };
 
+  const handleAdoptSession = async (outside: OutsideSession) => {
+    const tid = selectedTaskId();
+    if (!tid) return;
+    try {
+      const session = await adoptOutsideSession(tid, outside);
+      setSelectedSessionIdForTask(tid, session.id);
+      setMainView(tid, "session");
+    } catch (e) {
+      addToast(`Couldn't continue that session: ${e}`, "error");
+    }
+  };
+
   const handleReopenSession = async (sessionId: string) => {
     const tid = selectedTaskId();
     if (!tid) return;
@@ -408,6 +414,20 @@ export const TaskPanel: Component = () => {
     localStorage.getItem("verun:showChanges") !== "false",
   );
   const [rightPanelDragging, setRightPanelDragging] = createSignal(false);
+
+  // Tasks whose terminal panel has been opened in this window. The panel (and
+  // its xterms + auto-spawned shell) only mounts once that happens; after that
+  // it stays mounted while hidden so its xterm state is preserved.
+  const [terminalOpenedTasks, setTerminalOpenedTasks] = createSignal<
+    ReadonlySet<string>
+  >(new Set());
+  createEffect(() => {
+    const tid = selectedTaskId();
+    if (!tid || !showTerminal() || untrack(terminalOpenedTasks).has(tid)) return;
+    setTerminalOpenedTasks((prev) => new Set(prev).add(tid));
+  });
+  const terminalMounted = (taskId: string) =>
+    showTerminal() || terminalOpenedTasks().has(taskId);
   const toggleChanges = () => {
     const next = !showChanges();
     setShowChanges(next);
@@ -756,6 +776,7 @@ export const TaskPanel: Component = () => {
                       }
                       onCreate={handleNewSession}
                       onReopen={handleReopenSession}
+                      onAdopt={handleAdoptSession}
                     />
                     {/* Session tabs */}
                     <For each={taskSessions()}>
@@ -1147,7 +1168,7 @@ export const TaskPanel: Component = () => {
                     }
                   />
 
-                  {/* Terminal panel — resizable bottom section, kept in DOM to preserve xterm state */}
+                  {/* Terminal panel — resizable bottom section, mounted on first open then kept in DOM to preserve xterm state */}
                   <div
                     class="h-1 cursor-row-resize bg-border-subtle hover:bg-accent/50 transition-colors shrink-0"
                     style={{ display: showTerminal() ? "block" : "none" }}
@@ -1179,11 +1200,13 @@ export const TaskPanel: Component = () => {
                     }}
                     class="shrink-0 overflow-hidden"
                   >
-                    <TerminalPanel
-                      taskId={t().id}
-                      startCommand={projectById(t().projectId)?.startCommand}
-                      autoStart={projectById(t().projectId)?.autoStart}
-                    />
+                    <Show when={terminalMounted(t().id)}>
+                      <TerminalPanel
+                        taskId={t().id}
+                        startCommand={projectById(t().projectId)?.startCommand}
+                        autoStart={projectById(t().projectId)?.autoStart}
+                      />
+                    </Show>
                   </div>
                 </Show>
               </div>

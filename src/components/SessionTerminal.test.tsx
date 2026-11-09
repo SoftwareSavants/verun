@@ -78,7 +78,7 @@ describe('SessionTerminal', () => {
     ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
     const { getByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
-    expect(ipcMocks.claudeTerminalOpen).toHaveBeenCalledWith('s-1', 24, 80)
+    expect(ipcMocks.claudeTerminalOpen).toHaveBeenCalledWith('s-1', 24, 80, undefined)
     const shell = getByTestId('shell-terminal')
     expect(shell.getAttribute('data-terminal-id')).toBe('term-1')
   })

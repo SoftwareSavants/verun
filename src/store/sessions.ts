@@ -1,10 +1,10 @@
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection, AgentType } from '../types'
+import type { OutsideSession, Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection, AgentType } from '../types'
 import { setSessionMcpServers } from './mcpServers'
 import { ELICITATION_TOOL_NAME, parseElicitation } from '../lib/mcpElicitation'
 import { setTasks, taskById } from './tasks'
-import { markTaskUnread, markTaskAttention, clearTaskAttention, markSessionUnread } from './ui'
+import { markTaskUnread, markSessionUnread } from './ui'
 import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps, restoreStep } from './steps'
 import * as ipc from '../lib/ipc'
 import { notify } from '../lib/notifications'
@@ -18,7 +18,11 @@ import {
   setPlanFilePathForSession,
 } from './sessionContext'
 
-const MAX_ITEMS_IN_MEMORY = 50_000
+export const MAX_ITEMS_IN_MEMORY = 50_000
+/** Output may run this far past the cap before it is trimmed back to it.
+ *  Trimming on every flush would copy the whole array each time and pin the
+ *  length at the cap. */
+export const OUTPUT_TRIM_CHUNK = 5_000
 
 export const [sessions, setSessions] = createStore<Session[]>([])
 export const [outputItems, setOutputItems] = createStore<Record<string, OutputItem[]>>({})
@@ -101,6 +105,15 @@ export async function handOffSession(sourceSessionId: string, targetAgentType: A
   seedSessionAggregates(session)
   setOutputItems(session.id, [])
   saveDraftAttachments(session.id, [attachment])
+  return session
+}
+
+/** Continue a Claude session started outside Verun, history included. */
+export async function adoptOutsideSession(taskId: string, outside: OutsideSession): Promise<Session> {
+  const session = await ipc.adoptOutsideSession(taskId, outside)
+  // Rust broadcasts session-created too; dedup against it landing first.
+  setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
+  seedSessionAggregates(session)
   return session
 }
 
@@ -253,16 +266,6 @@ function removeApproval(requestId: string, sessionId: string) {
       if (list.length === 0) delete store[sessionId]
     }
   }))
-  // Clear attention indicator if no more pending approvals for this task
-  const session = sessions.find(s => s.id === sessionId)
-  if (session) {
-    const taskSessions = sessions.filter(s => s.taskId === session.taskId)
-    const hasRemaining = taskSessions.some(s => {
-      const approvals = pendingApprovals[s.id]
-      return approvals && approvals.length > 0
-    })
-    if (!hasRemaining) clearTaskAttention(session.taskId)
-  }
 }
 
 export async function closeSession(sessionId: string) {
@@ -481,7 +484,7 @@ export async function initSessionListeners() {
       const existing = store[sessionId]
       if (existing) {
         existing.push(...items)
-        if (existing.length > MAX_ITEMS_IN_MEMORY) {
+        if (existing.length >= MAX_ITEMS_IN_MEMORY + OUTPUT_TRIM_CHUNK) {
           store[sessionId] = existing.slice(-MAX_ITEMS_IN_MEMORY)
         }
       } else {
@@ -570,10 +573,9 @@ export async function initSessionListeners() {
         store[req.sessionId] = [req]
       }
     }))
-    // Mark task as needing attention + OS notification
+    // OS notification. "Needs you" itself is derived from pendingApprovals (store/taskStatus).
     const session = sessions.find(s => s.id === req.sessionId)
     if (session) {
-      markTaskAttention(session.taskId)
       const displayName = session.name || taskById(session.taskId)?.name || 'Task'
       const isQuestion = req.toolName === 'AskUserQuestion'
       const isElicitation = req.toolName === ELICITATION_TOOL_NAME

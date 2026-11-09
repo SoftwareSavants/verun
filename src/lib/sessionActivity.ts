@@ -20,3 +20,7 @@ export function effectiveActivity(status: string, approval: boolean, phase?: Act
     unknown: phase === 'unknown',
   }
 }
+/** True on the transition into waiting, so a wait notifies once, not on every update. */
+export function startedWaiting(previous: ActivityPhase | undefined, next: ActivityPhase): boolean {
+  return next === 'waiting' && previous !== 'waiting'
+}

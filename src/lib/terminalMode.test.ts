@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { canUseTerminalView, formatDroppedPathsForTerminal } from './terminalMode'
+import { canUseTerminalView, formatDroppedPathsForTerminal, firstPromptTarget, setPendingTerminalPrompt, takePendingTerminalPrompt } from './terminalMode'
 import type { Session } from '../types'
 
 function session(overrides: Partial<Session> = {}): Session {
@@ -71,5 +71,20 @@ describe('formatDroppedPathsForTerminal', () => {
 
   test('empty list returns empty string', () => {
     expect(formatDroppedPathsForTerminal([])).toBe('')
+  })
+})
+
+describe('where a new task sends its first prompt', () => {
+  test('a Claude task in terminal view starts the conversation in the terminal', () => {
+    expect(firstPromptTarget('claude', 'terminal')).toBe('terminal')
+  })
+  test('chat view, and every other harness, send it through the chat', () => {
+    expect(firstPromptTarget('claude', 'ui')).toBe('chat')
+    expect(firstPromptTarget('codex', 'terminal')).toBe('chat')
+  })
+  test('a pending terminal prompt is handed over exactly once', () => {
+    setPendingTerminalPrompt('s1', 'Fix the login bug')
+    expect(takePendingTerminalPrompt('s1')).toBe('Fix the login bug')
+    expect(takePendingTerminalPrompt('s1')).toBeUndefined()
   })
 })

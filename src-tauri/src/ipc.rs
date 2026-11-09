@@ -1057,6 +1057,14 @@ pub async fn prewarm_session(
     if active.contains_key(&session_id) {
         return Ok(()); // already warm
     }
+    // A terminal owns this session; a chat process warmed now would miss its
+    // turns and fork the transcript on the next chat send.
+    if app
+        .try_state::<ClaudeTerminalMap>()
+        .is_some_and(|ct| ct.contains_key(&session_id))
+    {
+        return Ok(());
+    }
 
     let t = match db::get_task(pool.inner(), &session.task_id).await? {
         Some(t) => t,
@@ -1330,6 +1338,34 @@ pub async fn list_closed_sessions(
 
 /// Reopen a closed session - flip its status back to 'idle' and broadcast
 /// `session-created` so every window restores the tab.
+/// The reserved project quick tasks live under, created on first use.
+#[tauri::command]
+pub async fn ensure_quick_project(
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+) -> Result<Project, String> {
+    crate::quick_tasks::ensure(pool.inner(), db_tx.inner()).await
+}
+
+#[tauri::command]
+pub async fn list_outside_sessions(
+    pool: State<'_, SqlitePool>,
+    task_id: String,
+) -> Result<Vec<crate::outside_sessions::OutsideSession>, String> {
+    crate::outside_sessions::list_for_task(pool.inner(), &task_id).await
+}
+
+#[tauri::command]
+pub async fn adopt_outside_session(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    db_tx: State<'_, DbWriteTx>,
+    task_id: String,
+    session: crate::outside_sessions::OutsideSession,
+) -> Result<Session, String> {
+    crate::outside_sessions::adopt(&app, pool.inner(), db_tx.inner(), &task_id, &session).await
+}
+
 #[tauri::command]
 pub async fn reopen_session(
     app: AppHandle,
@@ -2617,6 +2653,20 @@ pub fn pty_listen(
     Ok(())
 }
 
+/// Stop streaming a terminal's output to this window (its xterm view was
+/// unmounted). Output keeps accumulating in the bounded replay buffer;
+/// `pty_listen` resumes from the xterm's checkpoint.
+#[tauri::command]
+pub fn pty_unlisten(
+    window: tauri::WebviewWindow,
+    pty_map: State<'_, ActivePtyMap>,
+    terminal_id: String,
+) {
+    if let Some(handle) = pty_map.get(&terminal_id) {
+        handle.output.detach(window.label());
+    }
+}
+
 #[tauri::command]
 pub fn pty_ack(
     window: tauri::WebviewWindow,
@@ -2700,6 +2750,7 @@ pub async fn claude_terminal_open(
     session_id: String,
     rows: u16,
     cols: u16,
+    initial_prompt: Option<String>,
 ) -> Result<OpenClaudeTerminalResult, String> {
     claude_terminal::open_claude_terminal(
         app,
@@ -2711,6 +2762,7 @@ pub async fn claude_terminal_open(
         session_id,
         rows,
         cols,
+        initial_prompt,
     )
     .await
 }
@@ -3938,9 +3990,17 @@ pub async fn upload_attachment_from_path(
 /// Read bytes back from the blob store. The frontend calls this lazily when
 /// rendering an attached image so the chat-view restore path doesn't load
 /// every blob up front.
+///
+/// Returns a raw IPC body so the webview gets an `ArrayBuffer` instead of a
+/// JSON array of numbers (a 2 MB screenshot was ~7 MB of JSON to parse).
 #[tauri::command]
-pub async fn get_blob(app_data: State<'_, AppDataDir>, hash: String) -> Result<Vec<u8>, String> {
-    blob::read_blob_bytes(&app_data.0, &hash).await
+pub async fn get_blob(
+    app_data: State<'_, AppDataDir>,
+    hash: String,
+) -> Result<tauri::ipc::Response, String> {
+    blob::read_blob_bytes(&app_data.0, &hash)
+        .await
+        .map(tauri::ipc::Response::new)
 }
 
 /// Aggregate counts and byte totals for the Storage Breakdown UI.

@@ -15,7 +15,7 @@ import { ErrorBlockView } from './ChatView'
 import { setSessions } from '../store/sessions'
 import { selectedSessionForTask } from '../store/taskContext'
 import { setToasts, toasts } from '../store/ui'
-import type { OutputItem, Session } from '../types'
+import type { Session } from '../types'
 
 const failed: Session = {
   id: 's-001',
@@ -38,17 +38,12 @@ const failed: Session = {
   accountId: 'a1',
 }
 
-const output: OutputItem[] = [
-  { kind: 'userMessage', text: 'Fix the bug' },
-  { kind: 'errorMessage', message: 'Rate limited' },
-]
-
 const removed = 'ACCOUNT_ERROR:{"kind":"removed","accountId":"a1","label":"Acme","projects":[],"message":null}'
 
 /** Shows the failed turn of `s-001` and presses "Retry in new session". */
 async function retryInNewSession() {
   render(() => (
-    <ErrorBlockView message="Rate limited" turnIndex={1} output={output} sessionId="s-001" taskId="t-001" agentType="claude" model="opus" />
+    <ErrorBlockView message="Rate limited" retryText="Fix the bug" sessionId="s-001" taskId="t-001" agentType="claude" model="opus" />
   ))
   fireEvent.click(screen.getByRole('button', { name: /Retry in new session/ }))
   await Promise.resolve()

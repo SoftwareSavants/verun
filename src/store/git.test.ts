@@ -44,7 +44,7 @@ vi.mock('../lib/ipc', () => ({
   }),
 }))
 
-import { clearTaskGitState, initGitListeners, refreshTaskGit, taskGit } from './git'
+import { clearTaskGitState, initGitListeners, initWindowFocusRefresh, refreshTaskGit, taskGit } from './git'
 import * as ipc from '../lib/ipc'
 
 describe('refreshTaskGit', () => {
@@ -58,6 +58,9 @@ describe('refreshTaskGit', () => {
     clearTaskGitState('t-a')
     clearTaskGitState('t-b')
     clearTaskGitState('t-github-source')
+    clearTaskGitState('t-throttle')
+    clearTaskGitState('t-vis-a')
+    clearTaskGitState('t-vis-b')
     vi.mocked(ipc.getGitStatus).mockClear()
     vi.mocked(ipc.getBranchCommits).mockClear()
     vi.mocked(ipc.getBranchStatus).mockClear()
@@ -215,5 +218,37 @@ describe('refreshTaskGit', () => {
 
     expect(ipc.getGitStatus).toHaveBeenCalledTimes(1)
     expect(ipc.getGithubOverview).not.toHaveBeenCalled()
+  })
+
+  test('local refreshes are throttled per task to one per second, including force', async () => {
+    await refreshTaskGit('t-throttle', { force: true })
+    expect(ipc.getGitStatus).toHaveBeenCalledTimes(1)
+
+    // A burst right after: coalesced into one trailing refresh.
+    const burst = [
+      refreshTaskGit('t-throttle', { force: true }),
+      refreshTaskGit('t-throttle', { force: true }),
+      refreshTaskGit('t-throttle'),
+    ]
+    await vi.advanceTimersByTimeAsync(500)
+    expect(ipc.getGitStatus).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(600)
+    await Promise.all(burst)
+    expect(ipc.getGitStatus).toHaveBeenCalledTimes(2)
+  })
+
+  test('window focus refreshes the remote state of the selected task only', async () => {
+    await refreshTaskGit('t-vis-a', { local: false, remote: true, force: true })
+    await refreshTaskGit('t-vis-b', { local: false, remote: true, force: true })
+    vi.mocked(ipc.getGithubOverview).mockClear()
+    uiMocks.__setSelectedTaskId('t-vis-b')
+
+    initWindowFocusRefresh()
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.runAllTimersAsync()
+
+    expect(ipc.getGithubOverview).toHaveBeenCalledTimes(1)
+    expect(ipc.getGithubOverview).toHaveBeenCalledWith('t-vis-b', 'network-only')
   })
 })

@@ -1576,6 +1576,13 @@ pub async fn send_message(
     let agent = AgentKind::parse(&agent_type).implementation();
     let is_first_turn = resume_session_id.as_ref().is_none_or(|s| s.is_empty());
 
+    // A Claude terminal open on this session holds its own in-memory history.
+    // Retire it (and any chat process warmed before its turns) so this turn
+    // resumes from the transcript instead of forking it.
+    if matches!(AgentKind::parse(&agent_type), AgentKind::Claude) {
+        crate::session_handover::hand_over_to_chat(&app, &active, &session_id).await?;
+    }
+
     // ── Fast path: persistent agent with a live, idle process in `active` ──
     //
     // Three sub-decisions, evaluated against the `ActiveProcess` entry:

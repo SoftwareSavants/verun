@@ -1,4 +1,13 @@
-export type BoardColumn = 'attention' | 'running' | 'ready' | 'archived' | 'unknown'
+// Single source of truth for a task's status, shared by the sidebar, the task
+// board and anything else that shows where a task stands.
+export type BoardColumn = 'attention' | 'running' | 'idle' | 'review' | 'done' | 'archived' | 'unknown'
+/** Icon vocabulary: every kind has its own glyph so status never relies on color alone. */
+export type TaskStatusKind =
+  | 'input' | 'failed' | 'conflicts' | 'ci-failed'
+  | 'running' | 'busy'
+  | 'idle' | 'pr-open' | 'merged'
+  | 'unknown' | 'archived'
+export interface TaskStatus { column: BoardColumn; kind: TaskStatusKind; label: string }
 export interface BoardActivity {
   unknown?: boolean
   archived?: boolean
@@ -12,15 +21,17 @@ export interface BoardActivity {
   merged?: boolean
   prOpen?: boolean
 }
-export function taskBoardState(activity: BoardActivity): { column: BoardColumn; label: string } {
-  if (activity.archived) return { column: 'archived', label: 'Archived' }
-  if (activity.approval) return { column: 'attention', label: 'Approval needed' }
-  if (activity.error) return { column: 'attention', label: 'Error' }
-  if (activity.conflicts) return { column: 'attention', label: 'Merge conflicts' }
-  if (activity.failedChecks) return { column: 'attention', label: 'CI failing' }
-  if (activity.archiving) return { column: 'running', label: 'Archiving' }
-  if (activity.creating) return { column: 'running', label: 'Setting up' }
-  if (activity.running) return { column: 'running', label: 'Running' }
-  if (activity.unknown) return { column: 'unknown', label: 'Status unavailable' }
-  return { column: 'ready', label: activity.merged ? 'PR merged' : activity.prOpen ? 'PR open' : 'Ready to continue' }
+export function taskBoardState(activity: BoardActivity): TaskStatus {
+  if (activity.archived) return { column: 'archived', kind: 'archived', label: 'Archived' }
+  if (activity.approval) return { column: 'attention', kind: 'input', label: 'Needs input' }
+  if (activity.error) return { column: 'attention', kind: 'failed', label: 'Error' }
+  if (activity.conflicts) return { column: 'attention', kind: 'conflicts', label: 'Merge conflicts' }
+  if (activity.failedChecks) return { column: 'attention', kind: 'ci-failed', label: 'CI failing' }
+  if (activity.archiving) return { column: 'running', kind: 'busy', label: 'Archiving' }
+  if (activity.creating) return { column: 'running', kind: 'busy', label: 'Setting up' }
+  if (activity.running) return { column: 'running', kind: 'running', label: 'Running' }
+  if (activity.unknown) return { column: 'unknown', kind: 'unknown', label: 'Status unavailable' }
+  if (activity.merged) return { column: 'done', kind: 'merged', label: 'PR merged' }
+  if (activity.prOpen) return { column: 'review', kind: 'pr-open', label: 'PR open' }
+  return { column: 'idle', kind: 'idle', label: 'Idle' }
 }

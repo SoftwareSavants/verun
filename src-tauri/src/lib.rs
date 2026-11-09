@@ -19,14 +19,18 @@ mod github;
 mod github_remote;
 mod handoff;
 mod ipc;
+mod keep_awake;
 mod lsp;
 mod markdown_skills;
 #[cfg(unix)]
 pub mod mcp;
 mod policy;
+mod outside_sessions;
 mod pty;
+mod quick_tasks;
 mod pty_output;
 mod resource_monitor;
+mod session_handover;
 mod snapshots;
 mod stream;
 mod task;
@@ -79,6 +83,7 @@ pub fn run() {
                 .build(),
         )
         .manage(activity::ActivityStore::default())
+        .manage(keep_awake::KeepAwake::default())
         .manage(transcript_source::SourceRegistry::default())
         .manage(ipc::new_agent_cache())
         .manage(task::new_active_map())
@@ -346,6 +351,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             activity::session_activity_snapshot,
+            keep_awake::keep_awake_status,
+            keep_awake::keep_awake_set_agents_working,
+            keep_awake::keep_awake_set_manual,
+            keep_awake::keep_awake_clear_manual,
             // Projects
             ipc::add_project,
             ipc::gh_status,
@@ -399,6 +408,9 @@ pub fn run() {
             ipc::list_sessions,
             ipc::list_closed_sessions,
             ipc::reopen_session,
+            ipc::list_outside_sessions,
+            ipc::ensure_quick_project,
+            ipc::adopt_outside_session,
             ipc::get_session,
             ipc::get_output_lines,
             ipc::fork_session_in_task,
@@ -465,6 +477,7 @@ pub fn run() {
             ipc::resolve_terminal_file,
             ipc::pty_listen,
             ipc::pty_ack,
+            ipc::pty_unlisten,
             ipc::pty_write,
             ipc::pty_resize,
             ipc::pty_close,

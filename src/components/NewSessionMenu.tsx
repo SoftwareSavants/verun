@@ -1,6 +1,6 @@
 import { Component, For, Show, createSignal, createEffect, createMemo, onCleanup } from 'solid-js'
 import { Portal } from 'solid-js/web'
-import type { AccountSelection, AgentType, ModelOption, Session } from '../types'
+import type { AccountSelection, AgentType, ModelOption, OutsideSession, Session } from '../types'
 import { AGENT_DISPLAY_NAMES } from '../types'
 import { agents } from '../store/agents'
 import { clsx } from 'clsx'
@@ -28,6 +28,8 @@ interface Props {
   /** `account` is the choice of the row picked; a harness without accounts has none. */
   onCreate: (agentType: AgentType, model?: string, account?: AccountSelection) => Promise<void>
   onReopen?: (sessionId: string) => Promise<void>
+  /** Continue a session started outside Verun; without it those aren't offered. */
+  onAdopt?: (session: OutsideSession) => Promise<void>
 }
 
 export const NewSessionMenu: Component<Props> = (props) => {
@@ -38,6 +40,8 @@ export const NewSessionMenu: Component<Props> = (props) => {
   const [hoveredAgent, setHoveredAgent] = createSignal<string | null>(null)
   const [submenuRect, setSubmenuRect] = createSignal<{ left: number; top: number } | null>(null)
   const [recentSessions, setRecentSessions] = createSignal<Session[]>([])
+  const [outsideSessions, setOutsideSessions] = createSignal<OutsideSession[]>([])
+  const hasRecent = () => recentSessions().length > 0 || outsideSessions().length > 0
   const [reopeningId, setReopeningId] = createSignal<string | null>(null)
   let buttonRef: HTMLButtonElement | undefined
 
@@ -72,6 +76,11 @@ export const NewSessionMenu: Component<Props> = (props) => {
     } else {
       setRecentSessions([])
     }
+    if (tid && props.onAdopt) {
+      ipc.listOutsideSessions(tid).then(setOutsideSessions).catch(() => setOutsideSessions([]))
+    } else {
+      setOutsideSessions([])
+    }
   }
 
   const closeMenu = () => {
@@ -88,6 +97,12 @@ export const NewSessionMenu: Component<Props> = (props) => {
     } finally {
       setReopeningId(null)
     }
+  }
+
+  const handleAdopt = async (session: OutsideSession) => {
+    if (!props.onAdopt) return
+    closeMenu()
+    await props.onAdopt(session)
   }
 
   const sessionLabel = (session: Session) =>
@@ -200,7 +215,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
             }}
             onMouseDown={(e) => e.preventDefault()}
           >
-            <Show when={recentSessions().length > 0}>
+            <Show when={hasRecent()}>
               {(() => {
                 let recentRowRef: HTMLButtonElement | undefined
                 const isHovered = () => hoveredAgent() === '__recent__'
@@ -272,7 +287,7 @@ export const NewSessionMenu: Component<Props> = (props) => {
             </Show>
           </div>
 
-          <Show when={hoveredAgent() === '__recent__' && recentSessions().length > 0}>
+          <Show when={hoveredAgent() === '__recent__' && hasRecent()}>
             <div
               class="fixed z-[102] bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl py-1 w-56 max-h-80 flex flex-col"
               style={{
@@ -313,6 +328,23 @@ export const NewSessionMenu: Component<Props> = (props) => {
                 </For>
                 <Show when={recentQuery() && filteredRecentSessions().length === 0}>
                   <div class="px-3 py-2 text-[11px] text-text-dim">No matches</div>
+                </Show>
+                <Show when={outsideSessions().length > 0}>
+                  <div class="px-3 pt-2 pb-1 text-[10px] font-medium text-text-dim" classList={{ 'mt-1 border-t border-outline/8': recentSessions().length > 0 }}>Started outside Verun</div>
+                  <For each={outsideSessions().filter(o => !recentQuery() || o.title.toLowerCase().includes(recentQuery().toLowerCase()))}>
+                    {(session) => (
+                      <button
+                        class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-3"
+                        onClick={() => handleAdopt(session)}
+                        title="Continue this session in Verun"
+                      >
+                        <SvgIcon svg={agentIcon(session.agentType)} size={13} />
+                        <AccountDot accountId={session.accountId} />
+                        <span class="flex-1 truncate">{session.title}</span>
+                        <span class="text-[10px] text-text-dim shrink-0">{formatDurationShort(Date.now() - session.updatedAt)}</span>
+                      </button>
+                    )}
+                  </For>
                 </Show>
               </div>
             </div>

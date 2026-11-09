@@ -90,7 +90,7 @@ describe('buildTaskMenuItems', () => {
 
   it('start/stop/setup item sits between Open in Finder and the separator', () => {
     const items = buildTaskMenuItems(baseHandlers(), baseState)
-    const order = items.map((it) => ('separator' in it ? '---' : it.label))
+    const order = items.map((it) => ('label' in it ? it.label : '---'))
     const finderIdx = order.indexOf('Open in Finder')
     const startIdx = order.indexOf('Start App')
     const sepIdx = order.indexOf('---')

@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { effectiveActivity, acceptActivity } from './sessionActivity'
+import { effectiveActivity, acceptActivity, startedWaiting } from './sessionActivity'
 
 test('terminal and structured activity coexist without modifying process state', () => {
   expect(effectiveActivity('idle', false, 'working')).toEqual({ running: true, approval: false, error: false, unknown: false })
@@ -18,4 +18,12 @@ test('snapshot arriving after a newer event cannot overwrite it', () => {
   expect(acceptActivity(12, 12)).toBe(false)
   expect(acceptActivity(12, 13)).toBe(true)
   expect(acceptActivity(undefined, 1)).toBe(true)
+})
+
+test('a terminal session notifies once when it starts waiting on the user', () => {
+  expect(startedWaiting(undefined, 'waiting')).toBe(true)
+  expect(startedWaiting('working', 'waiting')).toBe(true)
+  expect(startedWaiting('waiting', 'waiting')).toBe(false)
+  expect(startedWaiting('waiting', 'working')).toBe(false)
+  expect(startedWaiting('working', 'idle')).toBe(false)
 })

@@ -1,7 +1,9 @@
-import { Component, For, Show, createSignal, createMemo } from 'solid-js'
+import { Component, For, Show, createSignal, createMemo, createEffect } from 'solid-js'
 import { createVirtualizer } from '@tanstack/solid-virtual'
 import { ChevronRight, ChevronDown, CircleCheck, Loader2, XCircle, AlertTriangle, Info, ClipboardCopy } from 'lucide-solid'
 import { problemsByFileForTask, problemCountForTask, isProblemsLoading } from '../store/problems'
+import { taskById } from '../store/tasks'
+import { isSetupRunning, setupFailed } from '../store/setup'
 import { openFilePinned, revealFileInTree, setMainView, setPendingGoToLine, mainView } from '../store/editorView'
 import { getFileIcon } from '../lib/fileIcons'
 import { clsx } from 'clsx'
@@ -56,6 +58,22 @@ export const ProblemsPanel: Component<Props> = (props) => {
 
   const counts = () => problemCountForTask(props.taskId)
   const byFile = () => problemsByFileForTask(props.taskId)
+
+  // Project-wide diagnostics come from the task's language server, so the
+  // panel starts it on demand (lsp.ts keeps only a few alive). Wait for setup:
+  // tsgo needs node_modules to resolve dependencies.
+  const lspTarget = createMemo(() => {
+    const id = props.taskId
+    if (isSetupRunning(id) || setupFailed(id)) return null
+    const worktreePath = taskById(id)?.worktreePath
+    return worktreePath ? `${id}\n${worktreePath}` : null
+  })
+  createEffect(() => {
+    const target = lspTarget()
+    if (!target) return
+    const [id, worktreePath] = target.split('\n')
+    import('../lib/lsp').then(m => m.getLspClient(id, worktreePath)).catch(() => {})
+  })
 
   const fileGroups = createMemo((): FileGroup[] => {
     const files = byFile()

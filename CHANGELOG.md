@@ -1,10 +1,38 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 - 2026-11-09
 
+- Quick tasks: run an agent in any folder (home, a non-git dir, a parent of several repos) without adding a project, from the sidebar + menu or Cmd+Opt+N
+- New task composer keeps agent, location, base branch and chat/terminal choice in one row, names the checked-out branch and says "no isolation" for Project folder, and shows whether the task opens in chat or the terminal
+- A new task in terminal view starts Claude in the terminal with its prompt, instead of also sending it through a chat process, which duplicated the conversation (#277)
+- Recent now lists Claude Code sessions started outside Verun in the task's folder (or the project's main checkout) and continues them in Verun with their history, across the Default and added Claude accounts
+- Chat no longer freezes on send or session open: blocks build incrementally per flush, rendered markdown is cached, the streaming message re-renders at most once per frame, and task status lookups are O(1)
+- Chat keeps updating in very long sessions (past 50k output items) instead of freezing at the in-memory cap
+- Sending a message no longer freezes the window: keep-awake starts and stops `caffeinate` off the main thread
+- Streaming text and thinking tokens are merged per 30 ms flush, so a turn is a handful of chat items and DB rows instead of one per token
+- Attached terminals send only new output each tick instead of rebuilding the 256 KB scrollback
+- Activity monitor samples only Verun's own process tree, off the async runtime, every 10 s while the overlay is closed
+- Images load as raw bytes instead of a JSON number array
 - Session handoff across harnesses: right-click a session tab, pick "Hand off…", then the target harness, model and account. Verun starts a linked session on it in the same worktree with the handoff packet (recent conversation, branch commits, uncommitted files, full-transcript path) attached to its composer, so you can add your own context before sending; agents can do the same with the new `verun_handoff_session` MCP tool
 - Text attachments: non-image files attached to a message are shown as file chips and inlined into the prompt for every harness
 - `verun_create_session` and `verun_spawn_task` MCP tools now accept Grok; their agent lists come from the harness registry instead of a hardcoded copy
+- Sidebar pins a collapsible "Needs you" queue of tasks waiting on input, failing CI, conflicting or errored, with the reason on each row and a needs-you count on Task board
+- Sidebar task rows are single-line, with one distinct icon per state (needs input, error, CI failing, conflicts, running, idle, PR open, merged) instead of near-identical circles and pulsing edges
+- Task board splits Ready into Idle, In review and Done, renames Needs attention to Needs you, shows a full count summary, and uses compact one-line cards with the branch in the tooltip
+- Sidebar and board read task status from one shared model, so the two can no longer disagree
+- Closing a task's Claude terminal no longer marks its session as crashed, so restored tasks don't show a false Error in Needs you
+- Switching a Claude session between chat and terminal view continues the same conversation instead of forking it: the other view's Claude process is retired first, and a switch is refused while that process is mid-turn
+- Esc or Ctrl-C in a Claude terminal now reads as Idle instead of Status unavailable
+- A desktop notification fires when a Claude terminal session starts waiting for input
+- Needs you lists how many tasks have an unknown status, linking to the board
+- A task's Error comes from its newest session, so an old crashed session left open no longer flags a healthy task
+- Keep awake: the cup in the sidebar footer keeps the Mac awake while agents are working (not while they're idle or waiting on you), or keeps the screen on for 30 min to 4 hours or until turned off
+- Menus opened near a window edge stay on screen
+- `ui-council` project skill: headless screenshots of the real app (`uilab.html`) judged blind and pairwise by Claude and Codex
+- Lower resource use on task switch: the tsgo language server starts only when the editor or Problems panel needs it, with at most 2 alive (least recently used stopped); the project-wide typecheck now reruns on file changes
+- Only the selected task (and tasks in their own window) keep a file watcher; other tasks refresh git when a session turn ends, local git refreshes are throttled to once per second per task, and window focus refreshes GitHub state for the selected task only
+- The terminal panel (xterm + shell) mounts only after it is first opened for a task; hidden terminals stop receiving output and only the 6 most recently used hidden xterms are kept, the rest redraw from the replay buffer (#109)
+- Fresh Claude terminal sessions poll for their transcript with backoff (up to 2 s) instead of every 200 ms
 
 ## 0.15.0 - 2026-10-26
 

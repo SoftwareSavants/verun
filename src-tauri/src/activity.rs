@@ -162,10 +162,13 @@ impl Activity {
             _ => {}
         }
     }
+    /// Esc / Ctrl-C typed into the terminal. Claude fires no Stop hook for an
+    /// interrupt, but it lands back at its prompt: the user's turn. If work
+    /// actually continues, the next tool hook flips this back to Working.
     fn interrupt(&mut self) {
         if !self.ended {
             self.pending.clear();
-            self.phase = Phase::Unknown;
+            self.phase = Phase::Idle;
         }
     }
     fn release(&mut self) {
@@ -174,7 +177,10 @@ impl Activity {
         self.phase = Phase::Ended;
     }
     fn end(&mut self, code: Option<u32>) {
-        if self.ended && self.phase == Phase::Failed {
+        // The first outcome wins: a late PTY exit report must not turn a clean
+        // SessionEnd or a deliberate close (release) into a crash, and a late
+        // SessionEnd must not mask a real crash.
+        if self.ended {
             return;
         }
         self.pending.clear();
@@ -197,6 +203,9 @@ impl ActivityStore {
         activity.revision = store.0;
         store.1.insert(session.into(), activity.clone());
         activity
+    }
+    pub fn phase(&self, session: &str) -> Option<Phase> {
+        self.0.lock().unwrap().1.get(session).map(|s| s.phase)
     }
     pub fn snapshot(&self) -> Vec<Activity> {
         self.0.lock().unwrap().1.values().cloned().collect()
@@ -506,6 +515,17 @@ mod tests {
     }
 
     #[test]
+    fn closing_terminal_before_its_exit_is_reported_does_not_fake_a_crash() {
+        // Verun drops the bridge first, then kills the PTY; the reader thread
+        // reports the kill afterwards with no exit code.
+        let mut state = Activity::new("s", "l");
+        state.apply(&event("Stop", ""));
+        state.release();
+        state.end(None);
+        assert_eq!(state.phase, Phase::Ended);
+    }
+
+    #[test]
     fn late_session_end_does_not_mask_a_crash() {
         let mut state = Activity::new("s", "l");
         state.end(Some(1));
@@ -547,8 +567,10 @@ mod tests {
     fn interrupted_and_ended_launches_cannot_stay_busy() {
         let mut state = Activity::new("session", "launch");
         state.apply(&event("PermissionRequest", "a"));
+        // Esc / Ctrl-C lands Claude back at its prompt: the user's turn, not
+        // an unknown state. The next hook corrects it if work continues.
         state.interrupt();
-        assert_eq!(state.phase, Phase::Unknown);
+        assert_eq!(state.phase, Phase::Idle);
         assert!(state.pending.is_empty());
         state.apply(&event("UserPromptSubmit", ""));
         state.end(Some(1));

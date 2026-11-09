@@ -5,6 +5,8 @@ import { setTasks } from './tasks'
 import { clearDraft, saveDraftMessage } from './sessionDrafts'
 import { setSessions, setOutputItems, sendMessage, updateSessionModel } from './sessions'
 import { isSetupRunning, queueMessage, setupFailed } from './setup'
+import { sessionViewMode, setSessionViewMode, claudeDefaultViewMode } from './sessionViewMode'
+import { firstPromptTarget, setPendingTerminalPrompt } from '../lib/terminalMode'
 import { selectedTaskId, setSelectedTaskId, setSelectedProjectId, setSelectedSessionIdForTask, setShowArchived, addToast } from './ui'
 
 export interface DraftTaskInput {
@@ -16,6 +18,8 @@ export interface DraftTaskInput {
   /** The account the task's first session runs on. The project's when left out. */
   account?: AccountSelection
   message: string
+  /** Claude only: chat or terminal for this task's first session. Default view when left out. */
+  viewMode?: 'ui' | 'terminal'
 }
 
 export async function startDraftTask(input: DraftTaskInput) {
@@ -34,7 +38,15 @@ export async function startDraftTask(input: DraftTaskInput) {
     setSelectedSessionIdForTask(task.id, session.id)
     setShowArchived(false)
   }
+  if (input.viewMode && input.viewMode !== claudeDefaultViewMode()) setSessionViewMode(session.id, input.viewMode)
   if (setupFailed(task.id)) { selectTask(); return }
+  // Terminal view: the terminal starts Claude with the prompt when it opens.
+  if (firstPromptTarget(input.agentType, sessionViewMode(session.id)) === 'terminal') {
+    setPendingTerminalPrompt(session.id, input.message)
+    clearDraft(session.id)
+    selectTask()
+    return
+  }
   if (isSetupRunning(task.id)) {
     queueMessage(task.id, { sessionId: session.id, message: input.message, model: input.model })
     clearDraft(session.id)

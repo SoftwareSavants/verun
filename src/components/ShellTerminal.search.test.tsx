@@ -13,6 +13,7 @@ const ipcMocks = vi.hoisted(() => ({
   ptyWrite: vi.fn(() => Promise.resolve()),
   ptyResize: vi.fn(() => Promise.resolve()),
   ptyListen: vi.fn(() => Promise.resolve()),
+  ptyUnlisten: vi.fn(() => Promise.resolve()),
   readClipboard: vi.fn(() => Promise.resolve('')),
   resolveTerminalFile: vi.fn(() => Promise.resolve(null)),
 }))

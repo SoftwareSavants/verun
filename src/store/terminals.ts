@@ -99,11 +99,70 @@ export function registerXterm(
   webglFactory?: () => WebglAddon | undefined,
 ) {
   xtermInstances.set(terminalId, { term, fitAddon, searchAddon, webglAddon, webglFactory })
-  resumeTerminalOutput(terminalId)
+  rejoinXterm(terminalId)
 }
 
 export function getXtermEntry(terminalId: string): XtermEntry | undefined {
   return xtermInstances.get(terminalId)
+}
+
+// ---------------------------------------------------------------------------
+// xterm lifetime (issue #109)
+// ---------------------------------------------------------------------------
+
+/** Hidden (unmounted) xterms kept alive for instant re-show. Older ones are
+ *  disposed and redraw from the Rust replay buffer when viewed again. */
+export const MAX_LIVE_XTERMS = 6
+// Ids whose ShellTerminal view is currently mounted. Never evicted.
+const mountedXterms = new Set<string>()
+// Least recently used first.
+const xtermLru: string[] = []
+
+function touchXterm(terminalId: string) {
+  const i = xtermLru.indexOf(terminalId)
+  if (i >= 0) xtermLru.splice(i, 1)
+  xtermLru.push(terminalId)
+}
+
+function forgetXterm(terminalId: string) {
+  mountedXterms.delete(terminalId)
+  const i = xtermLru.indexOf(terminalId)
+  if (i >= 0) xtermLru.splice(i, 1)
+}
+
+function evictXterms() {
+  let live = xtermLru.filter(id => xtermInstances.has(id) && !mountedXterms.has(id)).length
+  for (const id of [...xtermLru]) {
+    if (live <= MAX_LIVE_XTERMS) break
+    // Exited hook/start-command logs may have no native replay left to redraw from.
+    if (mountedXterms.has(id) || keptAfterExit.has(id) || id in terminalExitCodes()) continue
+    const entry = xtermInstances.get(id)
+    if (!entry) continue
+    entry.term.dispose()
+    xtermInstances.delete(id)
+    // Next view builds a fresh xterm that replays from the start of the buffer.
+    lastSeqWritten.delete(id)
+    forgetXterm(id)
+    live--
+  }
+}
+
+/** A ShellTerminal view (re)mounted an existing xterm: resume its output. */
+export function rejoinXterm(terminalId: string) {
+  mountedXterms.add(terminalId)
+  touchXterm(terminalId)
+  resumeTerminalOutput(terminalId)
+}
+
+/** A ShellTerminal view unmounted: stop the Rust side streaming output into a
+ *  hidden xterm (it catches up from the replay buffer on rejoin), then trim
+ *  the pool of hidden xterms. */
+export function releaseXterm(terminalId: string) {
+  mountedXterms.delete(terminalId)
+  if (!xtermInstances.has(terminalId)) return
+  touchXterm(terminalId)
+  ipc.ptyUnlisten(terminalId).catch(() => {})
+  evictXterms()
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +380,7 @@ function removeTerminal(terminalId: string, opts: { suppressAutoSpawn?: boolean;
   setTerminals(prev => prev.filter(t => t.id !== terminalId))
   xtermInstances.get(terminalId)?.term.dispose()
   xtermInstances.delete(terminalId)
+  forgetXterm(terminalId)
 
   if (taskId && activeTerminalId(taskId) === terminalId) {
     const remaining = terminals.filter(t => t.taskId === taskId && t.id !== terminalId)
@@ -340,6 +400,7 @@ export function closeTerminalsForTask(taskId: string) {
     lastSeqWritten.delete(id)
     xtermInstances.get(id)?.term.dispose()
     xtermInstances.delete(id)
+    forgetXterm(id)
   }
   setTerminals(prev => prev.filter(t => t.taskId !== taskId))
   setHydratedTaskIds(prev => {

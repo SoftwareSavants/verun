@@ -1,15 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-const mocks = vi.hoisted(() => ({ start: vi.fn(), open: vi.fn(), inspect: vi.fn() }))
+const mocks = vi.hoisted(() => ({ start: vi.fn(), open: vi.fn(), inspect: vi.fn(), project: { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' } as Record<string, string> }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open }))
 vi.mock('../lib/ipc', () => ({
-  getRepoInfo: vi.fn().mockResolvedValue({ branches: ['main', 'develop'] }),
+  getRepoInfo: vi.fn().mockResolvedValue({ branches: ['main', 'develop'], currentBranch: 'develop' }),
   refreshAgents: vi.fn().mockResolvedValue(undefined),
   claudeCloudAvailability: vi.fn().mockResolvedValue({ available: false, reason: null }),
   inspectTaskDirectory: mocks.inspect,
 }))
-vi.mock('../store/projects', () => ({ projectById: () => ({ id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' }) }))
+vi.mock('../store/projects', () => ({ projectById: () => mocks.project, projects: [] }))
 vi.mock('../store/agents', () => ({ agents: [{ id: 'claude', name: 'Claude Code', installed: true, supportsModelSelection: true, models: [{ id: 'opus', label: 'Opus', description: '' }] }, { id: 'codex', name: 'Codex', installed: true, supportsModelSelection: true, models: [{ id: 'gpt', label: 'GPT', description: '' }] }] }))
 vi.mock('../store/draftTask', () => ({ startDraftTask: mocks.start }))
 vi.mock('./AgentPicker', () => ({ AgentPicker: () => <span>Claude</span> }))
@@ -19,7 +19,7 @@ import { toasts, setToasts } from '../store/ui'
 import { applySnapshot } from '../store/accounts'
 import { makeAccount, makeSnapshot } from '../test/accountFixtures'
 afterEach(cleanup)
-beforeEach(() => { vi.clearAllMocks(); setToasts([]); applySnapshot(makeSnapshot()); mocks.start.mockResolvedValue(undefined) })
+beforeEach(() => { vi.clearAllMocks(); mocks.project = { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' }; localStorage.clear(); setToasts([]); applySnapshot(makeSnapshot()); mocks.start.mockResolvedValue(undefined) })
 function select(label: string, option: string) {
   fireEvent.click(screen.getByRole('combobox', { name: label }))
   fireEvent.click(screen.getByRole('option', { name: option }))
@@ -153,4 +153,37 @@ test('the pick is dropped when the project changes', async () => {
   expect(screen.getByRole('button', { name: 'Choose model: Opus' })).toBeTruthy()
   send('Fix the bug')
   await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'q', account: projectDefault })))
+})
+
+test('project folder names the checked-out branch and says there is no isolation', async () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  select('Run in', 'Project folder')
+  expect(await screen.findByText('develop')).toBeTruthy()
+  expect(screen.getByText(/no isolation/i)).toBeTruthy()
+  expect(screen.getByText(/shared with other tasks/i)).toBeTruthy()
+})
+test('a worktree says where its isolated branch starts', () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  expect(screen.getByText(/new branch from/i)).toBeTruthy()
+})
+test('a quick task runs in a folder, starting at home, with no worktree or project options', async () => {
+  mocks.project = { id: 'quick-tasks', name: 'Quick tasks', repoPath: '/Users/me', baseBranch: '', defaultAgentType: 'claude' }
+  mocks.inspect.mockResolvedValue({ path: '/Users/me', branch: '', isGit: false })
+  render(() => <NewTaskView projectId="quick-tasks" onClose={() => {}} />)
+  await screen.findByText('/Users/me')
+  fireEvent.click(screen.getByRole('combobox', { name: 'Run in' }))
+  expect(screen.queryByRole('option', { name: 'New worktree' })).toBeNull()
+  expect(screen.queryByRole('option', { name: 'Project folder' })).toBeNull()
+  fireEvent.input(screen.getByRole('textbox', { name: 'Task prompt' }), { target: { value: 'Find stale branches across repos' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ directory: '/Users/me' })))
+})
+test('the chat or terminal choice for a Claude task is shown and sent', async () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  expect(screen.getByRole('button', { name: 'Open in chat' }).textContent).toContain('Chat')
+  fireEvent.click(screen.getByRole('button', { name: 'Open in terminal' }))
+  expect(screen.getByRole('button', { name: 'Open in terminal' }).textContent).toContain('Terminal')
+  fireEvent.input(screen.getByRole('textbox', { name: 'Task prompt' }), { target: { value: 'Fix the bug' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ viewMode: 'terminal' })))
 })

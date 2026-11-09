@@ -18,7 +18,7 @@ import { listen } from '@tauri-apps/api/event'
 import * as ipc from './ipc'
 import { openFilePinned } from '../store/editorView'
 import { markProblemsLoading, setProjectErrors } from '../store/problems'
-import { addToast } from '../store/ui'
+import { addToast, isTaskWindowed } from '../store/ui'
 import type { FileTreeChangedEvent } from '../types'
 
 interface LspMessagePayload {
@@ -48,6 +48,32 @@ const clients = new Map<string, LSPClient>()
 const worktreePaths = new Map<string, string>()
 // Debounce timers for node_modules restart
 const restartTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// In-flight starts, so concurrent callers (editor + Problems panel) share one
+// tsgo process instead of racing two lspStart calls.
+const starting = new Map<string, Promise<LSPClient>>()
+
+// Each live client is a tsgo LSP process plus a project-wide `tsgo --noEmit`.
+// Cap how many stay alive; the least recently used is stopped and restarts on
+// demand the next time an editor or the Problems panel needs it.
+export const MAX_LIVE_LSP_CLIENTS = 2
+const lspLru: string[] = []
+
+function touchLsp(taskId: string) {
+  const i = lspLru.indexOf(taskId)
+  if (i >= 0) lspLru.splice(i, 1)
+  lspLru.push(taskId)
+}
+
+function evictLspClients(keep: string) {
+  let live = lspLru.filter(id => clients.has(id) || starting.has(id))
+  for (const id of [...live]) {
+    if (live.length <= MAX_LIVE_LSP_CLIENTS) break
+    // A task open in its own window is that window's to manage.
+    if (id === keep || isTaskWindowed(id)) continue
+    live = live.filter(x => x !== id)
+    stopLspClient(id).catch(() => {})
+  }
+}
 
 // ── EditorView registry for cross-file go-to-definition ───────────────
 // CodeEditor registers its view here when mounted; displayFile reads it
@@ -368,8 +394,18 @@ function createTauriTransport(taskId: string, workspaceFolders?: Array<{ uri: st
  * Get or create an LSP client for a task's worktree.
  */
 export async function getLspClient(taskId: string, worktreePath: string): Promise<LSPClient> {
+  touchLsp(taskId)
   const existing = clients.get(taskId)
   if (existing?.connected) return existing
+  const pending = starting.get(taskId)
+  if (pending) return pending
+  const p = startLspClient(taskId, worktreePath).finally(() => starting.delete(taskId))
+  starting.set(taskId, p)
+  evictLspClients(taskId)
+  return p
+}
+
+async function startLspClient(taskId: string, worktreePath: string): Promise<LSPClient> {
 
   // Start the language server process in Rust
   try {
@@ -381,6 +417,11 @@ export async function getLspClient(taskId: string, worktreePath: string): Promis
       { id: `lsp:${taskId}:start`, duration: 10000 },
     )
     throw e
+  }
+  // Evicted (or the task was deleted) while the process was starting.
+  if (!lspLru.includes(taskId)) {
+    await ipc.lspStop(taskId).catch(() => {})
+    throw new Error('LSP client stopped before it finished starting')
   }
   worktreePaths.set(taskId, worktreePath)
 
@@ -460,6 +501,8 @@ function scheduleProjectRecheck(taskId: string) {
  * Stop and clean up the LSP client for a task.
  */
 export async function stopLspClient(taskId: string) {
+  const lruIdx = lspLru.indexOf(taskId)
+  if (lruIdx >= 0) lspLru.splice(lruIdx, 1)
   const client = clients.get(taskId)
   if (client) {
     client.disconnect()
@@ -512,6 +555,8 @@ listen<LspExitPayload>('lsp-exit', (event) => {
 // Watch for file tree changes:
 //   - node_modules changes restart the LSP entirely (debounced 3s)
 //   - any other change schedules a project-wide tsgo --noEmit rerun (3s)
+// `path` is the changed file's parent directory (the watcher has already
+// dropped generated/vendor dirs), so it can't be tested for a file extension.
 listen<FileTreeChangedEvent>('file-tree-changed', (event) => {
   const { taskId, path } = event.payload
   if (!clients.has(taskId)) return
@@ -526,8 +571,8 @@ listen<FileTreeChangedEvent>('file-tree-changed', (event) => {
     return
   }
 
-  // Only retypecheck on changes to source files we care about.
-  if (!isLspSupported(path)) return
+  // Empty path = ignore-rules change only; nothing to retypecheck.
+  if (!path) return
   scheduleProjectRecheck(taskId)
 })
 
