@@ -1,6 +1,6 @@
 import { Show, createMemo, createSignal, createEffect, untrack, type Component, type JSX } from 'solid-js'
 import { clsx } from 'clsx'
-import { LoaderCircle, CircleCheck, TriangleAlert, MessageCircleQuestion, ChevronRight, ChevronDown } from 'lucide-solid'
+import { LoaderCircle, CircleCheck, CircleStop, TriangleAlert, MessageCircleQuestion, ChevronRight, ChevronDown } from 'lucide-solid'
 import type { AgentBlock } from './ChatView'
 import {
   AGENT_STATE_LABEL,
@@ -38,11 +38,18 @@ export const AgentStatusIcon: Component<{ state: AgentStateKind; size?: number }
       when={props.state === 'done'}
       fallback={
         <Show
-          when={props.state === 'failed' || props.state === 'stopped'}
+          when={props.state === 'failed'}
           fallback={
             <Show
               when={props.state === 'needs-input'}
-              fallback={<LoaderCircle size={size()} class="shrink-0 animate-spin text-status-running" aria-hidden="true" />}
+              fallback={
+                <Show
+                  when={props.state === 'stopped'}
+                  fallback={<LoaderCircle size={size()} class="shrink-0 animate-spin text-status-running" aria-hidden="true" />}
+                >
+                  <CircleStop size={size()} class="shrink-0 text-text-dim" aria-hidden="true" />
+                </Show>
+              }
             >
               <MessageCircleQuestion size={size()} class="shrink-0 text-status-waiting" aria-hidden="true" />
             </Show>
@@ -158,7 +165,8 @@ export const AgentBlockView: Component<{
             <span
               class={clsx(
                 'pl-[29px] truncate text-[11px]',
-                status().state === 'failed' || status().state === 'stopped' ? 'text-status-error/80' : 'text-text-muted',
+                // Interrupted is not failed: only a failure reads as an error.
+                status().state === 'failed' ? 'text-status-error/80' : 'text-text-muted',
               )}
             >
               {detail()}

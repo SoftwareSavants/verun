@@ -23,13 +23,22 @@ const AgentStripRows: Component<{ items: readonly OutputItem[] }> = (props) => {
   const ids = createMemo(() => [...tasks().keys()], undefined, { equals: (a, b) => a.length === b.length && a.every((x, i) => x === b[i]) })
   const now = useNow()
   return (
-    <div role="status" aria-label="Background work" class="mx-4 mb-2 rounded-md bg-surface-1 ring-1 ring-outline/8 text-xs overflow-hidden">
-      <div class="px-3 pt-1.5 pb-1 flex items-center gap-2 text-[11px] text-text-muted">
-        <LoaderCircle size={11} class="animate-spin text-status-running shrink-0" aria-hidden="true" />
-        <span title="Claude picks up their results when they finish. You can keep chatting.">Running in background</span>
-      </div>
-      <Show when={ids().length > 0}>
-        <ul class="m-0 pl-0 pb-1 list-none">
+    <div
+      role="status"
+      aria-label="Running in background"
+      title="Running in background. Claude picks up their results when they finish; you can keep chatting."
+      class="mx-4 mb-2 rounded-md bg-surface-1 ring-1 ring-outline/8 text-xs overflow-hidden"
+    >
+      <Show
+        when={ids().length > 0}
+        fallback={
+          <div class="px-3 py-1.5 flex items-center gap-2 text-[11px] text-text-muted">
+            <LoaderCircle size={11} class="animate-spin text-status-running shrink-0" aria-hidden="true" />
+            <span>Running in background</span>
+          </div>
+        }
+      >
+        <ul class="m-0 pl-0 py-0.5 list-none">
           <For each={ids()}>
             {(id) => {
               const task = tasks().get(id)!

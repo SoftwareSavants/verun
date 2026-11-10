@@ -36,6 +36,19 @@ describe('AgentBlockView', () => {
     expect(text).toContain('reading types.ts · 12 tools · 41k tokens')
   })
 
+  test('an interrupted agent reads as stopped, not as an error; a failure does', () => {
+    const stopped = render(() => (
+      <AgentBlockView block={base({ progress: { taskId: 't', status: 'stopped', summary: "didn't finish before the previous session ended" } })} />
+    ))
+    expect(stopped.container.textContent).toContain('Stopped')
+    expect(stopped.container.querySelector('[class*="text-status-error"]')).toBeNull()
+    cleanup()
+    const failed = render(() => (
+      <AgentBlockView block={base({ progress: { taskId: 't', status: 'failed', error: 'Rate limited' } })} />
+    ))
+    expect(failed.container.querySelector('[class*="text-status-error"]')).not.toBeNull()
+  })
+
   test('names an untyped agent general-purpose, and says Starting before progress', () => {
     const { container } = render(() => (
       <AgentBlockView block={base({ subagentType: undefined, progress: { taskId: 't', status: 'running' } })} />
