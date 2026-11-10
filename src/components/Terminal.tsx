@@ -1,7 +1,7 @@
 import { Component, onMount, onCleanup, createEffect, on, createSignal, Show } from 'solid-js'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { WebLinksAddon } from '@xterm/addon-web-links'
+import { createWebLinksAddon } from '../lib/terminalWebLinks'
 import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 import type { OutputItem } from '../types'
@@ -176,7 +176,7 @@ export const Terminal: Component<Props> = (props) => {
       setResultCount(e.resultCount)
     })
     term.loadAddon(fitAddon)
-    term.loadAddon(new WebLinksAddon())
+    term.loadAddon(createWebLinksAddon())
     term.loadAddon(searchAddon)
 
     term.open(containerRef)

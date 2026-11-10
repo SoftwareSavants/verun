@@ -1,4 +1,5 @@
 import type { ILinkProvider, Terminal } from '@xterm/xterm'
+import { modPressed } from './platform'
 
 export interface FileLink {
   path: string
@@ -95,7 +96,9 @@ export function createFileLinkProvider(term: Terminal, open: (link: FileLink) =>
       text: text.slice(link.start, link.end),
       range: { start: starts[link.start], end: ends[link.end - 1] },
       decorations: { pointerCursor: true, underline: true },
-      activate: () => open(link),
+      // Cmd/Ctrl-click opens, like every editor and terminal; a plain click
+      // stays free for selecting text.
+      activate: (e: MouseEvent) => { if (modPressed(e)) open(link) },
     })))
     if (!validate) { publish(candidates); return }
     // Validation uses Rust IPC, never browser filesystem access. Missing files

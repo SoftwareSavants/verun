@@ -5,6 +5,8 @@ import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib
 import type { OutputItem, SessionStatus, AttachmentRef, AgentProgress } from '../types'
 import { AGENT_TOOLS, isTaskFinished, mergeAgentProgress } from '../lib/subagents'
 import { collapseInPlace } from '../lib/collapseInPlace'
+import { isMac, modPressed } from '../lib/platform'
+import { openFile } from '../store/editorView'
 import { AgentBlockView } from './AgentBlockView'
 import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp, MessageCircleQuestion, Loader2, Sparkles } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
@@ -695,7 +697,7 @@ function cloneBlock(b: DisplayBlock): DisplayBlock {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-const CopyButton: Component<{ text: string }> = (props) => {
+const CopyButton: Component<{ text: string; label?: string }> = (props) => {
   const [copied, setCopied] = createSignal(false)
   const handleCopy = async () => {
     await navigator.clipboard.writeText(props.text)
@@ -706,7 +708,8 @@ const CopyButton: Component<{ text: string }> = (props) => {
     <button
       class="p-1 rounded-md text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors"
       onClick={handleCopy}
-      title="Copy"
+      title={props.label ?? 'Copy'}
+      aria-label={props.label ?? 'Copy'}
     >
       <Show when={copied()} fallback={<Copy size={13} />}>
         <Check size={13} class="text-status-running" />
@@ -867,8 +870,8 @@ const ThinkingBlockView: Component<{ id: string; text: string }> = (props) => {
           </Show>
           <span class="italic">Thinking</span>
           <Show when={!expanded()}>
-            <span class="text-text-dim/60 truncate max-w-sm">
-              — {props.text.split('\n')[0].slice(0, 80)}
+            <span class="text-text-dim truncate max-w-sm">
+              {props.text.split('\n')[0].slice(0, 80)}
             </span>
           </Show>
         </button>
@@ -919,7 +922,22 @@ function formatQuestions(parsed: ToolInput | undefined): string | null {
   }).join('\n')
 }
 
-export const ToolBlockView: Component<{ id: string; tool: string; input: string; result?: { text: string; isError: boolean } }> = (props) => {
+const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+const WORKTREE_PREFIX = /^.*\.verun\/worktrees\/[^/]+\//
+
+/** The first non-empty line of a tool's error, shown on its collapsed row. */
+const firstErrorLine = (text: string) => text.split('\n').map(l => l.trim()).find(Boolean)?.slice(0, 160) ?? ''
+
+export const ToolBlockView: Component<{
+  id: string
+  tool: string
+  input: string
+  result?: { text: string; isError: boolean }
+  /** The session is still working, so a tool without a result is running. */
+  live?: boolean
+  /** Lets Cmd/Ctrl-click on a file tool's row open the file. */
+  taskId?: string
+}> = (props) => {
   const [expanded, setExpanded] = createSignal(expandedTools.get(props.id) ?? false)
   const set = (next: boolean) => {
     setExpanded(next)
@@ -927,7 +945,22 @@ export const ToolBlockView: Component<{ id: string; tool: string; input: string;
   }
   let root: HTMLDivElement | undefined
   let head: HTMLDivElement | undefined
-  const toggle = () => expanded() ? collapseInPlace(root, head, () => set(false)) : set(true)
+  /** A file inside the task's worktree this row is about, if any. */
+  const filePath = () => {
+    const p = FILE_TOOLS.has(props.tool) ? parsedInput()?.file_path : undefined
+    return p && WORKTREE_PREFIX.test(p) ? p.replace(WORKTREE_PREFIX, '') : undefined
+  }
+  const toggle = (e: MouseEvent) => {
+    const path = filePath()
+    if (path && props.taskId && modPressed(e)) {
+      openFile(props.taskId, path, path.split('/').pop() || path)
+      return
+    }
+    if (expanded()) collapseInPlace(root, head, () => set(false))
+    else set(true)
+  }
+  const failed = () => !!props.result?.isError
+  const running = () => !props.result && !!props.live
   const hasResult = () => !!props.result
   const isQuestion = () => props.tool === 'AskUserQuestion'
   // Parsed once per input, not per read: preview, summary and the question
@@ -980,21 +1013,34 @@ export const ToolBlockView: Component<{ id: string; tool: string; input: string;
     <div ref={root} class="px-5 py-0.5">
       <div ref={head} class={pinnedClass(expanded())} style={pinnedStyle(expanded())}>
       <button
-        class="flex items-center gap-1.5 text-xs text-text-dim hover:text-text-muted transition-colors"
+        class="max-w-full flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors"
         aria-expanded={expanded()}
+        title={filePath() && props.taskId ? `${isMac ? '⌘' : 'Ctrl'}-click to open ${filePath()}` : undefined}
         onClick={toggle}
       >
-        <Show when={expanded()} fallback={<ChevronRight size={11} />}>
-          <ChevronDown size={11} />
+        <Show when={expanded()} fallback={<ChevronRight size={11} class="shrink-0" />}>
+          <ChevronDown size={11} class="shrink-0" />
         </Show>
-        <span>{props.tool}</span>
+        <span class="shrink-0">{props.tool}</span>
         <Show when={!expanded() && preview()}>
-          <span class="text-text-dim/60 truncate max-w-md font-mono text-[11px]">
-            — {preview()}
+          <span class="text-text-muted/80 truncate max-w-md font-mono text-[11px]" data-file-open={filePath() && props.taskId ? '' : undefined}>
+            {preview()}
+          </span>
+        </Show>
+        <Show when={running()}>
+          <Loader2 size={11} class="shrink-0 animate-spin text-status-running" aria-label="Running" />
+        </Show>
+        <Show when={failed()}>
+          <span class="shrink-0 flex items-center gap-1 text-status-error">
+            <X size={11} aria-label="Failed" />
+            <span class="text-[11px]">Failed</span>
           </span>
         </Show>
       </button>
       </div>
+      <Show when={failed() && !expanded() && firstErrorLine(props.result!.text)}>
+        <div class="pl-4 text-[11px] font-mono text-status-error/80 truncate">{firstErrorLine(props.result!.text)}</div>
+      </Show>
       <Show when={expanded() && hasExpandedContent()}>
         <div class="pl-4 mt-1 border-l border-border-subtle">
           <Show when={questions()}>
@@ -1008,9 +1054,13 @@ export const ToolBlockView: Component<{ id: string; tool: string; input: string;
             </pre>
           </Show>
           <Show when={hasResult()}>
+            <div class="relative group/out">
+            <div class="absolute top-0 right-1 opacity-0 group-hover/out:opacity-100 focus-within:opacity-100 transition-opacity">
+              <CopyButton text={props.result!.text} label="Copy output" />
+            </div>
             <pre
               class={clsx(
-                'text-[11px] whitespace-pre-wrap break-all font-mono leading-relaxed max-h-48 overflow-y-auto',
+                'text-[11px] whitespace-pre-wrap break-all font-mono leading-relaxed max-h-48 overflow-y-auto pr-8',
                 props.result!.isError ? 'text-status-error/80' : 'text-text-dim'
               )}
               ref={(el) => {
@@ -1024,6 +1074,7 @@ export const ToolBlockView: Component<{ id: string; tool: string; input: string;
             >
               {props.result!.text}
             </pre>
+            </div>
           </Show>
         </div>
       </Show>
@@ -1066,8 +1117,8 @@ const WakeupBlockView: Component<{ prompt: string; reason?: string }> = (props) 
         </Show>
         <span>{headline()}</span>
         <Show when={!expanded() && props.prompt}>
-          <span class="text-text-dim/60 truncate max-w-md font-mono text-[11px]">
-            — {props.prompt.split('\n')[0].slice(0, 80)}
+          <span class="text-text-dim truncate max-w-md font-mono text-[11px]">
+            {props.prompt.split('\n')[0].slice(0, 80)}
           </span>
         </Show>
       </button>
@@ -1701,7 +1752,7 @@ export const ChatView: Component<Props> = (props) => {
                             {(() => {
                               const hasCostInfo = b.turnCost || b.turnTokens
                               if (!hasCostInfo) {
-                                return <span class="text-[10px] text-text-dim/50">{formatDuration(b.durationMs!)}</span>
+                                return <span class="text-[10px] text-text-dim">{formatDuration(b.durationMs!)}</span>
                               }
                               const parts = [
                                 b.turnCost ? formatCost(b.turnCost) : '',
@@ -1709,7 +1760,7 @@ export const ChatView: Component<Props> = (props) => {
                               ].filter(Boolean).join(' · ')
                               return (
                                 <span class="relative group/dur">
-                                  <span class="text-[10px] text-text-dim/50 cursor-default">{formatDuration(b.durationMs!)}</span>
+                                  <span class="text-[10px] text-text-dim cursor-default">{formatDuration(b.durationMs!)}</span>
                                   <span class="absolute left-0 bottom-full mb-1 hidden group-hover/dur:block z-50 whitespace-nowrap px-2 py-1 rounded bg-surface-3 border border-border-active shadow-lg text-[10px] text-text-secondary">
                                     {parts}
                                   </span>
@@ -1738,7 +1789,7 @@ export const ChatView: Component<Props> = (props) => {
               <Match when={block.type === 'tool'}>
                 {(() => {
                   const b = block as ToolBlock
-                  return <ToolBlockView id={b.id} tool={b.tool} input={b.input} result={b.result} />
+                  return <ToolBlockView id={b.id} tool={b.tool} input={b.input} result={b.result} live={props.sessionStatus === 'running'} taskId={props.taskId} />
                 })()}
               </Match>
               <Match when={block.type === 'agent'}>
@@ -1759,7 +1810,7 @@ export const ChatView: Component<Props> = (props) => {
                               <Match when={child.type === 'tool'}>
                                 {(() => {
                                   const c = child as ToolBlock
-                                  return <ToolBlockView id={c.id} tool={c.tool} input={c.input} result={c.result} />
+                                  return <ToolBlockView id={c.id} tool={c.tool} input={c.input} result={c.result} live={props.sessionStatus === 'running' || props.sessionStatus === 'background'} taskId={props.taskId} />
                                 })()}
                               </Match>
                               <Match when={child.type === 'thinking'}>
