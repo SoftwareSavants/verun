@@ -38,7 +38,7 @@ export const TaskWindowShell: Component = () => {
   // For existing tasks: fires immediately with the fixed taskId.
   // For new-task windows: fires when the placeholder is replaced with the real ID.
   createEffect(on(selectedTaskId, (taskId) => {
-    if (taskId) emit('task-window-changed', { taskId, open: true })
+    if (taskId) emit('task-window-changed', { taskId, open: true, windowLabel: ctx.windowLabel })
   }))
 
   // Hydrate terminals from the Rust ring buffer whenever the selected task

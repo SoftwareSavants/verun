@@ -36,6 +36,24 @@ describe('mergeAgentProgress', () => {
   })
 })
 
+describe('mergeAgentProgress across runs', () => {
+  test('a new start replaces what the previous run left behind', () => {
+    const stopped = mergeAgentProgress(
+      mergeAgentProgress(undefined, { taskId: 't', status: 'running', startedAt: 1, description: 'Implement' }),
+      { taskId: 't', status: 'stopped', summary: "didn't finish", endedAt: 2 },
+    )
+    const again = mergeAgentProgress(stopped, { taskId: 't', status: 'running', startedAt: 3, description: 'Implement' })
+    expect(again).toEqual({ taskId: 't', status: 'running', startedAt: 3, description: 'Implement' })
+  })
+
+  test("a progress event's description is the current step, not the task", () => {
+    const a = mergeAgentProgress(undefined, { taskId: 't', status: 'running', description: 'Implement Task 15' })
+    const b = mergeAgentProgress(a, { taskId: 't', description: 'Running Confirm the revert' })
+    expect(b.description).toBe('Implement Task 15')
+    expect(b.activity).toBe('Confirm the revert')
+  })
+})
+
 test('isTaskFinished', () => {
   expect(isTaskFinished('running')).toBe(false)
   expect(isTaskFinished(undefined)).toBe(false)

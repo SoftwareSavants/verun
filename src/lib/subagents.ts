@@ -4,9 +4,19 @@ import type { AgentProgress, OutputItem } from '../types'
 /** Tool names that spawn a Claude subagent. */
 export const AGENT_TOOLS = new Set(['Agent', 'Task'])
 
-/** Fold a newer progress event into what is known about the task. */
+/**
+ * Fold a newer progress event into what is known about the task. A start
+ * begins a new run (an agent resumed with SendMessage restarts its task), so
+ * nothing from the previous run, like its "didn't finish" summary, carries over.
+ */
 export function mergeAgentProgress(prev: AgentProgress | undefined, next: AgentProgress): AgentProgress {
-  const out: AgentProgress = { ...(prev ?? { taskId: next.taskId }) }
+  const out: AgentProgress = { ...(next.startedAt === undefined && prev ? prev : { taskId: next.taskId }) }
+  // A progress event names the current step in `description` ("Running X").
+  // Verun now sends it as `activity`; older transcripts still carry it here.
+  if (next.status === undefined && next.startedAt === undefined && next.description !== undefined) {
+    const { description, ...rest } = next
+    next = { ...rest, activity: next.activity ?? description.replace(/^Running /, '') }
+  }
   for (const [k, v] of Object.entries(next)) {
     if (v !== undefined && k !== 'kind') (out as unknown as Record<string, unknown>)[k] = v
   }
@@ -36,7 +46,7 @@ export function agentActivityLine(p: AgentProgress): string {
 
 /** What the agent is doing right now, if Claude said. */
 export function agentAction(p: AgentProgress): string {
-  return p.summary || p.lastToolName || ''
+  return p.summary || p.activity || p.lastToolName || ''
 }
 
 /** An Agent call without a type runs Claude's general-purpose agent. */

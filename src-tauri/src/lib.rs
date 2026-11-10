@@ -39,13 +39,14 @@ mod transcript_source;
 mod tsgo_check;
 mod wakeup;
 mod watcher;
+mod window_session;
 mod workspace;
 mod worktree;
 
 use dashmap::DashMap;
 #[cfg(target_os = "macos")]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
-use tauri::{Emitter, Manager, RunEvent, WindowEvent};
+use tauri::{Emitter, Listener, Manager, RunEvent, WindowEvent};
 use tauri_plugin_sql::Builder as SqlBuilder;
 use tauri_plugin_updater::UpdaterExt;
 
@@ -216,7 +217,31 @@ pub fn run() {
 
             app.manage(pool);
             app.manage(db_tx);
+            let windows_path = window_session::file_path(&app_data_dir);
+            app.manage(window_session::WindowSession::new(
+                windows_path.clone(),
+                window_session::load(&windows_path),
+            ));
             app.manage(blob::AppDataDir(app_data_dir));
+            // A new-task window becomes a task window once its task exists;
+            // track it from then on so it is restored and closes cleanly.
+            let new_task_handle = app.handle().clone();
+            app.listen_any("task-window-changed", move |event| {
+                let Ok(p) = serde_json::from_str::<serde_json::Value>(event.payload()) else { return };
+                if let (Some(label), Some(task_id), Some(true)) = (
+                    p.get("windowLabel").and_then(|v| v.as_str()),
+                    p.get("taskId").and_then(|v| v.as_str()),
+                    p.get("open").and_then(|v| v.as_bool()),
+                ) {
+                    if label.starts_with("task-") {
+                        ipc::track_task_window(&new_task_handle, label, task_id);
+                    }
+                }
+            });
+            // Put back the task windows that were open when Verun last quit.
+            let restore_handle = app.handle().clone();
+            let restore_pool = app.state::<sqlx::sqlite::SqlitePool>().inner().clone();
+            tauri::async_runtime::spawn(ipc::restore_task_windows(restore_handle, restore_pool));
             // Account secrets (API keys) live in the OS keychain, never SQLite.
             // The service name carries the bundle id, so dev and prod builds
             // keep separate secrets.
@@ -312,6 +337,11 @@ pub fn run() {
                     pty::detach_window(&map, window.label());
                 }
             }
+            if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_))
+                && window.label().starts_with("task-")
+            {
+                ipc::remember_task_window_geometry(window);
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     #[cfg(target_os = "macos")]
@@ -338,7 +368,7 @@ pub fn run() {
                                 }
                             }
                             // Setup not running — clean up and let close proceed
-                            map.remove(window.label());
+                            ipc::untrack_task_window(window.app_handle(), window.label());
                             let _ = window.emit_to(
                                 "main",
                                 "task-window-changed",

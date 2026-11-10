@@ -215,6 +215,10 @@ pub struct AgentProgress {
     pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_tool_name: Option<String>,
+    /// The step the agent is on now. `task_progress` sends it as its
+    /// `description` ("Running Confirm the revert"), not the task's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -258,7 +262,10 @@ impl AgentProgress {
             task_id,
             tool_use_id: field("tool_use_id"),
             task_type: field("task_type"),
-            description: field("description"),
+            description: field("description").filter(|_| subtype != "task_progress"),
+            activity: field("description")
+                .filter(|_| subtype == "task_progress")
+                .map(|d| d.strip_prefix("Running ").map(str::to_string).unwrap_or(d)),
             subagent_type: field("subagent_type"),
             is_backgrounded: v
                 .get("is_backgrounded")
@@ -278,12 +285,18 @@ impl AgentProgress {
 
     /// Fold a newer event for the same task into this one.
     fn merge(&mut self, newer: AgentProgress) {
+        // A start begins a new run (an agent resumed with SendMessage):
+        // nothing from the previous one carries over.
+        if newer.started_at.is_some() {
+            *self = newer;
+            return;
+        }
         macro_rules! take {
             ($($f:ident),*) => { $( if newer.$f.is_some() { self.$f = newer.$f; } )* };
         }
         take!(
             tool_use_id, task_type, description, subagent_type, status, is_backgrounded,
-            total_tokens, tool_uses, duration_ms, last_tool_name, summary, error, started_at, ended_at
+            total_tokens, tool_uses, duration_ms, last_tool_name, activity, summary, error, started_at, ended_at
         );
     }
 }
@@ -3584,6 +3597,29 @@ mod tests {
         assert_eq!(v[0]["status"], "running");
         assert_eq!(v[0]["toolUses"], 2);
         assert_eq!(v[1]["taskId"], "t2");
+    }
+
+    #[test]
+    fn a_progress_description_is_the_current_step() {
+        let started = r#"{"type":"system","subtype":"task_started","task_id":"t1","description":"Implement Task 15"}"#;
+        let progress = r#"{"type":"system","subtype":"task_progress","task_id":"t1","description":"Running Confirm the revert"}"#;
+        let v = parsed(&[started, progress]);
+        assert_eq!(v[0]["description"], "Implement Task 15");
+        assert!(v[1].get("description").is_none());
+        assert_eq!(v[1]["activity"], "Confirm the revert");
+        let c = parsed_coalesced(&[started, progress]);
+        assert_eq!(c[0]["description"], "Implement Task 15");
+        assert_eq!(c[0]["activity"], "Confirm the revert");
+    }
+
+    #[test]
+    fn a_restarted_task_drops_what_its_last_run_left() {
+        let stopped = r#"{"type":"system","subtype":"task_notification","task_id":"t1","status":"stopped","summary":"didn't finish"}"#;
+        let again = r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"toolu_S","description":"Implement"}"#;
+        let c = parsed_coalesced(&[stopped, again]);
+        assert_eq!(c[0]["status"], "running");
+        assert!(c[0].get("summary").is_none());
+        assert!(c[0].get("endedAt").is_none());
     }
 
     fn text(t: &str) -> OutputItem {

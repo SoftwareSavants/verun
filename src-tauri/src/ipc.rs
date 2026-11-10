@@ -3854,15 +3854,29 @@ pub async fn open_task_window(
     task_id: String,
     task_name: Option<String>,
 ) -> Result<(), String> {
+    show_task_window(&app, &task_id, task_name.as_deref(), None, true)
+}
+
+/// Open (or focus) the window for a task. `rect` is a remembered logical
+/// position and size; it is used only if it still lands on a screen.
+pub fn show_task_window(
+    app: &AppHandle,
+    task_id: &str,
+    task_name: Option<&str>,
+    rect: Option<crate::window_session::Rect>,
+    focus: bool,
+) -> Result<(), String> {
     let label = format!("task-{task_id}");
 
     if let Some(win) = app.get_webview_window(&label) {
-        // unminimize + show first — set_focus alone is unreliable on macOS
-        // when the window is minimized or behind another app.
-        let _ = win.unminimize();
-        let _ = win.show();
-        win.set_focus()
-            .map_err(|e| format!("Failed to focus window: {e}"))?;
+        if focus {
+            // unminimize + show first — set_focus alone is unreliable on macOS
+            // when the window is minimized or behind another app.
+            let _ = win.unminimize();
+            let _ = win.show();
+            win.set_focus()
+                .map_err(|e| format!("Failed to focus window: {e}"))?;
+        }
         let _ = app.emit(
             "task-window-changed",
             serde_json::json!({ "taskId": task_id, "open": true }),
@@ -3870,15 +3884,19 @@ pub async fn open_task_window(
         return Ok(());
     }
 
-    let title = task_name.unwrap_or_else(|| "Task".into());
+    let title = task_name.unwrap_or("Task");
     let url = format!("index.html?windowType=task&taskId={task_id}&windowLabel={label}");
 
-    let builder =
-        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
-            .title(&title)
+    let rect = rect.and_then(|r| crate::window_session::placement(r, &monitor_rects(app)));
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::App(url.into()))
+            .title(title)
             .inner_size(1200.0, 800.0)
             .min_inner_size(800.0, 600.0)
             .visible(false);
+    if let Some(r) = rect {
+        builder = builder.position(r.x, r.y).inner_size(r.width, r.height);
+    }
     #[cfg(target_os = "macos")]
     let builder = builder
         .hidden_title(true)
@@ -3887,17 +3905,97 @@ pub async fn open_task_window(
         .build()
         .map_err(|e| format!("Failed to create task window: {e}"))?;
 
-    // Track label → taskId so the close handler can emit the right event
-    if let Some(map) = app.try_state::<crate::WindowTaskMap>() {
-        map.insert(label, task_id.clone());
-    }
-
+    track_task_window(app, &label, task_id);
     let _ = app.emit(
         "task-window-changed",
         serde_json::json!({ "taskId": task_id, "open": true }),
     );
 
     Ok(())
+}
+
+/// Record that `label` shows `task_id`: the close handler needs it to tell the
+/// main window, and the window session needs it to restore it on next launch.
+pub fn track_task_window(app: &AppHandle, label: &str, task_id: &str) {
+    if let Some(map) = app.try_state::<crate::WindowTaskMap>() {
+        map.insert(label.to_string(), task_id.to_string());
+    }
+    if let Some(session) = app.try_state::<crate::window_session::WindowSession>() {
+        session.opened(task_id);
+    }
+}
+
+/// The user closed a task window: forget it for the next launch too.
+pub fn untrack_task_window(app: &AppHandle, label: &str) -> Option<String> {
+    let (_, task_id) = app.try_state::<crate::WindowTaskMap>()?.remove(label)?;
+    if let Some(session) = app.try_state::<crate::window_session::WindowSession>() {
+        session.closed(&task_id);
+    }
+    Some(task_id)
+}
+
+fn monitor_rects(app: &AppHandle) -> Vec<crate::window_session::Rect> {
+    app.available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let scale = m.scale_factor();
+            let pos = m.position().to_logical::<f64>(scale);
+            let size = m.size().to_logical::<f64>(scale);
+            crate::window_session::Rect { x: pos.x, y: pos.y, width: size.width, height: size.height }
+        })
+        .collect()
+}
+
+/// Remember a task window's position and size after it moves or resizes.
+pub fn remember_task_window_geometry(window: &tauri::Window) {
+    let app = window.app_handle();
+    let Some(task_id) = app
+        .try_state::<crate::WindowTaskMap>()
+        .and_then(|m| m.get(window.label()).map(|e| e.value().clone()))
+    else {
+        return;
+    };
+    // A minimized or fullscreen window has no useful geometry to restore.
+    if window.is_minimized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+    let (Ok(scale), Ok(pos), Ok(size)) = (window.scale_factor(), window.outer_position(), window.inner_size()) else {
+        return;
+    };
+    let pos = pos.to_logical::<f64>(scale);
+    let size = size.to_logical::<f64>(scale);
+    if let Some(session) = app.try_state::<crate::window_session::WindowSession>() {
+        session.moved(
+            &task_id,
+            crate::window_session::Rect { x: pos.x, y: pos.y, width: size.width, height: size.height },
+        );
+    }
+}
+
+/// Reopen the task windows that were open when Verun last quit, skipping
+/// tasks that were deleted or archived since.
+pub async fn restore_task_windows(app: AppHandle, pool: SqlitePool) {
+    let Some(session) = app.try_state::<crate::window_session::WindowSession>() else { return };
+    let saved = session.snapshot();
+    let mut restorable = Vec::new();
+    for w in saved.windows {
+        if let Ok(Some(task)) = db::get_task(&pool, &w.task_id).await {
+            if !task.archived {
+                restorable.push((w, task.name));
+            }
+        }
+    }
+    let keep: std::collections::HashSet<String> = restorable.iter().map(|(w, _)| w.task_id.clone()).collect();
+    session.retain(|id| keep.contains(id));
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        for (w, name) in restorable {
+            if let Err(e) = show_task_window(&handle, &w.task_id, name.as_deref(), w.rect, false) {
+                eprintln!("[verun] restoring task window failed: {e}");
+            }
+        }
+    });
 }
 
 /// Bring the calling window to the front (used when a notification is clicked).
@@ -3942,13 +4040,11 @@ pub async fn force_close_task_window(
     app: AppHandle,
     window: tauri::WebviewWindow,
 ) -> Result<(), String> {
-    if let Some(map) = app.try_state::<crate::WindowTaskMap>() {
-        if let Some((_, task_id)) = map.remove(window.label()) {
-            let _ = app.emit(
-                "task-window-changed",
-                serde_json::json!({ "taskId": task_id, "open": false }),
-            );
-        }
+    if let Some(task_id) = untrack_task_window(&app, window.label()) {
+        let _ = app.emit(
+            "task-window-changed",
+            serde_json::json!({ "taskId": task_id, "open": false }),
+        );
     }
     window
         .destroy()

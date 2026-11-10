@@ -411,6 +411,63 @@ describe('agent blocks (subagents)', () => {
     expect(c.children[0].text).toBe('orphan child')
   })
 
+  describe('an agent resumed with SendMessage', () => {
+    // Claude tags the resumed agent's actions with its original Agent call id,
+    // and its task events with the SendMessage call.
+    const resumed: OutputItem[] = [
+      { kind: 'userMessage', text: 'go', timestamp: 1 } as OutputItem,
+      agentStart('toolu_A', '{"description":"Implement Task 15","subagent_type":"general-purpose"}'),
+      progress({ taskId: 't1', toolUseId: 'toolu_A', status: 'running', description: 'Implement Task 15', startedAt: 100, isBackgrounded: true, taskType: 'local_agent' }),
+      progress({ taskId: 't1', status: 'stopped', summary: "didn't finish before the previous session ended", endedAt: 200 }),
+      { kind: 'userMessage', text: 'continue', timestamp: 2 } as OutputItem,
+      { kind: 'toolStart', tool: 'SendMessage', input: '{"to":"t1","message":"Resume"}', id: 'toolu_S' } as unknown as OutputItem,
+      progress({ taskId: 't1', toolUseId: 'toolu_S', status: 'running', description: 'Implement Task 15', startedAt: 300, isBackgrounded: true, taskType: 'local_agent', subagentType: 'general-purpose' }),
+      { kind: 'toolResult', text: '{"success":true}', isError: false, toolUseId: 'toolu_S' } as unknown as OutputItem,
+      sub('toolu_A', { kind: 'text', text: 'Resuming.' }),
+      progress({ taskId: 't1', toolUseId: 'toolu_S', activity: 'Confirm the revert', toolUses: 1 }),
+    ]
+
+    test('shows the resumed run where it was resumed, with its task and live progress', () => {
+      const blocks = rebuildBlocks(resumed)
+      expect(blocks.filter(b => b.type === 'tool')).toEqual([])
+      const [first, again] = blocks.filter(b => b.type === 'agent') as unknown as Agent[]
+      expect(first.toolUseId).toBe('toolu_A')
+      expect(first.progress?.status).toBe('stopped')
+      expect(again.toolUseId).toBe('toolu_S')
+      expect(again.description).toBe('Implement Task 15')
+      expect(again.progress).toMatchObject({ status: 'running', toolUses: 1 })
+      expect(again.progress?.summary).toBeUndefined()
+      expect(again.children.map(c => c.text)).toEqual(['Resuming.'])
+      expect(blocks.indexOf(again as never)).toBeGreaterThan(blocks.indexOf(first as never))
+    })
+
+    test('builds the same blocks fed one item at a time', () => {
+      const b = createBlockBuilder()
+      for (let i = 1; i <= resumed.length; i++) b.append(resumed.slice(0, i))
+      expect(JSON.stringify(b.blocks)).toBe(JSON.stringify(rebuildBlocks(resumed)))
+    })
+
+    test('a background shell keeps its Bash row', () => {
+      const items: OutputItem[] = [
+        { kind: 'toolStart', tool: 'Bash', input: '{"command":"pnpm test"}', id: 'toolu_X' } as unknown as OutputItem,
+        progress({ taskId: 'b1', toolUseId: 'toolu_X', status: 'running', startedAt: 1, taskType: 'local_bash' }),
+      ]
+      expect(rebuildBlocks(items).map(b => b.type)).toEqual(['tool'])
+    })
+  })
+
+  test('children of an unknown parent join the agent that just started, for transcripts recorded without call ids', () => {
+    const items: OutputItem[] = [
+      { kind: 'toolStart', tool: 'SendMessage', input: '{}', id: 'toolu_S' } as unknown as OutputItem,
+      progress({ taskId: 't1', toolUseId: 'toolu_S', status: 'running', description: 'Implement Task 15', startedAt: 300, taskType: 'local_agent' }),
+      sub('toolu_OLD', { kind: 'text', text: 'Resuming.' }),
+    ]
+    const all = agents(items)
+    expect(all).toHaveLength(1)
+    expect(all[0].description).toBe('Implement Task 15')
+    expect(all[0].children.map(c => c.text)).toEqual(['Resuming.'])
+  })
+
   test('main text after an agent block keeps streaming into the main list', () => {
     const blocks = rebuildBlocks(transcript)
     expect(blocks.some(b => b.type === 'assistant' && b.text === 'main keeps going')).toBe(true)

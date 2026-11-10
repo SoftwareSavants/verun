@@ -32,6 +32,8 @@ describe('AgentStrip', () => {
     expect(text).toContain('shell')
     expect(text).toContain('pnpm dev')
     expect(text).not.toContain('Finished one')
+    // One row per task; the rows say what runs, no separate heading.
+    expect(text).not.toContain('Running in background')
   })
 
   test("clicking an agent row reveals that agent's block", () => {

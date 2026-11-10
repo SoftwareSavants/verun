@@ -330,6 +330,8 @@ export interface AgentProgress {
   toolUses?: number;
   durationMs?: number;
   lastToolName?: string;
+  /** The step the agent is on now, e.g. "Confirm the revert". */
+  activity?: string;
   summary?: string;
   error?: string;
   startedAt?: number;

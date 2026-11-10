@@ -1,9 +1,10 @@
-import { Component, For, Show, Switch, Match, batch, createEffect, createMemo, on, createSignal, onMount, onCleanup, untrack } from 'solid-js'
+import { Component, For, Show, Switch, Match, batch, createEffect, createMemo, on, createSignal, onMount, onCleanup, untrack, type JSX } from 'solid-js'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { OutputItem, SessionStatus, AttachmentRef, AgentProgress } from '../types'
-import { AGENT_TOOLS, mergeAgentProgress } from '../lib/subagents'
+import { AGENT_TOOLS, isTaskFinished, mergeAgentProgress } from '../lib/subagents'
+import { collapseInPlace } from '../lib/collapseInPlace'
 import { AgentBlockView } from './AgentBlockView'
 import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp, MessageCircleQuestion, Loader2, Sparkles } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
@@ -265,6 +266,12 @@ export function createBlockBuilder(): BlockBuilder {
   // Task progress by task id, and task id by tool_use id (later events may omit it).
   const tasks = new Map<string, AgentProgress>()
   const taskByToolUse = new Map<string, string>()
+  // The block showing each task's current run. A resumed agent gets a new
+  // block where it was resumed; its actions still carry the first call's id.
+  const agentByTask = new Map<string, AgentBlock>()
+  // The agent that started last, for actions whose parent call was recorded
+  // without an id (transcripts from before Verun kept them).
+  let lastStarted: AgentBlock | undefined
 
   const parseAgentInput = (input: string): { description?: unknown; subagent_type?: unknown } => {
     if (!input) return {}
@@ -300,13 +307,43 @@ export function createBlockBuilder(): BlockBuilder {
       agents.set(toolUseId, a)
       const taskId = taskByToolUse.get(toolUseId)
       const p = taskId ? tasks.get(taskId) : undefined
-      if (p) applyProgress(a, p)
+      if (p && taskId) {
+        applyProgress(a, p)
+        agentByTask.set(taskId, a)
+      }
     }
     return a
   }
 
+  const isAgentTask = (p: AgentProgress) => p.taskType === 'local_agent' || !!p.subagentType
+  /** A tool row that turned out to start an agent run (SendMessage resuming one) becomes its block. */
+  const adoptToolAsAgent = (toolUseId: string): AgentBlock | undefined => {
+    const t = toolsById.get(toolUseId)
+    if (!t || t.agent) return undefined
+    const i = blocks.lastIndexOf(t.block)
+    if (i < 0) return undefined
+    const a: AgentBlock = { type: 'agent', id: t.block.id, toolUseId, tool: t.block.tool, input: '', children: [] }
+    if (t.block.result) a.result = t.block.result
+    blocks[i] = a
+    dirty.add(i)
+    toolsById.delete(toolUseId)
+    agents.set(toolUseId, a)
+    agentIndex.set(a, i)
+    return a
+  }
+  const agentForParent = (parent: string): AgentBlock => {
+    const taskId = taskByToolUse.get(parent)
+    const current = (taskId ? agentByTask.get(taskId) : undefined) ?? agents.get(parent)
+    if (current) return current
+    if (lastStarted && lastStarted.children.length === 0 && !isTaskFinished(lastStarted.progress?.status)) {
+      agents.set(parent, lastStarted)
+      return lastStarted
+    }
+    return pushAgent('Agent', '', parent)
+  }
+
   const foldSubagent = (parent: string, item: OutputItem) => {
-    const a = agents.get(parent) ?? pushAgent('Agent', '', parent)
+    const a = agentForParent(parent)
     const children = a.children
     const last = children[children.length - 1]
     switch (item.kind) {
@@ -575,8 +612,13 @@ export function createBlockBuilder(): BlockBuilder {
         const merged = mergeAgentProgress(tasks.get(p.taskId), p)
         tasks.set(p.taskId, merged)
         if (p.toolUseId) taskByToolUse.set(p.toolUseId, p.taskId)
-        const a = merged.toolUseId ? agents.get(merged.toolUseId) : undefined
+        const starts = p.startedAt !== undefined
+        const a = (merged.toolUseId ? agents.get(merged.toolUseId) : undefined)
+          ?? (starts && p.toolUseId && isAgentTask(merged) ? adoptToolAsAgent(p.toolUseId) : undefined)
+          ?? agentByTask.get(p.taskId)
         if (a) {
+          agentByTask.set(p.taskId, a)
+          if (starts) lastStarted = a
           applyProgress(a, merged)
           touchAgent(a)
         }
@@ -795,18 +837,29 @@ export const ForkButton: Component<{ sessionId: string; messageUuid: string }> =
   )
 }
 
+// An expanded block's header stays pinned to the top of the transcript (or
+// under its agent's pinned header) while you read its body, so collapsing it
+// never means scrolling back up. See collapseInPlace for the other half.
+const pinnedClass = (on: boolean) => on ? 'sticky z-10 py-0.5 -my-0.5' : undefined
+const pinnedStyle = (on: boolean): JSX.CSSProperties | undefined =>
+  on ? { top: 'var(--sticky-top, 0px)', background: 'var(--sticky-bg, var(--surface-0))' } : undefined
+
 const ThinkingBlockView: Component<{ id: string; text: string }> = (props) => {
   const [expanded, setExpanded] = createSignal(expandedThinking.get(props.id) ?? false)
-  const toggle = () => {
-    const next = !expanded()
+  const set = (next: boolean) => {
     setExpanded(next)
     expandedThinking.set(props.id, next)
   }
+  let root: HTMLDivElement | undefined
+  let head: HTMLDivElement | undefined
+  const toggle = () => expanded() ? collapseInPlace(root, head, () => set(false)) : set(true)
   return (
-    <div class="px-5 py-1">
+    <div ref={root} class="px-5 py-1">
       <div class="flex-1 min-w-0">
+        <div ref={head} class={pinnedClass(expanded())} style={pinnedStyle(expanded())}>
         <button
           class="flex items-center gap-1.5 text-xs text-text-dim hover:text-text-muted transition-colors"
+          aria-expanded={expanded()}
           onClick={toggle}
         >
           <Show when={expanded()} fallback={<ChevronRight size={11} />}>
@@ -819,6 +872,7 @@ const ThinkingBlockView: Component<{ id: string; text: string }> = (props) => {
             </span>
           </Show>
         </button>
+        </div>
         <Show when={expanded()}>
           <pre
             class="text-xs text-text-dim whitespace-pre-wrap font-mono leading-relaxed mt-1.5 max-h-60 overflow-y-auto pl-4 border-l border-border-subtle"
@@ -867,11 +921,13 @@ function formatQuestions(parsed: ToolInput | undefined): string | null {
 
 export const ToolBlockView: Component<{ id: string; tool: string; input: string; result?: { text: string; isError: boolean } }> = (props) => {
   const [expanded, setExpanded] = createSignal(expandedTools.get(props.id) ?? false)
-  const toggle = () => {
-    const next = !expanded()
+  const set = (next: boolean) => {
     setExpanded(next)
     expandedTools.set(props.id, next)
   }
+  let root: HTMLDivElement | undefined
+  let head: HTMLDivElement | undefined
+  const toggle = () => expanded() ? collapseInPlace(root, head, () => set(false)) : set(true)
   const hasResult = () => !!props.result
   const isQuestion = () => props.tool === 'AskUserQuestion'
   // Parsed once per input, not per read: preview, summary and the question
@@ -921,9 +977,11 @@ export const ToolBlockView: Component<{ id: string; tool: string; input: string;
   }
 
   return (
-    <div class="px-5 py-0.5">
+    <div ref={root} class="px-5 py-0.5">
+      <div ref={head} class={pinnedClass(expanded())} style={pinnedStyle(expanded())}>
       <button
         class="flex items-center gap-1.5 text-xs text-text-dim hover:text-text-muted transition-colors"
+        aria-expanded={expanded()}
         onClick={toggle}
       >
         <Show when={expanded()} fallback={<ChevronRight size={11} />}>
@@ -936,6 +994,7 @@ export const ToolBlockView: Component<{ id: string; tool: string; input: string;
           </span>
         </Show>
       </button>
+      </div>
       <Show when={expanded() && hasExpandedContent()}>
         <div class="pl-4 mt-1 border-l border-border-subtle">
           <Show when={questions()}>
@@ -986,16 +1045,20 @@ const expandedWakeups = new Map<string, boolean>()
 const WakeupBlockView: Component<{ prompt: string; reason?: string }> = (props) => {
   const key = () => `${props.reason ?? ''}::${props.prompt}`
   const [expanded, setExpanded] = createSignal(expandedWakeups.get(key()) ?? false)
-  const toggle = () => {
-    const next = !expanded()
+  const set = (next: boolean) => {
     setExpanded(next)
     expandedWakeups.set(key(), next)
   }
+  let root: HTMLDivElement | undefined
+  let head: HTMLDivElement | undefined
+  const toggle = () => expanded() ? collapseInPlace(root, head, () => set(false)) : set(true)
   const headline = () => props.reason ? `Wakeup fired — ${props.reason}` : 'Wakeup fired'
   return (
-    <div class="px-5 py-0.5">
+    <div ref={root} class="px-5 py-0.5">
+      <div ref={head} class={pinnedClass(expanded())} style={pinnedStyle(expanded())}>
       <button
         class="flex items-center gap-1.5 text-xs text-text-dim hover:text-text-muted transition-colors"
+        aria-expanded={expanded()}
         onClick={toggle}
       >
         <Show when={expanded()} fallback={<ChevronRight size={11} />}>
@@ -1008,6 +1071,7 @@ const WakeupBlockView: Component<{ prompt: string; reason?: string }> = (props) 
           </span>
         </Show>
       </button>
+      </div>
       <Show when={expanded() && props.prompt}>
         <div class="pl-4 mt-1 border-l border-border-subtle">
           <pre class="text-[11px] text-text-muted whitespace-pre-wrap font-mono leading-relaxed">
@@ -1256,14 +1320,10 @@ export const ChatView: Component<Props> = (props) => {
     && !!props.sessionId
     && sideQuestionPanel()?.sessionId !== props.sessionId
     && (btwSticky() || (isAtBottom() && hasAiTurn()))
-  // Reserve extra bottom space only when the pill would otherwise sit on top
-  // of the user's last message: agent isn't streaming and the last rendered
-  // block is user-authored (e.g. user interrupted a turn). Checking the last
-  // *block* (not raw output) ignores trailing turnEnd/turnSnapshot items.
-  const needsBtwPad = () =>
-    showBtw()
-    && props.sessionStatus !== 'running'
-    && blocks[blocks.length - 1]?.type === 'user'
+  // Reserve room under the last block whenever the pill shows, so it never
+  // sits on a message, a tool row or an agent block's status. Independent of
+  // scroll position, so the padding can't toggle the pill it makes room for.
+  const needsBtwPad = () => props.agentType === 'claude' && !!props.sessionId && hasAiTurn()
 
   // Search state
   const [showSearch, setShowSearch] = createSignal(false)
@@ -1570,6 +1630,7 @@ export const ChatView: Component<Props> = (props) => {
       </Show>
       <div
         ref={containerRef}
+        data-chat-scroll
         class="w-full h-full overflow-y-auto overflow-x-hidden"
         onScroll={handleScroll}
         onClick={handleLinkClick}
