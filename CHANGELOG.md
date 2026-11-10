@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.16.2 - 2026-11-10
+
 - Links and file paths open on Cmd-click (Ctrl-click elsewhere) in chat, rendered markdown and terminals, like an editor; a plain click is free for selecting text. They underline with a pointer only while the modifier is held, external links carry a ↗, and a path like `src/a.ts:12:3` opens at that line and column
 - Failed tool rows say "Failed" with their first error line while collapsed, running ones show a spinner, Cmd-click on a Read/Edit/Write row opens its file, and an expanded row's output has a copy button
 - Code blocks in chat get a header with their language and a copy button (copies the code only); paths in tables lose their chip styling, and tool arguments, thinking previews and turn durations are easier to read
