@@ -2,7 +2,9 @@ import { Component, For, Show, Switch, Match, batch, createEffect, createMemo, o
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
-import type { OutputItem, SessionStatus, AttachmentRef } from '../types'
+import type { OutputItem, SessionStatus, AttachmentRef, AgentProgress } from '../types'
+import { AGENT_TOOLS, mergeAgentProgress } from '../lib/subagents'
+import { AgentBlockView } from './AgentBlockView'
 import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp, MessageCircleQuestion, Loader2, Sparkles } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
@@ -18,7 +20,7 @@ import {
   sideQuestionState,
 } from '../store/sideQuestion'
 import { addToast, setSelectedTaskId, setSelectedSessionIdForTask } from '../store/ui'
-import { sessionById, setSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, sendMessage } from '../store/sessions'
+import { sessionById, setSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, sendMessage, pendingApprovals } from '../store/sessions'
 import { planModeForSession, thinkingModeForSession, fastModeForSession } from '../store/sessionContext'
 import { taskById, setTasks } from '../store/tasks'
 import { formatCost, formatTokens } from '../lib/format'
@@ -123,6 +125,27 @@ interface ToolBlock {
   tool: string
   input: string
   result: { text: string; isError: boolean } | undefined
+  /** The agent's tool_use id, when reported. */
+  toolUseId?: string
+}
+/** One action of a subagent, nested in its agent block. */
+type AgentChild = ToolBlock | ThinkingBlock | { type: 'assistant'; text: string }
+/**
+ * A Claude subagent (Agent/Task call): its own actions nest here instead of
+ * in the main list, and its live progress comes from task events.
+ */
+export interface AgentBlock {
+  type: 'agent'
+  /** UI-state key, stable across rebuilds. */
+  id: string
+  toolUseId?: string
+  tool: string
+  input: string
+  description?: string
+  subagentType?: string
+  children: AgentChild[]
+  result?: { text: string; isError: boolean }
+  progress?: AgentProgress
 }
 interface SystemBlock {
   type: 'system'
@@ -159,7 +182,7 @@ interface DiffBlock {
   type: 'diff'
   diff: string
 }
-type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | SystemBlock | WakeupBlock | ErrorBlock | PlanBlock | DiffBlock
+type DisplayBlock = UserBlock | AssistantBlock | ThinkingBlock | ToolBlock | AgentBlock | SystemBlock | WakeupBlock | ErrorBlock | PlanBlock | DiffBlock
 
 export interface BlockBuilder {
   /** Blocks built so far. Owned by the builder - copy before handing to a store. */
@@ -224,13 +247,115 @@ export function createBlockBuilder(): BlockBuilder {
     turnProgress = false
   }
 
-  const lastOpenTool = (): ToolBlock | undefined => {
+  const lastOpenTool = (): ToolBlock | AgentBlock | undefined => {
     for (let i = blocks.length - 1; i >= 0; i--) {
       const b = blocks[i]
-      if (b.type === 'tool' && !b.result) return b
-      if (b.type !== 'tool') break
+      if ((b.type === 'tool' || b.type === 'agent') && !b.result) return b
+      if (b.type !== 'tool' && b.type !== 'agent') break
     }
     return undefined
+  }
+
+  // -- Subagents --
+  // Agent blocks by the Agent call's tool_use id.
+  const agents = new Map<string, AgentBlock>()
+  const agentIndex = new Map<AgentBlock, number>()
+  // Tool rows by tool_use id: main-list rows and subagent rows (with their agent).
+  const toolsById = new Map<string, { block: ToolBlock; agent?: AgentBlock }>()
+  // Task progress by task id, and task id by tool_use id (later events may omit it).
+  const tasks = new Map<string, AgentProgress>()
+  const taskByToolUse = new Map<string, string>()
+
+  const parseAgentInput = (input: string): { description?: unknown; subagent_type?: unknown } => {
+    if (!input) return {}
+    try {
+      const v = JSON.parse(input)
+      return v && typeof v === 'object' ? v : {}
+    } catch { return {} }
+  }
+  const setAgentInput = (a: AgentBlock, input: string) => {
+    if (!input || input === a.input) return
+    a.input = input
+    const parsed = parseAgentInput(input)
+    if (!a.description && typeof parsed.description === 'string') a.description = parsed.description
+    if (!a.subagentType && typeof parsed.subagent_type === 'string') a.subagentType = parsed.subagent_type
+  }
+  const applyProgress = (a: AgentBlock, p: AgentProgress) => {
+    a.progress = p
+    if (p.description) a.description = p.description
+    if (p.subagentType) a.subagentType = p.subagentType
+  }
+  const touchAgent = (a: AgentBlock) => {
+    const i = agentIndex.get(a)
+    if (i !== undefined) dirty.add(i)
+  }
+  const pushAgent = (tool: string, input: string, toolUseId?: string): AgentBlock => {
+    flushText(); flushThinking()
+    const a: AgentBlock = { type: 'agent', id: `tool-${toolCounter++}`, tool, input: '', children: [] }
+    if (toolUseId) a.toolUseId = toolUseId
+    setAgentInput(a, input)
+    push(a)
+    agentIndex.set(a, blocks.length - 1)
+    if (toolUseId) {
+      agents.set(toolUseId, a)
+      const taskId = taskByToolUse.get(toolUseId)
+      const p = taskId ? tasks.get(taskId) : undefined
+      if (p) applyProgress(a, p)
+    }
+    return a
+  }
+
+  const foldSubagent = (parent: string, item: OutputItem) => {
+    const a = agents.get(parent) ?? pushAgent('Agent', '', parent)
+    const children = a.children
+    const last = children[children.length - 1]
+    switch (item.kind) {
+      case 'text':
+        if (!item.text) return
+        if (last && last.type === 'assistant') last.text += item.text
+        else children.push({ type: 'assistant', text: item.text })
+        break
+      case 'thinking':
+        if (!item.text) return
+        if (last && last.type === 'thinking') last.text += item.text
+        else children.push({ type: 'thinking', id: `thinking-${thinkingCounter++}`, text: item.text })
+        break
+      case 'toolStart': {
+        const known = item.id ? toolsById.get(item.id) : undefined
+        if (known) {
+          if (item.input && !known.block.input) known.block.input = item.input
+        } else if (!item.id && last && last.type === 'tool' && !last.result && last.tool === item.tool
+            && (!item.input || !last.input || item.input === last.input)) {
+          if (item.input && !last.input) last.input = item.input
+        } else {
+          const t: ToolBlock = { type: 'tool', id: `tool-${toolCounter++}`, tool: item.tool, input: item.input, result: undefined }
+          if (item.id) {
+            t.toolUseId = item.id
+            toolsById.set(item.id, { block: t, agent: a })
+          }
+          children.push(t)
+        }
+        break
+      }
+      case 'toolResult': {
+        const result = { text: item.text, isError: item.isError }
+        const byId = item.toolUseId ? toolsById.get(item.toolUseId) : undefined
+        let open: ToolBlock | undefined = byId?.agent === a ? byId.block : undefined
+        if (!open) {
+          for (let i = children.length - 1; i >= 0; i--) {
+            const c = children[i]
+            if (c.type !== 'tool') break
+            if (!c.result) open = c
+          }
+        }
+        if (open) open.result = result
+        else children.push({ type: 'tool', id: `tool-${toolCounter++}`, tool: 'Tool', input: '', result })
+        break
+      }
+      default:
+        return
+    }
+    touchAgent(a)
   }
 
   const setFlag = (b: AssistantBlock, key: 'isLastInTurn' | 'isStreaming', value: boolean | undefined) => {
@@ -288,6 +413,33 @@ export function createBlockBuilder(): BlockBuilder {
         turnProgress = true
         // Hide ExitPlanMode from the chat — it's shown as a dedicated plan overlay
         if (item.tool === 'ExitPlanMode') break
+        // A call already shown, e.g. a subagent's tool echoed by its approval request.
+        const knownAgent = item.id ? agents.get(item.id) : undefined
+        const knownTool = item.id ? toolsById.get(item.id) : undefined
+        if (knownAgent) {
+          setAgentInput(knownAgent, item.input)
+          touchAgent(knownAgent)
+          break
+        }
+        if (knownTool) {
+          if (item.input && !knownTool.block.input) {
+            knownTool.block.input = item.input
+            if (knownTool.agent) touchAgent(knownTool.agent)
+            else touch(knownTool.block)
+          }
+          break
+        }
+        if (AGENT_TOOLS.has(item.tool)) {
+          const lastBlock = blocks[blocks.length - 1]
+          if (!item.id && lastBlock && lastBlock.type === 'agent' && !lastBlock.result && lastBlock.tool === item.tool
+              && (!item.input || !lastBlock.input || item.input === lastBlock.input)) {
+            setAgentInput(lastBlock, item.input)
+            dirty.add(blocks.length - 1)
+          } else {
+            pushAgent(item.tool, item.input, item.id)
+          }
+          break
+        }
         flushText(); flushThinking()
         // Deduplicate: if the last block is an open tool with the same name AND same input,
         // it's a duplicate from control_request + content_block_start. Merge it.
@@ -300,17 +452,27 @@ export function createBlockBuilder(): BlockBuilder {
             dirty.add(blocks.length - 1)
           }
         } else {
-          push({ type: 'tool', id: `tool-${toolCounter++}`, tool: item.tool, input: item.input, result: undefined })
+          const t: ToolBlock = { type: 'tool', id: `tool-${toolCounter++}`, tool: item.tool, input: item.input, result: undefined }
+          if (item.id) {
+            t.toolUseId = item.id
+            toolsById.set(item.id, { block: t })
+          }
+          push(t)
         }
         break
       }
       case 'toolResult': {
         turnProgress = true
         flushText(); flushThinking()
-        const openTool = lastOpenTool()
+        const mainTool = item.toolUseId ? toolsById.get(item.toolUseId) : undefined
+        const byId = item.toolUseId
+          ? (agents.get(item.toolUseId) ?? (mainTool && !mainTool.agent ? mainTool.block : undefined))
+          : undefined
+        const openTool = byId ?? lastOpenTool()
         if (openTool) {
           openTool.result = { text: item.text, isError: item.isError }
-          touch(openTool)
+          if (openTool.type === 'agent') touchAgent(openTool)
+          else touch(openTool)
         } else {
           push({ type: 'tool', id: `tool-${toolCounter++}`, tool: 'Tool', input: '', result: { text: item.text, isError: item.isError } })
         }
@@ -405,6 +567,21 @@ export function createBlockBuilder(): BlockBuilder {
         // chat transcript. `sessions.ts` routes these into
         // `codexLivePlans` / `planFilePathForSession` instead.
         break
+      case 'subagent':
+        foldSubagent(item.parentToolUseId, item.item)
+        break
+      case 'agentProgress': {
+        const { kind: _kind, ...p } = item
+        const merged = mergeAgentProgress(tasks.get(p.taskId), p)
+        tasks.set(p.taskId, merged)
+        if (p.toolUseId) taskByToolUse.set(p.toolUseId, p.taskId)
+        const a = merged.toolUseId ? agents.get(merged.toolUseId) : undefined
+        if (a) {
+          applyProgress(a, merged)
+          touchAgent(a)
+        }
+        break
+      }
       case 'raw':
         break
     }
@@ -460,6 +637,12 @@ export function rebuildBlocks(items: readonly OutputItem[]): DisplayBlock[] {
 function cloneBlock(b: DisplayBlock): DisplayBlock {
   switch (b.type) {
     case 'tool': return { ...b, result: b.result && { ...b.result } }
+    case 'agent': return {
+      ...b,
+      result: b.result && { ...b.result },
+      progress: b.progress && { ...b.progress },
+      children: b.children.map(c => c.type === 'tool' ? { ...c, result: c.result && { ...c.result } } : { ...c }),
+    }
     case 'assistant': return { ...b, turnTokens: b.turnTokens && { ...b.turnTokens } }
     case 'plan': return { ...b, items: b.items.map(s => ({ ...s })) }
     default: return { ...b }
@@ -1053,6 +1236,10 @@ export const ChatView: Component<Props> = (props) => {
   const [isAtBottom, setIsAtBottom] = createSignal(true)
 
   const hasAiTurn = () => props.output.some((i) => i.kind !== 'userMessage')
+  // Tool calls waiting on the user, so an agent block can say it needs input.
+  const approvalToolUseIds = createMemo(() => new Set(
+    (props.sessionId ? pendingApprovals[props.sessionId] ?? [] : []).flatMap(a => a.toolUseId ? [a.toolUseId] : []),
+  ))
   const btwState = () => props.sessionId ? sideQuestionState(props.sessionId) : undefined
   // The pill is "sticky" (visible regardless of scroll position) when there's
   // a side question in flight or an unread answer for this session - those are
@@ -1491,6 +1678,41 @@ export const ChatView: Component<Props> = (props) => {
                 {(() => {
                   const b = block as ToolBlock
                   return <ToolBlockView id={b.id} tool={b.tool} input={b.input} result={b.result} />
+                })()}
+              </Match>
+              <Match when={block.type === 'agent'}>
+                {(() => {
+                  const b = block as AgentBlock
+                  return (
+                    <AgentBlockView
+                      block={b}
+                      needsInput={b.children.some(c => c.type === 'tool' && !c.result && !!c.toolUseId && approvalToolUseIds().has(c.toolUseId))}
+                      sessionLive={props.sessionStatus === 'running' || props.sessionStatus === 'background'}
+                    >
+                      <div class="pl-3">
+                        <For each={b.children}>
+                          {(child) => (
+                            <Switch>
+                              <Match when={child.type === 'tool'}>
+                                {(() => {
+                                  const c = child as ToolBlock
+                                  return <ToolBlockView id={c.id} tool={c.tool} input={c.input} result={c.result} />
+                                })()}
+                              </Match>
+                              <Match when={child.type === 'thinking'}>
+                                <ThinkingBlockView id={(child as ThinkingBlock).id} text={(child as ThinkingBlock).text} />
+                              </Match>
+                              <Match when={child.type === 'assistant'}>
+                                <div class="px-5 py-1 text-[13px]">
+                                  <AssistantMarkdown text={(child as { text: string }).text} worktreePath={worktreePath()} />
+                                </div>
+                              </Match>
+                            </Switch>
+                          )}
+                        </For>
+                      </div>
+                    </AgentBlockView>
+                  )
                 })()}
               </Match>
               <Match when={block.type === 'system'}>

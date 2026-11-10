@@ -88,7 +88,7 @@ pub fn wakeup_from_tool_start(
     now_ms: i64,
 ) -> Option<ScheduledWakeup> {
     let (tool, input) = match item {
-        OutputItem::ToolStart { tool, input } => (tool.as_str(), input.as_str()),
+        OutputItem::ToolStart { tool, input, .. } => (tool.as_str(), input.as_str()),
         _ => return None,
     };
     if tool != SCHEDULE_WAKEUP_TOOL {
@@ -280,6 +280,7 @@ mod tests {
         let item = OutputItem::ToolStart {
             tool: "ScheduleWakeup".into(),
             input: r#"{"delaySeconds":60,"prompt":"hi","reason":"r"}"#.into(),
+            id: None,
         };
         let w = wakeup_from_tool_start("s-001", &item, 1_000).unwrap();
         assert_eq!(w.session_id, "s-001");
@@ -293,6 +294,7 @@ mod tests {
         let item = OutputItem::ToolStart {
             tool: "Bash".into(),
             input: r#"{"command":"ls"}"#.into(),
+            id: None,
         };
         assert!(wakeup_from_tool_start("s-001", &item, 1_000).is_none());
     }
@@ -310,6 +312,7 @@ mod tests {
         let item = OutputItem::ToolStart {
             tool: "ScheduleWakeup".into(),
             input: r#"{"prompt":"missing delay"}"#.into(),
+            id: None,
         };
         assert!(wakeup_from_tool_start("s-001", &item, 1_000).is_none());
     }

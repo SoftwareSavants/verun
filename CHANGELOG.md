@@ -2,8 +2,10 @@
 
 ## Unreleased
 
+- Chat shows each Claude subagent as one collapsible block with its type, task, live progress (tools, tokens, current action) and result, its own actions nested inside instead of mixed into the main agent's; a strip above the composer lists background agents and shells still running and jumps to their block
+- A background subagent's own output no longer flips its session from background to running
 - Terminal-view Claude sessions stay working while their turn's subagents or background shells run, instead of showing idle until Claude resumes
-- A session whose turn ends while subagents or background shells keep running now shows as working ("Background agents are still working") instead of idle, and goes back to running when Claude resumes on its own after they report back; "Task completed" fires once that work settles
+- A session whose turn ends while subagents or background shells keep running now shows as working instead of idle, and goes back to running when Claude resumes on its own after they report back; "Task completed" fires once that work settles
 - A session's Claude terminal no longer also appears as a "Claude Code" tab in the bottom terminal panel, which left either the panel tab or the session view blank (#250)
 
 ## 0.16.0 - 2026-11-09

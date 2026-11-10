@@ -7,6 +7,7 @@ vi.mock('../lib/ipc', () => ({}))
 
 import { ChatView, ToolBlockView } from './ChatView'
 import type { OutputItem } from '../types'
+import { setPendingApprovals } from '../store/sessions'
 
 // The transcript keeps rendering what the store holds as it streams, as it is
 // trimmed at a fixed length, and as it is replaced.
@@ -69,6 +70,35 @@ describe('streaming markdown', () => {
       s.items.push({ kind: 'turnEnd', status: 'completed' } as OutputItem)
     }))
     expect(container.textContent).toContain('partial')
+  })
+})
+
+describe('subagents', () => {
+  const sub = (item: object) => ({ kind: 'subagent', parentToolUseId: 'toolu_A', item }) as unknown as OutputItem
+  const transcript = (): OutputItem[] => [
+    user('review'),
+    { kind: 'toolStart', tool: 'Agent', input: '{"description":"Review diff","subagent_type":"code-reviewer"}', id: 'toolu_A' } as unknown as OutputItem,
+    { kind: 'agentProgress', taskId: 't1', toolUseId: 'toolu_A', status: 'running', toolUses: 2 } as unknown as OutputItem,
+    sub({ kind: 'toolStart', tool: 'Bash', input: '{"command":"rm -rf build"}', id: 'toolu_B' }),
+  ]
+
+  test("a subagent's actions render inside its collapsed agent block", () => {
+    const { container } = setup(transcript())
+    const header = container.querySelector('button[aria-expanded]')!
+    expect(header.textContent).toContain('code-reviewer')
+    expect(header.textContent).toContain('Review diff')
+    // Not flattened into the main list.
+    expect(container.textContent).not.toContain('Bash')
+    fireEvent.click(header)
+    expect(container.textContent).toContain('Bash')
+    expect(container.textContent).toContain('rm -rf build')
+  })
+
+  test('an approval pending on a subagent tool marks its block as needing input', () => {
+    setPendingApprovals('s-render', [{ requestId: 'r', sessionId: 's-render', toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_B' }])
+    const { container } = setup(transcript())
+    expect(container.querySelector('button[aria-expanded]')!.textContent).toContain('Needs input')
+    setPendingApprovals('s-render', [])
   })
 })
 

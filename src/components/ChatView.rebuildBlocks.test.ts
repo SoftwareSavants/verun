@@ -336,3 +336,130 @@ describe('createBlockBuilder (incremental block building)', () => {
     expect(dirty.has(1)).toBe(true)
   })
 })
+
+describe('agent blocks (subagents)', () => {
+  const sub = (parent: string, item: object) => ({ kind: 'subagent', parentToolUseId: parent, item }) as unknown as OutputItem
+  const agentStart = (id: string, input = '{"description":"Review diff","subagent_type":"code-reviewer","prompt":"go"}') =>
+    ({ kind: 'toolStart', tool: 'Agent', input, id }) as unknown as OutputItem
+  const progress = (p: object) => ({ kind: 'agentProgress', ...p }) as unknown as OutputItem
+  type Agent = {
+    type: 'agent'; toolUseId?: string; description?: string; subagentType?: string
+    children: Array<{ type: string; text?: string; tool?: string; result?: { text: string } }>
+    result?: { text: string; isError: boolean }
+    progress?: { status?: string; toolUses?: number; summary?: string; isBackgrounded?: boolean }
+  }
+  const agents = (items: OutputItem[]) => rebuildBlocks(items).filter(b => b.type === 'agent') as unknown as Agent[]
+
+  const transcript: OutputItem[] = [
+    { kind: 'userMessage', text: 'review', timestamp: 1 } as OutputItem,
+    { kind: 'text', text: 'Spawning ' } as OutputItem,
+    agentStart('toolu_A', ''),
+    agentStart('toolu_A'),
+    progress({ taskId: 't1', toolUseId: 'toolu_A', status: 'running', description: 'Review diff', startedAt: 100 }),
+    agentStart('toolu_B', '{"description":"Run tests","subagent_type":"tester"}'),
+    sub('toolu_A', { kind: 'text', text: 'Reading ' }),
+    sub('toolu_B', { kind: 'toolStart', tool: 'Bash', input: '{"command":"pnpm test"}', id: 'toolu_B1' }),
+    sub('toolu_A', { kind: 'text', text: 'files' }),
+    sub('toolu_A', { kind: 'toolStart', tool: 'Read', input: '{"file_path":"a.ts"}', id: 'toolu_A1' }),
+    // control_request duplicate of a subagent tool reaches the main list with the same id
+    { kind: 'toolStart', tool: 'Read', input: '{"file_path":"a.ts"}', id: 'toolu_A1' } as unknown as OutputItem,
+    progress({ taskId: 't1', toolUses: 1, totalTokens: 41000, summary: 'reading a.ts' }),
+    sub('toolu_A', { kind: 'toolResult', text: 'contents', isError: false, toolUseId: 'toolu_A1' }),
+    sub('toolu_B', { kind: 'toolResult', text: 'failed', isError: true, toolUseId: 'toolu_B1' }),
+    { kind: 'text', text: 'main keeps going' } as OutputItem,
+    { kind: 'toolResult', text: 'B crashed', isError: true, toolUseId: 'toolu_B' } as unknown as OutputItem,
+    { kind: 'toolResult', text: 'All good\nmore detail', isError: false, toolUseId: 'toolu_A' } as unknown as OutputItem,
+    progress({ taskId: 't1', status: 'completed', endedAt: 900 }),
+    sub('toolu_C', { kind: 'text', text: 'orphan child' }),
+    { kind: 'turnEnd', status: 'completed', timestamp: 9 } as OutputItem,
+  ]
+
+  test('an Agent call becomes one agent block, deduped by tool_use id', () => {
+    const blocks = rebuildBlocks(transcript.slice(0, 5))
+    expect(blocks.map(b => b.type)).toEqual(['user', 'assistant', 'agent'])
+    const a = blocks[2] as unknown as Agent
+    expect(a.toolUseId).toBe('toolu_A')
+    expect(a.description).toBe('Review diff')
+    expect(a.subagentType).toBe('code-reviewer')
+    expect(a.progress?.status).toBe('running')
+  })
+
+  test("subagent items nest under their parent's block, not the main list", () => {
+    const blocks = rebuildBlocks(transcript)
+    // The main list holds no Read/Bash rows from the subagents.
+    expect(blocks.filter(b => b.type === 'tool')).toEqual([])
+    const [a, b] = agents(transcript)
+    expect(a.children.map(c => c.type)).toEqual(['assistant', 'tool'])
+    expect(a.children[0].text).toBe('Reading files')
+    expect(a.children[1].tool).toBe('Read')
+    expect(a.children[1].result?.text).toBe('contents')
+    expect(b.children.map(c => c.tool)).toEqual(['Bash'])
+    expect(b.children[0].result?.text).toBe('failed')
+  })
+
+  test('results match their agent by tool_use id and progress applies per task', () => {
+    const [a, b] = agents(transcript)
+    expect(a.result).toEqual({ text: 'All good\nmore detail', isError: false })
+    expect(b.result).toEqual({ text: 'B crashed', isError: true })
+    expect(a.progress).toMatchObject({ status: 'completed', toolUses: 1, summary: 'reading a.ts' })
+    expect(b.progress).toBeUndefined()
+  })
+
+  test('children of an unknown parent get their own agent block', () => {
+    const c = agents(transcript)[2]
+    expect(c.toolUseId).toBe('toolu_C')
+    expect(c.children[0].text).toBe('orphan child')
+  })
+
+  test('main text after an agent block keeps streaming into the main list', () => {
+    const blocks = rebuildBlocks(transcript)
+    expect(blocks.some(b => b.type === 'assistant' && b.text === 'main keeps going')).toBe(true)
+  })
+
+  test('old transcripts without ids still render Agent calls as agent blocks', () => {
+    const old: OutputItem[] = [
+      { kind: 'userMessage', text: 'q', timestamp: 1 } as OutputItem,
+      { kind: 'toolStart', tool: 'Task', input: '' } as OutputItem,
+      { kind: 'toolStart', tool: 'Task', input: '{"description":"Explore"}' } as OutputItem,
+      { kind: 'toolResult', text: 'report', isError: false } as OutputItem,
+    ]
+    const [a] = agents(old)
+    expect(agents(old).length).toBe(1)
+    expect(a.description).toBe('Explore')
+    expect(a.subagentType).toBeUndefined()
+    expect(a.result?.text).toBe('report')
+  })
+
+  test('progress that arrives before its Agent call is applied when the block appears', () => {
+    const items: OutputItem[] = [
+      progress({ taskId: 't9', toolUseId: 'toolu_Z', status: 'running', subagentType: 'explorer' }),
+      agentStart('toolu_Z', '{"description":"Look"}'),
+    ]
+    expect(agents(items)[0].progress?.status).toBe('running')
+    expect(agents(items)[0].subagentType).toBe('explorer')
+  })
+
+  const plain = (v: unknown) => JSON.parse(JSON.stringify(v))
+  test('incremental building matches a full rebuild in any chunking', () => {
+    for (let chunk = 1; chunk <= 4; chunk++) {
+      const builder = createBlockBuilder()
+      for (let end = chunk; end < transcript.length + chunk; end += chunk) {
+        const prefix = transcript.slice(0, Math.min(end, transcript.length))
+        builder.append(prefix)
+        expect(plain(builder.blocks)).toEqual(plain(rebuildBlocks(prefix)))
+      }
+    }
+  })
+
+  test('a subagent update dirties its own agent block only', () => {
+    const builder = createBlockBuilder()
+    const head = transcript.slice(0, 14)
+    builder.append(head)
+    const idx = builder.blocks.findIndex(b => b.type === 'agent')
+    const other = builder.blocks.map(b => b.type).lastIndexOf('agent')
+    const dirty = builder.append([...head, sub('toolu_A', { kind: 'text', text: '!' })])
+    expect(dirty.has(idx)).toBe(true)
+    expect(dirty.has(other)).toBe(false)
+    expect(builder.blocks.length).toBe(other + 1)
+  })
+})

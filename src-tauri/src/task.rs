@@ -870,6 +870,8 @@ pub struct PendingApprovalEntry {
     pub tool_input: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<crate::claude_control::ApprovalPrompt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
 }
 
 /// request_id → oneshot sender waiting for user's approval decision
