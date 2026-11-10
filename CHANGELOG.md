@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Expanded agent blocks, tool rows, thinking and wakeups keep their header pinned to the top of the chat while you scroll through them (rows inside an agent pin under its header), so you can collapse them from anywhere; collapsing returns you to the block instead of leaving you further down the conversation
 - A subagent Claude resumes with SendMessage shows as its own block where it was resumed, with its task, current step and live progress, instead of an empty "general-purpose" row; the previous run's "didn't finish" note no longer carries over
 - Agent blocks and the background strip show the agent's task, not its latest step ("Running ..."), which now appears as the current action
 - An interrupted agent reads as stopped, not in error red; the background strip is one row per task without a heading, and the "Ask sideways" pill no longer covers the last block

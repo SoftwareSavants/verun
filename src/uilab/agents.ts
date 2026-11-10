@@ -75,6 +75,10 @@ export async function seedResumedAgent() {
     { kind: 'text', text: "The Task 15 implementer has resumed to finish its work and run the checks. When it reports, I'll snapshot and send it to review as usual." },
     { kind: 'turnEnd', status: 'completed', timestamp: now - 30_000 },
     sub('toolu_impl', { kind: 'text', text: 'Resuming. First, confirming the tree is as I left it.' }),
+    ...Array.from({ length: 14 }, (_, i) => [
+      sub('toolu_impl', bash(`toolu_s${i}`, `pnpm exec vitest run src/lib/invoicePdf.test.ts -t "case ${i + 1}"`)),
+      sub('toolu_impl', { kind: 'toolResult', text: `✓ invoicePdf > case ${i + 1} (${12 + i}ms)\n\nTest Files  1 passed (1)\n     Tests  1 passed (1)`, isError: false, toolUseId: `toolu_s${i}` }),
+    ]).flat(),
     sub('toolu_impl', bash('toolu_r1', 'git status --short -- src/lib')),
     { kind: 'agentProgress', taskId: 'task-impl', toolUseId: 'toolu_send', activity: 'Confirm the revert and the working-tree state', lastToolName: 'Bash', toolUses: 1, totalTokens: 396_451 },
   ]

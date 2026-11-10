@@ -1,7 +1,8 @@
-import { Show, createMemo, createSignal, createEffect, untrack, type Component, type JSX } from 'solid-js'
+import { Show, createMemo, createSignal, createEffect, onCleanup, untrack, type Component, type JSX } from 'solid-js'
 import { clsx } from 'clsx'
 import { LoaderCircle, CircleCheck, CircleStop, TriangleAlert, MessageCircleQuestion, ChevronRight, ChevronDown } from 'lucide-solid'
 import type { AgentBlock } from './ChatView'
+import { collapseInPlace } from '../lib/collapseInPlace'
 import {
   AGENT_STATE_LABEL,
   agentActivityLine,
@@ -121,11 +122,24 @@ export const AgentBlockView: Component<{
     if (s.starting) return 'Starting'
     return props.block.progress ? agentActivityLine(props.block.progress) : ''
   }
+  let root: HTMLDivElement | undefined
+  let head: HTMLButtonElement | undefined
+  // Rows inside the block pin just under this header.
+  const [headHeight, setHeadHeight] = createSignal(0)
+  const measure = (el: HTMLButtonElement) => {
+    head = el
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => setHeadHeight(el.offsetHeight))
+    ro.observe(el)
+    onCleanup(() => ro.disconnect())
+  }
+  const toggle = () => expanded() ? collapseInPlace(root, head, () => setExp(false)) : setExp(true)
   const label = () => [type(), props.block.description, AGENT_STATE_LABEL[status().state], elapsed()].filter(Boolean).join(', ')
 
   return (
     <div class={clsx('px-5', props.joinPrev ? 'pt-0 -mt-px' : 'pt-1', props.joinNext ? 'pb-0' : 'pb-1')}>
       <div
+        ref={root}
         data-agent-id={props.block.toolUseId}
         data-highlighted={highlighted() === props.block.toolUseId && !!props.block.toolUseId ? 'true' : undefined}
         class={clsx(
@@ -138,11 +152,16 @@ export const AgentBlockView: Component<{
         )}
       >
         <button
+          ref={measure}
           type="button"
-          class="w-full text-left px-2.5 py-1.5 flex flex-col gap-0.5 rounded-md outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+          class={clsx(
+            'w-full text-left px-2.5 py-1.5 flex flex-col gap-0.5 rounded-md outline-none focus-visible:ring-1 focus-visible:ring-accent/60',
+            // Pinned while open, so collapsing is always one click away.
+            expanded() && 'sticky top-0 z-20 bg-surface-1 rounded-b-none border-0 border-b-1 border-b-solid border-b-outline/8',
+          )}
           aria-expanded={expanded()}
           aria-label={label()}
-          onClick={() => setExp(!expanded())}
+          onClick={toggle}
         >
           <span class="w-full flex items-center gap-1.5 text-xs min-w-0">
             <Show when={expanded()} fallback={<ChevronRight size={11} class="shrink-0 text-text-dim" aria-hidden="true" />}>
@@ -174,7 +193,7 @@ export const AgentBlockView: Component<{
           </Show>
         </button>
         <Show when={expanded()}>
-          <div class="pb-1.5">
+          <div class="pb-1.5" style={{ '--sticky-top': `${headHeight()}px`, '--sticky-bg': 'var(--surface-1)' }}>
             {props.children}
             <Show when={finished() && finalText()}>
               <div class="mx-2.5 mt-1 pt-1.5 border-t-1 border-t-solid border-t-outline/8">
