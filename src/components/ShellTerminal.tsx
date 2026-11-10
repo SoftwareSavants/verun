@@ -2,7 +2,7 @@ import { Component, onMount, onCleanup, createSignal, Show, type Accessor } from
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
-import { WebLinksAddon } from '@xterm/addon-web-links'
+import { createWebLinksAddon } from '../lib/terminalWebLinks'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { registerXterm, getXtermEntry, consumeInitialReplay, markSeqWritten, rejoinXterm, releaseXterm } from '../store/terminals'
@@ -317,7 +317,7 @@ export const ShellTerminal: Component<Props> = (props) => {
     attachResultsListener(searchAddon)
     term.loadAddon(fitAddon)
     term.loadAddon(searchAddon)
-    term.loadAddon(new WebLinksAddon())
+    term.loadAddon(createWebLinksAddon())
     term.registerLinkProvider(createFileLinkProvider(
       term,
       link => { void openTerminalFile(props.terminalId, link) },

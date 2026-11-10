@@ -35,7 +35,7 @@ describe('terminal file links', () => {
     createFileLinkProvider(term, open).provideLinks(2, value => { links = value })
     expect(links).toHaveLength(1)
     expect(links![0].range).toEqual({ start: { x: 4, y: 1 }, end: { x: 7, y: 2 } })
-    links![0].activate(new MouseEvent('click'), links![0].text)
+    links![0].activate(new MouseEvent('click', { metaKey: true, ctrlKey: true }), links![0].text)
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/a.ts', line: 2, column: 3 }))
   })
 })
@@ -50,7 +50,7 @@ test('joins indented harness line breaks and makes both fragments clickable', ()
     let links: ILink[] | undefined
     createFileLinkProvider(term, open).provideLinks(y, value => { links = value })
     expect(links).toHaveLength(1)
-    links![0].activate(new MouseEvent('click'), links![0].text)
+    links![0].activate(new MouseEvent('click', { metaKey: true, ctrlKey: true }), links![0].text)
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ path: '/private/tmp/worktree-distributed-codesplitting-290/session/scratchpad/file.txt' }))
   }
 })
@@ -64,7 +64,7 @@ test('keeps unrelated indented file paths separate', () => {
   let links: ILink[] | undefined
   createFileLinkProvider(term, open).provideLinks(2, value => { links = value })
   expect(links).toHaveLength(1)
-  links![0].activate(new MouseEvent('click'), links![0].text)
+  links![0].activate(new MouseEvent('click', { metaKey: true, ctrlKey: true }), links![0].text)
   expect(open).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/second.ts' }))
 })
 
@@ -87,4 +87,18 @@ test('only exposes filesystem-validated candidates, including unusual real filen
   })
   expect(links?.map(link => link.text)).toEqual(['actual.custom'])
   expect(validate).toHaveBeenCalledWith(expect.objectContaining({ path: 'accounting.invoices' }))
+})
+
+test('a plain click on a path does not open it; Cmd/Ctrl-click does', () => {
+  const lines = ['see src/a.ts:4']
+  const term = { cols: 40, buffer: { active: { length: 1, getLine: (row: number) => lines[row] === undefined ? undefined : {
+    isWrapped: false, getCell: (x: number) => ({ getChars: () => lines[row][x] ?? '', getWidth: () => 1 }),
+  } } } } as unknown as Terminal
+  const open = vi.fn()
+  let links: ILink[] | undefined
+  createFileLinkProvider(term, open).provideLinks(1, value => { links = value })
+  links![0].activate(new MouseEvent('click'), links![0].text)
+  expect(open).not.toHaveBeenCalled()
+  links![0].activate(new MouseEvent('click', { metaKey: true, ctrlKey: true }), links![0].text)
+  expect(open).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/a.ts', line: 4 }))
 })

@@ -1,4 +1,5 @@
-import { Component, Show, onMount, createSignal } from 'solid-js'
+import { Component, Show, onMount, onCleanup, createSignal } from 'solid-js'
+import { initModHeld } from './lib/modHeld'
 import { parseWindowContext, WindowContextProvider } from './lib/windowContext'
 import { initListeners, loadInitialData, dismissSplash, checkCli, installContextMenu, initQuitListener, showQuitConfirm, closeQuitDialog } from './lib/appInit'
 import { Layout } from './components/Layout'
@@ -24,6 +25,7 @@ const MainApp: Component = () => {
 
   onMount(async () => {
     initTheme()
+    onCleanup(initModHeld())
     initQuitListener()
     installContextMenu(setSelMenu)
     await initListeners()

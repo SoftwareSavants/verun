@@ -1,7 +1,10 @@
 import { marked } from 'marked'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { openFile } from '../store/editorView'
+import { openFile, setPendingGoToLine } from '../store/editorView'
+import { modPressed, isMac } from './platform'
+
+const modSymbol = isMac ? '⌘' : 'Ctrl'
 import { tasks } from '../store/tasks'
 import { resolveWorktreeFilePath } from './ipc'
 
@@ -12,7 +15,7 @@ const FILE_EXT_RE = /\.(ts|tsx|js|jsx|mjs|cjs|rs|py|go|rb|java|kt|swift|c|cpp|h|
 function looksLikeFilePath(text: string): boolean {
   const t = text.trim()
   if (t.includes(' ') || t.includes('\n')) return false
-  const withoutLineNum = t.replace(/:\d+$/, '')
+  const withoutLineNum = t.replace(/(?::\d+){1,2}$/, "")
   return FILE_EXT_RE.test(withoutLineNum)
 }
 
@@ -32,16 +35,62 @@ function resolveLocalImages(doc: Document, worktreePath: string, fileDir?: strin
   })
 }
 
+/** "src/a.ts:12:3" → path and position. */
+function splitLocation(text: string): { path: string; line?: number; column?: number } {
+  const m = text.trim().match(/^(.*?)(?::(\d+)(?::(\d+))?)?$/)!
+  return { path: m[1], line: m[2] ? Number(m[2]) : undefined, column: m[3] ? Number(m[3]) : undefined }
+}
+
 function linkifyFilePaths(doc: Document) {
   doc.querySelectorAll('code').forEach(code => {
     if (code.closest('pre') || code.closest('a')) return
     const text = code.textContent
     if (!text || !looksLikeFilePath(text)) return
+    const { path, line, column } = splitLocation(text)
     const link = doc.createElement('a')
-    link.setAttribute('href', text.trim().replace(/:\d+$/, ''))
+    link.setAttribute('href', path)
     link.setAttribute('data-file-link', '')
+    if (line) link.setAttribute('data-line', String(line))
+    if (column) link.setAttribute('data-column', String(column))
     code.parentNode!.replaceChild(link, code)
     link.appendChild(code)
+  })
+}
+
+/** Code blocks get a slim header: their language and a copy button. */
+function decorateCodeBlocks(doc: Document) {
+  doc.querySelectorAll('pre').forEach(pre => {
+    if (pre.parentElement?.hasAttribute('data-code-block')) return
+    const lang = pre.querySelector('code')?.className.match(/language-([\w+#-]+)/)?.[1]
+    const wrap = doc.createElement('div')
+    wrap.setAttribute('data-code-block', '')
+    const head = doc.createElement('div')
+    head.setAttribute('data-code-head', '')
+    if (lang) {
+      const label = doc.createElement('span')
+      label.setAttribute('data-code-lang', '')
+      label.textContent = lang
+      head.appendChild(label)
+    }
+    const copy = doc.createElement('button')
+    copy.setAttribute('type', 'button')
+    copy.setAttribute('data-copy-code', '')
+    copy.setAttribute('aria-label', 'Copy code')
+    copy.textContent = 'Copy'
+    head.appendChild(copy)
+    pre.parentNode!.replaceChild(wrap, pre)
+    wrap.append(head, pre)
+  })
+}
+
+/** Every link says how to open it: links open on Cmd/Ctrl-click only. */
+function titleLinks(doc: Document) {
+  doc.querySelectorAll('a[href]').forEach(a => {
+    if (a.hasAttribute('title')) return
+    const href = a.getAttribute('href')!
+    a.setAttribute('title', isFileLinkHref(href)
+      ? `${modSymbol}-click to open ${a.getAttribute('href')}${a.getAttribute('data-line') ? `:${a.getAttribute('data-line')}` : ''}`
+      : `${modSymbol}-click to open ${href}`)
   })
 }
 
@@ -86,6 +135,8 @@ function renderMarkdownUncached(text: string, options: RenderOptions): string {
     resolveLocalImages(doc, options.worktreePath, options.fileDir)
   }
   linkifyFilePaths(doc)
+  titleLinks(doc)
+  decorateCodeBlocks(doc)
 
   return doc.body.innerHTML
 }
@@ -95,30 +146,45 @@ function isFileLinkHref(href: string): boolean {
   return true
 }
 
+/**
+ * Clicks in rendered markdown. A code block's copy button copies its code.
+ * Links open on Cmd/Ctrl-click, like in an editor or a
+ * terminal: a plain click stays free for selecting and copying text. URLs open
+ * in the browser, file paths in the editor at their line.
+ */
 export function handleMarkdownLinkClick(e: MouseEvent, taskId?: string) {
+  const copy = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-copy-code]')
+  if (copy) {
+    const code = copy.closest('[data-code-block]')?.querySelector('pre')?.textContent ?? ''
+    void navigator.clipboard.writeText(code).then(() => {
+      copy.textContent = 'Copied'
+      setTimeout(() => { copy.textContent = 'Copy' }, 1500)
+    })
+    return
+  }
   const anchor = (e.target as HTMLElement).closest('a')
   if (!anchor) return
 
+  // Never navigate the webview.
   e.preventDefault()
+  if (!modPressed(e)) return
 
   const rawHref = anchor.getAttribute('href')
   if (!rawHref) return
 
-  if (!isFileLinkHref(rawHref)) {
+  if (!isFileLinkHref(rawHref) || !taskId) {
     openUrl(anchor.href)
     return
   }
 
-  if (taskId) {
-    const filePath = rawHref.replace(/^\.\//, '')
-    resolveWorktreeFilePath(taskId, filePath)
-      .then(() => {
-        const name = filePath.split('/').pop() || filePath
-        openFile(taskId, filePath, name)
-      })
-      .catch(() => {})
-    return
-  }
-
-  openUrl(anchor.href)
+  const filePath = rawHref.replace(/^\.\//, '')
+  const line = Number(anchor.getAttribute('data-line')) || undefined
+  const column = Number(anchor.getAttribute('data-column')) || 1
+  resolveWorktreeFilePath(taskId, filePath)
+    .then(() => {
+      const name = filePath.split('/').pop() || filePath
+      openFile(taskId, filePath, name)
+      if (line) setPendingGoToLine({ taskId, relativePath: filePath, line, column })
+    })
+    .catch(() => {})
 }

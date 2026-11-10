@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Links and file paths open on Cmd-click (Ctrl-click elsewhere) in chat, rendered markdown and terminals, like an editor; a plain click is free for selecting text. They underline with a pointer only while the modifier is held, external links carry a ↗, and a path like `src/a.ts:12:3` opens at that line and column
+- Failed tool rows say "Failed" with their first error line while collapsed, running ones show a spinner, Cmd-click on a Read/Edit/Write row opens its file, and an expanded row's output has a copy button
+- Code blocks in chat get a header with their language and a copy button (copies the code only); paths in tables lose their chip styling, and tool arguments, thinking previews and turn durations are easier to read
 - Expanded agent blocks, tool rows, thinking and wakeups keep their header pinned to the top of the chat while you scroll through them (rows inside an agent pin under its header), so you can collapse them from anywhere; collapsing returns you to the block instead of leaving you further down the conversation
 - A subagent Claude resumes with SendMessage shows as its own block where it was resumed, with its task, current step and live progress, instead of an empty "general-purpose" row; the previous run's "didn't finish" note no longer carries over
 - Agent blocks and the background strip show the agent's task, not its latest step ("Running ..."), which now appears as the current action

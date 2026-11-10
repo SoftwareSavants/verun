@@ -35,6 +35,7 @@ mockIPC((cmd) => {
 
 if (params.get('fixture') === 'scale') (await import('./scale')).seedScale()
 if (params.get('fixture') === 'long') await (await import('./scale')).seedLongTranscript()
+if (params.get('fixture') === 'chat') await (await import('./chat')).seedChat()
 if (params.get('fixture') === 'agents-resumed') await (await import('./agents')).seedResumedAgent()
 if (params.get('fixture') === 'agents') await (await import('./agents')).seedAgents(params.get('flat') === '1')
 

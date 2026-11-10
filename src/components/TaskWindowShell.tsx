@@ -1,4 +1,5 @@
 import { Component, Show, createSignal, createEffect, on, onMount, onCleanup } from 'solid-js'
+import { initModHeld } from '../lib/modHeld'
 import { listen, emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useWindowContext } from '../lib/windowContext'
@@ -54,6 +55,7 @@ export const TaskWindowShell: Component = () => {
 
   onMount(async () => {
     initTheme()
+    onCleanup(initModHeld())
     initQuitListener()
     installContextMenu(setSelMenu)
 

@@ -284,6 +284,33 @@ export default defineConfig({
           overflow-x: auto;
           margin: 0.5em 0;
         }
+        /* Code block header: language on the left, copy on the right. */
+        .prose-verun [data-code-block] {
+          margin: 0.5em 0;
+          border: 1px solid var(--border-default);
+          border-radius: 8px;
+          background: var(--surface-1);
+          overflow: hidden;
+        }
+        .prose-verun [data-code-block] pre { margin: 0; border: none; border-radius: 0; padding-top: 0.25em; }
+        .prose-verun [data-code-head] {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 0.3em 0.6em 0 1em;
+          font-family: var(--font-code); font-size: 11px; color: var(--text-muted);
+        }
+        .prose-verun [data-copy-code] {
+          margin-left: auto; padding: 0.15em 0.5em; border-radius: 4px;
+          background: none; border: none; cursor: pointer;
+          font: inherit; color: var(--text-dim);
+          opacity: 0.55; transition: opacity 120ms ease-out;
+        }
+        .prose-verun [data-code-block]:hover [data-copy-code],
+        .prose-verun [data-copy-code]:focus-visible { opacity: 1; }
+        .prose-verun [data-copy-code]:hover { color: var(--text-primary); background: var(--surface-2); }
+        /* Paths inside table cells: no chip inside a bordered cell. */
+        .prose-verun td code { background: none; border: none; padding: 0; }
+        /* External links say they leave the app. */
+        .prose-verun a[href^="http"]::after { content: "↗"; font-size: 0.8em; margin-left: 0.1em; opacity: 0.7; }
         .prose-verun pre code {
           background: none;
           border: none;
@@ -313,8 +340,12 @@ export default defineConfig({
           margin: 0.4em 0;
           color: var(--text-secondary);
         }
-        .prose-verun a { color: var(--accent); text-decoration: none; cursor: pointer; }
-        .prose-verun a:hover { text-decoration: underline; }
+        /* Links open on Cmd/Ctrl-click (see handleMarkdownLinkClick): they look
+           like links, but only act like them while the modifier is held. */
+        .prose-verun a { color: var(--accent); text-decoration: none; cursor: text; }
+        .prose-verun a:hover { text-decoration: underline dotted; text-underline-offset: 2px; }
+        :root[data-mod-held] .prose-verun a:hover,
+        :root[data-mod-held] [data-file-open]:hover { cursor: pointer; text-decoration: underline solid; text-underline-offset: 2px; color: var(--accent); }
         .prose-verun img { max-width: 100%; height: auto; border-radius: 8px; margin: 0.5em 0; }
         .prose-verun hr { border: none; border-top: 1px solid var(--border-default); margin: 0.8em 0; }
 
