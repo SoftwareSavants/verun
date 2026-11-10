@@ -302,7 +302,7 @@ export default defineConfig({
           margin-left: auto; padding: 0.15em 0.5em; border-radius: 4px;
           background: none; border: none; cursor: pointer;
           font: inherit; color: var(--text-dim);
-          opacity: 0; transition: opacity 120ms ease-out;
+          opacity: 0.55; transition: opacity 120ms ease-out;
         }
         .prose-verun [data-code-block]:hover [data-copy-code],
         .prose-verun [data-copy-code]:focus-visible { opacity: 1; }

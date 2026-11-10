@@ -870,7 +870,7 @@ const ThinkingBlockView: Component<{ id: string; text: string }> = (props) => {
           </Show>
           <span class="italic">Thinking</span>
           <Show when={!expanded()}>
-            <span class="text-text-dim truncate max-w-sm">
+            <span class="text-text-muted/80 truncate max-w-sm">
               {props.text.split('\n')[0].slice(0, 80)}
             </span>
           </Show>
@@ -1039,7 +1039,7 @@ export const ToolBlockView: Component<{
       </button>
       </div>
       <Show when={failed() && !expanded() && firstErrorLine(props.result!.text)}>
-        <div class="pl-4 text-[11px] font-mono text-status-error/80 truncate">{firstErrorLine(props.result!.text)}</div>
+        <div class="pl-4 text-[11px] font-mono text-status-error/80 line-clamp-2 break-all">{firstErrorLine(props.result!.text)}</div>
       </Show>
       <Show when={expanded() && hasExpandedContent()}>
         <div class="pl-4 mt-1 border-l border-border-subtle">
@@ -1752,7 +1752,7 @@ export const ChatView: Component<Props> = (props) => {
                             {(() => {
                               const hasCostInfo = b.turnCost || b.turnTokens
                               if (!hasCostInfo) {
-                                return <span class="text-[10px] text-text-dim">{formatDuration(b.durationMs!)}</span>
+                                return <span class="text-[10px] text-text-muted/80">{formatDuration(b.durationMs!)}</span>
                               }
                               const parts = [
                                 b.turnCost ? formatCost(b.turnCost) : '',
@@ -1760,7 +1760,7 @@ export const ChatView: Component<Props> = (props) => {
                               ].filter(Boolean).join(' · ')
                               return (
                                 <span class="relative group/dur">
-                                  <span class="text-[10px] text-text-dim cursor-default">{formatDuration(b.durationMs!)}</span>
+                                  <span class="text-[10px] text-text-muted/80 cursor-default">{formatDuration(b.durationMs!)}</span>
                                   <span class="absolute left-0 bottom-full mb-1 hidden group-hover/dur:block z-50 whitespace-nowrap px-2 py-1 rounded bg-surface-3 border border-border-active shadow-lg text-[10px] text-text-secondary">
                                     {parts}
                                   </span>
@@ -1873,7 +1873,7 @@ export const ChatView: Component<Props> = (props) => {
                           <For each={b.items}>
                             {(step) => (
                               <li class="flex items-start gap-2 text-xs text-text-primary leading-relaxed">
-                                <span class="mt-0.5 shrink-0 inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] text-text-dim ring-1 ring-border">
+                                <span class="mt-0.5 shrink-0 inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] text-text-muted/80 ring-1 ring-border">
                                   {step.status === 'completed' ? '✓' : step.status === 'in_progress' ? '·' : ' '}
                                 </span>
                                 <span class={step.status === 'completed' ? 'line-through text-text-dim' : ''}>{step.step}</span>
