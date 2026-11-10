@@ -6,7 +6,9 @@ import type { OutputItem } from '../types'
 
 const SESSION = 'demo-sess-md-1'
 
-export async function seedAgents() {
+/** `flat`: the same conversation as pre-0.16.1 Verun stored it (subagent items
+ * flattened into the main list, no progress items), for before/after comparisons. */
+export async function seedAgents(flat = false) {
   const { DEMO_OUTPUT_LINES, DEMO_SESSIONS } = await import('../lib/seedData')
   const now = Date.now()
   const sub = (parent: string, item: OutputItem): OutputItem => ({ kind: 'subagent', parentToolUseId: parent, item })
@@ -37,9 +39,12 @@ export async function seedAgents() {
     { kind: 'text', text: 'Tests pass and the link check failed on a rate limit. The reviewer is still working in the background; I will pick up its findings when it reports back.' },
     { kind: 'turnEnd', status: 'completed', timestamp: now - 180_000 },
   ]
+  const shown = flat
+    ? items.flatMap(i => i.kind === 'subagent' ? [i.item] : i.kind === 'agentProgress' ? [] : [i])
+    : items
   const lines = DEMO_OUTPUT_LINES[SESSION]
   const lastId = lines.length ? lines[lines.length - 1].id : 0
-  lines.push({ id: lastId + 1, sessionId: SESSION, line: JSON.stringify({ type: 'verun_items', items }), emittedAt: now - 180_000 })
+  lines.push({ id: lastId + 1, sessionId: SESSION, line: JSON.stringify({ type: 'verun_items', items: shown }), emittedAt: now - 180_000 })
   const session = DEMO_SESSIONS.find(s => s.id === SESSION)
   if (session) session.status = 'background'
 }
