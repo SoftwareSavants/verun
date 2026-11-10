@@ -1,3 +1,4 @@
+import { finishedWork, clearsPendingApprovals } from '../lib/sessionActivity'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { OutsideSession, Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection, AgentType } from '../types'
@@ -529,11 +530,11 @@ export async function initSessionListeners() {
   await listen<SessionStatusEvent>('session-status', (event) => {
     const { sessionId, status, error } = event.payload
     const prevSession = sessions.find(s => s.id === sessionId)
-    const wasRunning = prevSession?.status === 'running'
+    const previousStatus = prevSession?.status
     setSessions(s => s.id === sessionId, 'status', status)
     setSessions(s => s.id === sessionId, 'error', status === 'error' ? error : undefined)
     // Clear pending approvals when session stops running
-    if (status !== 'running') {
+    if (clearsPendingApprovals(status)) {
       setPendingApprovals(produce(store => { delete store[sessionId] }))
     }
     // Drain armed steps on idle — but only if this idle didn't come from an
@@ -550,7 +551,7 @@ export async function initSessionListeners() {
       disarmAllSteps(sessionId)
     }
     // Mark unread + OS notification on completion/error
-    if (wasRunning && (status === 'idle' || status === 'error') && prevSession) {
+    if (finishedWork(previousStatus, status) && prevSession) {
       markTaskUnread(prevSession.taskId)
       markSessionUnread(sessionId)
       const displayName = prevSession.name || taskById(prevSession.taskId)?.name || 'Task'

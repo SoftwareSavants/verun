@@ -131,6 +131,7 @@ import { NewSessionMenu } from "./NewSessionMenu";
 import { QuickOpen } from "./QuickOpen";
 import { RightPanel } from "./RightPanel";
 import { SessionTerminal } from "./SessionTerminal";
+import { BackgroundWorkNotice } from "./BackgroundWorkNotice";
 import { selectSettingsSection } from "./SettingsPage";
 import { SideQuestionPanel } from "./SideQuestionPanel";
 import { StepList } from "./StepList";
@@ -1025,6 +1026,7 @@ export const TaskPanel: Component = () => {
                                   when={t().archived}
                                   fallback={
                                     <>
+                                      <BackgroundWorkNotice status={currentSession()?.status} />
                                       <StepList
                                         sessionId={selectedSessionId()}
                                         isRunning={

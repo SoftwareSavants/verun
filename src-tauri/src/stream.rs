@@ -1605,6 +1605,10 @@ pub async fn stream_and_capture(
     let mut last_flush = Instant::now();
     let mut total_persisted: usize = 0;
     let mut last_error: Option<String> = None;
+    // Subagents / background shells still running after a turn ends, and
+    // whether Claude started a turn on its own when one reported back.
+    let mut background = BackgroundWork::default();
+    let mut resumed_on_own = false;
     // Captured from `system.init` events for the per-turn snapshot hook.
     let mut resume_id_for_snapshot: Option<String> = None;
     // For agents that defer (Codex): hold the captured id until the first
@@ -1652,6 +1656,32 @@ pub async fn stream_and_capture(
                             claims.lock().unwrap().stream(&mut v, &mut claude_message)
                         });
                         let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                        // Keep the reported status honest between user turns: a
+                        // background task finishing ends "background", and Claude
+                        // producing output on its own is "running".
+                        if !busy.load(Ordering::SeqCst) {
+                            let next = if background.observe(&v) && background.is_empty() && !resumed_on_own {
+                                Some("idle")
+                            } else if !resumed_on_own && matches!(msg_type, "assistant" | "stream_event") {
+                                resumed_on_own = true;
+                                Some("running")
+                            } else {
+                                None
+                            };
+                            if let Some(status) = next {
+                                let _ = db_tx.send(DbWrite::UpdateSessionStatus {
+                                    id: session_id.clone(),
+                                    status: status.to_string(),
+                                }).await;
+                                let _ = app.emit(
+                                    "session-status",
+                                    SessionStatusEvent { session_id: session_id.clone(), status: status.to_string(), error: None },
+                                );
+                            }
+                        } else {
+                            background.observe(&v);
+                        }
 
                         // Incoming `control_response` — resolve the matching pending oneshot so
                         // IPC callers like `interrupt_session` / `get_session_context_usage`
@@ -1822,7 +1852,8 @@ pub async fn stream_and_capture(
                                 let mut guard = stdin.lock().await;
                                 drop(guard.take());
                             } else {
-                                let (status, error) = turn_end_session_status(&last_error);
+                                let (status, error) = turn_end_status(&last_error, &background);
+                                resumed_on_own = false;
                                 let _ = db_tx.send(DbWrite::UpdateSessionStatus {
                                     id: session_id.clone(),
                                     status: status.to_string(),
@@ -2453,6 +2484,56 @@ pub fn map_exit_status(code: Option<i32>) -> &'static str {
 /// persistent agent. The process stays alive, so we can't wait for exit —
 /// a turn-level error (e.g. API 401, overload) must propagate as the
 /// session status so the frontend can render the retry banner.
+/// Background work (subagents, background shells) Claude reports through
+/// `system` task events. A turn can end while it keeps running; Claude may
+/// then resume on its own when it reports back.
+#[derive(Default)]
+pub(crate) struct BackgroundWork {
+    tasks: std::collections::HashSet<String>,
+}
+
+impl BackgroundWork {
+    /// Feed any event; returns true when the set of running tasks changed.
+    pub(crate) fn observe(&mut self, v: &serde_json::Value) -> bool {
+        if v.get("type").and_then(|t| t.as_str()) != Some("system") {
+            return false;
+        }
+        let Some(id) = v.get("task_id").and_then(|t| t.as_str()) else {
+            return false;
+        };
+        let finished = |status: Option<&str>| {
+            matches!(
+                status,
+                Some("completed" | "failed" | "killed" | "stopped" | "cancelled" | "error")
+            )
+        };
+        match v.get("subtype").and_then(|t| t.as_str()) {
+            Some("task_started") => self.tasks.insert(id.to_string()),
+            Some("task_notification") => self.tasks.remove(id),
+            Some("task_updated")
+                if finished(v.pointer("/patch/status").and_then(|s| s.as_str())) =>
+            {
+                self.tasks.remove(id)
+            }
+            _ => false,
+        }
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+}
+
+/// Turn-end status: an error wins, then still-running background work.
+pub(crate) fn turn_end_status(
+    err: &Option<String>,
+    bg: &BackgroundWork,
+) -> (&'static str, Option<String>) {
+    match turn_end_session_status(err) {
+        ("idle", None) if !bg.is_empty() => ("background", None),
+        other => other,
+    }
+}
+
 pub fn turn_end_session_status(err: &Option<String>) -> (&'static str, Option<String>) {
     match err {
         Some(msg) => ("error", Some(msg.clone())),
@@ -2934,6 +3015,31 @@ mod tests {
             OutputItem::Raw { text } => assert_eq!(text, "not json at all"),
             _ => panic!("Expected Raw item"),
         }
+    }
+
+    #[test]
+    fn background_agents_keep_a_session_working_after_its_turn_ends() {
+        let mut bg = BackgroundWork::default();
+        let started = serde_json::json!({"type":"system","subtype":"task_started","task_id":"t1","is_backgrounded":true});
+        assert!(bg.observe(&started));
+        assert!(!bg.is_empty());
+        assert_eq!(turn_end_status(&None, &bg).0, "background");
+        // Progress doesn't change the count; the notification ends it.
+        assert!(!bg.observe(&serde_json::json!({"type":"system","subtype":"task_progress","task_id":"t1"})));
+        assert!(bg.observe(&serde_json::json!({"type":"system","subtype":"task_notification","task_id":"t1","status":"completed"})));
+        assert!(bg.is_empty());
+        assert_eq!(turn_end_status(&None, &bg).0, "idle");
+    }
+
+    #[test]
+    fn a_task_update_to_a_final_status_ends_it_and_errors_still_win() {
+        let mut bg = BackgroundWork::default();
+        bg.observe(&serde_json::json!({"type":"system","subtype":"task_started","task_id":"t2"}));
+        assert!(!bg.observe(&serde_json::json!({"type":"system","subtype":"task_updated","task_id":"t2","patch":{"description":"x"}})));
+        assert_eq!(turn_end_status(&Some("boom".into()), &bg).0, "error");
+        assert!(bg.observe(&serde_json::json!({"type":"system","subtype":"task_updated","task_id":"t2","patch":{"status":"killed"}})));
+        assert!(bg.is_empty());
+        assert!(!bg.observe(&serde_json::json!({"type":"system","subtype":"init"})));
     }
 
     #[test]
