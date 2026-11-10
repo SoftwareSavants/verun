@@ -33,14 +33,14 @@ describe('AgentBlockView', () => {
     expect(text).toContain('code-reviewer')
     expect(text).toContain('Review diff')
     expect(text).toContain('Running')
-    expect(text).toContain('12 tools · 41k tokens · reading types.ts')
+    expect(text).toContain('reading types.ts · 12 tools · 41k tokens')
   })
 
-  test('falls back to "agent" without a subagent type, and says Starting before progress', () => {
+  test('names an untyped agent general-purpose, and says Starting before progress', () => {
     const { container } = render(() => (
       <AgentBlockView block={base({ subagentType: undefined, progress: { taskId: 't', status: 'running' } })} />
     ))
-    expect(container.textContent).toContain('agent')
+    expect(container.textContent).toContain('general-purpose')
     expect(container.textContent).toContain('Starting')
   })
 

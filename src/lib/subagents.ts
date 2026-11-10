@@ -24,14 +24,24 @@ function compactTokens(n: number): string {
   return `${n}`
 }
 
-/** "12 tools · 41k tokens · reading types.ts" */
+/** "reading types.ts · 12 tools · 41k tokens": what it's doing now leads. */
 export function agentActivityLine(p: AgentProgress): string {
   const parts: string[] = []
+  const action = agentAction(p)
+  if (action) parts.push(action)
   if (p.toolUses !== undefined) parts.push(`${p.toolUses} ${p.toolUses === 1 ? 'tool' : 'tools'}`)
   if (p.totalTokens) parts.push(`${compactTokens(p.totalTokens)} tokens`)
-  const action = p.summary || p.lastToolName
-  if (action) parts.push(action)
   return parts.join(' · ')
+}
+
+/** What the agent is doing right now, if Claude said. */
+export function agentAction(p: AgentProgress): string {
+  return p.summary || p.lastToolName || ''
+}
+
+/** An Agent call without a type runs Claude's general-purpose agent. */
+export function agentTypeLabel(subagentType: string | undefined): string {
+  return subagentType || 'general-purpose'
 }
 
 export function formatElapsed(ms: number): string {

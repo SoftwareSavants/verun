@@ -5,6 +5,7 @@ import type { AgentBlock } from './ChatView'
 import {
   AGENT_STATE_LABEL,
   agentActivityLine,
+  agentTypeLabel,
   agentFinalText,
   agentState,
   formatElapsed,
@@ -97,7 +98,7 @@ export const AgentBlockView: Component<{
     const ms = taskElapsed(props.block.progress, finished() ? 0 : now())
     return ms === undefined ? '' : formatElapsed(ms)
   }
-  const type = () => props.block.subagentType || 'agent'
+  const type = () => agentTypeLabel(props.block.subagentType)
   const finalText = () => agentFinalText(props.block.progress, props.block.result)
 
   const detail = () => {

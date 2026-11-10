@@ -1,7 +1,7 @@
 import { For, Show, createMemo, type Component } from 'solid-js'
 import { LoaderCircle, SquareTerminal } from 'lucide-solid'
 import type { AgentProgress, OutputItem, SessionStatus } from '../types'
-import { agentActivityLine, formatElapsed, runningBackgroundTasks, taskElapsed, useNow } from '../lib/subagents'
+import { agentAction, agentTypeLabel, formatElapsed, runningBackgroundTasks, taskElapsed, useNow } from '../lib/subagents'
 import { revealAgent } from './AgentBlockView'
 
 const isShell = (t: AgentProgress) => t.taskType === 'local_bash'
@@ -26,7 +26,7 @@ const AgentStripRows: Component<{ items: readonly OutputItem[] }> = (props) => {
     <div role="status" aria-label="Background work" class="mx-4 mb-2 rounded-md bg-surface-1 ring-1 ring-outline/8 text-xs overflow-hidden">
       <div class="px-3 pt-1.5 pb-1 flex items-center gap-2 text-[11px] text-text-muted">
         <LoaderCircle size={11} class="animate-spin text-status-running shrink-0" aria-hidden="true" />
-        <span>Background work is still running. You can keep chatting; Claude picks up results when they finish.</span>
+        <span title="Claude picks up their results when they finish. You can keep chatting.">Running in background</span>
       </div>
       <Show when={ids().length > 0}>
         <ul class="m-0 pl-0 pb-1 list-none">
@@ -34,8 +34,9 @@ const AgentStripRows: Component<{ items: readonly OutputItem[] }> = (props) => {
             {(id) => {
               const task = tasks().get(id)!
               const t = () => tasks().get(id) ?? task
-              const type = () => isShell(t()) ? 'shell' : t().subagentType || 'agent'
-              const activity = () => isShell(t()) ? '' : agentActivityLine(t())
+              const type = () => isShell(t()) ? 'shell' : agentTypeLabel(t().subagentType)
+              // Just what it's doing now: the block above carries the counts.
+              const activity = () => isShell(t()) ? '' : agentAction(t())
               const elapsed = () => {
                 const ms = taskElapsed(t(), now())
                 return ms === undefined ? '' : formatElapsed(ms)
@@ -46,9 +47,9 @@ const AgentStripRows: Component<{ items: readonly OutputItem[] }> = (props) => {
                     <SquareTerminal size={11} class="shrink-0 text-text-dim" aria-hidden="true" />
                   </Show>
                   <span class="shrink-0 font-mono text-[11px] text-text-secondary">{type()}</span>
-                  <span class="truncate text-text-primary">{t().description}</span>
+                  <span class="truncate min-w-24 text-text-primary">{t().description}</span>
                   <Show when={activity()}>
-                    <span class="truncate text-text-dim">{activity()}</span>
+                    <span class="hidden lg:inline truncate text-text-muted">{activity()}</span>
                   </Show>
                   <Show when={elapsed()}>
                     <span class="ml-auto shrink-0 tabular-nums text-[11px] text-text-dim">{elapsed()}</span>

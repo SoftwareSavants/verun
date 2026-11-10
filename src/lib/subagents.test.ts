@@ -8,6 +8,7 @@ import {
   runningBackgroundTasks,
   agentState,
   agentFinalText,
+  agentTypeLabel,
 } from './subagents'
 
 describe('agentFinalText', () => {
@@ -43,11 +44,12 @@ test('isTaskFinished', () => {
 
 describe('agentActivityLine', () => {
   test('tools, tokens and the current action', () => {
+    // What it is doing now leads; the counts are secondary.
     expect(agentActivityLine({ taskId: 't', toolUses: 12, totalTokens: 41_200, summary: 'reading types.ts' }))
-      .toBe('12 tools · 41k tokens · reading types.ts')
+      .toBe('reading types.ts · 12 tools · 41k tokens')
   })
   test('falls back to the last tool name and singular tool', () => {
-    expect(agentActivityLine({ taskId: 't', toolUses: 1, lastToolName: 'Read' })).toBe('1 tool · Read')
+    expect(agentActivityLine({ taskId: 't', toolUses: 1, lastToolName: 'Read' })).toBe('Read · 1 tool')
   })
   test('empty without progress', () => {
     expect(agentActivityLine({ taskId: 't' })).toBe('')
@@ -103,5 +105,13 @@ describe('runningBackgroundTasks', () => {
   })
   test('ignores progress nested inside subagent items', () => {
     expect(runningBackgroundTasks([{ kind: 'subagent', parentToolUseId: 'p', item: progress({ taskId: 'z', status: 'running' }) } as unknown as OutputItem])).toEqual([])
+  })
+})
+
+describe('agentTypeLabel', () => {
+  test("an Agent call without a type runs Claude's general-purpose agent, so it is named that", () => {
+    expect(agentTypeLabel(undefined)).toBe('general-purpose')
+    expect(agentTypeLabel('')).toBe('general-purpose')
+    expect(agentTypeLabel('code-reviewer')).toBe('code-reviewer')
   })
 })

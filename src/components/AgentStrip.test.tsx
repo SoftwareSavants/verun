@@ -28,7 +28,7 @@ describe('AgentStrip', () => {
     const text = container.textContent ?? ''
     expect(text).toContain('code-reviewer')
     expect(text).toContain('Review diff')
-    expect(text).toContain('3 tools · reading a.ts')
+    expect(text).toContain('reading a.ts')
     expect(text).toContain('shell')
     expect(text).toContain('pnpm dev')
     expect(text).not.toContain('Finished one')
@@ -42,6 +42,6 @@ describe('AgentStrip', () => {
 
   test('without task data it still says background work is running', () => {
     const { container } = render(() => <AgentStrip status="background" items={[]} />)
-    expect(container.textContent).toContain('Background')
+    expect(container.textContent).toContain('Running in background')
   })
 })
