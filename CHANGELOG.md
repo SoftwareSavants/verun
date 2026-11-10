@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Task windows that were open when Verun quit reopen on launch at the same position and size (skipping archived or deleted tasks, and positions on a monitor that is gone)
+
 ## 0.16.1 - 2026-11-10
 
 - Chat shows each Claude subagent as one collapsible block with its type, task, live progress (tools, tokens, current action) and result, its own actions nested inside instead of mixed into the main agent's; a strip above the composer lists background agents and shells still running and jumps to their block
