@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.16.2 - 2026-11-10
+
 - Links and file paths open on Cmd-click (Ctrl-click elsewhere) in chat, rendered markdown and terminals, like an editor; a plain click is free for selecting text. They underline with a pointer only while the modifier is held, external links carry a ↗, and a path like `src/a.ts:12:3` opens at that line and column
 - Failed tool rows say "Failed" with their first error line while collapsed, running ones show a spinner, Cmd-click on a Read/Edit/Write row opens its file, and an expanded row's output has a copy button
 - Code blocks in chat get a header with their language and a copy button (copies the code only); paths in tables lose their chip styling, and tool arguments, thinking previews and turn durations are easier to read
@@ -10,6 +12,7 @@
 - Agent blocks and the background strip show the agent's task, not its latest step ("Running ..."), which now appears as the current action
 - An interrupted agent reads as stopped, not in error red; the background strip is one row per task without a heading, and the "Ask sideways" pill no longer covers the last block
 - Task windows that were open when Verun quit reopen on launch at the same position and size (skipping archived or deleted tasks, and positions on a monitor that is gone)
+- Open editor tabs follow edits made outside Verun (agents, other editors) as they happen, not only when the window regains focus: a clean tab updates in place, keeping cursor, scroll and undo, and saving no longer raises a false "changed on disk" conflict. Tabs with unsaved edits still get the keep/overwrite prompt. Markdown and SVG previews follow outside edits too
 
 ## 0.16.1 - 2026-11-10
 

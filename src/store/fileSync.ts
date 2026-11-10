@@ -1,4 +1,5 @@
 import { createSignal } from 'solid-js'
+import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
 import {
   getCachedContent,
@@ -71,16 +72,48 @@ function notifyExternalChange(
   })
 }
 
-let inFlight = false
+/** Which open tabs a check looks at: all, or those in one folder of one task. */
+export interface CheckScope { taskId: string; dir: string }
 
-/** Re-check every open tab against disk on app focus.
+const parentDir = (relativePath: string) => {
+  const i = relativePath.lastIndexOf('/')
+  return i < 0 ? '' : relativePath.slice(0, i)
+}
+
+let inFlight: Promise<void> | null = null
+// Scopes asked for while a check runs; null = everything. Run right after,
+// so a write that lands mid-check is never dropped.
+let queued: CheckScope[] | null | undefined
+
+/** Re-check open tabs against disk: on window focus, and whenever the file
+ *  watcher reports a change in a folder with open tabs (an agent's edit).
  *  Silently refreshes clean tabs. For dirty tabs, shows a toast (no modal). */
-export async function checkOpenFilesForExternalChanges() {
-  if (inFlight) return
-  inFlight = true
+export async function checkOpenFilesForExternalChanges(scope?: CheckScope): Promise<void> {
+  if (inFlight) {
+    queued = queued === null || !scope ? null : [...(queued ?? []), scope]
+    return inFlight
+  }
+  inFlight = runCheck(scope ? [scope] : null)
   try {
+    await inFlight
+  } finally {
+    inFlight = null
+  }
+  if (queued !== undefined) {
+    const next = queued
+    queued = undefined
+    if (next === null) await checkOpenFilesForExternalChanges()
+    else for (const s of next) await checkOpenFilesForExternalChanges(s)
+  }
+}
+
+async function runCheck(scopes: CheckScope[] | null) {
+  {
     const all = allOpenTabs()
-    for (const [taskId, tabs] of Object.entries(all)) {
+    for (const [taskId, allTabs] of Object.entries(all)) {
+      const tabs = scopes
+        ? allTabs.filter(t => scopes.some(s => s.taskId === taskId && s.dir === parentDir(t.relativePath)))
+        : allTabs
       if (!tabs.length) continue
       const task = await ipc.getTask(taskId).catch(() => null)
       if (!task) continue
@@ -115,8 +148,6 @@ export async function checkOpenFilesForExternalChanges() {
         }
       }
     }
-  } finally {
-    inFlight = false
   }
 }
 
@@ -183,11 +214,17 @@ export function dismissConflict() {
   setActiveConflict(null)
 }
 
-/** Register the visibilitychange listener. Mirrors git.ts's initWindowFocusRefresh. */
+/** Keep open tabs in sync with disk: on window focus, and on every file
+ *  watcher change in a folder that has open tabs (no polling). */
 export function initOpenFilesRefresh(): void {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      checkOpenFilesForExternalChanges()
+      void checkOpenFilesForExternalChanges()
     }
+  })
+  void listen<{ taskId: string; path: string; ignoreRulesChanged?: boolean }>('file-tree-changed', ({ payload }) => {
+    // A .gitignore change replaces the per-folder events: check every tab.
+    if (payload.ignoreRulesChanged) { void checkOpenFilesForExternalChanges(); return }
+    void checkOpenFilesForExternalChanges({ taskId: payload.taskId, dir: payload.path.replace(/\\/g, '/') })
   })
 }

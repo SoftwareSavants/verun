@@ -8,7 +8,8 @@ import { DiffEditor } from './DiffEditor'
 import { BreadcrumbBar } from './BreadcrumbBar'
 import { getPreviewType } from '../lib/fileTypes'
 import * as ipc from '../lib/ipc'
-import { getCachedContent, setCachedContent, setCachedOriginal, isDiffKey, pathFromDiffKey } from '../store/files'
+import { getCachedContent, isDiffKey, pathFromDiffKey } from '../store/files'
+import { createPreviewContent } from './previewContent'
 import { openTabs, pendingGoToLine } from '../store/editorView'
 
 interface Props {
@@ -223,35 +224,12 @@ const AudioViewer: Component<Props> = (props) => {
 
 const MarkdownViewer: Component<Props> = (props) => {
   const [mode, setMode] = createSignal<'preview' | 'edit'>('preview')
-  const [content, setContent] = createSignal('')
-  const [loading, setLoading] = createSignal(true)
-  const [error, setError] = createSignal<string | null>(null)
+  const { content, setContent, loading, error } = createPreviewContent(() => props.taskId, () => props.relativePath)
 
   let previewScrollFraction = 0
   let previewEl: HTMLDivElement | undefined
   let editorWrapperEl: HTMLDivElement | undefined
 
-  const loadContent = async (rp: string) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const cached = getCachedContent(props.taskId, rp)
-      if (cached !== undefined) {
-        setContent(cached)
-      } else {
-        const text = await ipc.readWorktreeFile(props.taskId, rp)
-        setContent(text)
-        setCachedContent(props.taskId, rp, text)
-        setCachedOriginal(props.taskId, rp, text)
-      }
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  createEffect(on(() => props.relativePath, loadContent))
 
   // Opening from workspace search (or any pending go-to-line) for this file
   // jumps straight to edit mode so the target line is visible and editable.
@@ -366,36 +344,13 @@ const MarkdownViewer: Component<Props> = (props) => {
 
 const SvgViewer: Component<Props> = (props) => {
   const [mode, setMode] = createSignal<'preview' | 'edit'>('preview')
-  const [content, setContent] = createSignal('')
-  const [loading, setLoading] = createSignal(true)
-  const [error, setError] = createSignal<string | null>(null)
+  const { content, setContent, loading, error } = createPreviewContent(() => props.taskId, () => props.relativePath)
   const filename = () => props.relativePath.split('/').pop() ?? props.relativePath
 
   let previewScrollFraction = 0
   let previewEl: HTMLDivElement | undefined
   let editorWrapperEl: HTMLDivElement | undefined
 
-  const loadContent = async (rp: string) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const cached = getCachedContent(props.taskId, rp)
-      if (cached !== undefined) {
-        setContent(cached)
-      } else {
-        const text = await ipc.readWorktreeFile(props.taskId, rp)
-        setContent(text)
-        setCachedContent(props.taskId, rp, text)
-        setCachedOriginal(props.taskId, rp, text)
-      }
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  createEffect(on(() => props.relativePath, loadContent))
 
   // Opening from workspace search (or any pending go-to-line) for this file
   // jumps straight to edit mode so the target line is visible and editable.
