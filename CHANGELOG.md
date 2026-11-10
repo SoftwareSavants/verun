@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Terminal-view Claude sessions stay working while their turn's subagents or background shells run, instead of showing idle until Claude resumes
 - A session whose turn ends while subagents or background shells keep running now shows as working ("Background agents are still working") instead of idle, and goes back to running when Claude resumes on its own after they report back; "Task completed" fires once that work settles
 - A session's Claude terminal no longer also appears as a "Claude Code" tab in the bottom terminal panel, which left either the panel tab or the session view blank (#250)
 

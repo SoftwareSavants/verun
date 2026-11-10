@@ -32,6 +32,29 @@ pub struct HookEvent {
     pub notification_type: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    /// How many background tasks (subagents, background shells) are still
+    /// unfinished. Claude sends the full list on Stop/SubagentStop; only the
+    /// count crosses the bridge, never their descriptions or commands.
+    #[serde(default, deserialize_with = "unfinished_count")]
+    pub background_tasks: Option<usize>,
+}
+
+fn unfinished_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(tasks) => Some(
+            tasks
+                .iter()
+                .filter(|t| {
+                    !matches!(
+                        t.get("status").and_then(|s| s.as_str()),
+                        Some("completed" | "failed" | "killed" | "stopped" | "cancelled")
+                    )
+                })
+                .count(),
+        ),
+        serde_json::Value::Number(n) => n.as_u64().map(|n| n as usize),
+        _ => None,
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -53,6 +76,9 @@ pub struct Activity {
     ended: bool,
     #[serde(skip)]
     terminal_id: Option<String>,
+    /// The turn ended with background work still running.
+    #[serde(skip)]
+    awaiting_background: bool,
 }
 impl Activity {
     fn new(session: &str, launch: &str) -> Self {
@@ -69,9 +95,19 @@ impl Activity {
             awaiting_start: false,
             ended: false,
             terminal_id: None,
+            awaiting_background: false,
         }
     }
     fn apply(&mut self, event: &HookEvent) {
+        // A subagent finishing is the one subagent event that matters to the
+        // parent: it may be the last of the work the parent's turn left behind.
+        if event.hook_event_name == "SubagentStop" {
+            if !self.ended && self.awaiting_background && event.background_tasks == Some(0) {
+                self.awaiting_background = false;
+                self.phase = Phase::Idle;
+            }
+            return;
+        }
         if self.ended || event.agent_id.is_some() || event.session_id.is_empty() {
             return;
         }
@@ -101,6 +137,7 @@ impl Activity {
             "SessionStart" if self.phase == Phase::Unknown => self.phase = Phase::Idle,
             "UserPromptSubmit" => {
                 self.pending.clear();
+                self.awaiting_background = false;
                 self.phase = Phase::Working;
             }
             "PermissionRequest" | "Elicitation" => {
@@ -142,13 +179,23 @@ impl Activity {
             }
             "Stop" => {
                 self.pending.clear();
-                self.phase = Phase::Idle;
+                // Subagents or background shells still running: Claude is
+                // still working, and resumes when they report back.
+                self.awaiting_background = event.background_tasks.unwrap_or(0) > 0;
+                self.phase = if self.awaiting_background {
+                    Phase::Working
+                } else {
+                    Phase::Idle
+                };
             }
             "StopFailure" => {
                 self.pending.clear();
                 self.phase = Phase::Failed;
             }
-            "Notification" if event.notification_type.as_deref() == Some("idle_prompt") => {
+            "Notification"
+                if event.notification_type.as_deref() == Some("idle_prompt")
+                    && !self.awaiting_background =>
+            {
                 self.pending.clear();
                 self.phase = Phase::Idle;
             }
@@ -447,6 +494,7 @@ fn hook_settings(command: &str) -> serde_json::Value {
         "PostToolBatch",
         "Stop",
         "StopFailure",
+        "SubagentStop",
         "SessionEnd",
         "Elicitation",
         "ElicitationResult",
@@ -576,6 +624,43 @@ mod tests {
         state.end(Some(1));
         state.apply(&event("PostToolUse", "a"));
         assert_eq!(state.phase, Phase::Failed);
+    }
+
+    #[test]
+    fn a_turn_that_ends_with_background_agents_stays_working_until_they_finish() {
+        let mut state = Activity::new("s", "l");
+        state.apply(&event("UserPromptSubmit", ""));
+        let stop: HookEvent = serde_json::from_value(json!({
+            "hook_event_name": "Stop", "session_id": "claude-1",
+            "background_tasks": [{"id": "a1", "type": "local_agent", "status": "running", "description": "secret"}]
+        })).unwrap();
+        state.apply(&stop);
+        assert_eq!(state.phase, Phase::Working, "Claude is still working through its subagent");
+        // Claude's idle reminder can't end it either.
+        let mut idle = event("Notification", "");
+        idle.notification_type = Some("idle_prompt".into());
+        state.apply(&idle);
+        assert_eq!(state.phase, Phase::Working);
+        // The subagent reports back with nothing left running.
+        let done: HookEvent = serde_json::from_value(json!({
+            "hook_event_name": "SubagentStop", "session_id": "claude-1", "agent_id": "a1", "background_tasks": []
+        })).unwrap();
+        state.apply(&done);
+        assert_eq!(state.phase, Phase::Idle);
+    }
+
+    #[test]
+    fn background_tasks_cross_the_bridge_as_a_count_only() {
+        let input = json!({"hook_event_name":"Stop","session_id":"c","background_tasks":[
+            {"id":"b1","type":"local_bash","status":"running","command":"export TOKEN=hunter2"},
+            {"id":"b2","type":"local_agent","status":"completed","description":"done"}]});
+        let event: HookEvent = serde_json::from_value(input).unwrap();
+        let wire = serde_json::to_string(&event).unwrap();
+        assert!(!wire.contains("hunter2"));
+        assert!(!wire.contains("local_bash"));
+        // Round-trips through the relay frame as the count of unfinished tasks.
+        let back: HookEvent = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back.background_tasks, Some(1));
     }
 
     #[test]
