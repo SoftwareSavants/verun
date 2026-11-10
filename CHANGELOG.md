@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.1 - 2026-11-10
 
 - Chat shows each Claude subagent as one collapsible block with its type, task, live progress (tools, tokens, current action) and result, its own actions nested inside instead of mixed into the main agent's; a strip above the composer lists background agents and shells still running and jumps to their block
 - A background subagent's own output no longer flips its session from background to running
