@@ -10,6 +10,7 @@
 - Agent blocks and the background strip show the agent's task, not its latest step ("Running ..."), which now appears as the current action
 - An interrupted agent reads as stopped, not in error red; the background strip is one row per task without a heading, and the "Ask sideways" pill no longer covers the last block
 - Task windows that were open when Verun quit reopen on launch at the same position and size (skipping archived or deleted tasks, and positions on a monitor that is gone)
+- Open editor tabs follow edits made outside Verun (agents, other editors) as they happen, not only when the window regains focus: a clean tab updates in place, keeping cursor, scroll and undo, and saving no longer raises a false "changed on disk" conflict. Tabs with unsaved edits still get the keep/overwrite prompt
 
 ## 0.16.1 - 2026-11-10
 

@@ -2,7 +2,7 @@ import { editorFilePath, isExternalFile } from '../lib/editorFilePath'
 import { Component, createEffect, on, createSignal, Show, onCleanup, onMount } from 'solid-js'
 import { EditorView, keymap, lineNumbers, ViewPlugin, GutterMarker, gutterLineClass, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightSpecialChars, showTooltip, hoverTooltip, tooltips, Decoration, type DecorationSet, type Tooltip } from '@codemirror/view'
 import { linter, forEachDiagnostic, type Diagnostic } from '@codemirror/lint'
-import { EditorState, StateField, StateEffect, RangeSet, Facet, Text, type Extension } from '@codemirror/state'
+import { EditorState, StateField, StateEffect, RangeSet, Facet, Text, Transaction, type Extension } from '@codemirror/state'
 import { setChatPrefillRequest } from '../store/ui'
 import { mainView, setMainView } from '../store/editorView'
 import { ContextMenu } from './ContextMenu'
@@ -32,6 +32,7 @@ import * as ipc from '../lib/ipc'
 import { getCachedContent, setCachedContent, getCachedOriginal, setCachedOriginal } from '../store/files'
 import { setTabDirty, pendingGoToLine, consumeGoToLine, setPendingGoToLine, openFilePinned, onBeforeActiveEditorChange, onTabClose, onTaskCleanup } from '../store/editorView'
 import { reloadNonce, checkBeforeSave } from '../store/fileSync'
+import { minimalChange } from '../lib/minimalChange'
 import { getLspClient, isLspSupported, registerEditorView, unregisterEditorView } from '../lib/lsp'
 
 // Selection-aware active line: suppresses highlight when text is selected
@@ -1408,6 +1409,21 @@ export const CodeEditor: Component<Props> = (props) => {
     async ([path]) => {
     const cached = getCachedContent(props.taskId, path)
     const cachedOriginal = getCachedOriginal(props.taskId, path)
+    // The file shown changed on disk (an agent's edit): apply just the changed
+    // span to the open document, keeping cursor, scroll, folds and undo.
+    if (editorView && currentFileKey === cacheKey(props.taskId, path) && cached !== undefined && cachedOriginal !== undefined) {
+      setOriginalContent(cachedOriginal)
+      const shown = editorView.state.doc.toString()
+      if (shown !== cached) {
+        editorView.dispatch({
+          changes: minimalChange(shown, cached),
+          // Undo must not revert the agent's edit.
+          annotations: Transaction.addToHistory.of(false),
+        })
+      }
+      currentContent = cached
+      return
+    }
     if (cached !== undefined && cachedOriginal !== undefined) {
       currentContent = cached
       setOriginalContent(cachedOriginal)
