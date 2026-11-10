@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A session's Claude terminal no longer also appears as a "Claude Code" tab in the bottom terminal panel, which left either the panel tab or the session view blank (#250)
+
 ## 0.16.0 - 2026-11-09
 
 - Quick tasks: run an agent in any folder (home, a non-git dir, a parent of several repos) without adding a project, from the sidebar + menu or Cmd+Opt+N

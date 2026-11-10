@@ -527,6 +527,17 @@ pub fn close_all_for_task(map: &ActivePtyMap, task_id: &str) {
 /// Return metadata + replay buffer for every PTY currently running for a given task.
 /// Callers on a freshly-opened window use this to rebuild their terminal list and
 /// replay scrollback into their xterm instances.
+/// The bottom panel's terminals: everything but PTYs a session view owns.
+pub fn panel_terminals(
+    entries: Vec<PtyListEntry>,
+    session_owned: &std::collections::HashSet<String>,
+) -> Vec<PtyListEntry> {
+    entries
+        .into_iter()
+        .filter(|e| !session_owned.contains(&e.terminal_id))
+        .collect()
+}
+
 pub fn list_for_task(map: &ActivePtyMap, task_id: &str) -> Vec<PtyListEntry> {
     let mut entries: Vec<PtyListEntry> = map
         .iter()
@@ -626,6 +637,28 @@ pub(crate) fn insert_test_pty(map: &ActivePtyMap, terminal_id: &str, output: Arc
 
 #[cfg(test)]
 mod tests {
+    fn entry(id: &str) -> PtyListEntry {
+        PtyListEntry {
+            terminal_id: id.into(),
+            task_id: "t".into(),
+            name: id.into(),
+            is_start_command: false,
+            hook_type: None,
+            buffered_output: String::new(),
+            seq: 0,
+        }
+    }
+
+    #[test]
+    fn a_sessions_claude_terminal_is_not_a_panel_terminal() {
+        // The session view owns it; listing it made the panel add a "Claude
+        // Code" tab that stole the session's xterm (#249, #250).
+        let owned = std::collections::HashSet::from(["claude-pty".to_string()]);
+        let listed = panel_terminals(vec![entry("zsh"), entry("claude-pty"), entry("setup")], &owned);
+        let ids: Vec<_> = listed.iter().map(|e| e.terminal_id.as_str()).collect();
+        assert_eq!(ids, ["zsh", "setup"]);
+    }
+
     use super::*;
 
     #[test]
