@@ -1578,7 +1578,7 @@ mod tests {
             &json!({"update": {"sessionUpdate": "tool_call_update", "toolCallId": "c2", "status": "completed",
                 "content": [{"type": "diff", "path": "out.txt", "oldText": "", "newText": "DONE\n"}]}}),
         );
-        assert!(diff.iter().any(|i| matches!(i, crate::stream::OutputItem::ToolResult { text, is_error } if text.contains("+DONE") && !is_error)));
+        assert!(diff.iter().any(|i| matches!(i, crate::stream::OutputItem::ToolResult { text, is_error, .. } if text.contains("+DONE") && !is_error)));
 
         // In-progress updates surface nothing.
         let pending = a.rpc_decode_notification(
@@ -1593,7 +1593,7 @@ mod tests {
             &json!({"update": {"sessionUpdate": "tool_call_update", "toolCallId": "c3", "status": "completed",
                 "content": [{"type": "content", "content": {"type": "text", "text": "ok"}}]}}),
         );
-        assert!(res.iter().any(|i| matches!(i, crate::stream::OutputItem::ToolResult { text, is_error } if text == "ok" && !is_error)));
+        assert!(res.iter().any(|i| matches!(i, crate::stream::OutputItem::ToolResult { text, is_error, .. } if text == "ok" && !is_error)));
 
         // Failed tool -> is_error true.
         let failed = a.rpc_decode_notification(

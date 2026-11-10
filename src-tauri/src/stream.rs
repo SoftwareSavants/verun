@@ -45,11 +45,38 @@ pub enum OutputItem {
 
     /// Tool use started
     #[serde(rename_all = "camelCase")]
-    ToolStart { tool: String, input: String },
+    ToolStart {
+        tool: String,
+        input: String,
+        /// The tool_use id, when the agent reports one. Lets the frontend tie
+        /// an Agent call to its subagent's items, progress and result.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
 
     /// Tool result
     #[serde(rename_all = "camelCase")]
-    ToolResult { text: String, is_error: bool },
+    ToolResult {
+        text: String,
+        is_error: bool,
+        /// The tool_use id this result answers, when reported.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+    },
+
+    /// An item produced by a Claude subagent. Claude tags a subagent's
+    /// messages with `parent_tool_use_id` (the Agent call that spawned it);
+    /// wrapping keeps them out of the main agent's list.
+    #[serde(rename_all = "camelCase")]
+    Subagent {
+        parent_tool_use_id: String,
+        item: Box<OutputItem>,
+    },
+
+    /// Live state of a background task (subagent or background shell), from
+    /// Claude's `task_started` / `task_progress` / `task_updated` /
+    /// `task_notification` events.
+    AgentProgress(AgentProgress),
 
     /// System/status message
     #[serde(rename_all = "camelCase")]
@@ -161,6 +188,106 @@ pub enum OutputItem {
     Raw { text: String },
 }
 
+/// One task event's view of a Claude background task. Every field but the
+/// task id is optional: each event carries only what it knows, and later
+/// events win field by field (see `merge`).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProgress {
+    pub task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_backgrounded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_uses: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<i64>,
+}
+
+impl AgentProgress {
+    /// Parse a `system` task event; None for any other event.
+    fn from_task_event(v: &serde_json::Value) -> Option<Self> {
+        let subtype = v.get("subtype").and_then(|s| s.as_str())?;
+        if !matches!(subtype, "task_started" | "task_progress" | "task_updated" | "task_notification") {
+            return None;
+        }
+        let task_id = v.get("task_id").and_then(|t| t.as_str())?.to_string();
+        let patch = v.get("patch");
+        let field = |key: &str| {
+            v.get(key)
+                .or_else(|| patch.and_then(|p| p.get(key)))
+                .and_then(|x| x.as_str())
+                .filter(|x| !x.is_empty())
+                .map(str::to_string)
+        };
+        let usage = |key: &str| {
+            v.get("usage")
+                .or_else(|| patch.and_then(|p| p.get("usage")))
+                .and_then(|u| u.get(key))
+                .and_then(|x| x.as_u64())
+        };
+        let status = match subtype {
+            "task_started" => Some("running".to_string()),
+            "task_progress" => None,
+            "task_notification" => Some(field("status").unwrap_or_else(|| "completed".into())),
+            _ => field("status"),
+        };
+        let finished = status.as_deref().is_some_and(|s| s != "running" && s != "pending");
+        Some(Self {
+            task_id,
+            tool_use_id: field("tool_use_id"),
+            task_type: field("task_type"),
+            description: field("description"),
+            subagent_type: field("subagent_type"),
+            is_backgrounded: v
+                .get("is_backgrounded")
+                .or_else(|| patch.and_then(|p| p.get("is_backgrounded")))
+                .and_then(|b| b.as_bool()),
+            total_tokens: usage("total_tokens"),
+            tool_uses: usage("tool_uses"),
+            duration_ms: usage("duration_ms"),
+            last_tool_name: field("last_tool_name"),
+            summary: field("summary"),
+            error: field("error"),
+            started_at: (subtype == "task_started").then(epoch_ms),
+            ended_at: finished.then(epoch_ms),
+            status,
+        })
+    }
+
+    /// Fold a newer event for the same task into this one.
+    fn merge(&mut self, newer: AgentProgress) {
+        macro_rules! take {
+            ($($f:ident),*) => { $( if newer.$f.is_some() { self.$f = newer.$f; } )* };
+        }
+        take!(
+            tool_use_id, task_type, description, subagent_type, status, is_backgrounded,
+            total_tokens, tool_uses, duration_ms, last_tool_name, summary, error, started_at, ended_at
+        );
+    }
+}
+
 /// One row in a Codex plan-mode checklist.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -258,6 +385,19 @@ pub struct ToolApprovalEvent {
     pub tool_input: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<crate::claude_control::ApprovalPrompt>,
+    /// The tool_use id being approved, so a subagent's request can be traced
+    /// to its agent block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+}
+
+/// The tool_use id a `can_use_tool` control request asks about.
+fn request_tool_use_id(request: &serde_json::Value) -> Option<String> {
+    request
+        .get("tool_use_id")
+        .and_then(|i| i.as_str())
+        .filter(|i| !i.is_empty())
+        .map(str::to_string)
 }
 
 /// Emitted to frontend with subscription rate limit info
@@ -338,6 +478,28 @@ fn parse_sdk_event(line: &str) -> Vec<OutputItem> {
 fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
     let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
+    // A Claude subagent's messages carry the id of the Agent call that
+    // spawned it. Its text arrives whole in the message snapshot, so its
+    // stream deltas are dropped rather than shown twice.
+    if let Some(parent) = v
+        .get("parent_tool_use_id")
+        .and_then(|p| p.as_str())
+        .filter(|p| !p.is_empty())
+    {
+        let items = match msg_type {
+            "assistant" => parse_subagent_assistant_message(v),
+            "user" => parse_user_message(v),
+            _ => Vec::new(),
+        };
+        return items
+            .into_iter()
+            .map(|item| OutputItem::Subagent {
+                parent_tool_use_id: parent.to_string(),
+                item: Box::new(item),
+            })
+            .collect();
+    }
+
     match msg_type {
         // -- Streaming token deltas (real-time) --
         "stream_event" => parse_stream_event(v),
@@ -361,7 +523,9 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
         // -- System messages --
         // `system.init` gives us the resume id (extracted in stream_and_capture);
         // other system subtypes are silently ignored.
-        "system" => vec![],
+        "system" => AgentProgress::from_task_event(v)
+            .map(|p| vec![OutputItem::AgentProgress(p)])
+            .unwrap_or_default(),
 
         // -- Result (turn completed) --
         // Text is already delivered via stream_event deltas; skip result.result to avoid duplication.
@@ -465,7 +629,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                 "started" => {
                     if let Some(tc) = tc {
                         let (tool, input) = parse_cursor_tool_call(tc);
-                        vec![OutputItem::ToolStart { tool, input }]
+                        vec![OutputItem::ToolStart { tool, input, id: None }]
                     } else {
                         vec![]
                     }
@@ -476,6 +640,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                         vec![OutputItem::ToolResult {
                             text: output,
                             is_error: false,
+                            tool_use_id: None,
                         }]
                     } else {
                         vec![]
@@ -529,6 +694,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                     vec![OutputItem::ToolStart {
                         tool: "shell".to_string(),
                         input: cmd,
+                        id: None,
                     }]
                 }
                 _ => vec![],
@@ -565,6 +731,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                     vec![OutputItem::ToolResult {
                         text: output,
                         is_error,
+                        tool_use_id: None,
                     }]
                 }
                 "tool_call" => {
@@ -576,6 +743,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                     vec![OutputItem::ToolStart {
                         tool: name.to_string(),
                         input: args,
+                        id: None,
                     }]
                 }
                 "tool_result" => {
@@ -591,6 +759,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                     vec![OutputItem::ToolResult {
                         text: output,
                         is_error,
+                        tool_use_id: None,
                     }]
                 }
                 "file_change" => format_codex_file_change(item),
@@ -604,10 +773,12 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                         OutputItem::ToolStart {
                             tool: "Read".to_string(),
                             input: path.clone(),
+                            id: None,
                         },
                         OutputItem::ToolResult {
                             text: path,
                             is_error: false,
+                            tool_use_id: None,
                         },
                     ]
                 }
@@ -690,10 +861,11 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                         .unwrap_or("")
                         .to_string();
                     vec![
-                        OutputItem::ToolStart { tool, input },
+                        OutputItem::ToolStart { tool, input, id: None },
                         OutputItem::ToolResult {
                             text: output,
                             is_error: false,
+                            tool_use_id: None,
                         },
                     ]
                 } else {
@@ -701,7 +873,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                         .and_then(|s| s.get("input"))
                         .map(|i| serde_json::to_string_pretty(i).unwrap_or_default())
                         .unwrap_or_default();
-                    vec![OutputItem::ToolStart { tool, input }]
+                    vec![OutputItem::ToolStart { tool, input, id: None }]
                 }
             } else {
                 // Gemini format: { type: "tool_use", tool_name, tool_id, parameters }
@@ -714,7 +886,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
                     .get("parameters")
                     .map(|p| serde_json::to_string_pretty(p).unwrap_or_default())
                     .unwrap_or_default();
-                vec![OutputItem::ToolStart { tool, input }]
+                vec![OutputItem::ToolStart { tool, input, id: None }]
             }
         }
 
@@ -782,6 +954,7 @@ fn parse_sdk_event_value(v: &serde_json::Value) -> Vec<OutputItem> {
             vec![OutputItem::ToolResult {
                 text: output,
                 is_error,
+                tool_use_id: None,
             }]
         }
 
@@ -859,6 +1032,7 @@ pub fn process_codex_rpc_notification(method: &str, params: &serde_json::Value) 
                         .and_then(|c| c.as_str())
                         .unwrap_or("")
                         .to_string(),
+                        id: None,
                 }],
                 "toolCall" | "tool_call" => {
                     let name = item
@@ -873,6 +1047,7 @@ pub fn process_codex_rpc_notification(method: &str, params: &serde_json::Value) 
                     vec![OutputItem::ToolStart {
                         tool: name,
                         input: args,
+                        id: None,
                     }]
                 }
                 _ => vec![],
@@ -930,6 +1105,7 @@ pub fn process_codex_rpc_notification(method: &str, params: &serde_json::Value) 
                     vec![OutputItem::ToolResult {
                         text: output,
                         is_error,
+                        tool_use_id: None,
                     }]
                 }
                 "toolCall" | "tool_call" => {
@@ -941,6 +1117,7 @@ pub fn process_codex_rpc_notification(method: &str, params: &serde_json::Value) 
                     vec![OutputItem::ToolStart {
                         tool: name.to_string(),
                         input: args,
+                        id: None,
                     }]
                 }
                 "toolResult" | "tool_result" => {
@@ -957,6 +1134,7 @@ pub fn process_codex_rpc_notification(method: &str, params: &serde_json::Value) 
                     vec![OutputItem::ToolResult {
                         text: output,
                         is_error,
+                        tool_use_id: None,
                     }]
                 }
                 "fileChange" | "file_change" => format_codex_file_change(item),
@@ -970,10 +1148,12 @@ pub fn process_codex_rpc_notification(method: &str, params: &serde_json::Value) 
                         OutputItem::ToolStart {
                             tool: "Read".to_string(),
                             input: path.clone(),
+                            id: None,
                         },
                         OutputItem::ToolResult {
                             text: path,
                             is_error: false,
+                            tool_use_id: None,
                         },
                     ]
                 }
@@ -1107,10 +1287,12 @@ fn format_codex_file_change(item: &serde_json::Value) -> Vec<OutputItem> {
         items.push(OutputItem::ToolStart {
             tool: tool.to_string(),
             input: path.clone(),
+            id: None,
         });
         items.push(OutputItem::ToolResult {
             text: path,
             is_error: false,
+            tool_use_id: None,
         });
     }
 
@@ -1175,22 +1357,7 @@ fn parse_stream_event(v: &serde_json::Value) -> Vec<OutputItem> {
             let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
             match block_type {
                 "tool_use" | "server_tool_use" | "mcp_tool_use" => {
-                    let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                    let input = block
-                        .get("input")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Object(Default::default()));
-                    let input_str = if input.is_object()
-                        && input.as_object().map(|o| o.is_empty()).unwrap_or(true)
-                    {
-                        String::new()
-                    } else {
-                        serde_json::to_string_pretty(&input).unwrap_or_default()
-                    };
-                    vec![OutputItem::ToolStart {
-                        tool: name.to_string(),
-                        input: input_str,
-                    }]
+                    vec![tool_start_from_block(block)]
                 }
                 _ => {
                     vec![]
@@ -1230,22 +1397,7 @@ fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
         let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match block_type {
             "tool_use" | "server_tool_use" | "mcp_tool_use" => {
-                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                let input = block
-                    .get("input")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Object(Default::default()));
-                let input_str = if input.is_object()
-                    && input.as_object().map(|o| o.is_empty()).unwrap_or(true)
-                {
-                    String::new()
-                } else {
-                    serde_json::to_string_pretty(&input).unwrap_or_default()
-                };
-                items.push(OutputItem::ToolStart {
-                    tool: name.to_string(),
-                    input: input_str,
-                });
+                items.push(tool_start_from_block(block));
             }
             "text" if is_synthetic => {
                 if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
@@ -1262,6 +1414,49 @@ fn parse_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
         }
     }
     items
+}
+
+/// A subagent's assistant snapshot, in block order: its text, thinking and
+/// tool calls. Subagents stream no deltas, so the snapshot is the only copy.
+fn parse_subagent_assistant_message(v: &serde_json::Value) -> Vec<OutputItem> {
+    let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else {
+        return vec![];
+    };
+    let text = |block: &serde_json::Value, key: &str| {
+        block
+            .get(key)
+            .and_then(|t| t.as_str())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    content
+        .iter()
+        .filter_map(|block| match block.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "text" => text(block, "text").map(|text| OutputItem::Text { text }),
+            "thinking" => text(block, "thinking").map(|text| OutputItem::Thinking { text }),
+            "tool_use" | "server_tool_use" | "mcp_tool_use" => Some(tool_start_from_block(block)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A `tool_use` content block as a ToolStart item.
+fn tool_start_from_block(block: &serde_json::Value) -> OutputItem {
+    let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+    let input = block
+        .get("input")
+        .cloned()
+        .unwrap_or(serde_json::Value::Object(Default::default()));
+    let input_str = if input.is_object() && input.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        String::new()
+    } else {
+        serde_json::to_string_pretty(&input).unwrap_or_default()
+    };
+    OutputItem::ToolStart {
+        tool: name.to_string(),
+        input: input_str,
+        id: block.get("id").and_then(|i| i.as_str()).map(str::to_string),
+    }
 }
 
 /// Extract text from a Cursor streaming assistant delta (has `timestamp_ms`).
@@ -1322,7 +1517,11 @@ fn parse_user_message(v: &serde_json::Value) -> Vec<OutputItem> {
                 .unwrap_or(false);
             let text = extract_text_content(block.get("content"));
             if !text.is_empty() {
-                items.push(OutputItem::ToolResult { text, is_error });
+                let tool_use_id = block
+                    .get("tool_use_id")
+                    .and_then(|i| i.as_str())
+                    .map(str::to_string);
+                items.push(OutputItem::ToolResult { text, is_error, tool_use_id });
             }
         }
     }
@@ -1542,7 +1741,7 @@ fn process_github_remote_invalidation(
     item: &OutputItem,
 ) -> Option<Vec<String>> {
     match item {
-        OutputItem::ToolStart { tool, input } => {
+        OutputItem::ToolStart { tool, input, .. } => {
             if let Some(scopes) = github_remote_scopes_for_tool_start(tool, input) {
                 pending.push(scopes);
             }
@@ -1605,6 +1804,10 @@ pub async fn stream_and_capture(
     let mut last_flush = Instant::now();
     let mut total_persisted: usize = 0;
     let mut last_error: Option<String> = None;
+    // Subagents / background shells still running after a turn ends, and
+    // whether Claude started a turn on its own when one reported back.
+    let mut background = BackgroundWork::default();
+    let mut resumed_on_own = false;
     // Captured from `system.init` events for the per-turn snapshot hook.
     let mut resume_id_for_snapshot: Option<String> = None;
     // For agents that defer (Codex): hold the captured id until the first
@@ -1652,6 +1855,32 @@ pub async fn stream_and_capture(
                             claims.lock().unwrap().stream(&mut v, &mut claude_message)
                         });
                         let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                        // Keep the reported status honest between user turns: a
+                        // background task finishing ends "background", and Claude
+                        // producing output on its own is "running".
+                        if !busy.load(Ordering::SeqCst) {
+                            let next = if background.observe(&v) && background.is_empty() && !resumed_on_own {
+                                Some("idle")
+                            } else if !resumed_on_own && is_main_agent_output(&v) {
+                                resumed_on_own = true;
+                                Some("running")
+                            } else {
+                                None
+                            };
+                            if let Some(status) = next {
+                                let _ = db_tx.send(DbWrite::UpdateSessionStatus {
+                                    id: session_id.clone(),
+                                    status: status.to_string(),
+                                }).await;
+                                let _ = app.emit(
+                                    "session-status",
+                                    SessionStatusEvent { session_id: session_id.clone(), status: status.to_string(), error: None },
+                                );
+                            }
+                        } else {
+                            background.observe(&v);
+                        }
 
                         // Incoming `control_response` — resolve the matching pending oneshot so
                         // IPC callers like `interrupt_session` / `get_session_context_usage`
@@ -1822,7 +2051,8 @@ pub async fn stream_and_capture(
                                 let mut guard = stdin.lock().await;
                                 drop(guard.take());
                             } else {
-                                let (status, error) = turn_end_session_status(&last_error);
+                                let (status, error) = turn_end_status(&last_error, &background);
+                                resumed_on_own = false;
                                 let _ = db_tx.send(DbWrite::UpdateSessionStatus {
                                     id: session_id.clone(),
                                     status: status.to_string(),
@@ -2058,6 +2288,7 @@ pub async fn stream_and_capture_rpc(
                             tool_name: entry.tool_name.clone(),
                             tool_input: entry.tool_input.clone(),
                             prompt: None,
+                            tool_use_id: None,
                         });
 
                         let (tx, rx) = tokio::sync::oneshot::channel::<ApprovalResponse>();
@@ -2201,9 +2432,11 @@ async fn handle_control_request(
     } else {
         serde_json::to_string_pretty(&tool_input).unwrap_or_default()
     };
+    let tool_use_id = request_tool_use_id(request);
     let tool_start = (!elicitation).then(|| OutputItem::ToolStart {
         tool: tool_name.clone(),
         input: input_str,
+        id: tool_use_id.clone(),
     });
 
     // Evaluate policy — load trust level fresh so mid-run IPC edits apply.
@@ -2293,6 +2526,7 @@ async fn handle_control_request(
                     tool_name: tool_name.clone(),
                     tool_input: tool_input.clone(),
                     prompt: prompt.clone(),
+                    tool_use_id: tool_use_id.clone(),
                 },
             );
 
@@ -2306,6 +2540,7 @@ async fn handle_control_request(
                     tool_name,
                     tool_input: tool_input.clone(),
                     prompt,
+                    tool_use_id,
                 },
             );
 
@@ -2383,6 +2618,27 @@ fn push_coalesced(buffer: &mut Vec<OutputItem>, item: OutputItem) {
             Some(OutputItem::CodexPlanDelta { item_id: acc_id, delta: acc }),
             OutputItem::CodexPlanDelta { item_id, delta },
         ) if *acc_id == item_id => acc.push_str(&delta),
+        // A subagent's text merges only with its own previous text.
+        (
+            Some(OutputItem::Subagent { parent_tool_use_id: acc_parent, item: acc }),
+            OutputItem::Subagent { parent_tool_use_id, item },
+        ) if *acc_parent == parent_tool_use_id => match (acc.as_mut(), *item) {
+            (OutputItem::Text { text: acc }, OutputItem::Text { text })
+            | (OutputItem::Thinking { text: acc }, OutputItem::Thinking { text }) => acc.push_str(&text),
+            (_, item) => buffer.push(OutputItem::Subagent { parent_tool_use_id, item: Box::new(item) }),
+        },
+        // Only a task's latest state matters: fold progress into the queued
+        // event for the same task.
+        (_, OutputItem::AgentProgress(p)) => {
+            let queued = buffer.iter_mut().find_map(|i| match i {
+                OutputItem::AgentProgress(q) if q.task_id == p.task_id => Some(q),
+                _ => None,
+            });
+            match queued {
+                Some(q) => q.merge(p),
+                None => buffer.push(OutputItem::AgentProgress(p)),
+            }
+        }
         (_, item) => buffer.push(item),
     }
 }
@@ -2453,6 +2709,66 @@ pub fn map_exit_status(code: Option<i32>) -> &'static str {
 /// persistent agent. The process stays alive, so we can't wait for exit —
 /// a turn-level error (e.g. API 401, overload) must propagate as the
 /// session status so the frontend can render the retry banner.
+/// Background work (subagents, background shells) Claude reports through
+/// `system` task events. A turn can end while it keeps running; Claude may
+/// then resume on its own when it reports back.
+#[derive(Default)]
+pub(crate) struct BackgroundWork {
+    tasks: std::collections::HashSet<String>,
+}
+
+impl BackgroundWork {
+    /// Feed any event; returns true when the set of running tasks changed.
+    pub(crate) fn observe(&mut self, v: &serde_json::Value) -> bool {
+        if v.get("type").and_then(|t| t.as_str()) != Some("system") {
+            return false;
+        }
+        let Some(id) = v.get("task_id").and_then(|t| t.as_str()) else {
+            return false;
+        };
+        let finished = |status: Option<&str>| {
+            matches!(
+                status,
+                Some("completed" | "failed" | "killed" | "stopped" | "cancelled" | "error")
+            )
+        };
+        match v.get("subtype").and_then(|t| t.as_str()) {
+            Some("task_started") => self.tasks.insert(id.to_string()),
+            Some("task_notification") => self.tasks.remove(id),
+            Some("task_updated")
+                if finished(v.pointer("/patch/status").and_then(|s| s.as_str())) =>
+            {
+                self.tasks.remove(id)
+            }
+            _ => false,
+        }
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+}
+
+/// Output from the main agent itself (not a subagent or a task event): seen
+/// between user turns, it means Claude resumed on its own.
+pub(crate) fn is_main_agent_output(v: &serde_json::Value) -> bool {
+    matches!(v.get("type").and_then(|t| t.as_str()), Some("assistant" | "stream_event"))
+        && v
+            .get("parent_tool_use_id")
+            .and_then(|p| p.as_str())
+            .is_none_or(|p| p.is_empty())
+}
+
+/// Turn-end status: an error wins, then still-running background work.
+pub(crate) fn turn_end_status(
+    err: &Option<String>,
+    bg: &BackgroundWork,
+) -> (&'static str, Option<String>) {
+    match turn_end_session_status(err) {
+        ("idle", None) if !bg.is_empty() => ("background", None),
+        other => other,
+    }
+}
+
 pub fn turn_end_session_status(err: &Option<String>) -> (&'static str, Option<String>) {
     match err {
         Some(msg) => ("error", Some(msg.clone())),
@@ -2644,6 +2960,7 @@ pub fn build_codex_approval_entry(
         tool_name,
         tool_input,
         prompt: None,
+        tool_use_id: None,
     }
 }
 
@@ -2835,7 +3152,7 @@ mod tests {
         let items = parse_sdk_event(line);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::ToolResult { text, is_error } => {
+            OutputItem::ToolResult { text, is_error, .. } => {
                 assert_eq!(text, "output here");
                 assert!(!is_error);
             }
@@ -2937,6 +3254,43 @@ mod tests {
     }
 
     #[test]
+    fn only_main_agent_output_means_claude_resumed_on_its_own() {
+        let main = serde_json::json!({"type":"assistant","parent_tool_use_id":null,"message":{"content":[]}});
+        let delta = serde_json::json!({"type":"stream_event","event":{}});
+        let sub = serde_json::json!({"type":"assistant","parent_tool_use_id":"toolu_A","message":{"content":[]}});
+        let progress = serde_json::json!({"type":"system","subtype":"task_progress","task_id":"t"});
+        assert!(is_main_agent_output(&main));
+        assert!(is_main_agent_output(&delta));
+        assert!(!is_main_agent_output(&sub));
+        assert!(!is_main_agent_output(&progress));
+    }
+
+    #[test]
+    fn background_agents_keep_a_session_working_after_its_turn_ends() {
+        let mut bg = BackgroundWork::default();
+        let started = serde_json::json!({"type":"system","subtype":"task_started","task_id":"t1","is_backgrounded":true});
+        assert!(bg.observe(&started));
+        assert!(!bg.is_empty());
+        assert_eq!(turn_end_status(&None, &bg).0, "background");
+        // Progress doesn't change the count; the notification ends it.
+        assert!(!bg.observe(&serde_json::json!({"type":"system","subtype":"task_progress","task_id":"t1"})));
+        assert!(bg.observe(&serde_json::json!({"type":"system","subtype":"task_notification","task_id":"t1","status":"completed"})));
+        assert!(bg.is_empty());
+        assert_eq!(turn_end_status(&None, &bg).0, "idle");
+    }
+
+    #[test]
+    fn a_task_update_to_a_final_status_ends_it_and_errors_still_win() {
+        let mut bg = BackgroundWork::default();
+        bg.observe(&serde_json::json!({"type":"system","subtype":"task_started","task_id":"t2"}));
+        assert!(!bg.observe(&serde_json::json!({"type":"system","subtype":"task_updated","task_id":"t2","patch":{"description":"x"}})));
+        assert_eq!(turn_end_status(&Some("boom".into()), &bg).0, "error");
+        assert!(bg.observe(&serde_json::json!({"type":"system","subtype":"task_updated","task_id":"t2","patch":{"status":"killed"}})));
+        assert!(bg.is_empty());
+        assert!(!bg.observe(&serde_json::json!({"type":"system","subtype":"init"})));
+    }
+
+    #[test]
     fn turn_end_session_status_idle_when_no_error() {
         let (status, err) = turn_end_session_status(&None);
         assert_eq!(status, "idle");
@@ -3008,14 +3362,14 @@ mod tests {
         let items = parse_sdk_event(line);
         assert_eq!(items.len(), 2);
         match &items[0] {
-            OutputItem::ToolStart { tool, input } => {
+            OutputItem::ToolStart { tool, input, .. } => {
                 assert_eq!(tool, "Write");
                 assert_eq!(input, "/tmp/verun-normal-test.txt");
             }
             _ => panic!("Expected ToolStart"),
         }
         match &items[1] {
-            OutputItem::ToolResult { text, is_error } => {
+            OutputItem::ToolResult { text, is_error, .. } => {
                 assert_eq!(text, "/tmp/verun-normal-test.txt");
                 assert!(!is_error);
             }
@@ -3055,14 +3409,14 @@ mod tests {
         let items = parse_sdk_event(line);
         assert_eq!(items.len(), 2);
         match &items[0] {
-            OutputItem::ToolStart { tool, input } => {
+            OutputItem::ToolStart { tool, input, .. } => {
                 assert_eq!(tool, "Read");
                 assert_eq!(input, "/tmp/foo.txt");
             }
             _ => panic!("Expected ToolStart"),
         }
         match &items[1] {
-            OutputItem::ToolResult { text, is_error } => {
+            OutputItem::ToolResult { text, is_error, .. } => {
                 assert_eq!(text, "/tmp/foo.txt");
                 assert!(!is_error);
             }
@@ -3111,6 +3465,127 @@ mod tests {
         assert_eq!(json["isUsingOverage"], false);
     }
 
+    // -- Subagents --
+    fn parsed(lines: &[&str]) -> serde_json::Value {
+        let items: Vec<OutputItem> = lines.iter().flat_map(|l| parse_sdk_event(l)).collect();
+        serde_json::to_value(&items).unwrap()
+    }
+    fn parsed_coalesced(lines: &[&str]) -> serde_json::Value {
+        pushed(lines.iter().flat_map(|l| parse_sdk_event(l)).collect())
+    }
+
+    #[test]
+    fn tool_starts_and_results_carry_their_tool_use_id() {
+        let start = r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_A","name":"Agent","input":{}}}}"#;
+        let snap = r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"description":"Review"}}]}}"#;
+        let result = r#"{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}"#;
+        let v = parsed(&[start, snap, result]);
+        assert_eq!(v[0]["kind"], "toolStart");
+        assert_eq!(v[0]["id"], "toolu_A");
+        assert_eq!(v[1]["id"], "toolu_A");
+        assert_eq!(v[2]["kind"], "toolResult");
+        assert_eq!(v[2]["toolUseId"], "toolu_A");
+    }
+
+    #[test]
+    fn approval_requests_carry_the_tool_use_id_they_ask_about() {
+        let request = serde_json::json!({"subtype":"can_use_tool","tool_name":"Bash","input":{},"tool_use_id":"toolu_B1"});
+        assert_eq!(request_tool_use_id(&request).as_deref(), Some("toolu_B1"));
+        assert_eq!(request_tool_use_id(&serde_json::json!({"subtype":"can_use_tool"})), None);
+        let event = ToolApprovalEvent {
+            request_id: "r".into(),
+            session_id: "s".into(),
+            tool_name: "Bash".into(),
+            tool_input: serde_json::Value::Null,
+            prompt: None,
+            tool_use_id: Some("toolu_B1".into()),
+        };
+        assert_eq!(serde_json::to_value(&event).unwrap()["toolUseId"], "toolu_B1");
+    }
+
+    #[test]
+    fn tool_starts_without_an_id_serialize_as_before() {
+        let v = serde_json::to_value(parse_sdk_event(r#"{"type":"tool_call","subtype":"started","tool_call":{"shellToolCall":{"args":{"command":"ls"}}}}"#)).unwrap();
+        assert!(v[0].get("id").is_none(), "{v}");
+    }
+
+    #[test]
+    fn subagent_messages_are_wrapped_with_their_parent_tool_use_id() {
+        let snap = r#"{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"content":[{"type":"text","text":"Looking"},{"type":"tool_use","id":"toolu_B","name":"Read","input":{"file_path":"a.ts"}}]}}"#;
+        let result = r#"{"type":"user","parent_tool_use_id":"toolu_A","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_B","content":"x"}]}}"#;
+        let v = parsed(&[snap, result]);
+        assert_eq!(v.as_array().unwrap().len(), 3);
+        for item in v.as_array().unwrap() {
+            assert_eq!(item["kind"], "subagent");
+            assert_eq!(item["parentToolUseId"], "toolu_A");
+        }
+        assert_eq!(v[0]["item"], serde_json::json!({"kind":"text","text":"Looking"}));
+        assert_eq!(v[1]["item"]["kind"], "toolStart");
+        assert_eq!(v[1]["item"]["tool"], "Read");
+        assert_eq!(v[1]["item"]["id"], "toolu_B");
+        assert_eq!(v[2]["item"]["kind"], "toolResult");
+        assert_eq!(v[2]["item"]["toolUseId"], "toolu_B");
+    }
+
+    #[test]
+    fn subagent_stream_deltas_are_dropped_in_favour_of_the_snapshot() {
+        let delta = r#"{"type":"stream_event","parent_tool_use_id":"toolu_A","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}}"#;
+        assert_eq!(parsed(&[delta]), serde_json::json!([]));
+    }
+
+    #[test]
+    fn subagent_text_never_merges_with_the_main_agent_or_another_subagent() {
+        let main = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"main"}}}"#;
+        let a1 = r#"{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"content":[{"type":"text","text":"a1"}]}}"#;
+        let a2 = r#"{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"content":[{"type":"text","text":"a2"}]}}"#;
+        let b = r#"{"type":"assistant","parent_tool_use_id":"toolu_B","message":{"content":[{"type":"text","text":"b"}]}}"#;
+        let v = parsed_coalesced(&[main, a1, a2, b, main]);
+        let kinds: Vec<_> = v.as_array().unwrap().iter().map(|i| i["kind"].as_str().unwrap().to_string()).collect();
+        assert_eq!(kinds, ["text", "subagent", "subagent", "text"]);
+        assert_eq!(v[1]["item"]["text"], "a1a2");
+        assert_eq!(v[2]["parentToolUseId"], "toolu_B");
+    }
+
+    #[test]
+    fn task_events_become_agent_progress_items() {
+        let started = r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"toolu_A","description":"Review diff","task_type":"local_agent","subagent_type":"code-reviewer"}"#;
+        let progress = r#"{"type":"system","subtype":"task_progress","task_id":"t1","tool_use_id":"toolu_A","description":"Review diff","usage":{"total_tokens":41000,"tool_uses":12,"duration_ms":5000},"last_tool_name":"Read","summary":"reading types.ts"}"#;
+        let updated = r#"{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"is_backgrounded":true}}"#;
+        let done = r#"{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"toolu_A","status":"failed","summary":"Agent crashed"}"#;
+        let v = parsed(&[started, progress, updated, done]);
+        assert_eq!(v[0]["kind"], "agentProgress");
+        assert_eq!(v[0]["taskId"], "t1");
+        assert_eq!(v[0]["toolUseId"], "toolu_A");
+        assert_eq!(v[0]["status"], "running");
+        assert_eq!(v[0]["subagentType"], "code-reviewer");
+        assert_eq!(v[0]["taskType"], "local_agent");
+        assert!(v[0]["startedAt"].is_i64());
+        assert_eq!(v[1]["totalTokens"], 41000);
+        assert_eq!(v[1]["toolUses"], 12);
+        assert_eq!(v[1]["durationMs"], 5000);
+        assert_eq!(v[1]["lastToolName"], "Read");
+        assert_eq!(v[1]["summary"], "reading types.ts");
+        assert!(v[1].get("status").is_none());
+        assert_eq!(v[2]["isBackgrounded"], true);
+        assert_eq!(v[3]["status"], "failed");
+        assert!(v[3]["endedAt"].is_i64());
+    }
+
+    #[test]
+    fn agent_progress_coalesces_per_task_keeping_the_latest_fields() {
+        let started = r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"toolu_A","description":"Review diff"}"#;
+        let other = r#"{"type":"system","subtype":"task_started","task_id":"t2","tool_use_id":"toolu_B","description":"Tests"}"#;
+        let p1 = r#"{"type":"system","subtype":"task_progress","task_id":"t1","usage":{"tool_uses":1}}"#;
+        let p2 = r#"{"type":"system","subtype":"task_progress","task_id":"t1","usage":{"tool_uses":2}}"#;
+        let v = parsed_coalesced(&[started, other, p1, p2]);
+        assert_eq!(v.as_array().unwrap().len(), 2);
+        assert_eq!(v[0]["taskId"], "t1");
+        assert_eq!(v[0]["description"], "Review diff");
+        assert_eq!(v[0]["status"], "running");
+        assert_eq!(v[0]["toolUses"], 2);
+        assert_eq!(v[1]["taskId"], "t2");
+    }
+
     fn text(t: &str) -> OutputItem {
         OutputItem::Text { text: t.into() }
     }
@@ -3138,7 +3613,7 @@ mod tests {
 
     #[test]
     fn deltas_do_not_merge_across_other_items() {
-        let tool = OutputItem::ToolStart { tool: "Read".into(), input: "{}".into() };
+        let tool = OutputItem::ToolStart { tool: "Read".into(), input: "{}".into(), id: None };
         assert_eq!(
             pushed(vec![text("a"), tool.clone(), text("b"), text("c")]),
             serde_json::to_value(vec![text("a"), tool, text("bc")]).unwrap()
@@ -3213,6 +3688,7 @@ mod tests {
         let start = OutputItem::ToolStart {
             tool: "Bash".into(),
             input: r#"{"command":"gh pr reopen 5"}"#.into(),
+            id: None,
         };
         assert!(process_github_remote_invalidation(&mut pending, &start).is_none());
         assert_eq!(pending, vec![vec!["overview".to_string()]]);
@@ -3220,6 +3696,7 @@ mod tests {
         let result = OutputItem::ToolResult {
             text: "Reopened the existing PR".into(),
             is_error: false,
+            tool_use_id: None,
         };
         let scopes = process_github_remote_invalidation(&mut pending, &result);
         assert_eq!(scopes, Some(vec!["overview".to_string()]));
@@ -3233,12 +3710,14 @@ mod tests {
         let start = OutputItem::ToolStart {
             tool: "Bash".into(),
             input: r#"{"command":"gh pr reopen 5"}"#.into(),
+            id: None,
         };
         process_github_remote_invalidation(&mut pending, &start);
 
         let result = OutputItem::ToolResult {
             text: "failed".into(),
             is_error: true,
+            tool_use_id: None,
         };
         let scopes = process_github_remote_invalidation(&mut pending, &result);
         assert_eq!(scopes, None);
@@ -3252,6 +3731,7 @@ mod tests {
         let start = OutputItem::ToolStart {
             tool: "Bash".into(),
             input: r#"{"command":"gh pr checks 5"}"#.into(),
+            id: None,
         };
         let scopes = process_github_remote_invalidation(&mut pending, &start);
         assert_eq!(scopes, None);
@@ -3281,6 +3761,7 @@ mod tests {
         let item = OutputItem::ToolStart {
             tool: "Bash".into(),
             input: "ls".into(),
+            id: None,
         };
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(json["kind"], "toolStart");
@@ -3369,7 +3850,7 @@ mod tests {
         let items = process_codex_rpc_notification("item/started", &params);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::ToolStart { tool, input } => {
+            OutputItem::ToolStart { tool, input, .. } => {
                 assert_eq!(tool, "shell");
                 assert_eq!(input, "ls -la");
             }
@@ -3401,7 +3882,7 @@ mod tests {
         let items = process_codex_rpc_notification("item/completed", &params);
         assert_eq!(items.len(), 1);
         match &items[0] {
-            OutputItem::ToolResult { text, is_error } => {
+            OutputItem::ToolResult { text, is_error, .. } => {
                 assert!(is_error);
                 assert!(text.contains("bash"));
             }

@@ -1644,7 +1644,7 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
 
         // -- Startup recovery --
         DbWrite::ResetRunningSessions => {
-            sqlx::query("UPDATE sessions SET status = 'idle' WHERE status = 'running'")
+            sqlx::query("UPDATE sessions SET status = 'idle' WHERE status IN ('running', 'background')")
                 .execute(pool)
                 .await?;
         }
@@ -3581,12 +3581,21 @@ pub(crate) mod tests {
         process_write(&pool, DbWrite::CreateSession(s2))
             .await
             .unwrap();
+        // A turn that ended with background agents: their process died with the app.
+        let mut s3 = make_session("t-001");
+        s3.id = "s-bg".into();
+        s3.status = "background".into();
+        process_write(&pool, DbWrite::CreateSession(s3))
+            .await
+            .unwrap();
 
         process_write(&pool, DbWrite::ResetRunningSessions)
             .await
             .unwrap();
 
         let s = get_session(&pool, "s-run").await.unwrap().unwrap();
+        assert_eq!(s.status, "idle");
+        let s = get_session(&pool, "s-bg").await.unwrap().unwrap();
         assert_eq!(s.status, "idle");
         let s = get_session(&pool, "s-done").await.unwrap().unwrap();
         assert_eq!(s.status, "done"); // untouched

@@ -131,6 +131,7 @@ import { NewSessionMenu } from "./NewSessionMenu";
 import { QuickOpen } from "./QuickOpen";
 import { RightPanel } from "./RightPanel";
 import { SessionTerminal } from "./SessionTerminal";
+import { AgentStrip } from "./AgentStrip";
 import { selectSettingsSection } from "./SettingsPage";
 import { SideQuestionPanel } from "./SideQuestionPanel";
 import { StepList } from "./StepList";
@@ -1025,6 +1026,10 @@ export const TaskPanel: Component = () => {
                                   when={t().archived}
                                   fallback={
                                     <>
+                                      <AgentStrip
+                                        status={currentSession()?.status}
+                                        items={outputItems[selectedSessionId() ?? ""] || []}
+                                      />
                                       <StepList
                                         sessionId={selectedSessionId()}
                                         isRunning={

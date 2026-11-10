@@ -283,7 +283,7 @@ impl Agent for Grok {
                     .get("rawInput")
                     .map(|a| serde_json::to_string_pretty(a).unwrap_or_default())
                     .unwrap_or_default();
-                vec![OutputItem::ToolStart { tool, input }]
+                vec![OutputItem::ToolStart { tool, input, id: None }]
             }
             "tool_call_update" => {
                 let status = u.get("status").and_then(|s| s.as_str()).unwrap_or("");
@@ -305,6 +305,7 @@ impl Agent for Grok {
                                 out.push(OutputItem::ToolResult {
                                     text: render_unified_diff(path, old, new),
                                     is_error,
+                                    tool_use_id: None,
                                 });
                             }
                             Some("content") => {
@@ -313,7 +314,7 @@ impl Agent for Grok {
                                     .and_then(|t| t.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                out.push(OutputItem::ToolResult { text, is_error });
+                                out.push(OutputItem::ToolResult { text, is_error, tool_use_id: None });
                             }
                             _ => {}
                         }
@@ -381,6 +382,7 @@ impl Agent for Grok {
             tool_name,
             tool_input,
             prompt: None,
+            tool_use_id: None,
         }
     }
 

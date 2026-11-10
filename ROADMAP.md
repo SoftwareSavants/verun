@@ -7,7 +7,6 @@ Track progress and discuss priorities in [Issues](https://github.com/SoftwareSav
 ## Up next
 
 - **Multi-agent support** - run Codex, Gemini CLI, and other coding agents alongside Claude Code
-- **Subagent visualization** - see nested agent threads and their relationships in the chat
 - **CLI parity** - full support for skills, slash commands, CLAUDE.md, AGENTS.md, and memory
 - **Code review on diffs** - leave comments directly on changed lines
 - **Idle LSP eviction** - stop language servers for inactive tasks to free memory, restart on focus

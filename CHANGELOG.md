@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.1 - 2026-11-10
+
+- Chat shows each Claude subagent as one collapsible block with its type, task, live progress (tools, tokens, current action) and result, its own actions nested inside instead of mixed into the main agent's; a strip above the composer lists background agents and shells still running and jumps to their block
+- A background subagent's own output no longer flips its session from background to running
+- Notifications come from one rule for chat and terminal sessions: "Task completed" only when work actually finished (not when you press Stop, Esc or Ctrl-C, and not while background agents still run), "Task failed" on failure, and one notification per wait for input. Terminal sessions now notify on completion and get unread markers too
+- Terminal-view Claude sessions stay working while their turn's subagents or background shells run, instead of showing idle until Claude resumes
+- A session whose turn ends while subagents or background shells keep running now shows as working instead of idle, and goes back to running when Claude resumes on its own after they report back; "Task completed" fires once that work settles
+- A session's Claude terminal no longer also appears as a "Claude Code" tab in the bottom terminal panel, which left either the panel tab or the session view blank (#250)
+
 ## 0.16.0 - 2026-11-09
 
 - Quick tasks: run an agent in any folder (home, a non-git dir, a parent of several repos) without adding a project, from the sidebar + menu or Cmd+Opt+N

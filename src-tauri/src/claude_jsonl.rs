@@ -333,7 +333,11 @@ fn parse_transcript_user(value: &serde_json::Value) -> Vec<OutputItem> {
                     .unwrap_or(false);
                 let text = extract_tool_result_text(block.get("content"));
                 if !text.is_empty() {
-                    items.push(OutputItem::ToolResult { text, is_error });
+                    let tool_use_id = block
+                        .get("tool_use_id")
+                        .and_then(|i| i.as_str())
+                        .map(str::to_string);
+                    items.push(OutputItem::ToolResult { text, is_error, tool_use_id });
                 }
             }
             "image" => {
@@ -425,7 +429,8 @@ fn parse_transcript_assistant(value: &serde_json::Value) -> Vec<OutputItem> {
                 } else {
                     serde_json::to_string_pretty(&input_value).unwrap_or_default()
                 };
-                items.push(OutputItem::ToolStart { tool, input });
+                let id = block.get("id").and_then(|i| i.as_str()).map(str::to_string);
+                items.push(OutputItem::ToolStart { tool, input, id });
             }
             _ => {}
         }
@@ -693,7 +698,8 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu_1","type":"tool_result","content":"file1.txt\nfile2.txt","is_error":false}]},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
-            [OutputItem::ToolResult { text, is_error }] => {
+            [OutputItem::ToolResult { text, is_error, tool_use_id }] => {
+                assert_eq!(tool_use_id.as_deref(), Some("tu_1"));
                 assert_eq!(text, "file1.txt\nfile2.txt");
                 assert!(!is_error);
             }
@@ -706,7 +712,7 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu_1","type":"tool_result","content":[{"type":"text","text":"permission denied"}],"is_error":true}]},"uuid":"u1"}"#;
         let items = parse_transcript_line(line);
         match items.as_slice() {
-            [OutputItem::ToolResult { text, is_error }] => {
+            [OutputItem::ToolResult { text, is_error, .. }] => {
                 assert_eq!(text, "permission denied");
                 assert!(*is_error);
             }
@@ -739,7 +745,8 @@ mod tests {
     fn transcript_assistant_tool_use_becomes_tool_start() {
         let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls","description":"List files"}}]},"uuid":"a1"}"#;
         match parse_transcript_line(line).as_slice() {
-            [OutputItem::ToolStart { tool, input }] => {
+            [OutputItem::ToolStart { tool, input, id }] => {
+                assert_eq!(id.as_deref(), Some("tu_1"));
                 assert_eq!(tool, "Bash");
                 assert!(input.contains("\"command\""));
                 assert!(input.contains("\"ls\""));
@@ -752,7 +759,7 @@ mod tests {
     fn transcript_assistant_empty_tool_use_input_yields_empty_string() {
         let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"NoArg","input":{}}]},"uuid":"a1"}"#;
         match parse_transcript_line(line).as_slice() {
-            [OutputItem::ToolStart { tool, input }] => {
+            [OutputItem::ToolStart { tool, input, .. }] => {
                 assert_eq!(tool, "NoArg");
                 assert_eq!(input, "");
             }
@@ -847,10 +854,10 @@ mod tests {
         assert!(matches!(&items[2], OutputItem::Text { text } if text.starts_with("Hi!")));
         assert!(matches!(&items[3], OutputItem::ToolStart { tool, .. } if tool == "Bash"));
         assert!(
-            matches!(&items[4], OutputItem::ToolResult { text, is_error } if text.contains("file1.txt") && !is_error)
+            matches!(&items[4], OutputItem::ToolResult { text, is_error, .. } if text.contains("file1.txt") && !is_error)
         );
         assert!(
-            matches!(&items[5], OutputItem::ToolResult { text, is_error } if text == "permission denied" && *is_error)
+            matches!(&items[5], OutputItem::ToolResult { text, is_error, .. } if text == "permission denied" && *is_error)
         );
     }
 }

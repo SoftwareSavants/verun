@@ -1,4 +1,4 @@
-export type SessionStatus = "running" | "idle" | "done" | "error";
+export type SessionStatus = "running" | "idle" | "done" | "error" | "background";
 
 export interface Project {
   id: string;
@@ -310,11 +310,46 @@ export interface PlanStep {
   step: string;
 }
 
+/**
+ * Live state of a Claude background task (subagent or background shell), from
+ * its `task_started` / `task_progress` / `task_updated` / `task_notification`
+ * events. Each event carries only the fields it knows; later ones win.
+ */
+export interface AgentProgress {
+  taskId: string;
+  /** The Agent (or Bash) tool call that started the task. */
+  toolUseId?: string;
+  /** `local_agent` for subagents, `local_bash` for background shells. */
+  taskType?: string;
+  description?: string;
+  subagentType?: string;
+  /** running | completed | failed | stopped | killed | cancelled | error */
+  status?: string;
+  isBackgrounded?: boolean;
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+  lastToolName?: string;
+  summary?: string;
+  error?: string;
+  startedAt?: number;
+  endedAt?: number;
+}
+
 export type OutputItem =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
-  | { kind: "toolStart"; tool: string; input: string }
-  | { kind: "toolResult"; text: string; isError: boolean }
+  | {
+      kind: "toolStart";
+      tool: string;
+      input: string;
+      /** The tool_use id, when the agent reports one (absent in old rows). */
+      id?: string;
+    }
+  | { kind: "toolResult"; text: string; isError: boolean; toolUseId?: string }
+  /** An item produced by a Claude subagent, nested under the Agent call that spawned it. */
+  | { kind: "subagent"; parentToolUseId: string; item: OutputItem }
+  | ({ kind: "agentProgress" } & AgentProgress)
   | { kind: "system"; text: string }
   | { kind: "errorMessage"; message: string; raw?: string }
   | {
@@ -400,6 +435,8 @@ export interface ToolApprovalRequest {
   toolName: string;
   toolInput: Record<string, unknown>;
   prompt?: ApprovalPrompt;
+  /** The tool_use id being approved, so a subagent's request can be traced to its block. */
+  toolUseId?: string;
 }
 
 export interface McpServerStatus {

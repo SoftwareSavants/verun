@@ -165,6 +165,9 @@ pub fn parse_turns(lines: &[String]) -> Vec<Turn> {
                         {
                             b.user(&str_of(item, "text"))
                         }
+                        // A subagent's own work and task progress are not the
+                        // main conversation.
+                        Some("subagent" | "agentProgress") => {}
                         Some("toolStart") => {
                             b.flush();
                             let summary =
@@ -649,6 +652,23 @@ mod tests {
         let turns = parse_turns(&lines);
         let users: Vec<_> = turns.iter().filter_map(|t| t.user.as_deref()).collect();
         assert_eq!(users, vec!["from terminal", "from mcp"]);
+    }
+
+    #[test]
+    fn parse_turns_leaves_subagent_internals_out_of_the_main_conversation() {
+        let lines = vec![
+            user("review it"),
+            items(json!([
+                {"kind": "text", "text": "Spawning "},
+                {"kind": "subagent", "parentToolUseId": "toolu_A", "item": {"kind": "toolStart", "tool": "Read", "input": "{}"}},
+                {"kind": "subagent", "parentToolUseId": "toolu_A", "item": {"kind": "text", "text": "sub says"}},
+                {"kind": "agentProgress", "taskId": "t1", "status": "running"},
+                {"kind": "text", "text": "a reviewer."},
+            ])),
+        ];
+        let turns = parse_turns(&lines);
+        assert_eq!(turns[0].assistant, vec!["Spawning a reviewer."]);
+        assert!(turns[0].tools.is_empty());
     }
 
     #[test]

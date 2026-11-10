@@ -1274,6 +1274,7 @@ mod tests {
             OutputItem::ToolStart {
                 tool: "Read".into(),
                 input: "{}".into(),
+                id: None,
             },
         ];
         let line = verun_items_line(&items);
@@ -1529,6 +1530,7 @@ mod tests {
             OutputItem::ToolStart {
                 tool: "Read".into(),
                 input: "{}".into(),
+                id: None,
             },
         ];
         let segs = partition_tail_batch(&items);
@@ -1728,6 +1730,7 @@ mod tests {
             OutputItem::ToolStart {
                 tool: "Read".into(),
                 input: "{}".into(),
+                id: None,
             },
         ];
         let lines = build_persist_lines(&pool, dir.path(), partition_tail_batch(&items)).await;

@@ -2725,10 +2725,19 @@ pub async fn pty_close(
 #[tauri::command]
 pub async fn pty_list_for_task(
     pty_map: State<'_, ActivePtyMap>,
+    ct_map: State<'_, ClaudeTerminalMap>,
     task_id: String,
 ) -> Result<Vec<pty::PtyListEntry>, String> {
     let map = pty_map.inner().clone();
-    flatten_join(tokio::task::spawn_blocking(move || Ok(pty::list_for_task(&map, &task_id))).await)
+    // A session's Claude terminal belongs to the session view, never the panel.
+    let session_owned: std::collections::HashSet<String> =
+        ct_map.iter().map(|e| e.value().terminal_id.clone()).collect();
+    flatten_join(
+        tokio::task::spawn_blocking(move || {
+            Ok(pty::panel_terminals(pty::list_for_task(&map, &task_id), &session_owned))
+        })
+        .await,
+    )
 }
 
 // ---------------------------------------------------------------------------
