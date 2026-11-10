@@ -1579,7 +1579,7 @@ export const ChatView: Component<Props> = (props) => {
         class={clsx('flex flex-col gap-2 pt-4', needsBtwPad() ? 'pb-16' : 'pb-6')}
       >
         <For each={blocks}>
-          {(block) => (
+          {(block, index) => (
             <Switch>
               <Match when={block.type === 'user'}>
                 {(() => {
@@ -1686,6 +1686,8 @@ export const ChatView: Component<Props> = (props) => {
                   return (
                     <AgentBlockView
                       block={b}
+                      joinPrev={blocks[index() - 1]?.type === 'agent'}
+                      joinNext={blocks[index() + 1]?.type === 'agent'}
                       needsInput={b.children.some(c => c.type === 'tool' && !c.result && !!c.toolUseId && approvalToolUseIds().has(c.toolUseId))}
                       sessionLive={props.sessionStatus === 'running' || props.sessionStatus === 'background'}
                     >

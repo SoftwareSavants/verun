@@ -97,3 +97,21 @@ describe('AgentBlockView', () => {
     expect(container.querySelector('[data-agent-id="toolu_R"]')!.getAttribute('data-highlighted')).toBe('true')
   })
 })
+
+describe('parallel agents', () => {
+  test('consecutive agents join into one group instead of a stack of boxes', () => {
+    const first = render(() => <AgentBlockView block={base()} joinNext />)
+    const box = (c: HTMLElement) => c.querySelector('[data-agent-id]') as HTMLElement
+    expect(box(first.container).className).toContain('rounded-b-none')
+    cleanup()
+    const middle = render(() => <AgentBlockView block={base()} joinPrev joinNext />)
+    expect(box(middle.container).className).toContain('rounded-none')
+    expect((middle.container.firstElementChild as HTMLElement).className).toContain('pt-0')
+  })
+  test('a lone agent stays a standalone block', () => {
+    const { container } = render(() => <AgentBlockView block={base()} />)
+    const el = container.querySelector('[data-agent-id]') as HTMLElement
+    expect(el.className).toContain('rounded-md')
+    expect(el.className).not.toContain('rounded-none')
+  })
+})

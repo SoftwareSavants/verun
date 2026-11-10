@@ -71,6 +71,9 @@ export const AgentBlockView: Component<{
   sessionLive?: boolean
   /** The subagent's own actions, rendered by the transcript. */
   children?: JSX.Element
+  /** Neighbouring agents of the same dispatch: render as one grouped list, not separate boxes. */
+  joinPrev?: boolean
+  joinNext?: boolean
 }> = (props) => {
   const status = createMemo(() => agentState({
     progress: props.block.progress,
@@ -114,12 +117,16 @@ export const AgentBlockView: Component<{
   const label = () => [type(), props.block.description, AGENT_STATE_LABEL[status().state], elapsed()].filter(Boolean).join(', ')
 
   return (
-    <div class="px-5 py-1">
+    <div class={clsx('px-5', props.joinPrev ? 'pt-0 -mt-px' : 'pt-1', props.joinNext ? 'pb-0' : 'pb-1')}>
       <div
         data-agent-id={props.block.toolUseId}
         data-highlighted={highlighted() === props.block.toolUseId && !!props.block.toolUseId ? 'true' : undefined}
         class={clsx(
-          'rounded-md bg-surface-1 ring-1 transition-shadow duration-300',
+          'bg-surface-1 ring-1 transition-shadow duration-300',
+          props.joinPrev && props.joinNext ? 'rounded-none'
+            : props.joinPrev ? 'rounded-md rounded-t-none'
+            : props.joinNext ? 'rounded-md rounded-b-none'
+            : 'rounded-md',
           highlighted() === props.block.toolUseId && props.block.toolUseId ? 'ring-accent/60' : 'ring-outline/8',
         )}
       >
