@@ -67,6 +67,7 @@ vi.mock('../store/fileSync', () => ({ initOpenFilesRefresh: vi.fn() }))
 vi.mock('../store/setup', () => ({ initSetupListeners: vi.fn(() => Promise.resolve()) }))
 vi.mock('../store/resource-monitor', () => ({ initResourceMonitor: vi.fn(() => Promise.resolve()) }))
 vi.mock('../store/keepAwake', () => ({ initKeepAwake: vi.fn(() => Promise.resolve()) }))
+vi.mock('../store/sessionNotifications', () => ({ initSessionNotifications: vi.fn() }))
 vi.mock('../store/problems', () => ({ initProblemsListener: vi.fn() }))
 vi.mock('../store/tasks', () => ({ loadTasks: vi.fn(() => Promise.resolve()), taskById: vi.fn() }))
 

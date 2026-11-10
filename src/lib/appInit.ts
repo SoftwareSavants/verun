@@ -1,5 +1,6 @@
 import { initActivityListeners } from '../store/activity'
 import { initKeepAwake } from '../store/keepAwake'
+import { initSessionNotifications } from '../store/sessionNotifications'
 import { createSignal } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -77,6 +78,7 @@ export async function initListeners() {
     initResourceMonitor(),
     initKeepAwake(),
   ])
+  initSessionNotifications()
   initWindowFocusRefresh()
   initSessionWindowFocusRefresh()
   initEnvPathFocusRefresh()

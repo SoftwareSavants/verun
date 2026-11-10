@@ -68,6 +68,9 @@ pub struct Activity {
     pub source: &'static str,
     pub harness: &'static str,
     pub pending: BTreeSet<String>,
+    /// The last turn ended because the user pressed Esc / Ctrl-C, not because
+    /// Claude finished: notifications stay quiet for it.
+    pub interrupted: bool,
     #[serde(skip)]
     native_session: Option<String>,
     #[serde(skip)]
@@ -91,6 +94,7 @@ impl Activity {
             source: "hooks",
             harness: "claude",
             pending: BTreeSet::new(),
+            interrupted: false,
             native_session: None,
             awaiting_start: false,
             ended: false,
@@ -111,6 +115,8 @@ impl Activity {
         if self.ended || event.agent_id.is_some() || event.session_id.is_empty() {
             return;
         }
+        // Claude reported again: whatever happens next is its doing.
+        self.interrupted = false;
         if self.awaiting_start {
             if event.hook_event_name != "SessionStart" {
                 return;
@@ -216,6 +222,7 @@ impl Activity {
         if !self.ended {
             self.pending.clear();
             self.phase = Phase::Idle;
+            self.interrupted = true;
         }
     }
     fn release(&mut self) {
@@ -661,6 +668,16 @@ mod tests {
         // Round-trips through the relay frame as the count of unfinished tasks.
         let back: HookEvent = serde_json::from_str(&wire).unwrap();
         assert_eq!(back.background_tasks, Some(1));
+    }
+
+    #[test]
+    fn an_interrupt_is_marked_as_the_users_own_stop_until_claude_reports_again() {
+        let mut state = Activity::new("s", "l");
+        state.apply(&event("UserPromptSubmit", ""));
+        state.interrupt();
+        assert!(state.interrupted, "Esc / Ctrl-C ended this turn, not Claude");
+        state.apply(&event("UserPromptSubmit", ""));
+        assert!(!state.interrupted);
     }
 
     #[test]
