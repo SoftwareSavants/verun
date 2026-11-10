@@ -1,14 +1,11 @@
-import { finishedWork, clearsPendingApprovals } from '../lib/sessionActivity'
+import { clearsPendingApprovals } from '../lib/sessionActivity'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
 import type { OutsideSession, Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection, AgentType } from '../types'
 import { setSessionMcpServers } from './mcpServers'
-import { ELICITATION_TOOL_NAME, parseElicitation } from '../lib/mcpElicitation'
-import { setTasks, taskById } from './tasks'
-import { markTaskUnread, markSessionUnread } from './ui'
+import { setTasks } from './tasks'
 import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps, restoreStep } from './steps'
 import * as ipc from '../lib/ipc'
-import { notify } from '../lib/notifications'
 import { notifyAccountError } from '../lib/accountErrors'
 import { deserializeAttachments } from '../lib/binary'
 import { clearDraft, saveDraftAttachments } from './sessionDrafts'
@@ -529,9 +526,7 @@ export async function initSessionListeners() {
 
   await listen<SessionStatusEvent>('session-status', (event) => {
     const { sessionId, status, error } = event.payload
-    const prevSession = sessions.find(s => s.id === sessionId)
-    const previousStatus = prevSession?.status
-    setSessions(s => s.id === sessionId, 'status', status)
+        setSessions(s => s.id === sessionId, 'status', status)
     setSessions(s => s.id === sessionId, 'error', status === 'error' ? error : undefined)
     // Clear pending approvals when session stops running
     if (clearsPendingApprovals(status)) {
@@ -550,18 +545,7 @@ export async function initSessionListeners() {
     if (status === 'error') {
       disarmAllSteps(sessionId)
     }
-    // Mark unread + OS notification on completion/error
-    if (finishedWork(previousStatus, status) && prevSession) {
-      markTaskUnread(prevSession.taskId)
-      markSessionUnread(sessionId)
-      const displayName = prevSession.name || taskById(prevSession.taskId)?.name || 'Task'
-      notify({
-        title: status === 'error' ? 'Task failed' : 'Task completed',
-        body: displayName,
-        taskId: prevSession.taskId,
-        sessionId,
-      })
-    }
+    // Notifications and unread markers: store/sessionNotifications.
   })
 
   await listen<ToolApprovalRequest>('tool-approval-request', (event) => {
@@ -574,23 +558,6 @@ export async function initSessionListeners() {
         store[req.sessionId] = [req]
       }
     }))
-    // OS notification. "Needs you" itself is derived from pendingApprovals (store/taskStatus).
-    const session = sessions.find(s => s.id === req.sessionId)
-    if (session) {
-      const displayName = session.name || taskById(session.taskId)?.name || 'Task'
-      const isQuestion = req.toolName === 'AskUserQuestion'
-      const isElicitation = req.toolName === ELICITATION_TOOL_NAME
-      notify({
-        title: isQuestion || isElicitation ? 'Question from task' : 'Approval needed',
-        body: isQuestion
-          ? `${displayName}: ${(req.toolInput?.question as string)?.slice(0, 100) || 'has a question'}`
-          : isElicitation
-            ? `${displayName}: ${parseElicitation(req.toolInput).message.slice(0, 100) || 'an MCP server needs input'}`
-            : `${displayName}: ${req.prompt?.title ?? req.toolName}`,
-        taskId: session.taskId,
-        sessionId: req.sessionId,
-      })
-    }
   })
 
   await listen<{ sessionId: string; servers: McpServerStatus[] }>('mcp-servers', (event) => {
