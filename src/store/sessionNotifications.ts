@@ -45,7 +45,7 @@ export function initSessionNotifications() {
         live.add(session.id)
         const activity = sessionActivity[session.id]
         const approvals = pendingApprovals[session.id] ?? []
-        const next = workState(session.status, approvals.length > 0, activity?.phase)
+        const next = workState(session.status, approvals.length > 0, activity?.phase, activity?.background)
         if (next === null) continue
         const userStopped = !!abortingSessions[session.id] || !!activity?.interrupted || activity?.phase === 'ended'
         const kind = notificationFor(previous.get(session.id), next, userStopped)

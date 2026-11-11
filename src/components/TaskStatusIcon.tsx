@@ -1,7 +1,7 @@
 import { Dynamic } from 'solid-js/web'
 import type { Component } from 'solid-js'
 import {
-  Archive, CircleCheck, CircleDashed, CircleOff, CircleX, GitMergeConflict, GitPullRequest,
+  Archive, CircleCheck, CircleDashed, CircleDotDashed, CircleOff, CircleX, GitMergeConflict, GitPullRequest,
   LoaderCircle, MessageCircleQuestion, TriangleAlert,
 } from 'lucide-solid'
 import type { TaskStatusKind } from '../lib/taskBoard'
@@ -15,6 +15,9 @@ const ICONS: Record<TaskStatusKind, { icon: Component<{ size?: number; class?: s
   running: { icon: LoaderCircle, color: 'text-status-running', spin: true },
   busy: { icon: LoaderCircle, color: 'text-text-dim', spin: true },
   'pr-open': { icon: GitPullRequest, color: 'text-status-done' },
+  // Your turn while subagents or shells keep going: a still dashed ring with
+  // a dot, not a spinner, so it never reads as "Claude is working".
+  background: { icon: CircleDotDashed, color: 'text-status-running' },
   // Dashed ring: the agent finished its turn but the work isn't done.
   idle: { icon: CircleDashed, color: 'text-text-muted' },
   merged: { icon: CircleCheck, color: 'text-purple-400', fill: 'fill-purple-400/25' },

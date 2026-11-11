@@ -9,12 +9,12 @@ export type SessionNotification = 'completed' | 'failed' | 'needs-input'
  * approvals and the terminal hooks feed the same states. `null` when the
  * terminal can't be read, so an unknown status never looks like a finish.
  */
-export function workState(status: string, approval: boolean, phase?: ActivityPhase): WorkState | null {
+export function workState(status: string, approval: boolean, phase?: ActivityPhase, background = 0): WorkState | null {
   if (phase === 'unknown') return null
-  const a = effectiveActivity(status, approval, phase)
+  const a = effectiveActivity(status, approval, phase, background)
   if (a.approval) return 'needs-input'
   if (a.error) return 'failed'
-  if (a.running) return 'working'
+  if (a.running || a.background) return 'working'
   return 'finished'
 }
 

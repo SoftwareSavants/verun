@@ -10,14 +10,19 @@ export interface SessionActivity {
   pending: string[]
   /** The turn ended on the user's Esc / Ctrl-C, not on Claude finishing. */
   interrupted?: boolean
+  /** Background tasks Claude left unfinished at its last turn end. */
+  background?: number
 }
 export function acceptActivity(current: number | undefined, incoming: number): boolean {
   return current === undefined || incoming > current
 }
-export function effectiveActivity(status: string, approval: boolean, phase?: ActivityPhase) {
+export function effectiveActivity(status: string, approval: boolean, phase?: ActivityPhase, background = 0) {
+  const running = status === 'running' || phase === 'working'
   return {
-    // 'background': the turn ended but subagents or background shells still run.
-    running: status === 'running' || status === 'background' || phase === 'working',
+    running,
+    // The turn ended with subagents, shells or watchers still going: Claude
+    // is at its prompt, so it's the user's turn, with work in the background.
+    background: !running && (status === 'background' || background > 0),
     approval: approval || phase === 'waiting',
     error: status === 'error' || phase === 'failed',
     unknown: phase === 'unknown',

@@ -6,7 +6,7 @@ import { taskGit } from './git'
 import { effectiveActivity } from '../lib/sessionActivity'
 import { taskBoardState, type TaskStatus } from '../lib/taskBoard'
 
-interface SessionRollup { running: boolean; error: boolean; approval: boolean; unknown: boolean }
+interface SessionRollup { running: boolean; background: boolean; error: boolean; approval: boolean; unknown: boolean }
 
 // Roll every open session up to its task once, shared by every caller.
 // Waiting and running count from any session. A failure counts only from the
@@ -17,9 +17,10 @@ const sessionRollup = createRoot(() => createMemo(() => {
   const newest = new Map<string, { startedAt: number; error: boolean }>()
   for (const session of sessions) {
     if (session.closedAt) continue
-    const state = result.get(session.taskId) ?? { running: false, error: false, approval: false, unknown: false }
-    const observed = effectiveActivity(session.status, (pendingApprovals[session.id]?.length ?? 0) > 0, sessionActivity[session.id]?.phase)
+    const state = result.get(session.taskId) ?? { running: false, background: false, error: false, approval: false, unknown: false }
+    const observed = effectiveActivity(session.status, (pendingApprovals[session.id]?.length ?? 0) > 0, sessionActivity[session.id]?.phase, sessionActivity[session.id]?.background)
     state.running ||= observed.running
+    state.background ||= observed.background
     state.approval ||= observed.approval
     state.unknown ||= observed.unknown
     const latest = newest.get(session.taskId)
