@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.16.3 - 2026-11-11
+
+- Coming back to a chat session opens it at a "New · 3 turns since 14:02" line above the turns that finished since you last looked (remembered per session across restarts; also marked when you return to a window left open), with a jump back to it if you scroll away first
+- Long chat sessions get a turn outline on the right edge: a tick per prompt that expands on hover or focus into the list of prompts with their times, new and failed turns marked, to jump between turns
+- MCP server status moves from the amber banner above the composer into a composer chip: a failed server leads with Reconnect and its error, servers never signed in (such as unused claude.ai connectors) stay quiet and fold into one line, and any server can be hidden for good
+- Composer controls wrap as whole controls in a narrow window instead of breaking their labels over lines
 
 ## 0.16.2 - 2026-11-10
 

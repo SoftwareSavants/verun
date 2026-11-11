@@ -117,3 +117,34 @@ describe('ToolBlockView', () => {
     parse.mockRestore()
   })
 })
+
+describe('catching up', () => {
+  const turn = (prompt: string, at: number, endedAt: number): OutputItem[] => [
+    { kind: 'userMessage', text: prompt, timestamp: at } as OutputItem,
+    text(`answer to ${prompt}`),
+    { kind: 'turnEnd', status: 'completed', timestamp: endedAt } as OutputItem,
+  ]
+  const items = [...turn('first', 100, 200), ...turn('second', 300, 400), ...turn('third', 500, 600)]
+
+  test('marks where the turns finished since the last look begin', () => {
+    localStorage.setItem('verun:chatSeen', JSON.stringify({ 's-catch': 250 }))
+    const { container } = render(() => <ChatView output={items} sessionId="s-catch" />)
+    const divider = container.querySelector('[data-unseen-divider]')
+    expect(divider?.textContent).toContain('2 turns since')
+    const t = container.textContent ?? ''
+    expect(t.indexOf('answer to first')).toBeLessThan(t.indexOf('2 turns since'))
+    expect(t.indexOf('2 turns since')).toBeLessThan(t.indexOf('second'))
+  })
+
+  test('no divider when everything was seen', () => {
+    localStorage.setItem('verun:chatSeen', JSON.stringify({ 's-catch2': 900 }))
+    const { container } = render(() => <ChatView output={items} sessionId="s-catch2" />)
+    expect(container.querySelector('[data-unseen-divider]')).toBeNull()
+  })
+
+  test('long sessions get a turn outline to jump between prompts', () => {
+    const { getByRole } = render(() => <ChatView output={items} sessionId="s-catch3" />)
+    expect(getByRole('navigation', { name: 'Turns' })).toBeTruthy()
+    expect(getByRole('button', { name: /Turn 2: second/ })).toBeTruthy()
+  })
+})

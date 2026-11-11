@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { formatCost, formatTokens, formatDurationShort, formatBytes, formatPct } from './format'
+import { describe, it, test, expect } from 'vitest'
+import { formatCost, formatTokens, formatDurationShort, formatBytes, formatPct, formatClock } from './format'
 
 describe('formatCost', () => {
   it('uses 4 decimals for sub-cent amounts', () => {
@@ -98,5 +98,18 @@ describe('formatPct', () => {
     expect(formatPct(10)).toBe('10%')
     expect(formatPct(99.6)).toBe('100%')
     expect(formatPct(420)).toBe('420%')
+  })
+})
+
+describe('formatClock', () => {
+  const now = new Date(2026, 10, 10, 18, 0).getTime()
+  test('today shows the time only', () => {
+    expect(formatClock(new Date(2026, 10, 10, 14, 2).getTime(), now)).toBe('14:02')
+  })
+  test('yesterday says so', () => {
+    expect(formatClock(new Date(2026, 10, 9, 9, 5).getTime(), now)).toBe('yesterday 09:05')
+  })
+  test('older shows the date', () => {
+    expect(formatClock(new Date(2026, 10, 3, 9, 5).getTime(), now)).toBe('Nov 3, 09:05')
   })
 })

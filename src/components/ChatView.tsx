@@ -8,6 +8,8 @@ import { collapseInPlace } from '../lib/collapseInPlace'
 import { isMac, modPressed } from '../lib/platform'
 import { openFile } from '../store/editorView'
 import { AgentBlockView } from './AgentBlockView'
+import { UnseenDivider, UnseenJump, TurnOutline } from './ChatCatchUp'
+import { turnOutline, unseenAnchor, loadSeen, markSeen } from '../lib/chatCatchUp'
 import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp, MessageCircleQuestion, Loader2, Sparkles } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
@@ -105,6 +107,11 @@ interface UserBlock {
   text: string
   images?: AttachmentRef[]
   files?: AttachmentRef[]
+  /** When the prompt was sent, and when its turn finished. */
+  at?: number
+  endedAt?: number
+  /** The turn ended in an error. */
+  failed?: boolean
 }
 interface AssistantBlock {
   type: 'assistant'
@@ -163,6 +170,9 @@ interface WakeupBlock {
   type: 'wakeup'
   prompt: string
   reason?: string
+  at?: number
+  endedAt?: number
+  failed?: boolean
 }
 interface ErrorBlock {
   type: 'error'
@@ -430,9 +440,9 @@ export function createBlockBuilder(): BlockBuilder {
         startTurn(item.text)
         turnStartTs = item.timestamp
         if (item.wakeupReason !== undefined) {
-          push({ type: 'wakeup', prompt: item.text, reason: item.wakeupReason || undefined })
+          push({ type: 'wakeup', prompt: item.text, reason: item.wakeupReason || undefined, at: item.timestamp })
         } else {
-          push({ type: 'user', text: item.text, images: item.images, files: item.files })
+          push({ type: 'user', text: item.text, images: item.images, files: item.files, at: item.timestamp })
         }
         break
       case 'transcriptUserMessage':
@@ -528,6 +538,18 @@ export function createBlockBuilder(): BlockBuilder {
         const turnTokens = (item.inputTokens || item.outputTokens)
           ? { input: item.inputTokens || 0, output: item.outputTokens || 0, cacheRead: item.cacheReadTokens || 0, cacheWrite: item.cacheWriteTokens || 0 }
           : undefined
+        {
+          const failed = turnHasError || !!item.error || (item.status !== 'completed' && item.status !== 'interrupted')
+          for (let i = blocks.length - 1; i >= 0; i--) {
+            const b = blocks[i]
+            if (b.type === 'user' || b.type === 'wakeup') {
+              if (item.timestamp) b.endedAt = item.timestamp
+              if (failed) b.failed = true
+              dirty.add(i)
+              break
+            }
+          }
+        }
         // Mark the last assistant block in this turn
         for (let i = blocks.length - 1; i >= 0; i--) {
           const b = blocks[i]
@@ -1350,6 +1372,44 @@ export const ChatView: Component<Props> = (props) => {
   // Scroll to bottom button visibility
   const [isAtBottom, setIsAtBottom] = createSignal(true)
 
+  // Catching up: the prompts of this session, and where the turns that
+  // finished since you last looked begin. `dividerSince` is the look the
+  // divider is measured from; it stays put while you read and only moves
+  // when you come back to the window or the session.
+  const turns = createMemo(() => turnOutline(blocks))
+  const [dividerSince, setDividerSince] = createSignal<number | null>(null)
+  const unseen = createMemo(() => {
+    const since = dividerSince()
+    return since === null ? null : unseenAnchor(turns(), since, blocks.length)
+  })
+  const [activeTurn, setActiveTurn] = createSignal(-1)
+  const [unseenAbove, setUnseenAbove] = createSignal(false)
+  // Once the divider has been on screen you've caught up; the jump pill is
+  // only for a divider that appeared while you were scrolled elsewhere.
+  let dividerVisited = false
+  createEffect(on(dividerSince, () => { dividerVisited = false }))
+  const lastLook = () => (props.sessionId ? loadSeen(props.sessionId) : undefined)
+  const catchUpFromLastLook = () => {
+    const since = lastLook()
+    if (since !== undefined && unseenAnchor(turns(), since, blocks.length)) setDividerSince(since)
+  }
+  // Everything is on screen when you're at the bottom of a visible, focused
+  // view. Throttled with a trailing write: streaming scrolls every frame.
+  let seenTimer: ReturnType<typeof setTimeout> | undefined
+  let seenWrittenAt = 0
+  const noteSeen = () => {
+    const sid = props.sessionId
+    if (!sid || !autoScroll || !containerRef?.offsetParent || document.hidden || !document.hasFocus()) return
+    const write = () => { seenTimer = undefined; seenWrittenAt = Date.now(); markSeen(sid, seenWrittenAt) }
+    if (Date.now() - seenWrittenAt >= 1000) write()
+    else if (!seenTimer) seenTimer = setTimeout(write, 1000)
+  }
+  onCleanup(() => clearTimeout(seenTimer))
+  // A new prompt means you're engaged again: the divider has done its job.
+  createEffect(on(() => turns()[turns().length - 1]?.at, (_at, prev) => {
+    if (prev !== undefined) setDividerSince(null)
+  }, { defer: true }))
+
   const hasAiTurn = () => props.output.some((i) => i.kind !== 'userMessage')
   // Tool calls waiting on the user, so an agent block can say it needs input.
   const approvalToolUseIds = createMemo(() => new Set(
@@ -1459,7 +1519,55 @@ export const ChatView: Component<Props> = (props) => {
     }
   }
 
+  onMount(() => {
+    const onFocus = () => {
+      catchUpFromLastLook()
+      noteSeen()
+    }
+    window.addEventListener('focus', onFocus)
+    onCleanup(() => window.removeEventListener('focus', onFocus))
+  })
+
+  const scrollToEl = (el: Element | null | undefined, smooth: boolean) => {
+    if (!el || !containerRef) return
+    const top = el.getBoundingClientRect().top - containerRef.getBoundingClientRect().top + containerRef.scrollTop - 12
+    autoScroll = false
+    setIsAtBottom(false)
+    if (smooth && containerRef.scrollTo) containerRef.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
+    else containerRef.scrollTop = Math.max(0, top)
+  }
+  const jumpToTurn = (index: number) => scrollToEl(contentRef?.querySelector(`[data-turn="${index}"]`), true)
+  const jumpToUnseen = () => scrollToEl(contentRef?.querySelector('[data-unseen-divider]'), true)
+
+  // Which turn is in view, and whether the divider is above it.
+  let marksRaf = false
+  const updateViewportMarks = () => {
+    if (marksRaf) return
+    marksRaf = true
+    requestAnimationFrame(() => {
+      marksRaf = false
+      if (!containerRef || !contentRef) return
+      const top = containerRef.getBoundingClientRect().top
+      const els = contentRef.querySelectorAll<HTMLElement>('[data-turn]')
+      let active = els.length ? Number(els[0].dataset.turn) : -1
+      if (autoScroll && els.length) active = Number(els[els.length - 1].dataset.turn)
+      else {
+        for (const el of els) {
+          if (el.getBoundingClientRect().top - top > 96) break
+          active = Number(el.dataset.turn)
+        }
+      }
+      setActiveTurn(active)
+      const d = contentRef.querySelector('[data-unseen-divider]')
+      if (!d) { setUnseenAbove(false); return }
+      const r = d.getBoundingClientRect()
+      if (r.bottom >= top && r.top <= containerRef.getBoundingClientRect().bottom) dividerVisited = true
+      setUnseenAbove(!dividerVisited && r.bottom < top)
+    })
+  }
+
   // Save scroll position on unmount, restore after first block rebuild on remount
+  let initialBuildDone = false
   let pendingScrollRestore: { scrollTop: number; autoScroll: boolean } | null = null
   onMount(() => {
     const sid = props.sessionId
@@ -1549,6 +1657,23 @@ export const ChatView: Component<Props> = (props) => {
         if (showSearch() && searchQuery()) {
           requestAnimationFrame(() => refreshHighlights())
         }
+        if (!initialBuildDone) {
+          initialBuildDone = true
+          // Opening a session with turns that finished since you last looked:
+          // start reading at the first of them, unless you left this view
+          // scrolled somewhere on purpose.
+          catchUpFromLastLook()
+          if (unseen() && (!pendingScrollRestore || pendingScrollRestore.autoScroll)) {
+            pendingScrollRestore = null
+            autoScroll = false
+            setIsAtBottom(false)
+            requestAnimationFrame(() => {
+              scrollToEl(contentRef?.querySelector('[data-unseen-divider]'), false)
+              updateViewportMarks()
+            })
+            return
+          }
+        }
         if (pendingScrollRestore) {
           const restore = pendingScrollRestore
           pendingScrollRestore = null
@@ -1578,6 +1703,8 @@ export const ChatView: Component<Props> = (props) => {
       scrollRafPending = false
       if (autoScroll && containerRef) {
         containerRef.scrollTop = containerRef.scrollHeight
+        noteSeen()
+        updateViewportMarks()
       }
     })
   }
@@ -1629,6 +1756,8 @@ export const ChatView: Component<Props> = (props) => {
     const distFromBottom = scrollHeight - scrollTop - clientHeight
     autoScroll = distFromBottom < 30
     setIsAtBottom(distFromBottom < 200)
+    noteSeen()
+    updateViewportMarks()
     if (scrollTop < 200) void maybeLoadOlder()
   }
 
@@ -1688,16 +1817,19 @@ export const ChatView: Component<Props> = (props) => {
       >
       <div
         ref={contentRef}
-        class={clsx('flex flex-col gap-2 pt-4', needsBtwPad() ? 'pb-16' : 'pb-6')}
+        class={clsx('flex flex-col gap-2 pt-4', needsBtwPad() ? 'pb-16' : 'pb-6', turns().length >= 3 && 'pr-3')}
       >
         <For each={blocks}>
-          {(block, index) => (
+          {(block, index) => (<>
+            <Show when={unseen()?.index === index() && unseen()} keyed>
+              {(a) => <UnseenDivider anchor={a} />}
+            </Show>
             <Switch>
               <Match when={block.type === 'user'}>
                 {(() => {
                   const b = block as UserBlock
                   return (
-                    <div class="flex flex-col items-end px-5 py-1 gap-1">
+                    <div data-turn={index()} class="flex flex-col items-end px-5 py-1 gap-1">
                       <Show when={b.images && b.images.length > 0}>
                         <div class="flex flex-wrap justify-end gap-1 max-w-[75%]">
                           <For each={b.images || []}>
@@ -1837,7 +1969,7 @@ export const ChatView: Component<Props> = (props) => {
               <Match when={block.type === 'wakeup'}>
                 {(() => {
                   const b = block as WakeupBlock
-                  return <WakeupBlockView prompt={b.prompt} reason={b.reason} />
+                  return <div data-turn={index()}><WakeupBlockView prompt={b.prompt} reason={b.reason} /></div>
                 })()}
               </Match>
               <Match when={block.type === 'error'}>
@@ -1902,7 +2034,7 @@ export const ChatView: Component<Props> = (props) => {
                 })()}
               </Match>
             </Switch>
-          )}
+          </>)}
         </For>
 
         <Show when={props.sessionStatus === 'running'}>
@@ -1925,6 +2057,14 @@ export const ChatView: Component<Props> = (props) => {
         </Show>
       </div>
       </div>
+      <TurnOutline turns={turns()} active={activeTurn()} newFrom={unseen()?.index} onJump={jumpToTurn} />
+      <Show when={unseenAbove() && unseen()} keyed>
+        {(a) => (
+          <div class="absolute top-3 left-1/2 -translate-x-1/2 z-30">
+            <UnseenJump anchor={a} onClick={jumpToUnseen} />
+          </div>
+        )}
+      </Show>
       {(() => {
         // Scroll-down chevron hides when the pill is "sticky" (loading/unread)
         // so the two never stack in the same anchor point.

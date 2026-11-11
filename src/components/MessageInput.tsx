@@ -35,7 +35,7 @@ import { decideQuestionKeyAction, QUESTION_SKIP_MESSAGE } from '../lib/questionK
 import { decideApprovalKeyAction } from '../lib/approvalKeyAction'
 import { ELICITATION_TOOL_NAME } from '../lib/mcpElicitation'
 import { McpElicitationCard } from './McpElicitationCard'
-import { McpServerStatusBar } from './McpServerStatusBar'
+import { McpStatusChip } from './McpStatusChip'
 import { accountKey, inheritedSelection } from '../lib/accounts'
 import { openNewSession } from '../lib/newSession'
 
@@ -1837,10 +1837,6 @@ export const MessageInput: Component<Props> = (props) => {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <Show when={props.sessionId}>
-        {(sid) => <McpServerStatusBar sessionId={sid()} />}
-      </Show>
-
       {/* MCP server asking for input */}
       <Show when={isElicitation() && currentApproval()} keyed>
         {(approval) => (
@@ -2407,8 +2403,8 @@ export const MessageInput: Component<Props> = (props) => {
         </div>
 
         {/* Bottom toolbar */}
-        <div class="flex items-center justify-between px-2 pb-2 pt-0.5">
-          <div class="flex items-center gap-0.5">
+        <div class="flex items-end justify-between gap-2 px-2 pb-2 pt-0.5">
+          <div class="flex flex-wrap items-center gap-0.5 min-w-0 whitespace-nowrap">
             {/* Model selector */}
             <ModelSelector
               model={currentModel()}
@@ -2532,6 +2528,9 @@ export const MessageInput: Component<Props> = (props) => {
 
             {/* Usage chip */}
             <UsageChip sessionId={props.sessionId} />
+            <Show when={props.sessionId}>
+              {(sid) => <McpStatusChip sessionId={sid()} />}
+            </Show>
           </div>
 
           <div class="flex items-center gap-1">
