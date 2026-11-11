@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import { effectiveActivity, acceptActivity, clearsPendingApprovals } from './sessionActivity'
 
 test('terminal and structured activity coexist without modifying process state', () => {
-  expect(effectiveActivity('idle', false, 'working')).toEqual({ running: true, approval: false, error: false, unknown: false })
+  expect(effectiveActivity('idle', false, 'working')).toEqual({ running: true, background: false, approval: false, error: false, unknown: false })
   expect(effectiveActivity('running', false, 'idle').running).toBe(true)
   expect(effectiveActivity('idle', true, 'idle').approval).toBe(true)
   expect(effectiveActivity('idle', false, 'waiting').approval).toBe(true)
@@ -21,9 +21,14 @@ test('snapshot arriving after a newer event cannot overwrite it', () => {
 })
 
 
-test('a session whose turn ended with background agents still running is working', () => {
-  expect(effectiveActivity('background', false).running).toBe(true)
-  expect(effectiveActivity('background', false, 'idle').running).toBe(true)
+test('a turn that ended with background work left is the user\'s turn, not running', () => {
+  // Chat: the turn ended with subagents or shells still going.
+  expect(effectiveActivity('background', false)).toMatchObject({ running: false, background: true })
+  // Terminal: Claude is at its prompt with background tasks still counted.
+  expect(effectiveActivity('idle', false, 'idle', 2)).toMatchObject({ running: false, background: true })
+  // Actually working wins.
+  expect(effectiveActivity('idle', false, 'working', 2)).toMatchObject({ running: true, background: false })
+  expect(effectiveActivity('idle', false, 'idle', 0).background).toBe(false)
 })
 
 

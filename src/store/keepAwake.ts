@@ -5,6 +5,7 @@ import type { KeepAwakeStatus } from '../lib/keepAwake'
 import { isMainWindow } from '../lib/windowContext'
 import { tasks } from './tasks'
 import { taskStatus } from './taskStatus'
+import { agentsWorking } from '../lib/taskBoard'
 
 const AUTO_KEY = 'verun:keepAwakeWhileWorking'
 const readAuto = () => { try { return localStorage.getItem(AUTO_KEY) !== 'false' } catch { return true } }
@@ -25,7 +26,7 @@ export async function initKeepAwake() {
   if (!isMainWindow) return
   createRoot(() => {
     // "Working", not "process alive": idle, paused and waiting sessions let the Mac sleep.
-    const working = createMemo(() => keepAwakeAuto() && tasks.some(t => !t.archived && taskStatus(t.id).kind === 'running'))
+    const working = createMemo(() => keepAwakeAuto() && tasks.some(t => !t.archived && agentsWorking(taskStatus(t.id))))
     createEffect(on(working, w => { ipc.keepAwakeSetAgentsWorking(w).catch(e => console.error('keep awake:', e)) }))
   })
 }

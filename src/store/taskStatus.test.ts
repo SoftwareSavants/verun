@@ -62,3 +62,8 @@ test('reading every task is not quadratic: task lookup does not scan the list', 
   }
   expect(taskStatus('t7').kind).toBe('archived')
 })
+
+test('a session whose turn ended with background work left is the user\'s turn', () => {
+  setSessions([{ ...session, status: 'background' }])
+  expect(taskStatus('t1')).toMatchObject({ column: 'idle', kind: 'background' })
+})

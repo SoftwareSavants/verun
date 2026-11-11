@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A session whose turn ended with subagents, shells or artifact watchers still going no longer shows as running: it reads as your turn with a still "work in background" icon (chat and terminal alike), so a question Claude asked doesn't hide behind a spinner, and watchers that stop silently can't leave it stuck. Keep-awake still covers the background work, the "completed" notification still waits for it, and switching a terminal session with live background work to the chat is refused instead of stopping it
+
 ## 0.16.3 - 2026-11-11
 
 - Coming back to a chat session opens it at a "New · 3 turns since 14:02" line above the turns that finished since you last looked (remembered per session across restarts; also marked when you return to a window left open), with a jump back to it if you scroll away first

@@ -3,7 +3,10 @@ import { workState, notificationFor } from './sessionNotifications'
 
 test('one work state per session, from chat status, approvals and terminal hooks alike', () => {
   expect(workState('running', false)).toBe('working')
+  // Background work left running: Claude usually resumes when it reports
+  // back, so no "completed" yet, though the board shows it as your turn.
   expect(workState('background', false)).toBe('working')
+  expect(workState('idle', false, 'idle', 2)).toBe('working')
   expect(workState('idle', false, 'working')).toBe('working')
   expect(workState('idle', true)).toBe('needs-input')
   expect(workState('idle', false, 'waiting')).toBe('needs-input')

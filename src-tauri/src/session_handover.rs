@@ -23,6 +23,8 @@ pub const CHAT_BUSY: &str =
     "Claude is still answering in the chat view. Wait for it or stop it before switching to the terminal.";
 pub const TERMINAL_BUSY: &str =
     "Claude is still working in the terminal view. Wait for it or interrupt it there before sending from the chat.";
+pub const TERMINAL_BACKGROUND: &str =
+    "Background work Claude started in the terminal view is still running, and switching to the chat would stop it. Keep going in the terminal, or stop it there first.";
 
 /// Opening the terminal: `chat_busy` is `None` when no chat process is alive.
 pub fn to_terminal(chat_busy: Option<bool>) -> Handover {
@@ -34,11 +36,14 @@ pub fn to_terminal(chat_busy: Option<bool>) -> Handover {
 }
 
 /// Sending from the chat: `terminal` is `None` when no terminal is open,
-/// otherwise the terminal's last observed activity phase (if any).
-pub fn to_chat(terminal: Option<Option<Phase>>) -> Handover {
+/// otherwise the terminal's last observed activity phase (if any) and how
+/// many background tasks it left running.
+pub fn to_chat(terminal: Option<Option<(Phase, usize)>>) -> Handover {
     match terminal {
         None => Handover::Clear,
-        Some(Some(Phase::Working | Phase::Waiting)) => Handover::Blocked(TERMINAL_BUSY),
+        Some(Some((Phase::Working | Phase::Waiting, _))) => Handover::Blocked(TERMINAL_BUSY),
+        // Closing the terminal ends its process, and its subagents with it.
+        Some(Some((_, n))) if n > 0 => Handover::Blocked(TERMINAL_BACKGROUND),
         Some(_) => Handover::Retire,
     }
 }
@@ -74,7 +79,7 @@ pub async fn hand_over_to_chat(
     };
     let terminal = ct_map.contains_key(session_id).then(|| {
         app.try_state::<crate::activity::ActivityStore>()
-            .and_then(|store| store.phase(session_id))
+            .and_then(|store| store.phase_and_background(session_id))
     });
     match to_chat(terminal) {
         Handover::Clear => Ok(()),
@@ -109,11 +114,17 @@ mod tests {
     #[test]
     fn chat_takes_over_only_from_a_terminal_that_is_not_mid_turn() {
         assert_eq!(to_chat(None), Handover::Clear);
-        for phase in [None, Some(Phase::Idle), Some(Phase::Unknown), Some(Phase::Ended), Some(Phase::Failed)] {
-            assert_eq!(to_chat(Some(phase)), Handover::Retire, "{phase:?}");
+        assert_eq!(to_chat(Some(None)), Handover::Retire);
+        for phase in [Phase::Idle, Phase::Unknown, Phase::Ended, Phase::Failed] {
+            assert_eq!(to_chat(Some(Some((phase, 0)))), Handover::Retire, "{phase:?}");
         }
         for phase in [Phase::Working, Phase::Waiting] {
-            assert_eq!(to_chat(Some(Some(phase))), Handover::Blocked(TERMINAL_BUSY));
+            assert_eq!(to_chat(Some(Some((phase, 0)))), Handover::Blocked(TERMINAL_BUSY));
         }
+    }
+
+    #[test]
+    fn closing_the_terminal_would_kill_its_background_agents_so_it_stays() {
+        assert_eq!(to_chat(Some(Some((Phase::Idle, 2)))), Handover::Blocked(TERMINAL_BACKGROUND));
     }
 }

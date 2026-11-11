@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { taskBoardState } from './taskBoard'
+import { taskBoardState, agentsWorking } from './taskBoard'
 
 test('archived wins over stale activity; attention wins over running', () => {
   expect(taskBoardState({ archived: true, running: true, approval: true }).column).toBe('archived')
@@ -30,4 +30,15 @@ test('unknown terminal activity never claims readiness', () => {
   expect(taskBoardState({ unknown: true })).toEqual({ column: 'unknown', kind: 'unknown', label: 'Status unavailable' })
   expect(taskBoardState({ unknown: true, running: true }).column).toBe('running')
   expect(taskBoardState({ unknown: true, approval: true }).column).toBe('attention')
+})
+test('background work after the turn ended reads as your turn, not running', () => {
+  expect(taskBoardState({ background: true })).toEqual({ column: 'idle', kind: 'background', label: 'Your turn, work running in background' })
+  expect(taskBoardState({ background: true, running: true }).kind).toBe('running')
+  expect(taskBoardState({ background: true, approval: true }).kind).toBe('input')
+})
+test('keep-awake counts background work: the Mac sleeping would stall it', () => {
+  expect(agentsWorking(taskBoardState({ running: true }))).toBe(true)
+  expect(agentsWorking(taskBoardState({ background: true }))).toBe(true)
+  expect(agentsWorking(taskBoardState({}))).toBe(false)
+  expect(agentsWorking(taskBoardState({ approval: true }))).toBe(false)
 })
