@@ -1603,6 +1603,38 @@ pub struct StreamResult {
     pub error: Option<String>,
 }
 
+pub struct GuardedStream {
+    pub result: StreamResult,
+    /// The reader panicked: its stdout is gone, so the process can't be
+    /// read again and must be stopped rather than waited on.
+    pub panicked: bool,
+}
+
+/// Run a session's output loop on its own task so a panic in it (a bug while
+/// handling one line) ends the session with an error the user can retry,
+/// instead of killing the reader silently and leaving the session "running"
+/// on a process nobody reads.
+pub async fn run_stream_guarded<F>(stream: F) -> GuardedStream
+where
+    F: std::future::Future<Output = StreamResult> + Send + 'static,
+{
+    match tokio::spawn(stream).await {
+        Ok(result) => GuardedStream { result, panicked: false },
+        Err(e) => {
+            eprintln!("[verun][stream] output reader failed: {e}");
+            GuardedStream {
+                result: StreamResult {
+                    error: Some(
+                        "Verun hit an internal error reading this session and stopped it. Send again to resume."
+                            .to_string(),
+                    ),
+                },
+                panicked: true,
+            }
+        }
+    }
+}
+
 /// After a turn ends, snapshot the worktree and persist a `turn_snapshots`
 /// row keyed to the latest assistant message uuid in the on-disk JSONL, which
 /// Claude writes in `claude_home`.
@@ -3124,6 +3156,17 @@ fn encode_codex_user_input_response(
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn a_panicking_stream_ends_as_an_error_instead_of_a_dead_task() {
+        let result = run_stream_guarded(async { panic!("byte index 497 is not a char boundary") }).await;
+        assert!(result.panicked);
+        assert!(result.result.error.unwrap().contains("internal error"));
+        let ok = run_stream_guarded(async { StreamResult { error: None } }).await;
+        assert!(!ok.panicked);
+        assert!(ok.result.error.is_none());
+    }
+
     use super::*;
 
     #[test]

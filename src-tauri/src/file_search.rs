@@ -437,11 +437,7 @@ fn truncate_line(s: &str, max_bytes: usize) -> (String, bool) {
     if s.len() <= max_bytes {
         return (s.to_string(), false);
     }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    (s[..end].to_string(), true)
+    (crate::text::truncate_bytes(s, max_bytes).to_string(), true)
 }
 
 #[cfg(test)]

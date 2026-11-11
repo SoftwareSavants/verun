@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.5 - 2026-11-11
+
+- Fixed chat sessions freezing for good: a tool call longer than 500 bytes with non-English text (such as Arabic) crashed the session's output reader, so Claude kept working unseen, subagents stalled, and new messages got no reply while the session showed "running". Long tool summaries now cut on a character boundary, and if a session's reader ever fails, Verun stops that session with an error you can retry instead of leaving it hanging
+
 ## 0.16.4 - 2026-11-11
 
 - The sidebar can list tasks by recent activity instead of by project (toggle next to the group picker): Needs you stays pinned on top, then every other task in one list with the most recently active first and its project and age beside it; tasks untouched for 3+ days fold under one line, and Cmd+1-9 follow the order shown. The task board orders its cards by recent activity too

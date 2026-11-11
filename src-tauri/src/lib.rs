@@ -1,3 +1,4 @@
+pub mod text;
 mod accounts;
 mod activity;
 pub mod agent;

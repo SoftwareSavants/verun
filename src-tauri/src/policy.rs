@@ -691,7 +691,7 @@ pub fn summarize_input(tool_name: &str, tool_input: &serde_json::Value) -> Strin
     };
 
     if summary.len() > 500 {
-        format!("{}…", &summary[..497])
+        format!("{}…", crate::text::truncate_bytes(&summary, 497))
     } else {
         summary
     }
@@ -703,6 +703,20 @@ pub fn summarize_input(tool_name: &str, tool_input: &serde_json::Value) -> Strin
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn long_summaries_cut_on_a_character_boundary() {
+        // A Bash command with Arabic text, long enough that byte 497 falls
+        // inside a character: slicing there used to panic and kill the
+        // session's output reader.
+        let command = format!("{}{}", "a".repeat(496), "\u{0627}\u{0644}".repeat(10));
+        assert!(!command.is_char_boundary(497));
+        let summary = summarize_input("Bash", &serde_json::json!({ "command": command }));
+        assert!(summary.ends_with('\u{2026}'));
+        assert!(summary.len() <= 500);
+        assert!(command.starts_with(summary.trim_end_matches('\u{2026}')));
+    }
+
     use super::*;
     use serde_json::json;
 
