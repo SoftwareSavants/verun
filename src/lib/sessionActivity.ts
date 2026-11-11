@@ -12,6 +12,9 @@ export interface SessionActivity {
   interrupted?: boolean
   /** Background tasks Claude left unfinished at its last turn end. */
   background?: number
+  /** Of those, subagents and background shells. */
+  backgroundAgents?: number
+  backgroundShells?: number
 }
 export function acceptActivity(current: number | undefined, incoming: number): boolean {
   return current === undefined || incoming > current
