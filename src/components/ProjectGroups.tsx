@@ -1,6 +1,6 @@
 import { For, Show, createSignal, type Component } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
-import { Activity, AlertCircle, Check, ChevronDown, ChevronRight, FolderPlus, FolderTree, Pencil, Search, Trash2, X } from 'lucide-solid'
+import { AlertCircle, Check, ChevronDown, ChevronRight, FolderPlus, FolderTree, History, Pencil, Search, Trash2, X } from 'lucide-solid'
 import { sidebarView, setSidebarView, type SidebarView } from '../store/sidebarView'
 import { Select } from './Select'
 import { addGroup, deleteGroup, groupState, projectQuery, renameGroup, setGroupScope, setProjectQuery, toggleGroup } from '../store/projectGroups'
@@ -28,12 +28,12 @@ const GroupNameEditor: Component<{ id?: string; name?: string; onClose: () => vo
   </div>
 }
 
-const VIEWS: { id: SidebarView; label: string; icon: typeof Activity }[] = [
+const VIEWS: { id: SidebarView; label: string; icon: typeof History }[] = [
   { id: 'projects', label: 'Tasks by project', icon: FolderTree },
-  { id: 'status', label: 'Tasks by status, most recent first', icon: Activity },
+  { id: 'recent', label: 'Tasks by recent activity', icon: History },
 ]
 
-/** Lists tasks under their projects, or by status with the latest work on top. */
+/** Lists tasks under their projects, or in one list with the latest work on top. */
 const ViewToggle: Component = () => (
   <div role="group" aria-label="Sidebar view" class="flex items-center shrink-0 rounded-md ring-1 ring-outline/10 p-px">
     <For each={VIEWS}>{v => (

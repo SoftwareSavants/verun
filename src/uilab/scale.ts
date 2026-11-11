@@ -41,14 +41,14 @@ export async function seedLongTranscript(turns = 25) {
   }
 }
 
-// ?fixture=status: the scale floor with realistic recency (a few tasks touched
-// in the last hours, the rest days or weeks ago), shown in the status view.
-export function seedStatusView() {
+// ?fixture=recent: the scale floor with realistic recency (a few tasks touched
+// in the last hours, the rest days or weeks ago), shown in the recent view.
+export function seedRecentView() {
   seedScale()
   const now = Date.now()
   const H = 3_600_000
   const ages = [0.2, 1, 3, 5, 9, 26, 50, 80, 140, 300, 600]
   DEMO_SESSIONS.forEach((s, i) => { s.startedAt = now - ages[i % ages.length] * H - i * 60_000 })
   DEMO_SESSIONS.slice(0, 3).forEach(s => { s.status = 'idle' })
-  try { localStorage.setItem('verun:sidebarView', 'status') } catch { /* ignore */ }
+  try { localStorage.setItem('verun:sidebarView', 'recent') } catch { /* ignore */ }
 }

@@ -34,7 +34,7 @@ mockIPC((cmd) => {
 }, { shouldMockEvents: true })
 
 if (params.get('fixture') === 'scale') (await import('./scale')).seedScale()
-if (params.get('fixture') === 'status') (await import('./scale')).seedStatusView()
+if (params.get('fixture') === 'recent') (await import('./scale')).seedRecentView()
 if (params.get('fixture') === 'long') await (await import('./scale')).seedLongTranscript()
 if (params.get('fixture') === 'chat') await (await import('./chat')).seedChat()
 if (params.get('fixture') === 'catchup') await (await import('./catchup')).seedCatchUp()

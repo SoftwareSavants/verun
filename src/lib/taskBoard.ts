@@ -41,3 +41,14 @@ export function taskBoardState(activity: BoardActivity): TaskStatus {
 
 /** Agents doing work right now, in a turn or in the background: what keep-awake guards. */
 export const agentsWorking = (s: TaskStatus) => s.kind === 'running' || s.kind === 'background'
+
+/** The board's columns in order; the sidebar and board share them. */
+export const BOARD_COLUMNS: { id: BoardColumn; name: string; empty: string }[] = [
+  { id: 'attention', name: 'Needs you', empty: 'Nothing needs you.' },
+  { id: 'running', name: 'Running', empty: 'No agents working.' },
+  { id: 'idle', name: 'Idle', empty: 'Agents that finished their turn land here.' },
+  { id: 'review', name: 'In review', empty: 'Open pull requests land here.' },
+  { id: 'done', name: 'Done', empty: 'Merged work lands here.' },
+  { id: 'unknown', name: 'Status unavailable', empty: '' },
+  { id: 'archived', name: 'Archived', empty: 'No archived tasks.' },
+]

@@ -20,10 +20,10 @@ import {
 import type { Task } from "../types";
 import { useNow } from "../lib/subagents";
 import { formatAgo } from "../lib/format";
-import { statusSections } from "../lib/statusView";
+import { recentTasks } from "../lib/recentTasks";
 import { lastActiveAt } from "../store/lastActive";
 import { sidebarView } from "../store/sidebarView";
-import { StatusTaskList } from "./StatusTaskList";
+import { RecentTaskList } from "./RecentTaskList";
 import { refreshTaskGit } from "../store/git";
 import { syncWatchedWorktrees } from "../store/worktreeWatch";
 import { newTaskIds } from "../lib/taskDiff";
@@ -153,19 +153,19 @@ export const Sidebar: Component = () => {
   const unknownCount = createMemo(() => visibleProjects(projects).flatMap(p => activeTasksByProject()[p.id] || []).filter(t => taskStatus(t.id).kind === 'unknown').length);
   const floor = createMemo(() => ({ running: tasks.filter(t => !t.archived && taskStatus(t.id).kind === 'running').length }));
 
-  // Status view: every task in scope grouped by status, newest first. The
-  // clock only moves the groups once a minute.
+  // Recent view: every task in scope in one list, newest first. The clock
+  // only moves ages and folding once a minute.
   const now = useNow();
   const minute = createMemo(() => Math.floor(now() / 60_000) * 60_000);
-  const statusView = createMemo(() => statusSections(
+  const recentView = createMemo(() => recentTasks(
     visibleProjects(projects).flatMap(p => (activeTasksByProject()[p.id] || []).map(task => ({
       id: task.id, task, column: taskStatus(task.id).column, lastActive: lastActiveAt(task),
     }))),
     minute(),
   ));
   // Tasks in the order the sidebar shows them; folded quiet tasks get no shortcut.
-  const orderedTasks = createMemo(() => sidebarView() === 'status'
-    ? statusView().flatMap(s => s.recent.map(r => r.task))
+  const orderedTasks = createMemo(() => sidebarView() === 'recent'
+    ? recentView().recent.map(r => r.task)
     : visibleProjects(projects).flatMap(p => activeTasksByProject()[p.id] || []));
 
   const taskBindingById = createMemo(() => {
@@ -487,13 +487,7 @@ export const Sidebar: Component = () => {
         <GroupToolbar attention={otherAttention()} onAttention={jumpToAttention} />
         {/* Project + task list */}
         <div class="flex-1 overflow-y-auto overflow-x-hidden px-2 no-drag">
-          <Show when={!projectQuery().trim() && sidebarView() === 'status'}>
-            <StatusTaskList sections={statusView()} row={r => renderTaskRow(r.task, () => <>
-              <span class="truncate">{projectById(r.task.projectId)?.name}</span>
-              <span class="tabular-nums shrink-0">{formatAgo(r.lastActive, minute())}</span>
-            </>)} />
-          </Show>
-          <Show when={!projectQuery().trim() && sidebarView() === 'projects' && (needsYouTasks().length > 0 || unknownCount() > 0)}>
+          <Show when={!projectQuery().trim() && (needsYouTasks().length > 0 || unknownCount() > 0)}>
             <section aria-label="Needs you" class="mb-2 pb-2 border-b-1 border-b-solid border-b-outline/8">
               <button type="button" class="w-full px-2 py-1 flex items-center gap-1.5 rounded text-[11px] font-semibold text-status-waiting hover:bg-surface-2"
                 aria-expanded={!queueCollapsed()} onClick={() => setQueueCollapsed(!queueCollapsed())}>
@@ -527,6 +521,12 @@ export const Sidebar: Component = () => {
                 </div>
               </Show>
             </section>
+          </Show>
+          <Show when={!projectQuery().trim() && sidebarView() === 'recent'}>
+            <RecentTaskList recent={recentView().recent} quiet={recentView().quiet} row={r => renderTaskRow(r.task, () => <>
+              <span class="truncate">{projectById(r.task.projectId)?.name}</span>
+              <span class="tabular-nums shrink-0">{formatAgo(r.lastActive, minute())}</span>
+            </>)} />
           </Show>
           <Show when={projectQuery().trim()}>
             <p class="text-[10px] text-text-dim px-2 py-1">Results from all groups</p>

@@ -2,8 +2,7 @@ import { For, Show, createMemo, createSignal } from 'solid-js'
 import { Search, X } from 'lucide-solid'
 import { Select } from './Select'
 import { TaskStatusIcon } from './TaskStatusIcon'
-import type { BoardColumn, TaskStatusKind } from '../lib/taskBoard'
-import { BOARD_COLUMNS } from '../lib/statusView'
+import { BOARD_COLUMNS, type BoardColumn, type TaskStatusKind } from '../lib/taskBoard'
 
 export interface BoardCard {
   id: string
