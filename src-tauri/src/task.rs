@@ -2714,23 +2714,37 @@ async fn spawn_rpc_session(
     let monitor_current_turn_id = current_turn_id;
     tokio::spawn(async move {
         let wt_for_hooks = monitor_wt.clone();
-        let stream_result = stream::stream_and_capture_rpc(
+        let (rpc_app, rpc_sid, rpc_tid, rpc_db_tx, rpc_wt) = (
             monitor_app.clone(),
             monitor_sid.clone(),
             monitor_tid.clone(),
-            events_rx,
-            monitor_stdin,
-            monitor_busy,
-            monitor_pending,
-            monitor_pending_meta,
             monitor_db_tx.clone(),
-            &*monitor_agent,
-            monitor_current_turn_id,
-            monitor_wt.clone().into(),
-        )
+            monitor_wt.clone(),
+        );
+        let guarded = stream::run_stream_guarded(async move {
+            stream::stream_and_capture_rpc(
+                rpc_app,
+                rpc_sid,
+                rpc_tid,
+                events_rx,
+                monitor_stdin,
+                monitor_busy,
+                monitor_pending,
+                monitor_pending_meta,
+                rpc_db_tx,
+                &*monitor_agent,
+                monitor_current_turn_id,
+                rpc_wt.into(),
+            )
+            .await
+        })
         .await;
+        let stream_result = guarded.result;
 
         let status = if let Some((_, mut proc)) = monitor_active.remove(&monitor_sid) {
+            if guarded.panicked {
+                let _ = proc.child.start_kill();
+            }
             let exit_status = proc.child.wait().await.ok();
             let exit_code = exit_status.as_ref().and_then(|s| s.code());
             eprintln!("[verun][rpc][{monitor_sid}] exited code={exit_code:?}");
@@ -3196,7 +3210,7 @@ pub async fn spawn_session_process(
     tokio::spawn(async move {
         // Stream stdout lines to frontend + DB
         let wt_for_hooks = monitor_wt.clone();
-        let stream_result = stream::stream_and_capture(
+        let guarded = stream::run_stream_guarded(stream::stream_and_capture(
             monitor_app.clone(),
             monitor_sid.clone(),
             monitor_tid.clone(),
@@ -3213,11 +3227,16 @@ pub async fn spawn_session_process(
             monitor_agent,
             claude_home,
             monitor_account_key,
-        )
+        ))
         .await;
+        let stream_result = guarded.result;
 
-        // Process exited — get exit code
+        // Process exited, or its reader failed and nothing can read it again:
+        // stop it rather than wait on a process that never ends.
         let status = if let Some((_, mut proc)) = monitor_active.remove(&monitor_sid) {
+            if guarded.panicked {
+                let _ = proc.child.start_kill();
+            }
             let exit_status = proc.child.wait().await.ok();
             let exit_code = exit_status.as_ref().and_then(|s| s.code());
             eprintln!("[verun][{}] exited code={:?}", monitor_sid, exit_code);
