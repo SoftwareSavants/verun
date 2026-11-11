@@ -1,7 +1,7 @@
 import { createSignal } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { check, type Update } from '@tauri-apps/plugin-updater'
-import { relaunch } from '@tauri-apps/plugin-process'
+import * as ipc from './ipc'
 
 export interface UpdateInfo {
   version: string
@@ -117,7 +117,7 @@ export async function downloadAndInstall() {
 }
 
 export async function restartApp() {
-  await relaunch()
+  await ipc.restartForUpdate()
 }
 
 export function dismissUpdate() {

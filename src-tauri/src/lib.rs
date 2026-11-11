@@ -29,6 +29,7 @@ mod policy;
 mod outside_sessions;
 mod pty;
 mod quick_tasks;
+mod relaunch;
 mod pty_output;
 mod resource_monitor;
 mod session_handover;
@@ -541,6 +542,7 @@ pub fn run() {
             ipc::open_in_finder,
             ipc::open_in_app,
             ipc::quit_app,
+            ipc::restart_for_update,
             // File tree
             ipc::list_directory,
             ipc::read_worktree_file,
@@ -600,6 +602,8 @@ pub fn run() {
                     let _ = w.set_focus();
                 }
             }
+            // A restart has already been confirmed; only a plain quit asks.
+            RunEvent::ExitRequested { code, .. } if code == Some(tauri::RESTART_EXIT_CODE) => {}
             RunEvent::ExitRequested { api, .. } => {
                 // Intercept quit and ask frontend for confirmation
                 api.prevent_exit();

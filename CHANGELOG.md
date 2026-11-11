@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Restarting into an update stops every session cleanly first (terminal Claudes get a hang-up so they save and exit) and relaunches Verun the way the Dock does, instead of as a child of the old process; with agents working, Restart asks first
+- Quitting also lets terminal Claudes save and exit instead of dying with the app
+
 ## 0.16.5 - 2026-11-11
 
 - Fixed chat sessions freezing for good: a tool call longer than 500 bytes with non-English text (such as Arabic) crashed the session's output reader, so Claude kept working unseen, subagents stalled, and new messages got no reply while the session showed "running". Long tool summaries now cut on a character boundary, and if a session's reader ever fails, Verun stops that session with an error you can retry instead of leaving it hanging
