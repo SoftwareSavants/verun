@@ -37,7 +37,7 @@ vi.mock('./windowContext', () => ({
   windowContext: { windowLabel: 'main' },
   get isMainWindow() { return mocks.window.isMainWindow },
 }))
-vi.mock('./ipc', () => ({ reloadEnvPath: vi.fn(() => Promise.resolve()), listProjects: vi.fn(() => Promise.resolve([])), listAvailableAgents: vi.fn(() => Promise.resolve([])) }))
+vi.mock('./ipc', () => ({ reloadEnvPath: vi.fn(() => Promise.resolve()), listProjects: vi.fn(() => Promise.resolve([])), listAvailableAgents: vi.fn(() => Promise.resolve([])), taskLastActive: vi.fn(() => Promise.resolve({})) }))
 
 vi.mock('../store/accounts', () => ({ initAccountListeners: mocks.initAccountListeners, loadAccounts: mocks.loadAccounts }))
 vi.mock('../store/ui', () => ({

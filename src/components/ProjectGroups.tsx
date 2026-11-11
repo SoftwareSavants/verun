@@ -1,5 +1,7 @@
 import { For, Show, createSignal, type Component } from 'solid-js'
-import { AlertCircle, Check, ChevronDown, ChevronRight, FolderPlus, Pencil, Search, Trash2, X } from 'lucide-solid'
+import { Dynamic } from 'solid-js/web'
+import { Activity, AlertCircle, Check, ChevronDown, ChevronRight, FolderPlus, FolderTree, Pencil, Search, Trash2, X } from 'lucide-solid'
+import { sidebarView, setSidebarView, type SidebarView } from '../store/sidebarView'
 import { Select } from './Select'
 import { addGroup, deleteGroup, groupState, projectQuery, renameGroup, setGroupScope, setProjectQuery, toggleGroup } from '../store/projectGroups'
 
@@ -26,6 +28,24 @@ const GroupNameEditor: Component<{ id?: string; name?: string; onClose: () => vo
   </div>
 }
 
+const VIEWS: { id: SidebarView; label: string; icon: typeof Activity }[] = [
+  { id: 'projects', label: 'Tasks by project', icon: FolderTree },
+  { id: 'status', label: 'Tasks by status, most recent first', icon: Activity },
+]
+
+/** Lists tasks under their projects, or by status with the latest work on top. */
+const ViewToggle: Component = () => (
+  <div role="group" aria-label="Sidebar view" class="flex items-center shrink-0 rounded-md ring-1 ring-outline/10 p-px">
+    <For each={VIEWS}>{v => (
+      <button type="button" title={v.label} aria-label={v.label} aria-pressed={sidebarView() === v.id}
+        class={`p-1 rounded transition-colors focus-visible:ring-2 focus-visible:ring-accent ${sidebarView() === v.id ? 'bg-surface-3 text-text-primary' : 'text-text-dim hover:text-text-secondary'}`}
+        onClick={() => setSidebarView(v.id)}>
+        <Dynamic component={v.icon} size={13} />
+      </button>
+    )}</For>
+  </div>
+)
+
 export const GroupToolbar: Component<{
   attention: { id: string; name: string; count: number }[]
   onAttention: (groupId: string) => void
@@ -36,6 +56,7 @@ export const GroupToolbar: Component<{
       <div class="flex-1 min-w-0"><Select label="Project group" value={groupState().scope} onChange={setGroupScope}
         options={[{ value: 'all', label: 'All projects' }, ...groupState().groups.map(g => ({ value: g.id, label: g.name })), { value: 'ungrouped', label: 'Ungrouped' }]} /></div>
       <button class="btn-ghost p-1.5 shrink-0" title="New group" aria-label="New group" onClick={() => setAdding(true)}><FolderPlus size={14} /></button>
+      <ViewToggle />
     </div>
     <Show when={adding()}><GroupNameEditor onClose={() => setAdding(false)} /></Show>
     <div class="relative">

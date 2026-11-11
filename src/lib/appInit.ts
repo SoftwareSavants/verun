@@ -1,4 +1,5 @@
 import { initActivityListeners } from '../store/activity'
+import { initLastActive } from '../store/lastActive'
 import { initKeepAwake } from '../store/keepAwake'
 import { initSessionNotifications } from '../store/sessionNotifications'
 import { createSignal } from 'solid-js'
@@ -77,6 +78,7 @@ export async function initListeners() {
     initAccountListeners(),
     initResourceMonitor(),
     initKeepAwake(),
+    initLastActive(),
   ])
   initSessionNotifications()
   initWindowFocusRefresh()

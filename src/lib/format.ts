@@ -56,3 +56,16 @@ export function formatClock(ts: number, now = Date.now()): string {
   if (days === 1) return `yesterday ${hm}`
   return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${hm}`
 }
+
+/** Compact age for lists: "now", "5m", "3h", "2d", then the date. */
+export function formatAgo(ts: number, now = Date.now()): string {
+  const m = Math.floor((now - ts) / 60_000)
+  if (m < 1) return 'now'
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24)
+  if (d < 7) return `${d}d`
+  const date = new Date(ts)
+  return `${MONTHS[date.getMonth()]} ${date.getDate()}`
+}

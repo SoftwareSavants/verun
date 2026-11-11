@@ -57,6 +57,15 @@ fn unfinished_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usi
     })
 }
 
+/// A terminal turn starting or ending: what moves the session's "last active".
+pub fn marks_activity(event: &HookEvent) -> bool {
+    event.agent_id.is_none()
+        && matches!(
+            event.hook_event_name.as_str(),
+            "UserPromptSubmit" | "Stop" | "StopFailure"
+        )
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Activity {
@@ -431,6 +440,15 @@ impl ActivityBridge {
                 )
                 .await;
                 if let Ok(Some(event)) = event {
+                    if marks_activity(&event) {
+                        if let Some(db) = listener_app.try_state::<crate::db::DbWriteTx>() {
+                            let _ = db.try_send(crate::db::DbWrite::TouchSession {
+                                id: listener_session.clone(),
+                                at: crate::task::epoch_ms(),
+                            });
+                        }
+                        let _ = listener_app.emit("session-touched", &listener_session);
+                    }
                     let store = listener_app.state::<ActivityStore>();
                     publish(
                         &listener_app,
@@ -670,6 +688,19 @@ mod tests {
         stop.background_tasks = Some(0);
         state.apply(&stop);
         assert_eq!((state.phase, state.background), (Phase::Idle, 0));
+    }
+
+    #[test]
+    fn turns_starting_and_ending_mark_the_session_active() {
+        for name in ["UserPromptSubmit", "Stop", "StopFailure"] {
+            assert!(marks_activity(&event(name, "")), "{name}");
+        }
+        for name in ["PreToolUse", "PostToolUse", "Notification", "SessionStart"] {
+            assert!(!marks_activity(&event(name, "")), "{name}");
+        }
+        let mut sub = event("Stop", "");
+        sub.agent_id = Some("child".into());
+        assert!(!marks_activity(&sub), "a subagent's turn is not the session's");
     }
 
     #[test]

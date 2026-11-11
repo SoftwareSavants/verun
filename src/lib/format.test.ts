@@ -1,5 +1,5 @@
 import { describe, it, test, expect } from 'vitest'
-import { formatCost, formatTokens, formatDurationShort, formatBytes, formatPct, formatClock } from './format'
+import { formatCost, formatTokens, formatDurationShort, formatBytes, formatPct, formatClock, formatAgo } from './format'
 
 describe('formatCost', () => {
   it('uses 4 decimals for sub-cent amounts', () => {
@@ -111,5 +111,16 @@ describe('formatClock', () => {
   })
   test('older shows the date', () => {
     expect(formatClock(new Date(2026, 10, 3, 9, 5).getTime(), now)).toBe('Nov 3, 09:05')
+  })
+})
+
+describe('formatAgo', () => {
+  const now = new Date(2026, 10, 11, 15, 0).getTime()
+  it('reads as a compact age', () => {
+    expect(formatAgo(now - 20_000, now)).toBe('now')
+    expect(formatAgo(now - 5 * 60_000, now)).toBe('5m')
+    expect(formatAgo(now - 3 * 3600_000, now)).toBe('3h')
+    expect(formatAgo(now - 2 * 86400_000, now)).toBe('2d')
+    expect(formatAgo(now - 20 * 86400_000, now)).toBe('Oct 22')
   })
 })

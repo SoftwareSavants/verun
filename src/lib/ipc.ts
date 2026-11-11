@@ -167,6 +167,12 @@ export const listSessions = (taskId: string): Promise<Session[]> =>
     ? seed().then(d => d.DEMO_SESSIONS.filter(s => s.taskId === taskId))
     : invoke<Session[]>('list_sessions', { taskId })
 
+/** When each task was last active (ms), keyed by task id. */
+export const taskLastActive = (): Promise<Record<string, number>> =>
+  DEMO
+    ? seed().then(d => d.DEMO_SESSIONS.reduce<Record<string, number>>((m, s) => ({ ...m, [s.taskId]: Math.max(m[s.taskId] ?? 0, s.startedAt) }), {}))
+    : invoke<Record<string, number>>('task_last_active')
+
 export const listClosedSessions = (taskId: string): Promise<Session[]> =>
   DEMO ? Promise.resolve([]) : invoke<Session[]>('list_closed_sessions', { taskId })
 

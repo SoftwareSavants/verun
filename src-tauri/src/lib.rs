@@ -437,6 +437,7 @@ pub fn run() {
             ipc::get_pending_approvals,
             ipc::list_sessions,
             ipc::list_closed_sessions,
+            ipc::task_last_active,
             ipc::reopen_session,
             ipc::list_outside_sessions,
             ipc::ensure_quick_project,
