@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { mcpServersNeedingAttention, mcpServerAction } from './mcpStatus'
+import { mcpServersNeedingAttention, mcpServerAction, mcpProblemGroups, mcpDisplayName } from './mcpStatus'
 
 describe('mcpStatus', () => {
   const servers = [
@@ -19,5 +19,18 @@ describe('mcpStatus', () => {
     expect(mcpServerAction('needs-auth')).toBe('authenticate')
     expect(mcpServerAction('failed')).toBe('reconnect')
     expect(mcpServerAction('connected')).toBe(null)
+  })
+
+  test('groups problems into failed and not signed in, leaving hidden ones out', () => {
+    const g = mcpProblemGroups(servers, new Set(['linear']))
+    expect(g.failed.map(s => s.name)).toEqual(['broken'])
+    expect(g.signIn).toEqual([])
+    expect(g.hidden).toBe(1)
+    expect(mcpProblemGroups(servers, new Set()).signIn.map(s => s.name)).toEqual(['linear'])
+  })
+
+  test('claude.ai connectors read by their own name', () => {
+    expect(mcpDisplayName('claude.ai Google Drive')).toEqual({ name: 'Google Drive', source: 'claude.ai' })
+    expect(mcpDisplayName('github')).toEqual({ name: 'github', source: undefined })
   })
 })

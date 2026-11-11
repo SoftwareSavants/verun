@@ -1,3 +1,4 @@
+import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import type { McpServerStatus } from '../types'
 import * as ipc from '../lib/ipc'
@@ -46,4 +47,28 @@ export function authenticateMcpServer(sessionId: string, name: string) {
 
 export function reconnectMcpServer(sessionId: string, name: string) {
   return runAction(sessionId, name, () => ipc.reconnectMcpServer(sessionId, name))
+}
+
+// Problem servers the user chose to stop seeing (by name, across sessions):
+// a Claude login brings a dozen claude.ai connectors most people never use.
+const HIDDEN_KEY = 'verun:mcpHidden'
+function loadHidden(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? '[]')
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+const [hidden, setHidden] = createSignal<Set<string>>(loadHidden())
+function saveHidden(next: Set<string>) {
+  setHidden(next)
+  try { localStorage.setItem(HIDDEN_KEY, JSON.stringify([...next])) } catch { /* blocked */ }
+}
+export const hiddenMcpServers = hidden
+export function hideMcpServers(names: string[]) {
+  saveHidden(new Set([...hidden(), ...names]))
+}
+export function unhideAllMcpServers() {
+  saveHidden(new Set())
 }

@@ -43,3 +43,16 @@ export function formatPct(p: number): string {
   }
   return `${Math.round(p)}%`
 }
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** "14:02" today, "yesterday 09:05", else "Nov 3, 09:05". */
+export function formatClock(ts: number, now = Date.now()): string {
+  const d = new Date(ts)
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const day = (t: Date) => new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime()
+  const days = Math.round((day(new Date(now)) - day(d)) / 86_400_000)
+  if (days === 0) return hm
+  if (days === 1) return `yesterday ${hm}`
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${hm}`
+}

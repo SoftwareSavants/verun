@@ -520,3 +520,29 @@ describe('agent blocks (subagents)', () => {
     expect(builder.blocks.length).toBe(other + 1)
   })
 })
+
+describe('turn times on turn-start blocks', () => {
+  test('a user block carries when it was sent and when its turn ended', () => {
+    const blocks = rebuildBlocks([
+      { kind: 'userMessage', text: 'one', timestamp: 100 } as OutputItem,
+      { kind: 'text', text: 'done' } as OutputItem,
+      { kind: 'turnEnd', status: 'completed', timestamp: 250 } as OutputItem,
+      { kind: 'userMessage', text: 'two', timestamp: 300 } as OutputItem,
+      { kind: 'text', text: 'working' } as OutputItem,
+    ])
+    expect(blocks[0]).toMatchObject({ type: 'user', at: 100, endedAt: 250 })
+    expect(blocks[2]).toMatchObject({ type: 'user', at: 300 })
+    expect((blocks[2] as { endedAt?: number }).endedAt).toBeUndefined()
+  })
+
+  test('a turn that ended in an error is marked failed on its prompt', () => {
+    const blocks = rebuildBlocks([
+      { kind: 'userMessage', text: 'one', timestamp: 100 } as OutputItem,
+      { kind: 'turnEnd', status: 'error', error: 'API overloaded', timestamp: 250 } as OutputItem,
+      { kind: 'userMessage', text: 'two', timestamp: 300 } as OutputItem,
+      { kind: 'turnEnd', status: 'completed', timestamp: 400 } as OutputItem,
+    ])
+    expect(blocks[0]).toMatchObject({ type: 'user', failed: true })
+    expect((blocks.find(b => b.type === 'user' && b.text === 'two') as { failed?: boolean }).failed).toBeFalsy()
+  })
+})
