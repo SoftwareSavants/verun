@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Verun keeps a log at ~/Library/Logs/com.softwaresavants.verun/verun.log (rotated at 5 MB); a terminal that exits early or with an error logs what it last showed
+
 ## 0.16.5 - 2026-11-11
 
 - Fixed chat sessions freezing for good: a tool call longer than 500 bytes with non-English text (such as Arabic) crashed the session's output reader, so Claude kept working unseen, subagents stalled, and new messages got no reply while the session showed "running". Long tool summaries now cut on a character boundary, and if a session's reader ever fails, Verun stops that session with an error you can retry instead of leaving it hanging
