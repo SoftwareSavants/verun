@@ -327,6 +327,19 @@ pub fn migrations() -> Vec<Migration> {
             ALTER TABLE sessions ADD COLUMN account_id TEXT;
         "#,
         kind: MigrationKind::Up,
+    },
+    Migration {
+        version: 27,
+        description: "track when each session was last active",
+        sql: r#"
+            ALTER TABLE sessions ADD COLUMN last_active_at INTEGER;
+            UPDATE sessions SET last_active_at = (
+                SELECT emitted_at FROM output_lines
+                WHERE output_lines.session_id = sessions.id
+                ORDER BY id DESC LIMIT 1
+            );
+        "#,
+        kind: MigrationKind::Up,
     }]
 }
 
@@ -702,6 +715,11 @@ pub enum DbWrite {
     UpdateSessionStatus {
         id: String,
         status: String,
+    },
+    /// A terminal turn started or ended (reported over hooks, not a status).
+    TouchSession {
+        id: String,
+        at: i64,
     },
     UpdateSessionModel {
         id: String,
@@ -1260,12 +1278,24 @@ pub(crate) async fn process_write(pool: &SqlitePool, write: DbWrite) -> Result<(
                 .execute(pool)
                 .await?;
         }
+        // Every status change is a turn starting, ending or being stopped:
+        // what "last active" means for ordering tasks by recency.
         DbWrite::UpdateSessionStatus { id, status } => {
-            sqlx::query("UPDATE sessions SET status = ? WHERE id = ?")
+            sqlx::query("UPDATE sessions SET status = ?, last_active_at = ? WHERE id = ?")
                 .bind(&status)
+                .bind(crate::task::epoch_ms())
                 .bind(&id)
                 .execute(pool)
                 .await?;
+        }
+        DbWrite::TouchSession { id, at } => {
+            sqlx::query(
+                "UPDATE sessions SET last_active_at = MAX(COALESCE(last_active_at, 0), ?) WHERE id = ?",
+            )
+            .bind(at)
+            .bind(&id)
+            .execute(pool)
+            .await?;
         }
         DbWrite::UpdateSessionModel { id, model } => {
             sqlx::query("UPDATE sessions SET model = ? WHERE id = ?")
@@ -1776,6 +1806,17 @@ pub async fn get_session(pool: &SqlitePool, id: &str) -> Result<Option<Session>,
         .fetch_optional(pool)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// When each task was last active: its most recently active session, falling
+/// back to when a session started for ones never touched since.
+pub async fn task_last_active(pool: &SqlitePool) -> Result<Vec<(String, i64)>, String> {
+    sqlx::query_as::<_, (String, i64)>(
+        "SELECT task_id, MAX(COALESCE(last_active_at, started_at)) FROM sessions GROUP BY task_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
 }
 
 pub async fn list_sessions_for_task(
@@ -2351,7 +2392,7 @@ pub(crate) mod tests {
     #[test]
     fn migration_versions_are_sequential() {
         let m = migrations();
-        assert_eq!(m.len(), 26);
+        assert_eq!(m.len(), 27);
         for (i, mig) in m.iter().enumerate() {
             assert_eq!(
                 mig.version,
@@ -3141,6 +3182,50 @@ pub(crate) mod tests {
 
         // Active sessions must be excluded
         assert!(closed.iter().all(|s| s.id != "s-active"));
+    }
+
+    #[tokio::test]
+    async fn a_task_is_last_active_when_any_of_its_sessions_last_changed() {
+        let pool = test_pool().await;
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        // Never touched: falls back to when the session started.
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        assert_eq!(task_last_active(&pool).await.unwrap(), vec![("t-001".to_string(), 3000)]);
+        // A status change (a turn starting or ending) is activity.
+        process_write(&pool, DbWrite::UpdateSessionStatus { id: "s-001".into(), status: "idle".into() })
+            .await
+            .unwrap();
+        let after_status = task_last_active(&pool).await.unwrap()[0].1;
+        assert!(after_status > 1_700_000_000_000, "stamped with the wall clock: {after_status}");
+        // A terminal turn reported over hooks, and it never moves backwards.
+        process_write(&pool, DbWrite::TouchSession { id: "s-001".into(), at: after_status + 5 }).await.unwrap();
+        process_write(&pool, DbWrite::TouchSession { id: "s-001".into(), at: 10 }).await.unwrap();
+        assert_eq!(task_last_active(&pool).await.unwrap()[0].1, after_status + 5);
+    }
+
+    #[tokio::test]
+    async fn existing_sessions_backfill_last_active_from_their_last_output() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let all = migrations();
+        let (before, after): (Vec<_>, Vec<_>) = all.into_iter().partition(|m| m.version < 27);
+        for m in before {
+            sqlx::query(m.sql).execute(&pool).await.unwrap();
+        }
+        process_write(&pool, DbWrite::InsertProject(make_project())).await.unwrap();
+        process_write(&pool, DbWrite::InsertTask(make_task("p-001"))).await.unwrap();
+        process_write(&pool, DbWrite::CreateSession(make_session("t-001"))).await.unwrap();
+        for at in [4000, 9000] {
+            sqlx::query("INSERT INTO output_lines (session_id, line, emitted_at) VALUES ('s-001', '{}', ?)")
+                .bind(at)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        for m in after {
+            sqlx::query(m.sql).execute(&pool).await.unwrap();
+        }
+        assert_eq!(task_last_active(&pool).await.unwrap(), vec![("t-001".to_string(), 9000)]);
     }
 
     #[tokio::test]

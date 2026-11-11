@@ -2,7 +2,7 @@ import { For, Show, createMemo, createSignal } from 'solid-js'
 import { Search, X } from 'lucide-solid'
 import { Select } from './Select'
 import { TaskStatusIcon } from './TaskStatusIcon'
-import type { BoardColumn, TaskStatusKind } from '../lib/taskBoard'
+import { BOARD_COLUMNS, type BoardColumn, type TaskStatusKind } from '../lib/taskBoard'
 
 export interface BoardCard {
   id: string
@@ -15,15 +15,7 @@ export interface BoardCard {
   kind: TaskStatusKind
   label: string
 }
-const columns: { id: BoardColumn; name: string; empty: string }[] = [
-  { id: 'attention', name: 'Needs you', empty: 'Nothing needs you.' },
-  { id: 'running', name: 'Running', empty: 'No agents working.' },
-  { id: 'idle', name: 'Idle', empty: 'Agents that finished their turn land here.' },
-  { id: 'review', name: 'In review', empty: 'Open pull requests land here.' },
-  { id: 'done', name: 'Done', empty: 'Merged work lands here.' },
-  { id: 'unknown', name: 'Status unavailable', empty: '' },
-  { id: 'archived', name: 'Archived', empty: 'No archived tasks.' },
-]
+const columns = BOARD_COLUMNS
 // Status text the column header doesn't already say.
 const showsLabel = (card: BoardCard) => card.column === 'attention' || card.kind === 'busy' || card.column === 'unknown'
 

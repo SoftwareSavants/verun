@@ -15,7 +15,15 @@ import {
   on,
   onMount,
   onCleanup,
+  type JSX,
 } from "solid-js";
+import type { Task } from "../types";
+import { useNow } from "../lib/subagents";
+import { formatAgo } from "../lib/format";
+import { recentTasks } from "../lib/recentTasks";
+import { lastActiveAt } from "../store/lastActive";
+import { sidebarView } from "../store/sidebarView";
+import { RecentTaskList } from "./RecentTaskList";
 import { refreshTaskGit } from "../store/git";
 import { syncWatchedWorktrees } from "../store/worktreeWatch";
 import { newTaskIds } from "../lib/taskDiff";
@@ -145,15 +153,24 @@ export const Sidebar: Component = () => {
   const unknownCount = createMemo(() => visibleProjects(projects).flatMap(p => activeTasksByProject()[p.id] || []).filter(t => taskStatus(t.id).kind === 'unknown').length);
   const floor = createMemo(() => ({ running: tasks.filter(t => !t.archived && taskStatus(t.id).kind === 'running').length }));
 
+  // Recent view: every task in scope in one list, newest first. The clock
+  // only moves ages and folding once a minute.
+  const now = useNow();
+  const minute = createMemo(() => Math.floor(now() / 60_000) * 60_000);
+  const recentView = createMemo(() => recentTasks(
+    visibleProjects(projects).flatMap(p => (activeTasksByProject()[p.id] || []).map(task => ({
+      id: task.id, task, column: taskStatus(task.id).column, lastActive: lastActiveAt(task),
+    }))),
+    minute(),
+  ));
+  // Tasks in the order the sidebar shows them; folded quiet tasks get no shortcut.
+  const orderedTasks = createMemo(() => sidebarView() === 'recent'
+    ? recentView().recent.map(r => r.task)
+    : visibleProjects(projects).flatMap(p => activeTasksByProject()[p.id] || []));
+
   const taskBindingById = createMemo(() => {
     const map: Record<string, number | null> = {}
-    let idx = 0
-    for (const p of visibleProjects(projects)) {
-      for (const t of activeTasksByProject()[p.id] || []) {
-        map[t.id] = idx < 9 ? idx : null
-        idx++
-      }
-    }
+    orderedTasks().forEach((t, idx) => { map[t.id] = idx < 9 ? idx : null })
     return map
   })
 
@@ -294,6 +311,114 @@ export const Sidebar: Component = () => {
 
   const closeMenu = () => setContextMenu(null);
 
+  // One task row, shared by the project and status views. `meta` adds the
+  // status view's project and age.
+  const renderTaskRow = (task: Task, meta?: () => JSX.Element) => {
+    const status = () => taskStatus(task.id);
+    const creating = () => isTaskCreating(task.id);
+    const archiving = () => isTaskArchiving(task.id);
+    const hasError = () => !!getTaskError(task.id);
+    const unread = () => isTaskUnread(task.id);
+    const disabled = () => creating() || archiving();
+    const windowed = () => isTaskWindowed(task.id);
+    const bindingIdx = () => taskBindingIndex(task.id);
+    const cloudPhase = () => getCloudTaskPhase(task.id);
+
+    const handleClick = () => focusOrSelectTask(task);
+
+    const isSelected = () => !windowed() && selectedTaskId() === task.id;
+    const tooltip = () => windowed() ? 'Open in separate window — click to focus'
+      : `${task.name || 'New task'}\n${task.branch} · ${hasError() ? 'Setup failed' : cloudPhase() ?? status().label}`;
+
+    return (
+      <div
+        class={clsx(
+          "group/task relative pl-2 pr-2 py-1.5 rounded-md flex items-center gap-2 cursor-pointer",
+          isSelected()
+            ? "bg-surface-2"
+            : "hover:bg-surface-2",
+          archiving() && "opacity-50 pointer-events-none",
+          windowed() && "opacity-60",
+        )}
+        style={isSelected() ? { 'box-shadow': 'inset 2px 0 0 rgb(var(--accent-rgb))' } : undefined}
+        onClick={handleClick}
+        onDblClick={() => { if (!disabled() && !hasError()) ipc.openTaskWindow(task.id, task.name || undefined) }}
+        onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
+        title={tooltip()}
+      >
+        <TaskStatusIcon kind={hasError() ? 'failed' : status().kind} label={hasError() ? 'Setup failed' : status().label} />
+        <div class={clsx("flex-1 min-w-0 flex items-center gap-1.5", bindingIdx() !== null && !meta && "pr-5")}>
+          <Show when={renamingTaskId() === task.id} fallback={
+            <span class={clsx(
+              "text-xs truncate",
+              unread() || isSelected() ? "text-text-primary font-medium" : "text-text-secondary"
+            )}>
+              {task.name || "New task"}
+            </span>
+          }>
+            <input
+              class="text-xs bg-bg-secondary text-text-primary border border-border-active rounded px-1 py-0 w-full outline-none"
+              value={task.name || ""}
+              ref={(el) => requestAnimationFrame(() => { el.focus(); el.select() })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const val = e.currentTarget.value.trim()
+                  if (val) updateTaskName(task.id, val)
+                  setRenamingTaskId(null)
+                } else if (e.key === 'Escape') {
+                  setRenamingTaskId(null)
+                }
+              }}
+              onBlur={(e) => {
+                const val = e.currentTarget.value.trim()
+                if (val) updateTaskName(task.id, val)
+                setRenamingTaskId(null)
+              }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </Show>
+          <Show when={task.parentTaskId}>
+            <GitBranch size={10} class="shrink-0 text-text-dim" aria-label="Forked task" />
+          </Show>
+          <Show when={isStartCommandRunning(task.id)}>
+            <span class="shrink-0 flex items-center gap-0.5 px-1 rounded text-[9px] leading-[14px] text-text-muted ring-1 ring-outline/10" title="App running">
+              <Play size={7} class="fill-current" />app
+            </span>
+          </Show>
+          <Show when={windowed()}>
+            <ExternalLink size={10} class="shrink-0 text-text-dim" aria-label="Open in separate window" />
+          </Show>
+          <Show when={cloudPhase()}>
+            <span class="text-[10px] text-text-dim truncate">{cloudPhase()}</span>
+          </Show>
+        </div>
+        <Show when={meta}>
+          <span class="shrink-0 min-w-0 max-w-[45%] pr-5 flex items-center gap-1.5 text-[10px] text-text-dim">{meta!()}</span>
+        </Show>
+        <Show when={hasError() && getCloudTaskPhase(task.id)}>
+          <button class="btn-ghost text-xs" onClick={e => { e.stopPropagation(); retryCloudTaskImport(task.id) }}>Retry</button>
+        </Show>
+        <Show when={!archiving() && !getCloudTaskPhase(task.id)}>
+          <Show when={bindingIdx() !== null}>
+            <kbd class="absolute right-2 top-1/2 -translate-y-1/2 -mt-px h-5 flex items-center leading-none text-[10px] font-mono text-text-dim pointer-events-none group-hover/task:opacity-0 transition-opacity">
+              {'\u2318'}{bindingIdx()! + 1}
+            </kbd>
+          </Show>
+          <button
+            class="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 text-text-dim hover:text-text-muted bg-surface-2"
+            onClick={(e) => {
+              e.stopPropagation();
+              setArchiveTaskTarget(task.id);
+            }}
+            title="Archive task"
+          >
+            <Archive size={12} />
+          </button>
+        </Show>
+      </div>
+    );
+  };
+
   return (
     <>
       {/* Context menu */}
@@ -397,6 +522,12 @@ export const Sidebar: Component = () => {
               </Show>
             </section>
           </Show>
+          <Show when={!projectQuery().trim() && sidebarView() === 'recent'}>
+            <RecentTaskList recent={recentView().recent} quiet={recentView().quiet} row={r => renderTaskRow(r.task, () => <>
+              <span class="truncate">{projectById(r.task.projectId)?.name}</span>
+              <span class="tabular-nums shrink-0">{formatAgo(r.lastActive, minute())}</span>
+            </>)} />
+          </Show>
           <Show when={projectQuery().trim()}>
             <p class="text-[10px] text-text-dim px-2 py-1">Results from all groups</p>
             <For each={visibleProjects(projects)}>{project => <button class="w-full px-2 py-2 text-left rounded-md hover:bg-surface-2" onClick={() => reveal(project.id)}>
@@ -405,7 +536,7 @@ export const Sidebar: Component = () => {
             </button>}</For>
             <Show when={visibleProjects(projects).length === 0}><p class="text-xs text-text-muted p-2">No matching projects.</p></Show>
           </Show>
-          <Show when={!projectQuery().trim()}>
+          <Show when={!projectQuery().trim() && sidebarView() === 'projects'}>
           <For each={sections()}>{section => <div>
             <Show when={groupState().scope === 'all' && groupState().groups.length > 0}>
               <GroupHeading id={section.id} name={section.name} count={section.projects.length} attention={attentionTasks(section.id).length} />
@@ -459,108 +590,7 @@ export const Sidebar: Component = () => {
                 <Show when={(activeTasksByProject()[project.id] || []).length > 0}>
                   <div class="mt-1 flex flex-col gap-0.5">
                     <For each={activeTasksByProject()[project.id] || []}>
-                      {(task) => {
-                        const status = () => taskStatus(task.id);
-                        const creating = () => isTaskCreating(task.id);
-                        const archiving = () => isTaskArchiving(task.id);
-                        const hasError = () => !!getTaskError(task.id);
-                        const unread = () => isTaskUnread(task.id);
-                        const disabled = () => creating() || archiving();
-                        const windowed = () => isTaskWindowed(task.id);
-                        const bindingIdx = () => taskBindingIndex(task.id);
-                        const cloudPhase = () => getCloudTaskPhase(task.id);
-
-                        const handleClick = () => focusOrSelectTask(task);
-
-                        const isSelected = () => !windowed() && selectedTaskId() === task.id;
-                        const tooltip = () => windowed() ? 'Open in separate window — click to focus'
-                          : `${task.name || 'New task'}\n${task.branch} · ${hasError() ? 'Setup failed' : cloudPhase() ?? status().label}`;
-
-                        return (
-                          <div
-                            class={clsx(
-                              "group/task relative pl-2 pr-2 py-1.5 rounded-md flex items-center gap-2 cursor-pointer",
-                              isSelected()
-                                ? "bg-surface-2"
-                                : "hover:bg-surface-2",
-                              archiving() && "opacity-50 pointer-events-none",
-                              windowed() && "opacity-60",
-                            )}
-                            style={isSelected() ? { 'box-shadow': 'inset 2px 0 0 rgb(var(--accent-rgb))' } : undefined}
-                            onClick={handleClick}
-                            onDblClick={() => { if (!disabled() && !hasError()) ipc.openTaskWindow(task.id, task.name || undefined) }}
-                            onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
-                            title={tooltip()}
-                          >
-                            <TaskStatusIcon kind={hasError() ? 'failed' : status().kind} label={hasError() ? 'Setup failed' : status().label} />
-                            <div class={clsx("flex-1 min-w-0 flex items-center gap-1.5", bindingIdx() !== null && "pr-5")}>
-                              <Show when={renamingTaskId() === task.id} fallback={
-                                <span class={clsx(
-                                  "text-xs truncate",
-                                  unread() || isSelected() ? "text-text-primary font-medium" : "text-text-secondary"
-                                )}>
-                                  {task.name || "New task"}
-                                </span>
-                              }>
-                                <input
-                                  class="text-xs bg-bg-secondary text-text-primary border border-border-active rounded px-1 py-0 w-full outline-none"
-                                  value={task.name || ""}
-                                  ref={(el) => requestAnimationFrame(() => { el.focus(); el.select() })}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      const val = e.currentTarget.value.trim()
-                                      if (val) updateTaskName(task.id, val)
-                                      setRenamingTaskId(null)
-                                    } else if (e.key === 'Escape') {
-                                      setRenamingTaskId(null)
-                                    }
-                                  }}
-                                  onBlur={(e) => {
-                                    const val = e.currentTarget.value.trim()
-                                    if (val) updateTaskName(task.id, val)
-                                    setRenamingTaskId(null)
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                />
-                              </Show>
-                              <Show when={task.parentTaskId}>
-                                <GitBranch size={10} class="shrink-0 text-text-dim" aria-label="Forked task" />
-                              </Show>
-                              <Show when={isStartCommandRunning(task.id)}>
-                                <span class="shrink-0 flex items-center gap-0.5 px-1 rounded text-[9px] leading-[14px] text-text-muted ring-1 ring-outline/10" title="App running">
-                                  <Play size={7} class="fill-current" />app
-                                </span>
-                              </Show>
-                              <Show when={windowed()}>
-                                <ExternalLink size={10} class="shrink-0 text-text-dim" aria-label="Open in separate window" />
-                              </Show>
-                              <Show when={cloudPhase()}>
-                                <span class="text-[10px] text-text-dim truncate">{cloudPhase()}</span>
-                              </Show>
-                            </div>
-                            <Show when={hasError() && getCloudTaskPhase(task.id)}>
-                              <button class="btn-ghost text-xs" onClick={e => { e.stopPropagation(); retryCloudTaskImport(task.id) }}>Retry</button>
-                            </Show>
-                            <Show when={!archiving() && !getCloudTaskPhase(task.id)}>
-                              <Show when={bindingIdx() !== null}>
-                                <kbd class="absolute right-2 top-1/2 -translate-y-1/2 -mt-px h-5 flex items-center leading-none text-[10px] font-mono text-text-dim pointer-events-none group-hover/task:opacity-0 transition-opacity">
-                                  {'\u2318'}{bindingIdx()! + 1}
-                                </kbd>
-                              </Show>
-                              <button
-                                class="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 text-text-dim hover:text-text-muted bg-surface-2"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setArchiveTaskTarget(task.id);
-                                }}
-                                title="Archive task"
-                              >
-                                <Archive size={12} />
-                              </button>
-                            </Show>
-                          </div>
-                        );
-                      }}
+                      {(task) => renderTaskRow(task)}
                     </For>
                   </div>
                 </Show>

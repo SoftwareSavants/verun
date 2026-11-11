@@ -1328,6 +1328,14 @@ pub async fn list_sessions(
     db::list_sessions_for_task(pool.inner(), &task_id).await
 }
 
+/// When each task was last active, for ordering tasks by recency.
+#[tauri::command]
+pub async fn task_last_active(
+    pool: State<'_, SqlitePool>,
+) -> Result<std::collections::HashMap<String, i64>, String> {
+    Ok(db::task_last_active(pool.inner()).await?.into_iter().collect())
+}
+
 #[tauri::command]
 pub async fn list_closed_sessions(
     pool: State<'_, SqlitePool>,
