@@ -1,8 +1,10 @@
-use crate::voice::catalog::{spec, ModelId, ModelSpec};
+use crate::voice::catalog::{spec, ModelFile, ModelId, ModelSpec};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 #[derive(Serialize)]
 pub struct ModelStatus {
@@ -27,11 +29,13 @@ fn total_bytes(spec: &ModelSpec) -> u64 {
     spec.files.iter().map(|f| f.bytes).sum()
 }
 
+fn file_installed(dir: &Path, file: &ModelFile) -> bool {
+    std::fs::metadata(dir.join(file.rel_path)).is_ok_and(|m| m.is_file() && m.len() == file.bytes)
+}
+
 /// Every file present with exactly the catalog size (no hashing here).
 pub fn is_installed_spec(dir: &Path, spec: &ModelSpec) -> bool {
-    spec.files.iter().all(|f| {
-        std::fs::metadata(dir.join(f.rel_path)).is_ok_and(|m| m.is_file() && m.len() == f.bytes)
-    })
+    spec.files.iter().all(|f| file_installed(dir, f))
 }
 
 pub fn is_installed(dir: &Path, id: ModelId) -> bool {
@@ -84,7 +88,7 @@ fn hex(bytes: &[u8]) -> String {
 /// `base` is the number of bytes already received for earlier files.
 fn download_file(
     dir: &Path,
-    file: &crate::voice::catalog::ModelFile,
+    file: &ModelFile,
     fetch: &dyn Fetch,
     base: u64,
     total: u64,
@@ -94,25 +98,36 @@ fn download_file(
     let part_path = dir.join(format!("{}.part", file.rel_path));
     let io = |e: std::io::Error| DownloadError::Io(e.to_string());
 
+    if let Some(parent) = part_path.parent() {
+        std::fs::create_dir_all(parent).map_err(io)?;
+    }
     remove_if_exists(&part_path).map_err(io)?;
     let mut out = std::fs::File::create(&part_path).map_err(io)?;
     let mut hasher = Sha256::new();
     let mut received: u64 = 0;
-    let mut write_err: Option<std::io::Error> = None;
+    // Set when the sink aborts the transfer (write failure or oversized body).
+    let mut abort: Option<DownloadError> = None;
 
     let fetched = fetch.get(file.url, &mut |chunk| {
-        out.write_all(chunk).inspect_err(|e| {
-            write_err = Some(std::io::Error::new(e.kind(), e.to_string()));
-        })?;
+        if let Err(e) = out.write_all(chunk) {
+            abort = Some(DownloadError::Io(e.to_string()));
+            return Err(e);
+        }
         hasher.update(chunk);
         received += chunk.len() as u64;
+        if received > file.bytes {
+            abort = Some(DownloadError::Checksum {
+                file: file.rel_path.to_string(),
+            });
+            return Err(std::io::Error::other("response larger than expected"));
+        }
         on_progress(base + received, total);
         Ok(())
     });
     drop(out);
 
-    let result = match (fetched, write_err) {
-        (_, Some(e)) => Err(DownloadError::Io(e.to_string())),
+    let result = match (fetched, abort) {
+        (_, Some(e)) => Err(e),
         (Err(e), None) => Err(DownloadError::Network(e.to_string())),
         (Ok(()), None) => {
             if received != file.bytes || hex(&hasher.finalize()) != file.sha256.to_lowercase() {
@@ -140,9 +155,7 @@ pub fn download_spec(
     let total = total_bytes(spec);
     let mut base = 0;
     for file in spec.files {
-        let installed = std::fs::metadata(dir.join(file.rel_path))
-            .is_ok_and(|m| m.is_file() && m.len() == file.bytes);
-        if installed {
+        if file_installed(dir, file) {
             base += file.bytes;
             on_progress(base, total);
             continue;
@@ -165,7 +178,55 @@ pub fn download(
 
 /// Real network fetch. Uses `reqwest::blocking`, which panics inside an async
 /// runtime: only call it from a blocking thread (e.g. `spawn_blocking`).
-pub struct HttpFetch;
+/// No bytes for this long aborts the download.
+const STALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+enum Msg {
+    Chunk(Vec<u8>),
+    Done(std::io::Result<()>),
+}
+
+/// Feeds chunks from the reader thread to `sink`; gives up when nothing arrives for `stall`.
+fn pump(
+    rx: &Receiver<Msg>,
+    stall: Duration,
+    sink: &mut dyn FnMut(&[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    loop {
+        match rx.recv_timeout(stall) {
+            Ok(Msg::Chunk(c)) => sink(&c)?,
+            Ok(Msg::Done(r)) => return r,
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "download stalled",
+                ))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(std::io::Error::other("download reader stopped"))
+            }
+        }
+    }
+}
+
+pub struct HttpFetch {
+    client: reqwest::blocking::Client,
+}
+
+impl HttpFetch {
+    pub fn new() -> Result<HttpFetch, String> {
+        // reqwest is built without a bundled crypto provider; install ring (idempotent, Err means one is set).
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10))
+            // The blocking client's default 30s total timeout would abort a large download.
+            .timeout(None)
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| e.to_string())?;
+        Ok(HttpFetch { client })
+    }
+}
 
 impl Fetch for HttpFetch {
     fn get(
@@ -174,26 +235,32 @@ impl Fetch for HttpFetch {
         sink: &mut dyn FnMut(&[u8]) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
         use std::io::Read;
-        let client = reqwest::blocking::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(10))
-            // The blocking client's default 30s total timeout would abort a large download.
-            .timeout(None)
-            .connect_timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(std::io::Error::other)?;
-        let mut resp = client
+        let mut resp = self
+            .client
             .get(url)
             .send()
             .and_then(|r| r.error_for_status())
             .map_err(std::io::Error::other)?;
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = resp.read(&mut buf)?;
-            if n == 0 {
-                return Ok(());
-            }
-            sink(&buf[..n])?;
-        }
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Msg>(4);
+        // Blocking reads happen on a helper thread so a stalled socket cannot hang the
+        // caller. On a stall the helper is left to die when the socket does; if `sink`
+        // fails, dropping `rx` makes its next send fail and it exits.
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; 64 * 1024];
+            let end = loop {
+                match resp.read(&mut buf) {
+                    Ok(0) => break Ok(()),
+                    Ok(n) => {
+                        if tx.send(Msg::Chunk(buf[..n].to_vec())).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => break Err(e),
+                }
+            };
+            let _ = tx.send(Msg::Done(end));
+        });
+        pump(&rx, STALL_TIMEOUT, sink)
     }
 }
 
@@ -267,6 +334,11 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn http_fetch_builds_without_a_network() {
+        assert!(HttpFetch::new().is_ok());
     }
 
     #[test]
@@ -414,5 +486,178 @@ mod tests {
     fn delete_of_a_missing_model_is_ok() {
         let tmp = tempfile::tempdir().unwrap();
         delete(tmp.path(), ModelId::WhisperTurbo).unwrap();
+    }
+
+    fn spec_of(files: &[(&'static str, &'static [u8])]) -> &'static ModelSpec {
+        let files: Vec<ModelFile> = files
+            .iter()
+            .map(|(rel, content)| ModelFile {
+                url: rel,
+                rel_path: rel,
+                sha256: Box::leak(hex(content).into_boxed_str()),
+                bytes: content.len() as u64,
+            })
+            .collect();
+        Box::leak(Box::new(ModelSpec {
+            id: ModelId::WhisperTurbo,
+            display_name: "Test",
+            files: Box::leak(files.into_boxed_slice()),
+        }))
+    }
+
+    /// Serves `bodies[url]`; records every requested url.
+    struct UrlFetch {
+        bodies: Vec<(&'static str, &'static [u8])>,
+        requested: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Fetch for UrlFetch {
+        fn get(
+            &self,
+            url: &str,
+            sink: &mut dyn FnMut(&[u8]) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            self.requested.lock().unwrap().push(url.to_string());
+            let body = self.bodies.iter().find(|(u, _)| *u == url).unwrap().1;
+            for chunk in body.chunks(5) {
+                sink(chunk)?;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sink_write_failure_is_io_and_leaves_no_part() {
+        let tmp = tempfile::tempdir().unwrap();
+        // "sub" is a regular file, so creating "sub/m.bin.part" must fail.
+        std::fs::write(tmp.path().join("sub"), b"x").unwrap();
+        let spec = spec_of(&[("sub/m.bin", CONTENT)]);
+        let r = download_spec(tmp.path(), spec, &ok_fetch(), &|_, _| {});
+        assert!(matches!(r, Err(DownloadError::Io(_))), "{r:?}");
+        assert_eq!(files_in(tmp.path()), vec!["sub".to_string()]);
+    }
+
+    #[test]
+    fn rel_path_with_a_subdirectory_is_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec = spec_of(&[("sub/m.bin", CONTENT)]);
+        download_spec(tmp.path(), spec, &ok_fetch(), &|_, _| {}).unwrap();
+        assert_eq!(std::fs::read(tmp.path().join("sub/m.bin")).unwrap(), CONTENT);
+        assert!(files_in(&tmp.path().join("sub")) == vec!["m.bin".to_string()]);
+    }
+
+    #[test]
+    fn second_file_continues_progress_after_a_skipped_first_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec = spec_of(&[("a.bin", b"first file"), ("b.bin", b"second file!")]);
+        std::fs::write(tmp.path().join("a.bin"), b"first file").unwrap();
+        let fetch = UrlFetch {
+            bodies: vec![("a.bin", b"first file"), ("b.bin", b"second file!")],
+            requested: Default::default(),
+        };
+        let calls = RefCell::new(Vec::new());
+        download_spec(tmp.path(), spec, &fetch, &|r, t| calls.borrow_mut().push((r, t))).unwrap();
+        let calls = calls.into_inner();
+        assert_eq!(*fetch.requested.lock().unwrap(), vec!["b.bin".to_string()]);
+        assert_eq!(calls[0], (10, 22));
+        assert!(calls.windows(2).all(|w| w[0].0 <= w[1].0));
+        assert_eq!(*calls.last().unwrap(), (22, 22));
+        assert!(is_installed_spec(tmp.path(), spec));
+    }
+
+    #[test]
+    fn oversized_response_is_rejected_early() {
+        struct Endless {
+            sent: std::sync::atomic::AtomicUsize,
+            sink_failed: std::sync::atomic::AtomicBool,
+        }
+        impl Fetch for Endless {
+            fn get(
+                &self,
+                _url: &str,
+                sink: &mut dyn FnMut(&[u8]) -> std::io::Result<()>,
+            ) -> std::io::Result<()> {
+                use std::sync::atomic::Ordering::SeqCst;
+                for _ in 0..1000 {
+                    if let Err(e) = sink(b"01234") {
+                        self.sink_failed.store(true, SeqCst);
+                        return Err(e);
+                    }
+                    self.sent.fetch_add(5, SeqCst);
+                }
+                Ok(())
+            }
+        }
+        use std::sync::atomic::Ordering::SeqCst;
+        let tmp = tempfile::tempdir().unwrap();
+        let fetch = Endless {
+            sent: Default::default(),
+            sink_failed: Default::default(),
+        };
+        let r = download_spec(tmp.path(), test_spec(), &fetch, &|_, _| {});
+        assert_eq!(
+            r,
+            Err(DownloadError::Checksum {
+                file: "m.bin".into()
+            })
+        );
+        assert!(fetch.sink_failed.load(SeqCst));
+        assert!(fetch.sent.load(SeqCst) <= CONTENT.len() + 5);
+        assert!(files_in(tmp.path()).is_empty());
+    }
+
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+
+    fn collect(
+        rx: &Receiver<Msg>,
+        stall: Duration,
+    ) -> (std::io::Result<()>, Vec<u8>) {
+        let mut got = Vec::new();
+        let r = pump(rx, stall, &mut |c| {
+            got.extend_from_slice(c);
+            Ok(())
+        });
+        (r, got)
+    }
+
+    #[test]
+    fn pump_passes_chunks_in_order_then_ok() {
+        let (tx, rx) = sync_channel(4);
+        tx.send(Msg::Chunk(b"ab".to_vec())).unwrap();
+        tx.send(Msg::Chunk(b"cd".to_vec())).unwrap();
+        tx.send(Msg::Done(Ok(()))).unwrap();
+        let (r, got) = collect(&rx, Duration::from_secs(5));
+        assert!(r.is_ok());
+        assert_eq!(got, b"abcd");
+    }
+
+    #[test]
+    fn pump_times_out_when_nothing_arrives() {
+        let (_tx, rx) = sync_channel::<Msg>(4);
+        let (r, _) = collect(&rx, Duration::from_millis(50));
+        let e = r.unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(e.to_string(), "download stalled");
+    }
+
+    #[test]
+    fn pump_returns_a_sink_error() {
+        let (tx, rx) = sync_channel(4);
+        tx.send(Msg::Chunk(b"ab".to_vec())).unwrap();
+        let r = pump(&rx, Duration::from_secs(5), &mut |_| {
+            Err(std::io::Error::other("disk full"))
+        });
+        assert_eq!(r.unwrap_err().to_string(), "disk full");
+    }
+
+    #[test]
+    fn pump_returns_a_reader_error() {
+        let (tx, rx) = sync_channel(4);
+        tx.send(Msg::Chunk(b"ab".to_vec())).unwrap();
+        tx.send(Msg::Done(Err(std::io::Error::other("reset")))).unwrap();
+        let (r, got) = collect(&rx, Duration::from_secs(5));
+        assert_eq!(r.unwrap_err().to_string(), "reset");
+        assert_eq!(got, b"ab");
     }
 }

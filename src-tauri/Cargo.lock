@@ -6845,6 +6845,7 @@ dependencies = [
  "portable-pty",
  "reqwest",
  "rstest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
