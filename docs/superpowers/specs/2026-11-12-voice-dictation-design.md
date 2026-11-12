@@ -72,18 +72,17 @@ rewrite.
 
 ### Engine and models
 
-- Engine: the `transcribe-rs` crate (MIT), in-process in Rust. It is what
-  Handy, a Tauri 2 dictation app, was built on. It puts Parakeet (ONNX
-  Runtime, CoreML flag) and Whisper (whisper.cpp, Metal) behind one interface.
-- Two models, picked by the chosen dictation language:
-  - **Parakeet TDT 0.6B v3** for its 25 European languages (English, French,
-    Spanish, Portuguese, Russian, German and others). More accurate than
-    Whisper on these, and smaller.
-  - **Whisper large-v3-turbo** for everything else (Arabic, Mandarin, Hindi,
-    Bengali, Urdu, Japanese), always with the language passed explicitly.
-- The routing is one table from language to model, so adding a model later
-  (for example Cohere Transcribe Arabic, or Parakeet Unified for English) is a
-  table change plus a catalog entry.
+- Engine: the `transcribe-rs` crate (MIT), in-process in Rust, running Whisper
+  through whisper.cpp with Metal. It is what Handy, a Tauri 2 dictation app,
+  was built on.
+- One model in v1: **Whisper large-v3-turbo** (q5_0, 574 MB) for every
+  language, always with the language passed explicitly. The user chose this
+  after the bake-off (see Phase 0 result): on their own voice it beat
+  Parakeet in French, matched it in English while dropping filler words, and
+  it uses about half the memory.
+- The routing is still one table from language to model, so adding a model
+  later (Parakeet as an optional faster English model, or Cohere Transcribe
+  Arabic) is a table change plus a catalog entry.
 - Models are not bundled. Each is downloaded on first need into the app data
   directory, with progress shown, a checksum verified, and a way to delete it
   in Settings.
@@ -198,9 +197,17 @@ on what it finds. It answers:
    action.
 6. Whether `transcribe-rs` handles clips up to 5 minutes, or needs chunking.
 
-If Parakeet through `transcribe-rs` is too slow or too heavy, the fallback is
-FluidAudio (Swift, CoreML on the Neural Engine) as a sidecar. That would be a
-change to this design and comes back to the user.
+### Result (2026-11-12, M2 Pro, 16 GB)
+
+- Whisper q5_0: 0.7 to 1.2 s from release to text for clips of 3 to 30 s;
+  a 5 minute clip in about 15 s. About 720 MB while loaded, about 90 MB
+  after unload. No chunking needed.
+- Parakeet v3: faster on short clips (0.1 to 0.5 s) but 1.2 to 1.6 GB while
+  loaded, less accurate on the user's French, and it keeps filler words.
+  Dropped for v1.
+- Whisper invents text from silence, so silent takes must be dropped first.
+- The user accepted the Arabic output and confirmed holding `Fn` triggers no
+  system popup. `Fn` stays the default hold key.
 
 ## Left to the builder
 

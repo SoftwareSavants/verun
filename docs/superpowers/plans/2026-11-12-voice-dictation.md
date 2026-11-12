@@ -6,7 +6,7 @@
 
 **Architecture:** A new Rust module `src-tauri/src/voice/` owns the hold-key listener, microphone capture, model files and transcription, and knows nothing about the chat UI. It emits state and transcript events addressed to a window label; the frontend store in that window pins the visible composer and inserts the text. Capture, key listening and the model sit behind traits so the state machine is tested without hardware.
 
-**Tech Stack:** Rust, Tauri v2, `transcribe-rs` (Parakeet TDT 0.6B v3 via ONNX Runtime, Whisper large-v3-turbo via whisper.cpp + Metal), `cpal` for capture, CoreGraphics event tap for the hold key, Solid.js + UnoCSS.
+**Tech Stack:** Rust, Tauri v2, `transcribe-rs` 0.3.12 with features `whisper-cpp` and `whisper-metal` (Whisper large-v3-turbo q5_0 via whisper.cpp + Metal; needs `cmake` to build), `cpal` for capture, CoreGraphics event tap for the hold key, Solid.js + UnoCSS.
 
 **Spec:** `docs/superpowers/specs/2026-11-12-voice-dictation-design.md`
 
@@ -22,7 +22,7 @@
 - Off by default: with `voice.enabled` unset, no event tap, no permission prompt, no model on disk, nothing loaded.
 - Audio is held in memory only, never written to disk, dropped after transcription.
 - Exact values: minimum hold `300 ms`; maximum take `5 min`; idle model unload `5 min`; default hold key `Fn`; capture format `16 kHz mono f32`.
-- Language to model: Parakeet v3 for `en fr es pt ru de`; Whisper turbo for `ar zh hi bn ur ja`, always with the language passed explicitly.
+- One model in v1: Whisper large-v3-turbo q5_0 for every language, always with the language passed explicitly. `model_for` stays a table so a second model can be added later. (Decided by the user after the Task 0 bake-off.)
 - No em dashes in copy, comments or docs. Use hyphens.
 - Main window and detached task window (`TaskWindowShell.tsx`) share one implementation.
 
@@ -46,6 +46,8 @@ Throwaway. No tests, not committed, lives outside the repo (for example `$TMPDIR
 - [ ] **Step 4:** Report to the user: accuracy per language (their judgement), time from release to text, memory loaded and after unload, chosen model files with URLs, sizes and SHA-256, `Fn` verdict, whether 5 minute clips need chunking.
 - [ ] **Step 5: Gate.** Continue only when: a 10 second clip returns in about 1 second on the user's machine, and the user accepts the Arabic output. If Arabic fails, repeat with Cohere Transcribe Arabic through the `onnx` feature. If speed or memory fails, stop: the FluidAudio sidecar fallback is a spec change and goes back to the user. If `Fn` cannot be used cleanly, the default hold key in Task 3 becomes Right Option.
 
+**Result (2026-11-12):** done. Whisper-only chosen by the user; `Fn` works as a hold key with no system popup; no chunking needed. Details in the plan workspace file `spike-findings.md`.
+
 Outputs consumed later: model URLs, sizes, checksums (Task 1), `Fn` verdict (Task 3), chunking need (Task 5).
 
 ---
@@ -66,7 +68,7 @@ impl Language { pub const ALL: [Language; 12]; pub fn code(self) -> &'static str
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ModelId { ParakeetV3, WhisperTurbo }
+pub enum ModelId { WhisperTurbo }
 
 pub struct ModelFile { pub url: &'static str, pub rel_path: &'static str, pub sha256: &'static str, pub bytes: u64 }
 pub struct ModelSpec { pub id: ModelId, pub display_name: &'static str, pub files: &'static [ModelFile] }
@@ -76,10 +78,9 @@ pub fn spec(id: ModelId) -> &'static ModelSpec;
 ```
 
 - [ ] **Step 1: Failing tests** in `catalog.rs`:
-  - `routes_european_languages_to_parakeet`: `model_for` of `En, Fr, Es, Pt, Ru, De` is `ParakeetV3`.
-  - `routes_other_languages_to_whisper`: `Ar, Zh, Hi, Bn, Ur, Ja` give `WhisperTurbo`.
+  - `routes_every_language_to_whisper`: `model_for(l) == ModelId::WhisperTurbo` for all of `Language::ALL`.
   - `every_language_round_trips_its_code`: `Language::from_code(l.code()) == Some(l)` for all of `ALL`.
-  - `catalog_entries_are_complete`: for both models, `files` is non-empty, every `url` starts with `https://`, every `sha256` is 64 hex chars, every `bytes > 0`.
+  - `catalog_entries_are_complete`: for every `ModelId`, `files` is non-empty, every `url` starts with `https://`, every `sha256` is 64 hex chars, every `bytes > 0`.
 - [ ] **Step 2:** `cargo test voice::catalog` fails to compile.
 - [ ] **Step 3:** Implement. File URLs, sizes and checksums come from Task 0.
 - [ ] **Step 4:** `cargo test voice::catalog` passes.
@@ -235,7 +236,7 @@ impl Capture for MicCapture { /* ... */ }
 
 **Files:**
 - Create: `src-tauri/src/voice/engine.rs`
-- Modify: `src-tauri/Cargo.toml` (`transcribe-rs` with the features proven in Task 0, under the macOS aarch64 target table)
+- Modify: `src-tauri/Cargo.toml` (`transcribe-rs = { version = "0.3.12", features = ["whisper-cpp", "whisper-metal"] }` under the macOS aarch64 target table)
 
 **Interfaces:**
 - Consumes: `Language`, `ModelId`, `model_for`, `VoiceError`.
@@ -265,14 +266,13 @@ pub fn clean_transcript(raw: &str) -> String; // trim, collapse whitespace
 ```
 
 - [ ] **Step 1: Failing tests** with a `FakeLoader` that counts loads:
-  - `loads_the_model_routed_for_the_language`: `Fr` loads `ParakeetV3`, `Ar` loads `WhisperTurbo`.
+  - `loads_the_model_routed_for_the_language`: `Fr` and `Ar` both load `WhisperTurbo`, into the directory passed to `Engine::new`.
   - `reuses_a_loaded_model`: two `En` takes, one load.
-  - `switching_language_family_swaps_the_model`: `En` then `Ar` leaves only `WhisperTurbo` loaded.
   - `unloads_after_five_idle_minutes`: false at +299 s, true at +300 s, `loaded()` is `None`.
   - `missing_model_files_give_model_missing`: loader error maps to `VoiceError::ModelMissing`.
   - `clean_transcript_trims_and_collapses`: `"  hello \n  world "` gives `"hello world"`; empty stays empty.
 - [ ] **Step 2:** `cargo test voice::engine` fails.
-- [ ] **Step 3:** Implement `Engine`, then `TranscribeRsLoader` using the model files and settings chosen in Task 0. Whisper always receives the language. Add chunking only if Task 0 showed 5 minute clips need it.
+- [ ] **Step 3:** Implement `Engine`, then `TranscribeRsLoader` using the model files and settings chosen in Task 0. Whisper always receives the language code. No chunking (Task 0: a 5 minute clip took 14-16 s with flat memory).
 - [ ] **Step 4:** Tests pass. Add one `#[ignore]` test `transcribes_a_real_clip` that runs a fixture WAV through the real loader when models are present; run it by hand once.
 - [ ] **Step 5:** Commit `voice: transcription engine with idle unload`.
 
