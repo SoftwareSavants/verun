@@ -150,6 +150,8 @@ pub async fn open_claude_terminal(
 
     let repo_path = db::get_repo_path_for_task(pool, &task.id).await?;
     let env_vars = crate::worktree::verun_env_vars(task.port_offset, &repo_path);
+    let trust_level =
+        crate::policy::TrustLevel::from_str(&db::get_trust_level(pool, &task.id).await?);
 
     let cwd_path = std::path::PathBuf::from(&task.worktree_path);
 
@@ -190,12 +192,8 @@ pub async fn open_claude_terminal(
                 crate::activity::ActivityBridge::unavailable(app.clone(), &session_id)
             }),
     );
-    let command = match &activity {
-        Some(bridge) if !bridge.settings.is_empty() => {
-            format!("{command} --settings {}", shell_quote(&bridge.settings))
-        }
-        _ => command,
-    };
+    let hook_settings = activity.as_ref().map_or("", |bridge| bridge.settings.as_str());
+    let command = with_permission_flags(&command, trust_level, hook_settings);
     // A new task in terminal view starts its conversation here, not in a chat process.
     let command = with_initial_prompt(&command, initial_prompt.as_deref());
     // Last, so the whole command - `--settings` included - runs inside the
@@ -675,14 +673,6 @@ pub(crate) enum ClaudeSpawnMode {
     Fresh,
 }
 
-/// Build the shell command passed to `sh -lic "<cmd>"` that spawns Claude.
-/// `exec` ensures the PTY dies with Claude instead of dropping to a login
-/// shell prompt when the user exits with Ctrl+D.
-///
-/// `model` is the value of `sessions.model` (alias like "sonnet"/"opus" or
-/// a full id like "claude-sonnet-4-6"); when set, threads it through as
-/// `--model <name>` so the TUI honors the per-session model the same way
-/// our SDK-backed UI mode does.
 /// Append the task's first prompt so `claude` starts the conversation itself.
 /// Must come last (after `--settings`), behind `--` so a leading `-` isn't a flag.
 pub(crate) fn with_initial_prompt(command: &str, prompt: Option<&str>) -> String {
@@ -692,6 +682,51 @@ pub(crate) fn with_initial_prompt(command: &str, prompt: Option<&str>) -> String
     }
 }
 
+/// Append the permission flags of the task's tier and the `--settings`
+/// (`hook_settings`: the activity hooks, `""` when there are none).
+///
+/// The Auto tier starts the TUI in Claude's auto mode with Verun's worktree
+/// guard, as a chat session of that tier runs, so switching views keeps the
+/// behaviour. Ask and Full auto add neither, leaving the TUI's own choice:
+/// the user's default mode, or the one a resumed session ended in. The CLI
+/// takes one `--settings`, so the guard joins the hooks in it.
+pub(crate) fn with_permission_flags(
+    command: &str,
+    trust: crate::policy::TrustLevel,
+    hook_settings: &str,
+) -> String {
+    use crate::agent::Agent;
+    if crate::agent::Claude.base_permission_mode(trust) != "auto" {
+        return if hook_settings.is_empty() {
+            command.to_string()
+        } else {
+            format!("{command} --settings {}", shell_quote(hook_settings))
+        };
+    }
+    let mut settings = serde_json::from_str::<Value>(hook_settings)
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    if let (Some(settings), Value::Object(guard)) = (
+        settings.as_object_mut(),
+        crate::agent::claude::worktree_guard_settings(),
+    ) {
+        settings.extend(guard);
+    }
+    format!(
+        "{command} --permission-mode 'auto' --settings {}",
+        shell_quote(&settings.to_string())
+    )
+}
+
+/// Build the shell command passed to `sh -lic "<cmd>"` that spawns Claude.
+/// `exec` ensures the PTY dies with Claude instead of dropping to a login
+/// shell prompt when the user exits with Ctrl+D.
+///
+/// `model` is the value of `sessions.model` (alias like "sonnet"/"opus" or
+/// a full id like "claude-sonnet-4-6"); when set, threads it through as
+/// `--model <name>` so the TUI honors the per-session model the same way
+/// our SDK-backed UI mode does.
 pub(crate) fn build_claude_shell_command(
     mode: ClaudeSpawnMode,
     id: &str,
@@ -1444,6 +1479,57 @@ mod tests {
             with_initial_prompt("exec claude --settings '{}'", Some("-fix it's $(x)")),
             "exec claude --settings '{}' -- '-fix it'\\''s $(x)'"
         );
+    }
+
+    /// The JSON a command passes to `--settings`, unquoted.
+    fn settings_of(command: &str) -> serde_json::Value {
+        let quoted = command
+            .split_once(" --settings '")
+            .unwrap_or_else(|| panic!("no --settings in {command}"))
+            .1;
+        let json = quoted
+            .strip_suffix('\'')
+            .unwrap_or_else(|| panic!("--settings is not last in {command}"))
+            .replace("'\\''", "'");
+        serde_json::from_str(&json).unwrap()
+    }
+
+    const HOOKS: &str = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"relay","timeout":1}]}]}}"#;
+
+    #[test]
+    fn an_auto_tier_terminal_runs_in_auto_mode_with_the_guard_beside_the_hooks() {
+        use crate::policy::TrustLevel;
+        let command = with_permission_flags("exec claude --resume 'r1'", TrustLevel::Normal, HOOKS);
+        assert!(
+            command.starts_with("exec claude --resume 'r1' --permission-mode 'auto' --settings '"),
+            "{command}"
+        );
+        let settings = settings_of(&command);
+        let guard = crate::agent::claude::worktree_guard_settings();
+        let hooks: serde_json::Value = serde_json::from_str(HOOKS).unwrap();
+        assert_eq!(settings["hooks"], hooks["hooks"]);
+        assert_eq!(settings["permissions"], guard["permissions"]);
+        assert_eq!(settings["autoMode"], guard["autoMode"]);
+    }
+
+    #[test]
+    fn an_auto_tier_terminal_without_hooks_still_gets_the_guard() {
+        let command = with_permission_flags("exec claude", crate::policy::TrustLevel::Normal, "");
+        assert!(command.starts_with("exec claude --permission-mode 'auto' --settings '"), "{command}");
+        assert_eq!(settings_of(&command), crate::agent::claude::worktree_guard_settings());
+    }
+
+    #[test]
+    fn ask_and_full_auto_terminals_add_no_mode_and_no_guard() {
+        use crate::policy::TrustLevel;
+        for trust in [TrustLevel::Supervised, TrustLevel::FullAuto] {
+            assert_eq!(
+                with_permission_flags("exec claude", trust, HOOKS),
+                format!("exec claude --settings {}", shell_quote(HOOKS)),
+                "{trust:?}"
+            );
+            assert_eq!(with_permission_flags("exec claude", trust, ""), "exec claude", "{trust:?}");
+        }
     }
 
     #[test]

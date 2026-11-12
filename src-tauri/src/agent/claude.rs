@@ -108,9 +108,19 @@ impl Agent for Claude {
             v.push("--chrome".into());
         }
 
-        if args.plan_mode {
-            v.extend(["--permission-mode".into(), "plan".into()]);
+        // Plan wins. Otherwise the Auto tier starts in Claude's own auto
+        // mode; Ask and Full auto keep the default mode, where Verun decides.
+        let mode = if args.plan_mode {
+            "plan"
+        } else {
+            self.base_permission_mode(args.trust_level)
+        };
+        if mode != "default" {
+            v.extend(["--permission-mode".into(), mode.into()]);
         }
+        // In every tier: a running session can be switched into auto mode,
+        // and `--settings` is only read at spawn.
+        v.extend(["--settings".into(), worktree_guard_settings().to_string()]);
         if let Some(rid) = args.resume_session_id {
             v.extend(["--resume".into(), rid.to_string()]);
         }
@@ -225,6 +235,15 @@ impl Agent for Claude {
             .map_err(|e| format!("serialize set_permission_mode: {e}"))?;
         payload.push(b'\n');
         Ok(payload)
+    }
+
+    fn base_permission_mode(&self, trust: crate::policy::TrustLevel) -> &'static str {
+        match trust {
+            crate::policy::TrustLevel::Normal => "auto",
+            crate::policy::TrustLevel::FullAuto | crate::policy::TrustLevel::Supervised => {
+                "default"
+            }
+        }
     }
 
     fn encode_stream_set_model(
@@ -380,6 +399,44 @@ fn plan_name(organization_type: &str) -> String {
     .to_string()
 }
 
+/// What auto mode's classifier is told about Verun's worktrees, for removals
+/// the ask rules don't catch.
+const WORKTREE_GUARD_RULE: &str = "Verun Worktrees [named+specifics — **must name:** the \
+worktree or `.verun` path to remove]: This session runs inside Verun, which creates the git \
+worktrees under `.verun/` and removes them itself when the user archives a task. Do not run \
+`git worktree remove` or `git worktree prune` in any form (`git -C <dir> worktree ...`, under \
+`sudo`, inside `sh -c` or a script), and do not delete, move or overwrite anything under a \
+`.verun` directory (`rm`, `find -delete`, `shutil.rmtree`, `rsync --delete`, ...): it breaks \
+Verun's tasks.";
+
+/// The inline `--settings` that keep Verun's worktree guard working in auto
+/// mode, where commands that look safe never reach Verun.
+///
+/// - `permissions.ask` rules match the forms Verun hard-blocks (`git worktree
+///   remove/prune`, `rm` on `.verun`, including `sudo`, `env`, `bash -c` and
+///   `git -C`) and are checked before the classifier, so those calls come to
+///   Verun's approval card even in auto mode. A `*` matches any text, spaces
+///   included: the leading one covers wrappers, the one after `git` options
+///   such as `-C <dir>`.
+/// - `autoMode.soft_deny` adds one classifier rule for other phrasings;
+///   `$defaults` keeps Claude's built-in rules.
+///
+/// Per process only: Verun never writes it to a settings file.
+pub(crate) fn worktree_guard_settings() -> serde_json::Value {
+    serde_json::json!({
+        "permissions": {
+            "ask": [
+                "Bash(*git *worktree remove*)",
+                "Bash(*git *worktree prune*)",
+                "Bash(*rm *.verun*)",
+            ],
+        },
+        "autoMode": {
+            "soft_deny": ["$defaults", WORKTREE_GUARD_RULE],
+        },
+    })
+}
+
 /// Whether the user turned on Claude in Chrome's "Enabled by default"
 /// (`claudeInChromeDefaultEnabled`) in the session's own Claude config. The
 /// CLI only honours it in interactive TUI sessions, so stream-json spawns must
@@ -434,6 +491,43 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    fn keys(v: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = v
+            .as_object()
+            .map(|o| o.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        keys.sort_unstable();
+        keys
+    }
+
+    #[test]
+    fn worktree_guard_asks_before_removing_worktrees_or_deleting_under_verun() {
+        let guard = worktree_guard_settings();
+        // Ask rules and one classifier rule, nothing that allows anything.
+        assert_eq!(keys(&guard), ["autoMode", "permissions"]);
+        assert_eq!(keys(&guard["permissions"]), ["ask"]);
+        // A leading `*` covers `sudo`, `env`, `bash -c '...'` and a path to
+        // the binary; the one after `git` covers `git -C <dir>` and other
+        // options before the subcommand.
+        assert_eq!(
+            guard["permissions"]["ask"],
+            serde_json::json!([
+                "Bash(*git *worktree remove*)",
+                "Bash(*git *worktree prune*)",
+                "Bash(*rm *.verun*)",
+            ])
+        );
+        assert_eq!(keys(&guard["autoMode"]), ["soft_deny"]);
+        let soft_deny = guard["autoMode"]["soft_deny"].as_array().unwrap();
+        // `$defaults` keeps Claude's built-in rules, with Verun's after them.
+        assert_eq!(soft_deny.len(), 2);
+        assert_eq!(soft_deny[0], "$defaults");
+        let rule = soft_deny[1].as_str().unwrap();
+        for words in ["Verun", "git worktree remove", "git worktree prune", ".verun"] {
+            assert!(rule.contains(words), "{words}: {rule}");
+        }
+    }
 
     #[test]
     fn chrome_default_enabled_reads_global_config_flag() {

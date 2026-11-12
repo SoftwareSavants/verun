@@ -79,11 +79,21 @@ function setPlanExpanded(v: boolean) {
 
 const [showUsagePopover, setShowUsagePopover] = createSignal(false)
 
-const TRUST_OPTIONS: ReadonlyArray<{ value: TrustLevel; title: string; subtitle: string }> = [
-  { value: 'supervised', title: 'Ask every time', subtitle: 'Approve each tool call' },
-  { value: 'normal', title: 'Auto-approve safe', subtitle: 'Edits in-repo, reads anything' },
-  { value: 'full_auto', title: 'Full auto', subtitle: 'No prompts. Anything goes.' },
-]
+type TrustOption = { value: TrustLevel; title: string; subtitle: string }
+
+/** The tool policies, for a session of `agentType`. Auto runs Claude in Claude
+ *  Code's own auto mode, and other agents in their own native modes. */
+function trustOptions(agentType: string | undefined): ReadonlyArray<TrustOption> {
+  return [
+    { value: 'supervised', title: 'Ask every time', subtitle: 'Approve each tool call' },
+    {
+      value: 'normal',
+      title: 'Auto',
+      subtitle: agentType === 'claude' ? "Claude's auto mode decides" : 'The agent decides, asks when unsure',
+    },
+    { value: 'full_auto', title: 'Full auto', subtitle: 'No prompts. Anything goes.' },
+  ]
+}
 
 function formatResetTime(epochSec: number): string {
   const d = new Date(epochSec * 1000)
@@ -463,6 +473,7 @@ export const MessageInput: Component<Props> = (props) => {
   const [filesLoaded, setFilesLoaded] = createSignal<string | null>(null)
   const [trustLevel, setTrustLevelLocal] = createSignal<TrustLevel>('normal')
   const [showTrustMenu, setShowTrustMenu] = createSignal(false)
+  const trustMenu = () => trustOptions(props.sessionId ? sessionById(props.sessionId)?.agentType : undefined)
 
   // Edit last message state — ArrowUp loads last user/queued message, Escape restores draft
   const [editingMessageIdx, setEditingMessageIdx] = createSignal<number | null>(null)
@@ -2484,7 +2495,7 @@ export const MessageInput: Component<Props> = (props) => {
                 )}
                 onClick={() => setShowTrustMenu(!showTrustMenu())}
                 disabled={!props.sessionId}
-                title={`Tool policy: ${TRUST_OPTIONS.find(o => o.value === trustLevel())?.title ?? trustLevel()}`}
+                title={`Tool policy: ${trustMenu().find(o => o.value === trustLevel())?.title ?? trustLevel()}`}
               >
                 {trustLevel() === 'full_auto' ? <ShieldCheck size={13} /> :
                  trustLevel() === 'supervised' ? <ShieldAlert size={13} /> :
@@ -2492,12 +2503,12 @@ export const MessageInput: Component<Props> = (props) => {
                 <span>
                   {trustLevel() === 'full_auto' ? 'Full auto' :
                    trustLevel() === 'supervised' ? 'Ask' :
-                   'Auto-safe'}
+                   'Auto'}
                 </span>
               </button>
               <Popover open={showTrustMenu()} onClose={() => setShowTrustMenu(false)} class="py-2 w-64 absolute bottom-full left-0 mb-1">
                 <div class="px-3 pb-2 text-[10px] uppercase tracking-wider text-text-muted font-medium">Tool policy</div>
-                <For each={TRUST_OPTIONS}>
+                <For each={trustMenu()}>
                   {(opt) => {
                     const selected = () => trustLevel() === opt.value
                     return (

@@ -1423,8 +1423,10 @@ pub async fn get_output_lines(
 
 #[tauri::command]
 pub async fn set_trust_level(
+    app: AppHandle,
     db_tx: State<'_, DbWriteTx>,
     active: State<'_, ActiveMap>,
+    pending_ctrl: State<'_, PendingControlResponses>,
     task_id: String,
     trust_level: String,
 ) -> Result<(), String> {
@@ -1452,12 +1454,30 @@ pub async fn set_trust_level(
 
     db_tx
         .send(db::DbWrite::SetTrustLevel {
-            task_id,
+            task_id: task_id.clone(),
             trust_level,
             updated_at: crate::task::epoch_ms(),
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
+
+    // And switch their permission mode (Claude: auto <-> default), so a turn
+    // already running follows the new tier. A session in Plan keeps it. In the
+    // background: the tier is set, and the menu needn't wait on the CLI.
+    let (active, pending_ctrl) = (active.inner().clone(), pending_ctrl.inner().clone());
+    tauri::async_runtime::spawn(async move {
+        let outcomes =
+            task::switch_live_permission_modes(&active, &pending_ctrl, &task_id, parsed).await;
+        for (session_id, outcome) in outcomes {
+            match outcome {
+                Ok(task::ModeApplied::Applied) => {}
+                Ok(task::ModeApplied::FellBack { reason }) => {
+                    crate::stream::emit_auto_mode_unavailable(&app, &session_id, Some(reason));
+                }
+                Err(e) => eprintln!("[verun][{session_id}] tier change: {e}"),
+            }
+        }
+    });
 
     Ok(())
 }

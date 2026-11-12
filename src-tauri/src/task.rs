@@ -547,9 +547,12 @@ pub struct ActiveProcess {
     /// Which agent owns this process. Lets `abort_message` /
     /// `close_session` / app-exit dispatch on the trait without a DB read.
     pub kind: AgentKind,
-    /// Last-applied permission mode ("default" or "plan"). Persistent-session
-    /// sends compare against this to decide whether to emit a
-    /// `set_permission_mode` control_request before the user message.
+    /// The permission mode Verun last asked this process for ("plan", or the
+    /// tier's base mode: "auto" or "default"). Persistent-session sends
+    /// compare against this to decide whether to emit a `set_permission_mode`
+    /// control_request before the user message. A refused "auto" stays here,
+    /// so later turns don't ask again (the CLI runs in "default" meanwhile)
+    /// until a model change might make it available.
     pub current_permission_mode: String,
     /// Last-applied model (`None` = CLI default). Persistent-session sends
     /// compare against this to decide whether to emit a `set_model`
@@ -1592,15 +1595,14 @@ pub async fn send_message(
     //   2. Busy             → error ("already processing").
     //   3. Effort changed   → kill and respawn (Claude CLI only accepts
     //                         `--effort` at spawn, no mid-session control).
-    //   4. Mode/model diff  → write `set_permission_mode` / `set_model`
+    //   4. Mode/model diff  → write `set_model` / `set_permission_mode`
     //                         control_request frames before the user message.
-    let want_permission_mode = if plan_mode { "plan" } else { "default" };
     if agent.persists_across_turns() {
         enum FastPath {
             Go {
                 stdin: Arc<TokioMutex<Option<ChildStdin>>>,
                 busy: Arc<AtomicBool>,
-                send_set_permission_mode: bool,
+                set_permission_mode: Option<&'static str>,
                 send_set_model: bool,
             },
             GoRpc {
@@ -1619,6 +1621,13 @@ pub async fn send_message(
             if let Some(mut entry) = active.get_mut(&session_id) {
                 let alive = matches!(entry.child.try_wait(), Ok(None));
                 let busy_now = entry.busy.load(Ordering::SeqCst);
+                // The live tier: `set_trust_level` updates it at once, the
+                // DB this turn's `trust_level` was read from a moment later.
+                let want_mode = want_permission_mode(
+                    &*agent,
+                    TrustLevel::from_atomic(&entry.trust_level),
+                    plan_mode,
+                );
                 if !alive {
                     drop(entry);
                     active.remove(&session_id);
@@ -1645,7 +1654,7 @@ pub async fn send_message(
                         "Codex RPC session missing current-turn slot — cannot reuse process"
                             .to_string()
                     })?;
-                    entry.current_permission_mode = want_permission_mode.to_string();
+                    entry.current_permission_mode = want_mode.to_string();
                     entry.current_model.clone_from(&model);
                     FastPath::GoRpc {
                         stdin: entry.stdin.clone(),
@@ -1656,20 +1665,22 @@ pub async fn send_message(
                         current_turn_id,
                     }
                 } else {
-                    let send_set_permission_mode =
-                        entry.current_permission_mode != want_permission_mode;
-                    let send_set_model = entry.current_model != model;
-                    if send_set_permission_mode {
-                        entry.current_permission_mode = want_permission_mode.to_string();
+                    let sync = mode_sync(
+                        &entry.current_permission_mode,
+                        want_mode,
+                        entry.current_model != model,
+                    );
+                    if sync.set_permission_mode {
+                        entry.current_permission_mode = want_mode.to_string();
                     }
-                    if send_set_model {
+                    if sync.set_model {
                         entry.current_model.clone_from(&model);
                     }
                     FastPath::Go {
                         stdin: entry.stdin.clone(),
                         busy: entry.busy.clone(),
-                        send_set_permission_mode,
-                        send_set_model,
+                        set_permission_mode: sync.set_permission_mode.then_some(want_mode),
+                        send_set_model: sync.set_model,
                     }
                 }
             } else {
@@ -1692,7 +1703,7 @@ pub async fn send_message(
             FastPath::Go {
                 stdin,
                 busy,
-                send_set_permission_mode,
+                set_permission_mode,
                 send_set_model,
             } => {
                 let prompt = agent_prompt(&message, &attachments);
@@ -1730,19 +1741,7 @@ pub async fn send_message(
                 // CLI applies mode/model changes only after ACKing. Writing the
                 // user message first (or before the ACK arrives) can race the
                 // switch, leaving Claude running the previous mode/model.
-                if send_set_permission_mode {
-                    let req_id = new_control_request_id();
-                    let bytes =
-                        agent.encode_stream_set_permission_mode(&req_id, want_permission_mode)?;
-                    await_control_ack(
-                        &stdin,
-                        &pending_control_responses,
-                        &req_id,
-                        &bytes,
-                        "set_permission_mode",
-                    )
-                    .await?;
-                }
+                // The model goes first: auto mode depends on it.
                 if send_set_model {
                     let req_id = new_control_request_id();
                     let bytes = agent.encode_stream_set_model(&req_id, model.as_deref())?;
@@ -1754,6 +1753,14 @@ pub async fn send_message(
                         "set_model",
                     )
                     .await?;
+                }
+                if let Some(mode) = set_permission_mode {
+                    let applied =
+                        apply_permission_mode(&stdin, &pending_control_responses, &*agent, mode)
+                            .await?;
+                    if let ModeApplied::FellBack { reason } = applied {
+                        stream::emit_auto_mode_unavailable(&app, &session_id, Some(reason));
+                    }
                 }
                 write_to_stdin(&stdin, &user_bytes).await?;
                 busy.store(true, Ordering::SeqCst);
@@ -2054,6 +2061,20 @@ async fn await_control_ack(
     bytes: &[u8],
     label: &str,
 ) -> Result<(), String> {
+    await_control_answer(stdin, pending, request_id, bytes, label)
+        .await?
+        .map_err(|e| format!("{label} failed: {e}"))
+}
+
+/// `await_control_ack`, keeping a refusal apart: the outer error is a request
+/// that never got an answer, the inner one the CLI's reason for refusing it.
+async fn await_control_answer(
+    stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
+    pending: &PendingControlResponses,
+    request_id: &str,
+    bytes: &[u8],
+    label: &str,
+) -> Result<Result<(), String>, String> {
     let (tx, rx) = oneshot::channel();
     pending.insert(request_id.to_string(), tx);
     if let Err(e) = write_to_stdin(stdin, bytes).await {
@@ -2061,14 +2082,152 @@ async fn await_control_ack(
         return Err(e);
     }
     match tokio::time::timeout(Duration::from_secs(5), rx).await {
-        Ok(Ok(Ok(_))) => Ok(()),
-        Ok(Ok(Err(e))) => Err(format!("{label} failed: {e}")),
+        Ok(Ok(Ok(_))) => Ok(Ok(())),
+        Ok(Ok(Err(e))) => Ok(Err(e)),
         Ok(Err(_)) => Err(format!("{label}: response channel dropped")),
         Err(_) => {
             pending.remove(request_id);
             Err(format!("{label}: CLI did not ACK within 5s"))
         }
     }
+}
+
+/// The CLI permission mode a turn runs in: Plan when it's on, else the base
+/// mode of the task's tier (Claude: `auto` for the Auto tier).
+pub(crate) fn want_permission_mode(
+    agent: &dyn crate::agent::Agent,
+    trust: TrustLevel,
+    plan_mode: bool,
+) -> &'static str {
+    if plan_mode {
+        "plan"
+    } else {
+        agent.base_permission_mode(trust)
+    }
+}
+
+/// What the fast path has to tell a live process before the next turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ModeSync {
+    pub set_model: bool,
+    pub set_permission_mode: bool,
+}
+
+/// Decide the control requests a live process needs before the next turn,
+/// from the mode Verun last asked it for and the one this turn wants.
+pub(crate) fn mode_sync(current_mode: &str, want_mode: &str, model_changed: bool) -> ModeSync {
+    ModeSync {
+        set_model: model_changed,
+        // Switching to a model auto mode doesn't support takes the CLI out of
+        // auto mode, and switching back doesn't put it back in.
+        set_permission_mode: current_mode != want_mode || (model_changed && want_mode == "auto"),
+    }
+}
+
+/// The mode a live process switches to when its task changes tier: the new
+/// tier's base mode, unless the process is in Plan, which stays on until the
+/// next turn without it (leaving Plan applies the tier then).
+pub(crate) fn tier_switch_mode<'a>(current_mode: &str, new_base: &'a str) -> Option<&'a str> {
+    (current_mode != "plan" && current_mode != new_base).then_some(new_base)
+}
+
+/// How a `set_permission_mode` went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModeApplied {
+    Applied,
+    /// The CLI refused auto mode (a model it doesn't support, an admin
+    /// setting), so the process runs in the default mode and Verun asks.
+    FellBack { reason: String },
+}
+
+/// Switch a live process to `mode` and wait for the CLI to apply it. A
+/// refused `auto` settles on the default mode instead: the CLI keeps the mode
+/// it was in, which could be Plan.
+async fn apply_permission_mode(
+    stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
+    pending: &PendingControlResponses,
+    agent: &dyn crate::agent::Agent,
+    mode: &str,
+) -> Result<ModeApplied, String> {
+    const LABEL: &str = "set_permission_mode";
+    let req_id = new_control_request_id();
+    let bytes = agent.encode_stream_set_permission_mode(&req_id, mode)?;
+    match await_control_answer(stdin, pending, &req_id, &bytes, LABEL).await? {
+        Ok(()) => Ok(ModeApplied::Applied),
+        Err(reason) if mode == "auto" => {
+            let req_id = new_control_request_id();
+            let bytes = agent.encode_stream_set_permission_mode(&req_id, "default")?;
+            await_control_ack(stdin, pending, &req_id, &bytes, LABEL).await?;
+            Ok(ModeApplied::FellBack { reason })
+        }
+        Err(reason) => Err(format!("{LABEL} failed: {reason}")),
+    }
+}
+
+/// Ask a live process to switch to `mode` without waiting for the CLI's
+/// answer. For the stream reader, which reads that answer itself and so
+/// can't wait on it. Returns the request id and the answer to come.
+pub(crate) async fn send_permission_mode(
+    stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
+    pending: &PendingControlResponses,
+    agent: &dyn crate::agent::Agent,
+    mode: &str,
+) -> Result<(String, oneshot::Receiver<Result<serde_json::Value, String>>), String> {
+    let req_id = new_control_request_id();
+    let bytes = agent.encode_stream_set_permission_mode(&req_id, mode)?;
+    let (tx, rx) = oneshot::channel();
+    pending.insert(req_id.clone(), tx);
+    if let Err(e) = write_to_stdin(stdin, &bytes).await {
+        pending.remove(&req_id);
+        return Err(e);
+    }
+    Ok((req_id, rx))
+}
+
+/// Record the mode Verun asked a live process for outside `send_message`.
+pub(crate) fn note_permission_mode(active: &ActiveMap, session_id: &str, mode: &str) {
+    if let Some(mut process) = active.get_mut(session_id) {
+        process.current_permission_mode = mode.to_string();
+    }
+}
+
+/// Move the live processes of `task_id` to the base mode of their new tier,
+/// so a tier change applies to a turn already running. Processes in Plan, and
+/// agents without permission modes, are left as they are. Returns how each
+/// switch went.
+pub(crate) async fn switch_live_permission_modes(
+    active: &ActiveMap,
+    pending: &PendingControlResponses,
+    task_id: &str,
+    trust: TrustLevel,
+) -> Vec<(String, Result<ModeApplied, String>)> {
+    // Decided under the map's locks, sent after: each send waits on the CLI.
+    let switches: Vec<_> = active
+        .iter()
+        .filter(|entry| entry.value().task_id == task_id)
+        .filter_map(|entry| {
+            let process = entry.value();
+            let agent = process.kind.implementation();
+            if !agent.persists_across_turns() || agent.uses_rpc() {
+                return None;
+            }
+            let mode = tier_switch_mode(
+                &process.current_permission_mode,
+                agent.base_permission_mode(trust),
+            )?;
+            Some((entry.key().clone(), process.kind, process.stdin.clone(), mode))
+        })
+        .collect();
+
+    let mut outcomes = Vec::with_capacity(switches.len());
+    for (session_id, kind, stdin, mode) in switches {
+        let outcome = apply_permission_mode(&stdin, pending, &*kind.implementation(), mode).await;
+        if outcome.is_ok() {
+            note_permission_mode(active, &session_id, mode);
+        }
+        outcomes.push((session_id, outcome));
+    }
+    outcomes
 }
 
 /// Write a payload to the session's stdin, keeping the fd open afterwards.
@@ -2687,7 +2846,8 @@ async fn spawn_rpc_session(
             busy: busy.clone(),
             trust_level: trust_level_atom,
             kind,
-            current_permission_mode: if plan_mode { "plan" } else { "default" }.to_string(),
+            current_permission_mode: want_permission_mode(&*agent, trust_level, plan_mode)
+                .to_string(),
             current_model: model.clone(),
             current_thinking_mode: thinking_mode,
             current_fast_mode: fast_mode,
@@ -3180,7 +3340,8 @@ pub async fn spawn_session_process(
             busy: busy.clone(),
             trust_level: trust_level_atom.clone(),
             kind,
-            current_permission_mode: if plan_mode { "plan" } else { "default" }.to_string(),
+            current_permission_mode: want_permission_mode(&*agent, trust_level, plan_mode)
+                .to_string(),
             current_model: model.clone(),
             current_thinking_mode: thinking_mode,
             current_fast_mode: fast_mode,
@@ -3202,7 +3363,6 @@ pub async fn spawn_session_process(
     let monitor_pending_meta = pending_approval_meta.clone();
     let monitor_pending_ctrl = pending_control_responses.clone();
     let monitor_wt = worktree_path.clone();
-    let monitor_repo = repo_path;
     let monitor_trust = trust_level_atom.clone();
     let monitor_agent = AgentKind::parse(&agent_type).implementation();
     let monitor_busy = busy.clone();
@@ -3222,7 +3382,6 @@ pub async fn spawn_session_process(
             monitor_pending_ctrl,
             monitor_db_tx.clone(),
             monitor_wt,
-            monitor_repo,
             monitor_trust,
             monitor_agent,
             claude_home,
@@ -5720,5 +5879,234 @@ mod tests {
 
         assert!(!active.contains_key("s1"));
         assert!(active.contains_key("s2"));
+    }
+
+    // -- Permission modes of a live Claude process --
+
+    #[test]
+    fn a_turn_with_nothing_changed_sends_no_control_request() {
+        assert_eq!(
+            mode_sync("auto", "auto", false),
+            ModeSync { set_model: false, set_permission_mode: false }
+        );
+    }
+
+    #[test]
+    fn leaving_plan_goes_back_to_the_tiers_base_mode() {
+        assert_eq!(
+            mode_sync("plan", "auto", false),
+            ModeSync { set_model: false, set_permission_mode: true }
+        );
+        assert_eq!(
+            mode_sync("plan", "default", false),
+            ModeSync { set_model: false, set_permission_mode: true }
+        );
+    }
+
+    #[test]
+    fn a_new_model_asks_for_auto_mode_again() {
+        // The CLI drops a session out of auto mode when it switches to a model
+        // auto mode doesn't support, and leaves it out after switching back.
+        assert_eq!(
+            mode_sync("auto", "auto", true),
+            ModeSync { set_model: true, set_permission_mode: true }
+        );
+        // The other modes outlive a model switch.
+        assert_eq!(
+            mode_sync("default", "default", true),
+            ModeSync { set_model: true, set_permission_mode: false }
+        );
+        assert_eq!(
+            mode_sync("plan", "plan", true),
+            ModeSync { set_model: true, set_permission_mode: false }
+        );
+    }
+
+    #[test]
+    fn a_tier_change_switches_a_live_process_unless_it_is_planning() {
+        assert_eq!(tier_switch_mode("auto", "default"), Some("default"));
+        assert_eq!(tier_switch_mode("default", "auto"), Some("auto"));
+        assert_eq!(tier_switch_mode("auto", "auto"), None);
+        // Plan stays on; leaving it applies the new tier.
+        assert_eq!(tier_switch_mode("plan", "auto"), None);
+        assert_eq!(tier_switch_mode("plan", "default"), None);
+    }
+
+    /// A stand-in for a live Claude: `cat` writes back every control request
+    /// it is sent, so a test can read each one and answer it as the CLI would.
+    fn echo_cli() -> (
+        Child,
+        Arc<TokioMutex<Option<ChildStdin>>>,
+        tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    ) {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin = Arc::new(TokioMutex::new(child.stdin.take()));
+        let lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        (child, stdin, lines)
+    }
+
+    /// Read the next control request the stand-in was sent, answer it, and
+    /// return its `request`.
+    async fn answer_next(
+        lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+        pending: &PendingControlResponses,
+        answer: Result<serde_json::Value, String>,
+    ) -> serde_json::Value {
+        let line = lines.next_line().await.unwrap().expect("a control request");
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let id = v["request_id"].as_str().unwrap();
+        let (_, tx) = pending.remove(id).expect("the request waits for an answer");
+        tx.send(answer).unwrap();
+        v["request"].clone()
+    }
+
+    const AUTO_REFUSED: &str =
+        "Cannot set permission mode to auto: auto mode unavailable for this model";
+
+    #[tokio::test]
+    async fn auto_mode_the_cli_refuses_falls_back_to_the_default_mode() {
+        let (_child, stdin, mut lines) = echo_cli();
+        let pending = new_pending_control_responses();
+        let claude = AgentKind::Claude.implementation();
+
+        let cli = async {
+            let first = answer_next(&mut lines, &pending, Err(AUTO_REFUSED.into())).await;
+            let second =
+                answer_next(&mut lines, &pending, Ok(serde_json::json!({"mode": "default"}))).await;
+            (first, second)
+        };
+        let (applied, (first, second)) = tokio::time::timeout(
+            Duration::from_secs(10),
+            async { tokio::join!(apply_permission_mode(&stdin, &pending, &*claude, "auto"), cli) },
+        )
+        .await
+        .expect("both requests answered");
+
+        assert_eq!(first["mode"], "auto");
+        // Left as it was, a process leaving Plan would go on planning.
+        assert_eq!(second["mode"], "default");
+        match applied {
+            Ok(ModeApplied::FellBack { reason }) => assert!(reason.contains(AUTO_REFUSED), "{reason}"),
+            other => panic!("expected a fall back, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_mode_the_cli_accepts_is_applied() {
+        let (_child, stdin, mut lines) = echo_cli();
+        let pending = new_pending_control_responses();
+        let claude = AgentKind::Claude.implementation();
+
+        let cli = answer_next(&mut lines, &pending, Ok(serde_json::json!({"mode": "auto"})));
+        let (applied, request) = tokio::join!(
+            apply_permission_mode(&stdin, &pending, &*claude, "auto"),
+            cli
+        );
+
+        assert_eq!(request["subtype"], "set_permission_mode");
+        assert_eq!(request["mode"], "auto");
+        assert_eq!(applied, Ok(ModeApplied::Applied));
+    }
+
+    #[tokio::test]
+    async fn another_mode_the_cli_refuses_is_an_error() {
+        let (_child, stdin, mut lines) = echo_cli();
+        let pending = new_pending_control_responses();
+        let claude = AgentKind::Claude.implementation();
+
+        let cli = answer_next(&mut lines, &pending, Err("no".into()));
+        let (applied, _) = tokio::join!(
+            apply_permission_mode(&stdin, &pending, &*claude, "plan"),
+            cli
+        );
+
+        assert!(applied.is_err(), "{applied:?}");
+    }
+
+    /// A live Claude process of `task_id` in `mode`, talking to `stdin`.
+    fn live_claude(task_id: &str, stdin: Arc<TokioMutex<Option<ChildStdin>>>, mode: &str) -> ActiveProcess {
+        let mut process = live_process(task_id);
+        process.stdin = stdin;
+        process.current_permission_mode = mode.to_string();
+        process
+    }
+
+    #[tokio::test]
+    async fn a_tier_change_moves_the_tasks_live_processes_to_its_mode() {
+        let (_child, stdin, mut lines) = echo_cli();
+        let pending = new_pending_control_responses();
+        let active = new_active_map();
+        active.insert("s1".to_string(), live_claude("t1", stdin, "auto"));
+
+        let cli = answer_next(&mut lines, &pending, Ok(serde_json::json!({"mode": "default"})));
+        let (outcomes, request) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                switch_live_permission_modes(&active, &pending, "t1", TrustLevel::Supervised),
+                cli
+            )
+        })
+        .await
+        .expect("the switch was sent");
+
+        assert_eq!(request["mode"], "default");
+        assert_eq!(outcomes, vec![("s1".to_string(), Ok(ModeApplied::Applied))]);
+        assert_eq!(active.get("s1").unwrap().current_permission_mode, "default");
+    }
+
+    #[tokio::test]
+    async fn a_tier_change_leaves_planning_and_other_tasks_processes_alone() {
+        let pending = new_pending_control_responses();
+        let active = new_active_map();
+        active.insert("planning".to_string(), {
+            let mut p = live_process("t1");
+            p.current_permission_mode = "plan".to_string();
+            p
+        });
+        active.insert("other-task".to_string(), {
+            let mut p = live_process("t2");
+            p.current_permission_mode = "default".to_string();
+            p
+        });
+
+        let outcomes =
+            switch_live_permission_modes(&active, &pending, "t1", TrustLevel::Normal).await;
+
+        assert!(outcomes.is_empty(), "{outcomes:?}");
+        assert_eq!(active.get("planning").unwrap().current_permission_mode, "plan");
+        assert_eq!(active.get("other-task").unwrap().current_permission_mode, "default");
+    }
+
+    #[tokio::test]
+    async fn a_tier_change_to_auto_the_cli_refuses_reports_the_fall_back() {
+        let (_child, stdin, mut lines) = echo_cli();
+        let pending = new_pending_control_responses();
+        let active = new_active_map();
+        active.insert("s1".to_string(), live_claude("t1", stdin, "default"));
+
+        let cli = async {
+            answer_next(&mut lines, &pending, Err(AUTO_REFUSED.into())).await;
+            answer_next(&mut lines, &pending, Ok(serde_json::json!({"mode": "default"}))).await;
+        };
+        let (outcomes, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                switch_live_permission_modes(&active, &pending, "t1", TrustLevel::Normal),
+                cli
+            )
+        })
+        .await
+        .expect("both requests answered");
+
+        assert!(
+            matches!(outcomes.as_slice(), [(sid, Ok(ModeApplied::FellBack { .. }))] if sid == "s1"),
+            "{outcomes:?}"
+        );
+        // Asked for and refused: the next turn doesn't ask again until the
+        // model changes.
+        assert_eq!(active.get("s1").unwrap().current_permission_mode, "auto");
     }
 }
