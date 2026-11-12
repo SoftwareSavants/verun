@@ -5,6 +5,7 @@ pub mod capture;
 pub mod catalog;
 pub mod engine;
 pub mod hold;
+pub mod models;
 #[cfg(target_os = "macos")]
 pub mod hotkey_macos;
 pub mod session;

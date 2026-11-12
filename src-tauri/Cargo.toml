@@ -47,6 +47,7 @@ notify = "7"
 notify-debouncer-mini = "0.5"
 yash-syntax = "0.19"
 sha2 = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider"] }
 base64 = "0.22"
 tempfile = "3"
 vt100 = "0.15"
