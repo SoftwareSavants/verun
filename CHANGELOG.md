@@ -5,7 +5,7 @@
 - The "Auto-safe" tool policy is now "Auto": Claude chat sessions run in Claude Code's own auto mode instead of Verun's rules, and whatever Claude still asks about comes to you. Switching tiers mid-turn, leaving Plan, and approving a plan put a session in its tier's mode (auto for Auto, default for Ask and Full auto)
 - Verun's worktree guard holds in auto mode: per-session ask rules bring `git worktree remove`/`prune` and deletes under `.verun` (with `sudo`, `bash -c` or `git -C` too) to the approval card, and an auto mode rule covers other phrasings. Nothing is written to your Claude settings
 - When Claude's auto mode isn't available for a session's model or account, Verun says so once and asks instead
-- The terminal view of an Auto session starts Claude in auto mode with the same guard
+- The terminal view of an Auto session starts Claude in auto mode with the same guard, and an Ask session's terminal starts in Claude's default mode so it asks (Claude would otherwise start new terminals in auto mode)
 
 ## 0.16.6 - 2026-11-12
 

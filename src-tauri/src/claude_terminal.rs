@@ -687,9 +687,10 @@ pub(crate) fn with_initial_prompt(command: &str, prompt: Option<&str>) -> String
 ///
 /// The Auto tier starts the TUI in Claude's auto mode with Verun's worktree
 /// guard, as a chat session of that tier runs, so switching views keeps the
-/// behaviour. Ask and Full auto add neither, leaving the TUI's own choice:
-/// the user's default mode, or the one a resumed session ended in. The CLI
-/// takes one `--settings`, so the guard joins the hooks in it.
+/// behaviour. Ask starts it in the default mode: interactive Claude would
+/// otherwise start new sessions in auto mode and resume in whatever mode a
+/// session ended in, and not ask. Full auto keeps the TUI's own choice. The
+/// CLI takes one `--settings`, so the guard joins the hooks in it.
 pub(crate) fn with_permission_flags(
     command: &str,
     trust: crate::policy::TrustLevel,
@@ -697,8 +698,13 @@ pub(crate) fn with_permission_flags(
 ) -> String {
     use crate::agent::Agent;
     if crate::agent::Claude.base_permission_mode(trust) != "auto" {
-        return if hook_settings.is_empty() {
+        let command = if trust == crate::policy::TrustLevel::Supervised {
+            format!("{command} --permission-mode 'default'")
+        } else {
             command.to_string()
+        };
+        return if hook_settings.is_empty() {
+            command
         } else {
             format!("{command} --settings {}", shell_quote(hook_settings))
         };
@@ -1520,16 +1526,28 @@ mod tests {
     }
 
     #[test]
-    fn ask_and_full_auto_terminals_add_no_mode_and_no_guard() {
+    fn an_ask_tier_terminal_asks_even_where_claude_would_start_in_auto_mode() {
         use crate::policy::TrustLevel;
-        for trust in [TrustLevel::Supervised, TrustLevel::FullAuto] {
-            assert_eq!(
-                with_permission_flags("exec claude", trust, HOOKS),
-                format!("exec claude --settings {}", shell_quote(HOOKS)),
-                "{trust:?}"
-            );
-            assert_eq!(with_permission_flags("exec claude", trust, ""), "exec claude", "{trust:?}");
-        }
+        // Interactive Claude starts new sessions in auto mode by default and
+        // resumes in the mode a session ended in, so Ask has to say so.
+        assert_eq!(
+            with_permission_flags("exec claude", TrustLevel::Supervised, HOOKS),
+            format!("exec claude --permission-mode 'default' --settings {}", shell_quote(HOOKS))
+        );
+        assert_eq!(
+            with_permission_flags("exec claude", TrustLevel::Supervised, ""),
+            "exec claude --permission-mode 'default'"
+        );
+    }
+
+    #[test]
+    fn a_full_auto_terminal_keeps_claudes_own_mode_and_no_guard() {
+        use crate::policy::TrustLevel;
+        assert_eq!(
+            with_permission_flags("exec claude", TrustLevel::FullAuto, HOOKS),
+            format!("exec claude --settings {}", shell_quote(HOOKS))
+        );
+        assert_eq!(with_permission_flags("exec claude", TrustLevel::FullAuto, ""), "exec claude");
     }
 
     #[test]
