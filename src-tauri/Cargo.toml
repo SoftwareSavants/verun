@@ -67,6 +67,8 @@ keyring = { version = "3.6", features = ["apple-native"] }
 # Voice dictation: global hold-key listener (CGEventTap on its own run loop).
 core-graphics = "0.25.0"
 core-foundation = "0.10.1"
+# Voice dictation: microphone capture.
+cpal = "0.15"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 tauri-plugin-notifications = { version = "0.4", default-features = false, features = ["notify-rust"] }

@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Verun allows terminal applications such as Claude Code to use your microphone for voice input.</string>
+    <string>Verun uses your microphone for voice dictation and for terminal applications such as Claude Code.</string>
 </dict>
 </plist>

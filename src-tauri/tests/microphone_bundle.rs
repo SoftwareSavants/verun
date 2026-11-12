@@ -29,3 +29,16 @@ fn macos_bundle_allows_terminal_microphone_access() {
         Some(true)
     );
 }
+
+#[test]
+fn microphone_usage_text_mentions_dictation() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let info = plist::Value::from_file(root.join("Info.plist")).unwrap();
+    let description = info
+        .as_dictionary()
+        .unwrap()
+        .get("NSMicrophoneUsageDescription")
+        .and_then(plist::Value::as_string)
+        .unwrap();
+    assert!(description.contains("dictation"));
+}
