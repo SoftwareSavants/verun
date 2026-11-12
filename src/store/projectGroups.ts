@@ -55,9 +55,12 @@ export function toggleGroup(id: string) {
   const s = groupState()
   save({ ...s, collapsed: s.collapsed.includes(id) ? s.collapsed.filter(g => g !== id) : [...s.collapsed, id] })
 }
+// All projects already shows every group, so revealing only expands the
+// project's group; a narrower scope switches to the project's group.
 export function revealProject(id: string) {
+  const s = groupState()
   const group = projectGroup(id)
-  save({ ...groupState(), scope: group, collapsed: groupState().collapsed.filter(g => g !== group) })
+  save({ ...s, scope: s.scope === 'all' ? 'all' : group, collapsed: s.collapsed.filter(g => g !== group) })
   setProjectQuery('')
 }
 export function projectSections<T extends { id: string; name: string }>(projects: T[]) {

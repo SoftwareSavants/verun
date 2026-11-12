@@ -4,9 +4,9 @@ import { sessions, pendingApprovals } from './sessions'
 import { tasks, taskById, isTaskCreating, isTaskArchiving, getTaskError } from './tasks'
 import { taskGit } from './git'
 import { effectiveActivity } from '../lib/sessionActivity'
-import { agentsWorking, taskBoardState, type TaskStatus } from '../lib/taskBoard'
+import { agentsWorking, taskBoardState, type BackgroundWork, type TaskStatus } from '../lib/taskBoard'
 
-interface SessionRollup { running: boolean; background: boolean; error: boolean; approval: boolean; unknown: boolean }
+interface SessionRollup { running: boolean; background: boolean; backgroundWork: BackgroundWork; error: boolean; approval: boolean; unknown: boolean }
 
 // Roll every open session up to its task once, shared by every caller.
 // Waiting and running count from any session. A failure counts only from the
@@ -17,10 +17,16 @@ const sessionRollup = createRoot(() => createMemo(() => {
   const newest = new Map<string, { startedAt: number; error: boolean }>()
   for (const session of sessions) {
     if (session.closedAt) continue
-    const state = result.get(session.taskId) ?? { running: false, background: false, error: false, approval: false, unknown: false }
-    const observed = effectiveActivity(session.status, (pendingApprovals[session.id]?.length ?? 0) > 0, sessionActivity[session.id]?.phase, sessionActivity[session.id]?.background)
+    const state = result.get(session.taskId) ?? { running: false, background: false, backgroundWork: { agents: 0, shells: 0, total: 0 }, error: false, approval: false, unknown: false }
+    const activity = sessionActivity[session.id]
+    const observed = effectiveActivity(session.status, (pendingApprovals[session.id]?.length ?? 0) > 0, activity?.phase, activity?.background)
     state.running ||= observed.running
     state.background ||= observed.background
+    if (observed.background && activity?.background) {
+      state.backgroundWork.agents += activity.backgroundAgents ?? 0
+      state.backgroundWork.shells += activity.backgroundShells ?? 0
+      state.backgroundWork.total += activity.background
+    }
     state.approval ||= observed.approval
     state.unknown ||= observed.unknown
     const latest = newest.get(session.taskId)

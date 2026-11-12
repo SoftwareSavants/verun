@@ -385,6 +385,8 @@ pub fn spawn_pty(
         // codepoint across boundaries; without this, `from_utf8_lossy` would
         // emit U+FFFD on each side of the split and corrupt the stream.
         let mut pending: Vec<u8> = Vec::new();
+        let started = std::time::Instant::now();
+        let mut tail = String::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -394,6 +396,7 @@ pub fn spawn_pty(
                     if data.is_empty() {
                         continue;
                     }
+                    crate::logfile::keep_tail(&mut tail, &data, crate::logfile::EXIT_TAIL_BYTES);
                     if !output.push(&data) {
                         break;
                     }
@@ -412,6 +415,10 @@ pub fn spawn_pty(
         } else {
             None
         };
+        eprintln!(
+            "{}",
+            crate::logfile::exit_report(&tid, exit_code, started.elapsed().as_millis(), &tail)
+        );
         output.finish(exit_code);
         crate::activity::terminal_exit(&exit_app, &tid, exit_code);
     });

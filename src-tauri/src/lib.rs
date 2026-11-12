@@ -21,6 +21,7 @@ mod github_remote;
 mod handoff;
 mod ipc;
 mod keep_awake;
+mod logfile;
 mod lsp;
 mod markdown_skills;
 #[cfg(unix)]
@@ -106,6 +107,10 @@ pub fn run() {
         .manage(bts_scaffold::new_bts_scaffold_map())
         .manage(WindowTaskMap::new())
         .setup(|app| {
+            // First, so everything after it is in the log.
+            if let Ok(dir) = app.path().app_log_dir() {
+                logfile::install(&dir);
+            }
             // Capture the user's full PATH from their interactive shell and
             // detect installed agents. Ordering matters: GUI apps on macOS
             // inherit a stripped PATH, so agent detection must run *after*
