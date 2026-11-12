@@ -3,7 +3,10 @@ import { createStore, reconcile, unwrap } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { OutputItem, SessionStatus, AttachmentRef, AgentProgress } from '../types'
-import { AGENT_TOOLS, isTaskFinished, mergeAgentProgress } from '../lib/subagents'
+import { AGENT_TOOLS, agentState, isTaskFinished, mergeAgentProgress } from '../lib/subagents'
+import { describeStep } from '../lib/steps'
+import { planFolds, type Directive, type FoldBlock, type FoldRow } from '../lib/workLog'
+import { StepDiffCount, StepGroupRow, StepIcon, StepLabel, TurnFoldRow } from './Steps'
 import { collapseInPlace } from '../lib/collapseInPlace'
 import { isMac, modPressed } from '../lib/platform'
 import { openFile } from '../store/editorView'
@@ -29,6 +32,7 @@ import { isUsageLimit } from '../lib/usageLimit'
 import { sessionById, loadOlderOutputLines, hasMoreOutputLines, sendMessage, pendingApprovals } from '../store/sessions'
 import { planModeForSession, thinkingModeForSession, fastModeForSession } from '../store/sessionContext'
 import { taskById } from '../store/tasks'
+import { projectById } from '../store/projects'
 import { formatCost, formatTokens } from '../lib/format'
 import { failureText } from '../lib/accountErrors'
 import { accountChoicesFor, inheritedSelection, otherAccountChoices } from '../lib/accounts'
@@ -81,12 +85,16 @@ function frameThrottled(source: () => string, live: () => boolean): () => string
 
 /** An assistant message as markdown. Finished messages hit the render cache;
  *  the streaming one re-parses at most once per frame. */
-const AssistantMarkdown: Component<{ text: string; streaming?: boolean; worktreePath?: string }> = (props) => {
+/** `quiet`: text written on the way (narration), set apart from a reply. */
+const AssistantMarkdown: Component<{ text: string; streaming?: boolean; worktreePath?: string; quiet?: boolean }> = (props) => {
   const text = frameThrottled(() => props.text, () => !!props.streaming)
   const html = createMemo(() => renderMarkdown(text(), props.worktreePath))
   return (
     <div
-      class="text-sm text-text-primary leading-relaxed prose-verun select-text break-words overflow-hidden"
+      class={clsx(
+        'leading-relaxed prose-verun select-text break-words overflow-hidden',
+        props.quiet ? 'text-[13px] text-text-secondary' : 'text-sm text-text-primary',
+      )}
       innerHTML={html()}
     />
   )
@@ -911,28 +919,26 @@ const ThinkingBlockView: Component<{ id: string; text: string }> = (props) => {
   let head: HTMLDivElement | undefined
   const toggle = () => expanded() ? collapseInPlace(root, head, () => set(false)) : set(true)
   return (
-    <div ref={root} class="px-5 py-1">
+    <div ref={root} style={{ 'padding-inline': 'var(--step-pad, 1.25rem)' }}>
       <div class="flex-1 min-w-0">
         <div ref={head} class={pinnedClass(expanded())} style={pinnedStyle(expanded())}>
         <button
-          class="flex items-center gap-1.5 text-xs text-text-dim hover:text-text-muted transition-colors"
+          class="group/step w-fit max-w-full flex items-center gap-2 py-[3px] px-1.5 -mx-1.5 rounded-md text-left text-[12.5px] leading-[18px] hover:bg-surface-1 focus-visible:ring-1 focus-visible:ring-accent/60 outline-none transition-colors"
           aria-expanded={expanded()}
           onClick={toggle}
         >
-          <Show when={expanded()} fallback={<ChevronRight size={11} />}>
-            <ChevronDown size={11} />
-          </Show>
-          <span class="italic">Thinking</span>
-          <Show when={!expanded()}>
-            <span class="text-text-muted/80 truncate max-w-sm">
-              {props.text.split('\n')[0].slice(0, 80)}
-            </span>
-          </Show>
+          <StepIcon kind="thinking" />
+          {/* Quiet: a glimpse of the reasoning; all of it is a click away. */}
+          <span class="min-w-0 truncate">
+            <span class="text-text-muted">Thought</span>
+            <span class="text-text-dim">{'  '}{(() => { const line = props.text.split('\n')[0]; return line.length > 60 ? `${line.slice(0, 60).trimEnd()}…` : line })()}</span>
+          </span>
+          <ChevronRight size={11} class={clsx('shrink-0 text-text-dim group-hover/step:text-text-secondary transition-transform duration-150', expanded() && 'rotate-90 text-text-secondary')} aria-hidden="true" />
         </button>
         </div>
         <Show when={expanded()}>
           <pre
-            class="text-xs text-text-dim whitespace-pre-wrap font-mono leading-relaxed mt-1.5 max-h-60 overflow-y-auto pl-4 border-l border-border-subtle"
+            class="ml-[22px] mt-0.5 mb-1.5 px-3 py-2 rounded-md bg-surface-1 ring-1 ring-outline/8 text-xs text-text-muted whitespace-pre-wrap font-sans leading-relaxed max-h-60 overflow-y-auto"
             ref={(el) => {
               const saved = thinkingScrollPositions.get(props.id)
               if (saved) requestAnimationFrame(() => { el.scrollTop = saved })
@@ -950,6 +956,10 @@ const ThinkingBlockView: Component<{ id: string; text: string }> = (props) => {
 }
 
 // Stable UI state — survives block rebuilds
+// Work logs you opened or closed, per session, so switching away and back keeps them.
+const openFoldsBySession = new Map<string, ReadonlyMap<string, boolean>>()
+const openFoldsFor = (sessionId?: string | null): ReadonlyMap<string, boolean> => (sessionId && openFoldsBySession.get(sessionId)) || new Map<string, boolean>()
+const SHOWN_BLOCK: Directive = { hidden: false }
 const expandedThinking = new Map<string, boolean>()
 const thinkingScrollPositions = new Map<string, number>()
 const expandedTools = new Map<string, boolean>()
@@ -991,6 +1001,8 @@ export const ToolBlockView: Component<{
   live?: boolean
   /** Lets Cmd/Ctrl-click on a file tool's row open the file. */
   taskId?: string
+  /** Folders paths are shown relative to: the worktree, then the project. */
+  roots?: readonly string[]
 }> = (props) => {
   const [expanded, setExpanded] = createSignal(expandedTools.get(props.id) ?? false)
   const set = (next: boolean) => {
@@ -1025,20 +1037,12 @@ export const ToolBlockView: Component<{
   /** Strip worktree prefix to get a project-relative path */
   const relPath = (p: string) => p.replace(/^.*\.verun\/worktrees\/[^/]+\//, '')
 
-  const preview = () => {
-    const qs = questions()
-    if (qs) return qs.split('\n')[0].slice(0, 80)
-    const parsed = parsedInput()
-    if (parsed) {
-      const tool = props.tool
-      if (tool === 'Bash' && parsed.command) return parsed.command.slice(0, 80)
-      if ((tool === 'Read' || tool === 'Write' || tool === 'Edit') && parsed.file_path) return relPath(parsed.file_path)
-      if (tool === 'Grep' && parsed.pattern) return parsed.pattern.slice(0, 60)
-      if (tool === 'Glob' && parsed.pattern) return parsed.pattern.slice(0, 60)
-      if (tool === 'Agent' && parsed.prompt) return parsed.prompt.slice(0, 80)
-    }
-    return props.input?.split('\n')[0].slice(0, 60) || ''
-  }
+  // What the step did, in words. Input that isn't JSON still names the tool.
+  const summary = createMemo(() => {
+    const s = describeStep(props.tool, parsedInput() as Record<string, unknown> | undefined, props.roots)
+    if (parsedInput() || !props.input) return s
+    return { ...s, parts: [s.parts[0], { text: props.input.split('\n')[0].slice(0, 100), tone: 'code' as const }] }
+  })
 
   const inputSummary = (): string => {
     if (!props.input) return ''
@@ -1064,58 +1068,51 @@ export const ToolBlockView: Component<{
   }
 
   return (
-    <div ref={root} class="px-5 py-0.5">
+    <div ref={root} style={{ 'padding-inline': 'var(--step-pad, 1.25rem)' }}>
       <div ref={head} class={pinnedClass(expanded())} style={pinnedStyle(expanded())}>
       <button
-        class="max-w-full flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors"
+        class={clsx(
+          'group/step w-fit max-w-full flex items-center gap-2 py-[3px] px-1.5 -mx-1.5 rounded-md text-left text-[12.5px] leading-[18px] focus-visible:ring-1 focus-visible:ring-accent/60 outline-none transition-colors',
+          // What's running now stands out from what's done.
+          running() ? 'bg-status-running/12 hover:bg-status-running/18' : 'hover:bg-surface-1',
+        )}
         aria-expanded={expanded()}
         title={filePath() && props.taskId ? `${isMac ? '⌘' : 'Ctrl'}-click to open ${filePath()}` : undefined}
         onClick={toggle}
       >
-        <Show when={expanded()} fallback={<ChevronRight size={11} class="shrink-0" />}>
-          <ChevronDown size={11} class="shrink-0" />
-        </Show>
-        <span class="shrink-0">{props.tool}</span>
-        <Show when={!expanded() && preview()}>
-          <span class="text-text-muted/80 truncate max-w-md font-mono text-[11px]" data-file-open={filePath() && props.taskId ? '' : undefined}>
-            {preview()}
-          </span>
-        </Show>
-        <Show when={running()}>
-          <Loader2 size={11} class="shrink-0 animate-spin text-status-running" aria-label="Running" />
-        </Show>
+        <StepIcon kind={summary().kind} running={running()} failed={failed()} />
+        <StepLabel parts={summary().parts} fileOpen={!!filePath() && !!props.taskId} />
+        <StepDiffCount added={summary().added} removed={summary().removed} />
         <Show when={failed()}>
-          <span class="shrink-0 flex items-center gap-1 text-status-error">
-            <X size={11} aria-label="Failed" />
-            <span class="text-[11px]">Failed</span>
-          </span>
+          <span class="shrink-0 text-[11px] text-status-error">Failed</span>
         </Show>
+        <ChevronRight size={11} class={clsx('shrink-0 text-text-dim group-hover/step:text-text-secondary transition-transform duration-150', expanded() && 'rotate-90 text-text-secondary')} aria-hidden="true" />
       </button>
       </div>
       <Show when={failed() && !expanded() && firstErrorLine(props.result!.text)}>
-        <div class="pl-4 text-[11px] font-mono text-status-error/80 line-clamp-2 break-all">{firstErrorLine(props.result!.text)}</div>
+        <div class="pl-[22px] pb-0.5 text-[11px] font-mono text-status-error/80 line-clamp-2 break-all">{firstErrorLine(props.result!.text)}</div>
       </Show>
       <Show when={expanded() && hasExpandedContent()}>
-        <div class="pl-4 mt-1 border-l border-border-subtle">
+        <div class="ml-[22px] mt-0.5 mb-1.5 rounded-md bg-surface-1 ring-1 ring-outline/8 overflow-hidden">
           <Show when={questions()}>
-            <pre class="text-xs text-text-muted whitespace-pre-wrap font-mono leading-relaxed mb-1 max-h-40 overflow-y-auto">
+            <pre class="px-3 py-2 text-xs text-text-muted whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto">
               {questions()}
             </pre>
           </Show>
           <Show when={!isQuestion() && inputSummary()}>
-            <pre class="text-[11px] text-text-muted whitespace-pre-wrap font-mono leading-relaxed mb-1">
+            <pre class="px-3 py-2 text-[11px] text-text-secondary whitespace-pre-wrap font-mono leading-relaxed">
               {inputSummary()}
             </pre>
           </Show>
           <Show when={hasResult()}>
-            <div class="relative group/out">
-            <div class="absolute top-0 right-1 opacity-0 group-hover/out:opacity-100 focus-within:opacity-100 transition-opacity">
+            <div class="relative group/out border-t-1 border-t-solid border-t-outline/8">
+            <div class="absolute top-1 right-1 opacity-0 group-hover/out:opacity-100 focus-within:opacity-100 transition-opacity">
               <CopyButton text={props.result!.text} label="Copy output" />
             </div>
             <pre
               class={clsx(
-                'text-[11px] whitespace-pre-wrap break-all font-mono leading-relaxed max-h-48 overflow-y-auto pr-8',
-                props.result!.isError ? 'text-status-error/80' : 'text-text-dim'
+                'px-3 py-2 text-[11px] whitespace-pre-wrap break-all font-mono leading-relaxed max-h-48 overflow-y-auto pr-8',
+                props.result!.isError ? 'text-status-error/80' : 'text-text-muted'
               )}
               ref={(el) => {
                 const saved = toolScrollPositions.get(props.id)
@@ -1401,6 +1398,11 @@ export const ChatView: Component<Props> = (props) => {
   // Memoised so a replaced tasks array doesn't re-render every message:
   // only an actual path change does.
   const worktreePath = createMemo(() => getWorktreePath(props.taskId))
+  // Steps show paths from the worktree, or from the project's checkout.
+  const pathRoots = createMemo(() => {
+    const projectId = props.taskId ? taskById(props.taskId)?.projectId : undefined
+    return [worktreePath(), projectId ? projectById(projectId)?.repoPath : undefined].filter((p): p is string => !!p)
+  })
 
   // Image viewer state
   const [viewerImage, setViewerImage] = createSignal<AttachmentRef | null>(null)
@@ -1477,6 +1479,54 @@ export const ChatView: Component<Props> = (props) => {
   const [searchQuery, setSearchQuery] = createSignal('')
   const [matches, setMatches] = createSignal<HTMLElement[]>([])
   const [currentMatchIdx, setCurrentMatchIdx] = createSignal(-1)
+
+  // The work log: a finished turn folds to one row above its final reply, the
+  // running turn groups older steps. What you open stays open for the session.
+  const [openFolds, setOpenFolds] = createSignal<ReadonlyMap<string, boolean>>(openFoldsFor(props.sessionId))
+  createEffect(on(() => props.sessionId, id => setOpenFolds(openFoldsFor(id)), { defer: true }))
+  const setFold = (key: string, open: boolean) => {
+    const next = new Map(openFolds())
+    next.set(key, open)
+    setOpenFolds(next)
+    if (props.sessionId) openFoldsBySession.set(props.sessionId, next)
+  }
+  const sessionWorking = () => props.sessionStatus === 'running' || props.sessionStatus === 'background'
+  // Work still going on, and a subagent that failed, never fold away.
+  const stateOf = (b: FoldBlock): 'active' | 'failed' | undefined => {
+    if (b.type === 'agent') {
+      const a = b as unknown as AgentBlock
+      const needsInput = a.children.some(c => c.type === 'tool' && !c.result && !!c.toolUseId && approvalToolUseIds().has(c.toolUseId))
+      const { state } = agentState({ progress: a.progress, result: a.result, needsInput, sessionLive: sessionWorking() })
+      if (state === 'running' || state === 'background' || state === 'needs-input') return 'active'
+      return state === 'failed' ? 'failed' : undefined
+    }
+    return b.type === 'tool' && !b.result && sessionWorking() ? 'active' : undefined
+  }
+  const folds = createMemo(() => planFolds(blocks as unknown as readonly FoldBlock[], {
+    live: props.sessionStatus === 'running',
+    stateOf,
+    isOpen: key => openFolds().get(key),
+    // Search finds what's on screen, so it unfolds everything.
+    unfoldAll: showSearch() && !!searchQuery(),
+  }))
+  const foldAt = (i: number) => folds()[i] ?? SHOWN_BLOCK
+  // A turn that finishes while you're reading further up stays open.
+  const runningTurnKey = createMemo(() => {
+    if (props.sessionStatus !== 'running') return null
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i]
+      if (b.type === 'user' || b.type === 'wakeup') return b.endedAt === undefined ? `turn:${b.at ?? i}` : null
+    }
+    return null
+  })
+  createEffect(on(runningTurnKey, (key, prev) => {
+    if (prev && prev !== key && !isAtBottom()) setFold(prev, true)
+  }, { defer: true }))
+  const turnCostTitle = (reply?: number) => {
+    const b = reply === undefined ? undefined : blocks[reply]
+    if (!b || b.type !== 'assistant') return undefined
+    return [b.turnCost ? formatCost(b.turnCost) : '', b.turnTokens ? formatTokensWithCache(b.turnTokens) : ''].filter(Boolean).join(' · ') || undefined
+  }
 
   const openSearch = () => {
     setShowSearch(true)
@@ -1860,6 +1910,23 @@ export const ChatView: Component<Props> = (props) => {
             <Show when={unseen()?.index === index() && unseen()} keyed>
               {(a) => <UnseenDivider anchor={a} />}
             </Show>
+            <Show when={foldAt(index()).row}>
+              {(row) => (
+                <TurnFoldRow
+                  row={row() as Extract<FoldRow, { kind: 'turn' }>}
+                  title={turnCostTitle((row() as Extract<FoldRow, { kind: 'turn' }>).reply)}
+                  onToggle={() => setFold(row().key, !row().open)}
+                />
+              )}
+            </Show>
+            <Show when={foldAt(index()).group}>
+              {(group) => (
+                <div class="-my-[3px]">
+                  <StepGroupRow row={group() as Extract<FoldRow, { kind: 'group' }>} onToggle={() => setFold(group().key, !group().open)} />
+                </div>
+              )}
+            </Show>
+            <Show when={!foldAt(index()).hidden}>
             <Switch>
               <Match when={block.type === 'user'}>
                 {(() => {
@@ -1912,38 +1979,21 @@ export const ChatView: Component<Props> = (props) => {
                 {(() => {
                   const b = block as AssistantBlock
                   return (
-                    <div class="px-5 py-1">
-                      <AssistantMarkdown text={b.text} streaming={b.isStreaming} worktreePath={worktreePath()} />
-                      <Show when={b.isLastInTurn}>
-                        <div class="flex items-center gap-2 mt-0.5">
-                          <Show when={b.durationMs}>
-                            {(() => {
-                              const hasCostInfo = b.turnCost || b.turnTokens
-                              if (!hasCostInfo) {
-                                return <span class="text-[10px] text-text-muted/80">{formatDuration(b.durationMs!)}</span>
-                              }
-                              const parts = [
-                                b.turnCost ? formatCost(b.turnCost) : '',
-                                b.turnTokens ? formatTokensWithCache(b.turnTokens) : '',
-                              ].filter(Boolean).join(' · ')
-                              return (
-                                <span class="relative group/dur">
-                                  <span class="text-[10px] text-text-muted/80 cursor-default">{formatDuration(b.durationMs!)}</span>
-                                  <span class="absolute left-0 bottom-full mb-1 hidden group-hover/dur:block z-50 whitespace-nowrap px-2 py-1 rounded bg-surface-3 border border-border-active shadow-lg text-[10px] text-text-secondary">
-                                    {parts}
-                                  </span>
-                                </span>
-                              )
-                            })()}
+                    <div class="relative group/reply px-5 py-1">
+                      <AssistantMarkdown text={b.text} streaming={b.isStreaming} worktreePath={worktreePath()} quiet={foldAt(index()).narration} />
+                      <Show when={b.isLastInTurn && !b.isStreaming}>
+                        {/* The reply's actions float on its top edge while you point at it,
+                            so a turn ends with its text instead of a row of icons. */}
+                        <div class="absolute -top-2.5 right-5 z-10 flex items-center gap-1 h-6 px-1 rounded-md bg-surface-1 ring-1 ring-outline/10 shadow-sm opacity-0 group-hover/reply:opacity-100 focus-within:opacity-100 transition-opacity duration-150">
+                          <Show when={b.durationMs && !foldAt(index()).replyMetaInRow}>
+                            <span class="px-1 text-[10px] tabular-nums text-text-muted cursor-default" title={turnCostTitle(index())}>{formatDuration(b.durationMs!)}</span>
                           </Show>
-                          <Show when={!b.isStreaming}>
-                            <CopyButton text={b.text} />
-                            <Show when={b.messageUuid && props.sessionId}>
-                              <ForkButton
-                                sessionId={props.sessionId!}
-                                messageUuid={b.messageUuid!}
-                              />
-                            </Show>
+                          <CopyButton text={b.text} />
+                          <Show when={b.messageUuid && props.sessionId}>
+                            <ForkButton
+                              sessionId={props.sessionId!}
+                              messageUuid={b.messageUuid!}
+                            />
                           </Show>
                         </div>
                       </Show>
@@ -1951,13 +2001,14 @@ export const ChatView: Component<Props> = (props) => {
                   )
                 })()}
               </Match>
+              {/* Steps sit closer together than messages: a list, not paragraphs. */}
               <Match when={block.type === 'thinking'}>
-                <ThinkingBlockView id={(block as ThinkingBlock).id} text={(block as ThinkingBlock).text} />
+                <div class="-my-[3px]"><ThinkingBlockView id={(block as ThinkingBlock).id} text={(block as ThinkingBlock).text} /></div>
               </Match>
               <Match when={block.type === 'tool'}>
                 {(() => {
                   const b = block as ToolBlock
-                  return <ToolBlockView id={b.id} tool={b.tool} input={b.input} result={b.result} live={props.sessionStatus === 'running'} taskId={props.taskId} />
+                  return <div class="-my-[3px]"><ToolBlockView id={b.id} tool={b.tool} input={b.input} result={b.result} live={props.sessionStatus === 'running'} taskId={props.taskId} roots={pathRoots()} /></div>
                 })()}
               </Match>
               <Match when={block.type === 'agent'}>
@@ -1970,30 +2021,27 @@ export const ChatView: Component<Props> = (props) => {
                       joinNext={blocks[index() + 1]?.type === 'agent'}
                       needsInput={b.children.some(c => c.type === 'tool' && !c.result && !!c.toolUseId && approvalToolUseIds().has(c.toolUseId))}
                       sessionLive={props.sessionStatus === 'running' || props.sessionStatus === 'background'}
-                    >
-                      <div class="pl-3">
-                        <For each={b.children}>
-                          {(child) => (
-                            <Switch>
-                              <Match when={child.type === 'tool'}>
-                                {(() => {
-                                  const c = child as ToolBlock
-                                  return <ToolBlockView id={c.id} tool={c.tool} input={c.input} result={c.result} live={props.sessionStatus === 'running' || props.sessionStatus === 'background'} taskId={props.taskId} />
-                                })()}
-                              </Match>
-                              <Match when={child.type === 'thinking'}>
-                                <ThinkingBlockView id={(child as ThinkingBlock).id} text={(child as ThinkingBlock).text} />
-                              </Match>
-                              <Match when={child.type === 'assistant'}>
-                                <div class="px-5 py-1 text-[13px]">
-                                  <AssistantMarkdown text={(child as { text: string }).text} worktreePath={worktreePath()} />
-                                </div>
-                              </Match>
-                            </Switch>
-                          )}
-                        </For>
-                      </div>
-                    </AgentBlockView>
+                      roots={pathRoots()}
+                      renderChild={(child) => (
+                        <Switch>
+                          <Match when={child.type === 'tool'}>
+                            {(() => {
+                              const c = child as ToolBlock
+                              return <ToolBlockView id={c.id} tool={c.tool} input={c.input} result={c.result} live={props.sessionStatus === 'running' || props.sessionStatus === 'background'} taskId={props.taskId} roots={pathRoots()} />
+                            })()}
+                          </Match>
+                          <Match when={child.type === 'thinking'}>
+                            <ThinkingBlockView id={(child as ThinkingBlock).id} text={(child as ThinkingBlock).text} />
+                          </Match>
+                          <Match when={child.type === 'assistant'}>
+                            {/* What a subagent says on the way is narration, not a reply. */}
+                            <div class="py-1" style={{ 'padding-inline': 'var(--step-pad, 1.25rem)' }}>
+                              <AssistantMarkdown text={(child as { text: string }).text} worktreePath={worktreePath()} quiet />
+                            </div>
+                          </Match>
+                        </Switch>
+                      )}
+                    />
                   )
                 })()}
               </Match>
@@ -2070,10 +2118,12 @@ export const ChatView: Component<Props> = (props) => {
                 })()}
               </Match>
             </Switch>
+            </Show>
           </>)}
         </For>
 
-        <Show when={props.sessionStatus === 'running'}>
+        {/* Working between steps. A running step already has its own spinner. */}
+        <Show when={props.sessionStatus === 'running' && !(blocks[blocks.length - 1]?.type === 'tool' && !(blocks[blocks.length - 1] as ToolBlock).result)}>
           <div class="px-5 py-2">
             <div class="thinking-dots">
               <span /><span /><span />
