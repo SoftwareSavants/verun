@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.6 - 2026-11-12
 
 - Fork a Claude session onto another account: the fork menu picks which account the fork runs on, copying the transcript into that account's home
 - A usage-limit error offers "Continue on <account>": it forks the whole session to that account and picks up where it stopped. Terminal sessions show the same as a floating pill
