@@ -11,8 +11,10 @@ use super::catalog::Language;
 pub const MIN_HOLD: Duration = Duration::from_millis(300);
 /// A single take is ended automatically after this long.
 pub const MAX_TAKE: Duration = Duration::from_secs(300);
-/// RMS below this over the whole clip counts as silence (room noise).
-pub const SILENCE_RMS: f32 = 0.003;
+/// Silence is judged per window of this many samples (100 ms at 16 kHz).
+pub const SILENCE_WINDOW: usize = 1600;
+/// A window with RMS at or above this counts as speech.
+pub const SPEECH_RMS: f32 = 0.005;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -23,6 +25,8 @@ pub enum VoiceError {
     Engine(String),
 }
 
+/// After `stop` returns (Ok or Err) the capture is already stopped and
+/// `cancel` is not called for that take; `cancel` only abandons a take in progress.
 pub trait Capture: Send {
     fn start(&mut self) -> Result<(), VoiceError>;
     /// 16 kHz mono samples recorded since `start`. Err if the device was lost.
@@ -156,12 +160,16 @@ impl<C: Capture> Dictation<C> {
     }
 }
 
+/// Silent unless some 100 ms window reaches `SPEECH_RMS`. A trailing partial
+/// window counts only if it has at least a tenth of a window of samples.
 pub fn is_silent(samples: &[f32]) -> bool {
-    if samples.is_empty() {
-        return true;
-    }
-    let mean_sq = samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32;
-    mean_sq.sqrt() < SILENCE_RMS
+    !samples
+        .chunks(SILENCE_WINDOW)
+        .filter(|w| w.len() >= SILENCE_WINDOW / 10)
+        .any(|w| {
+            let sum_sq: f64 = w.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+            (sum_sq / w.len() as f64).sqrt() >= f64::from(SPEECH_RMS)
+        })
 }
 
 #[cfg(test)]
@@ -305,6 +313,7 @@ mod tests {
             _ => panic!("expected Failed"),
         }
         assert_eq!(d.state(), VoiceState::Idle);
+        assert_eq!(d.capture.cancels, 0);
         d.capture.stop_error = None;
         assert!(d.begin("w".into(), Language::En, t0 + ms(500)).is_ok());
     }
@@ -346,5 +355,37 @@ mod tests {
         assert!(is_silent(&[]));
         assert!(is_silent(&[0.0; 1600]));
         assert!(!is_silent(&loud()));
+    }
+
+    fn sine(amp: f32, n: usize) -> Vec<f32> {
+        (0..n)
+            .map(|i| amp * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16_000.0).sin())
+            .collect()
+    }
+
+    #[test]
+    fn quiet_speech_between_long_pauses_is_not_silent() {
+        let mut clip = vec![0.0; 80_000];
+        clip.extend(sine(0.02, 3_200));
+        clip.extend(vec![0.0; 76_800]);
+        assert!(!is_silent(&clip));
+    }
+
+    #[test]
+    fn steady_low_noise_is_silent() {
+        assert!(is_silent(&sine(0.002, 80_000)));
+    }
+
+    #[test]
+    fn stale_or_duplicate_ack_is_harmless() {
+        let t0 = Instant::now();
+        let mut d = Dictation::new(FakeCapture::new(loud()));
+        d.begin("w".into(), Language::En, t0).unwrap();
+        let seq = pending(d.end(t0 + ms(400))).seq;
+        d.transcribed(seq + 99);
+        assert_eq!(d.state(), VoiceState::Transcribing);
+        d.transcribed(seq);
+        d.transcribed(seq);
+        assert_eq!(d.state(), VoiceState::Idle);
     }
 }
