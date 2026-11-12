@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 
 use core_foundation::base::TCFType;
-use core_foundation::runloop::{kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop};
+use core_foundation::runloop::{kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopRunResult};
 use core_graphics::event::{
     CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
     CallbackResult, EventField,
@@ -18,7 +18,7 @@ use super::hold::{classify, HoldKey, KeyEvent, RawKind};
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
-    fn AXIsProcessTrusted() -> bool;
+    fn AXIsProcessTrusted() -> u8;
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -29,15 +29,30 @@ extern "C" {
 /// Whether Verun may observe global key events. Never prompts.
 pub fn accessibility_granted() -> bool {
     // SAFETY: plain C call with no arguments or preconditions.
-    unsafe { AXIsProcessTrusted() }
+    unsafe { AXIsProcessTrusted() != 0 }
 }
 
 pub fn open_accessibility_settings() {
-    let _ = std::process::Command::new("open")
+    match std::process::Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-        .spawn();
+        .spawn()
+    {
+        Ok(mut child) => {
+            // Reap the child so it does not linger as a zombie.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(e) => eprintln!("voice: could not open Accessibility settings: {e}"),
+    }
 }
 
+/// `on_event` runs on the tap thread for every key event system-wide, so it
+/// must not block or panic (a panic is caught and logged, and the event is
+/// dropped). Dropping the listener blocks up to about 500 ms while the tap
+/// thread exits: drop it off the async runtime (e.g. `spawn_blocking`) and
+/// never from inside `on_event`.
+///
 /// Dropping it stops the tap's run loop, joins the thread and removes the tap.
 pub struct HotkeyListener {
     run_loop: CFRunLoop,
@@ -122,7 +137,11 @@ fn run_tap(
             };
             let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
             if let Some(ev) = classify(key, raw, keycode, event.get_flags().bits()) {
-                on_event(ev);
+                // A panic must not unwind across the extern "C" tap callback.
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_event(ev))).is_err()
+                {
+                    eprintln!("voice: hotkey on_event panicked; event dropped");
+                }
             }
             CallbackResult::Keep
         },
@@ -145,7 +164,11 @@ fn run_tap(
     while !stop.load(Ordering::Acquire) {
         // SAFETY: kCFRunLoopDefaultMode is a constant CFString exported by CoreFoundation.
         let mode = unsafe { kCFRunLoopDefaultMode };
-        CFRunLoop::run_in_mode(mode, std::time::Duration::from_millis(500), false);
+        let result = CFRunLoop::run_in_mode(mode, std::time::Duration::from_millis(500), false);
+        // Finished means no sources left (port invalidated): stop, don't spin.
+        if matches!(result, CFRunLoopRunResult::Finished) {
+            break;
+        }
     }
     // `tap` drops below, invalidating the port.
     drop(source);

@@ -72,6 +72,10 @@ pub const FLAG_CONTROL: u64 = 0x0004_0000;
 pub const FLAG_ALTERNATE: u64 = 0x0008_0000;
 pub const FLAG_COMMAND: u64 = 0x0010_0000;
 pub const FLAG_SECONDARY_FN: u64 = 0x0080_0000;
+/// Device-specific bits in the low word (NX_DEVICERALTKEYMASK, NX_DEVICERCMDKEYMASK).
+/// The generic Alternate/Command masks cannot tell left from right.
+pub const FLAG_RIGHT_OPTION_DEVICE: u64 = 0x0000_0040;
+pub const FLAG_RIGHT_COMMAND_DEVICE: u64 = 0x0000_0010;
 
 /// Maps a raw event to a `KeyEvent` for the configured hold key.
 ///
@@ -85,10 +89,12 @@ pub fn classify(key: HoldKey, kind: RawKind, keycode: i64, flags: u64) -> Option
     }
     let hold_code = hold_keycode(key);
     let mask = modifier_mask(keycode)?;
-    let down = flags & mask != 0;
     if keycode == hold_code {
+        // The hold key is judged by its own bit so a held left twin does not
+        // mask its release.
+        let down = flags & hold_mask(key) != 0;
         Some(if down { KeyEvent::HoldDown } else { KeyEvent::HoldUp })
-    } else if down {
+    } else if flags & mask != 0 {
         Some(KeyEvent::OtherKeyDown)
     } else {
         None
@@ -101,6 +107,15 @@ fn hold_keycode(key: HoldKey) -> i64 {
         HoldKey::Fn => 63,
         HoldKey::RightOption => 61,
         HoldKey::RightCommand => 54,
+    }
+}
+
+/// Flag bit that is set only while the hold key itself is down.
+fn hold_mask(key: HoldKey) -> u64 {
+    match key {
+        HoldKey::Fn => FLAG_SECONDARY_FN,
+        HoldKey::RightOption => FLAG_RIGHT_OPTION_DEVICE,
+        HoldKey::RightCommand => FLAG_RIGHT_COMMAND_DEVICE,
     }
 }
 
@@ -185,15 +200,47 @@ mod tests {
     #[test]
     fn classify_right_option_and_command() {
         assert_eq!(
-            classify(HoldKey::RightOption, RawKind::FlagsChanged, 61, FLAG_ALTERNATE),
+            classify(HoldKey::RightOption, RawKind::FlagsChanged, 61, FLAG_ALTERNATE | FLAG_RIGHT_OPTION_DEVICE),
             Some(HoldDown)
         );
         assert_eq!(classify(HoldKey::RightOption, RawKind::FlagsChanged, 61, 0), Some(HoldUp));
         assert_eq!(
-            classify(HoldKey::RightCommand, RawKind::FlagsChanged, 54, FLAG_COMMAND),
+            classify(HoldKey::RightCommand, RawKind::FlagsChanged, 54, FLAG_COMMAND | FLAG_RIGHT_COMMAND_DEVICE),
             Some(HoldDown)
         );
         assert_eq!(classify(HoldKey::RightCommand, RawKind::FlagsChanged, 54, 0), Some(HoldUp));
+    }
+
+    #[test]
+    fn right_option_release_with_left_option_held_is_hold_up() {
+        assert_eq!(
+            classify(HoldKey::RightOption, RawKind::FlagsChanged, 61, FLAG_ALTERNATE | 0x20),
+            Some(HoldUp)
+        );
+    }
+
+    #[test]
+    fn right_option_press_sets_device_bit() {
+        assert_eq!(
+            classify(HoldKey::RightOption, RawKind::FlagsChanged, 61, FLAG_ALTERNATE | 0x40),
+            Some(HoldDown)
+        );
+    }
+
+    #[test]
+    fn right_command_release_with_left_command_held_is_hold_up() {
+        assert_eq!(
+            classify(HoldKey::RightCommand, RawKind::FlagsChanged, 54, FLAG_COMMAND | 0x08),
+            Some(HoldUp)
+        );
+    }
+
+    #[test]
+    fn right_command_press_sets_device_bit() {
+        assert_eq!(
+            classify(HoldKey::RightCommand, RawKind::FlagsChanged, 54, FLAG_COMMAND | 0x10),
+            Some(HoldDown)
+        );
     }
 
     #[test]
