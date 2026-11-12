@@ -1,10 +1,10 @@
 import { createMemo, createRoot } from 'solid-js'
 import { sessionActivity } from './activity'
 import { sessions, pendingApprovals } from './sessions'
-import { taskById, isTaskCreating, isTaskArchiving, getTaskError } from './tasks'
+import { tasks, taskById, isTaskCreating, isTaskArchiving, getTaskError } from './tasks'
 import { taskGit } from './git'
 import { effectiveActivity } from '../lib/sessionActivity'
-import { taskBoardState, type BackgroundWork, type TaskStatus } from '../lib/taskBoard'
+import { agentsWorking, taskBoardState, type BackgroundWork, type TaskStatus } from '../lib/taskBoard'
 
 interface SessionRollup { running: boolean; background: boolean; backgroundWork: BackgroundWork; error: boolean; approval: boolean; unknown: boolean }
 
@@ -54,5 +54,8 @@ export function taskStatus(taskId: string): TaskStatus {
     prOpen: git.pr?.state === 'OPEN',
   })
 }
+
+/** Tasks with agents working, in a turn or in the background: what keep-awake and restart guard. */
+export const workingTaskCount = () => tasks.filter(t => !t.archived && agentsWorking(taskStatus(t.id))).length
 
 export const needsYou = (taskId: string) => taskStatus(taskId).column === 'attention'

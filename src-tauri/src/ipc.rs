@@ -3707,16 +3707,38 @@ pub async fn workspace_search_cancel(
 }
 
 #[tauri::command]
-pub async fn quit_app(active: State<'_, ActiveMap>) -> Result<(), String> {
-    // Persistent agents keep CLIs alive across turns; drain them all so we
-    // don't leak orphan processes after the app exits.
-    let session_ids: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
-    for sid in session_ids {
-        if let Some((_, mut proc)) = active.remove(&sid) {
-            task::graceful_shutdown(&mut proc.child, &proc.stdin).await;
-        }
-    }
+pub async fn quit_app(
+    active: State<'_, ActiveMap>,
+    pty_map: State<'_, ActivePtyMap>,
+) -> Result<(), String> {
+    stop_all_sessions(&active, &pty_map).await;
     std::process::exit(0);
+}
+
+/// Restart into an installed update: stop every session the way quitting
+/// does, then come back up through a normal launch.
+#[tauri::command]
+pub async fn restart_for_update(
+    app: AppHandle,
+    active: State<'_, ActiveMap>,
+    pty_map: State<'_, ActivePtyMap>,
+) -> Result<(), String> {
+    stop_all_sessions(&active, &pty_map).await;
+    crate::relaunch::relaunch(&app)
+}
+
+/// Let every agent save and exit before the app goes: chat CLIs get EOF then
+/// SIGTERM, terminal ones a hang-up. Otherwise they die mid-write with the app.
+async fn stop_all_sessions(active: &ActiveMap, pty_map: &ActivePtyMap) {
+    let session_ids: Vec<String> = active.iter().map(|e| e.key().clone()).collect();
+    let mut chats = tokio::task::JoinSet::new();
+    for (_, mut proc) in session_ids.into_iter().filter_map(|sid| active.remove(&sid)) {
+        chats.spawn(async move { task::graceful_shutdown(&mut proc.child, &proc.stdin).await });
+    }
+    tokio::join!(
+        chats.join_all(),
+        crate::pty::hang_up_all(pty_map, std::time::Duration::from_secs(3)),
+    );
 }
 
 // ── Notifications ──────────────────────────────────────────────────────

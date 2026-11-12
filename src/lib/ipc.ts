@@ -657,6 +657,10 @@ export const defaultBootstrapDir = () =>
 export const quitApp = () =>
   invoke<void>('quit_app')
 
+/** Stop every session cleanly, then relaunch into the installed update. */
+export const restartForUpdate = () =>
+  invoke<void>('restart_for_update')
+
 // Window management
 export const openTaskWindow = (taskId: string, taskName?: string) =>
   invoke<void>('open_task_window', { taskId, taskName })

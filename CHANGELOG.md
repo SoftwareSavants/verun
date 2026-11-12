@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restarting into an update stops every session cleanly first (terminal Claudes get a hang-up so they save and exit) and relaunches Verun the way the Dock does, instead of as a child of the old process; with agents working, Restart asks first
+- Quitting also lets terminal Claudes save and exit instead of dying with the app
 - Verun keeps a log at ~/Library/Logs/com.softwaresavants.verun/verun.log (rotated at 5 MB); a terminal that exits early or with an error logs what it last showed
 - "Your turn, work still running" now says what is running (for terminal sessions: "2 agents and 1 shell"), so subagents still working read apart from a lone shell or watcher
 - A status key in the sidebar footer explains every task status icon

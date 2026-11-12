@@ -517,6 +517,41 @@ pub fn close_pty(map: &ActivePtyMap, terminal_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Hang up every terminal, as closing its window would: Claude saves its
+/// session and exits on SIGHUP. Whatever is still running after `grace` is
+/// killed with the rest when the PTYs close.
+pub async fn hang_up_all(map: &ActivePtyMap, grace: std::time::Duration) {
+    let live: Vec<(String, u32)> = map
+        .iter()
+        .filter(|e| !e.value().output.has_exited())
+        .filter_map(|e| e.value().pid.map(|pid| (e.key().clone(), pid)))
+        .collect();
+    let pids: Vec<u32> = live.iter().map(|(_, pid)| *pid).collect();
+    hang_up(&pids, grace, |pid| {
+        live.iter()
+            .find(|(_, p)| *p == pid)
+            .is_some_and(|(id, _)| is_running(map, id))
+    })
+    .await;
+    let ids: Vec<String> = map.iter().map(|e| e.key().clone()).collect();
+    for id in ids {
+        let _ = close_pty(map, &id);
+    }
+}
+
+/// SIGHUP each process, then wait until none is `alive` or `grace` runs out.
+pub async fn hang_up(pids: &[u32], grace: std::time::Duration, alive: impl Fn(u32) -> bool) {
+    #[cfg(unix)]
+    for &pid in pids {
+        // SAFETY: plain signal send to a child we spawned.
+        unsafe { libc::kill(pid as i32, libc::SIGHUP) };
+    }
+    let deadline = std::time::Instant::now() + grace;
+    while pids.iter().any(|&pid| alive(pid)) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// Close all PTYs for a given task (used during task deletion).
 pub fn close_all_for_task(map: &ActivePtyMap, task_id: &str) {
     let ids: Vec<String> = map
@@ -644,6 +679,36 @@ pub(crate) fn insert_test_pty(map: &ActivePtyMap, terminal_id: &str, output: Arc
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn hanging_up_waits_for_processes_to_exit_but_not_past_the_grace() {
+        use std::sync::Mutex;
+        let children: Vec<Mutex<std::process::Child>> = (0..2)
+            .map(|_| Mutex::new(std::process::Command::new("sleep").arg("30").spawn().unwrap()))
+            .collect();
+        let pids: Vec<u32> = children.iter().map(|c| c.lock().unwrap().id()).collect();
+        let alive = |pid: u32| {
+            children.iter().any(|c| {
+                let mut c = c.lock().unwrap();
+                c.id() == pid && matches!(c.try_wait(), Ok(None))
+            })
+        };
+        let started = std::time::Instant::now();
+        super::hang_up(&pids, std::time::Duration::from_secs(5), alive).await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "SIGHUP ends sleep at once");
+        assert!(pids.iter().all(|&p| !alive(p)));
+
+        // A process that ignores the hang-up holds us only for the grace.
+        let stubborn = Mutex::new(
+            std::process::Command::new("/bin/sh").args(["-c", "trap '' HUP; sleep 30"]).spawn().unwrap(),
+        );
+        let pid = stubborn.lock().unwrap().id();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        super::hang_up(&[pid], std::time::Duration::from_millis(300), |_| matches!(stubborn.lock().unwrap().try_wait(), Ok(None))).await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let _ = stubborn.lock().unwrap().kill();
+    }
+
     fn entry(id: &str) -> PtyListEntry {
         PtyListEntry {
             terminal_id: id.into(),
