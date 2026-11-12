@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Recent tasks in the sidebar are two-line tiles: the title gets the full width, with project, age and shortcut on the line below
+- Opening a task from Needs you, or a project from search, keeps the sidebar on All projects instead of switching it to that project's group
 
 ## 0.16.5 - 2026-11-11
 
