@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- New task (⌘N) at the top of the sidebar starts a task from either view, including recent activity; the draft's header switches its project (most recently active first) and keeps what you typed
+
 ## 0.16.6 - 2026-11-12
 
 - Fork a Claude session onto another account: the fork menu picks which account the fork runs on, copying the transcript into that account's home

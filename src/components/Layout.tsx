@@ -5,6 +5,7 @@ import { Component, Show, onMount, onCleanup, createSignal, createEffect } from 
 import { listen } from '@tauri-apps/api/event'
 import { Sidebar } from './Sidebar'
 import { openQuickTask } from '../store/quickTasks'
+import { draftProjectOptions, openNewTask } from '../store/newTask'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, settingsSectionForShortcut, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
@@ -105,10 +106,7 @@ export const Layout: Component = () => {
       }
       if (modPressed(e) && e.key === 'n') {
         e.preventDefault()
-        const pid = selectedProjectId()
-        if (pid) requestNewTaskForProject(pid)
-        else if (projects.length > 0) requestNewTaskForProject(projects[projects.length - 1].id)
-        else pickAndAddProject()
+        openNewTask()
       }
       if (modPressed(e) && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
@@ -200,9 +198,10 @@ export const Layout: Component = () => {
             <button class="text-xs text-text-muted text-left px-5 pt-9 pb-2 bg-surface-1 hover:text-text-primary" onClick={() => setSelectedTaskId(null)}>New task · Draft</button>
           </Show>
           <div class="flex-1 min-h-0" style={{ display: newTaskProjectId() && !selectedTaskId() ? 'none' : undefined }}><TaskPanel /></div>
-          <Show when={newTaskProjectId()} keyed>{projectId =>
+          {/* One draft, not one per project: moving it to another project keeps what was typed. */}
+          <Show when={newTaskProjectId()}>{projectId =>
             <div class="flex-1 min-h-0" style={{ display: selectedTaskId() ? 'none' : undefined }}>
-              <NewTaskView projectId={projectId} onClose={() => { if (newTaskProjectId() === projectId) closeDraft() }} />
+              <NewTaskView projectId={projectId()} projectOptions={draftProjectOptions()} onProjectChange={requestNewTaskForProject} onClose={closeDraft} />
             </div>
           }</Show>
           </div>

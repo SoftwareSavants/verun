@@ -10,7 +10,7 @@ Spin up multiple AI coding agents - in isolated git worktrees or existing folder
 
 Task headers identify the owning project, including in detached windows. Terminal-mode Claude tasks are automatically named from their conversation.
 
-New tasks open as drafts. Write a prompt, pick a harness and model from the combined selector, choose where to run it below the composer, and send to start. Use a new worktree for an isolated branch and ports, the project folder to work in place, or any existing folder, including non-Git directories. Tasks sharing a folder see the same files; archiving or removing a direct-folder task preserves those files. For isolated worktrees, lifecycle hooks copy `.env` files, install dependencies, and start dev servers automatically so each agent starts ready to work. Define your setup once in a `.verun.json` and the whole team gets the same config.
+New tasks open as drafts from **New task** (`⌘N`) at the top of the sidebar, in either sidebar view; the draft's header switches its project without losing what you typed. Write a prompt, pick a harness and model from the combined selector, choose where to run it below the composer, and send to start. Use a new worktree for an isolated branch and ports, the project folder to work in place, or any existing folder, including non-Git directories. Tasks sharing a folder see the same files; archiving or removing a direct-folder task preserves those files. For isolated worktrees, lifecycle hooks copy `.env` files, install dependencies, and start dev servers automatically so each agent starts ready to work. Define your setup once in a `.verun.json` and the whole team gets the same config.
 
 ## Multi-agent support
 
