@@ -36,23 +36,45 @@ pub struct HookEvent {
     /// unfinished. Claude sends the full list on Stop/SubagentStop; only the
     /// count crosses the bridge, never their descriptions or commands.
     #[serde(default, deserialize_with = "unfinished_count")]
-    pub background_tasks: Option<usize>,
+    pub background_tasks: Option<Background>,
 }
 
-fn unfinished_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+/// Unfinished background tasks by kind, so "your turn" can say whether
+/// subagents are still working or only a shell or watcher is left.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Background {
+    pub agents: usize,
+    pub shells: usize,
+    pub other: usize,
+}
+impl Background {
+    pub fn total(self) -> usize {
+        self.agents + self.shells + self.other
+    }
+}
+
+fn unfinished_count<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Background>, D::Error> {
     Ok(match serde_json::Value::deserialize(d)? {
-        serde_json::Value::Array(tasks) => Some(
-            tasks
-                .iter()
-                .filter(|t| {
-                    !matches!(
-                        t.get("status").and_then(|s| s.as_str()),
-                        Some("completed" | "failed" | "killed" | "stopped" | "cancelled")
-                    )
-                })
-                .count(),
-        ),
-        serde_json::Value::Number(n) => n.as_u64().map(|n| n as usize),
+        serde_json::Value::Array(tasks) => {
+            let mut bg = Background::default();
+            for task in tasks.iter().filter(|t| {
+                !matches!(
+                    t.get("status").and_then(|s| s.as_str()),
+                    Some("completed" | "failed" | "killed" | "stopped" | "cancelled")
+                )
+            }) {
+                match task.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                    kind if kind.ends_with("_agent") => bg.agents += 1,
+                    kind if kind.ends_with("_bash") || kind.ends_with("_shell") => bg.shells += 1,
+                    _ => bg.other += 1,
+                }
+            }
+            Some(bg)
+        }
+        // What crosses the relay: the counts already split.
+        obj @ serde_json::Value::Object(_) => serde_json::from_value(obj).ok(),
         _ => None,
     })
 }
@@ -92,6 +114,9 @@ pub struct Activity {
     /// unfinished at its last turn end. They don't make the session busy:
     /// Claude is at its prompt, and some never report back.
     pub background: usize,
+    /// Of those, subagents and background shells.
+    pub background_agents: usize,
+    pub background_shells: usize,
 }
 impl Activity {
     fn new(session: &str, launch: &str) -> Self {
@@ -110,14 +135,21 @@ impl Activity {
             ended: false,
             terminal_id: None,
             background: 0,
+            background_agents: 0,
+            background_shells: 0,
         }
+    }
+    fn set_background(&mut self, bg: Background) {
+        self.background = bg.total();
+        self.background_agents = bg.agents;
+        self.background_shells = bg.shells;
     }
     fn apply(&mut self, event: &HookEvent) {
         // A subagent finishing is the one subagent event that matters to the
         // parent: it refreshes what the parent's turn left running.
         if event.hook_event_name == "SubagentStop" {
-            if let (false, Some(n)) = (self.ended, event.background_tasks) {
-                self.background = n;
+            if let (false, Some(bg)) = (self.ended, event.background_tasks) {
+                self.set_background(bg);
             }
             return;
         }
@@ -196,7 +228,7 @@ impl Activity {
                 // Claude is back at its prompt: the user's turn, even with
                 // background work left running. Claude's tool hooks flip this
                 // back to Working if it picks a result up on its own.
-                self.background = event.background_tasks.unwrap_or(0);
+                self.set_background(event.background_tasks.unwrap_or_default());
                 self.phase = Phase::Idle;
             }
             "StopFailure" => {
@@ -669,6 +701,8 @@ mod tests {
         assert_eq!(state.background, 2);
         let wire = serde_json::to_value(&state).unwrap();
         assert_eq!(wire["background"], 2);
+        assert_eq!(wire["backgroundAgents"], 1);
+        assert_eq!(wire["backgroundShells"], 0);
         // A subagent reporting back updates the count.
         let done: HookEvent = serde_json::from_value(json!({
             "hook_event_name": "SubagentStop", "session_id": "claude-1", "agent_id": "a1",
@@ -676,6 +710,7 @@ mod tests {
         })).unwrap();
         state.apply(&done);
         assert_eq!(state.background, 1);
+        assert_eq!(state.background_agents, 0);
         assert_eq!(state.phase, Phase::Idle);
         // Claude picking a result up and working on it is working again.
         let mut tool = event("PreToolUse", "t");
@@ -685,7 +720,7 @@ mod tests {
         // The next turn end carries the fresh count.
         let mut stop = event("Stop", "");
         stop.session_id = "claude-1".into();
-        stop.background_tasks = Some(0);
+        stop.background_tasks = Some(Background::default());
         state.apply(&stop);
         assert_eq!((state.phase, state.background), (Phase::Idle, 0));
     }
@@ -714,7 +749,21 @@ mod tests {
         assert!(!wire.contains("local_bash"));
         // Round-trips through the relay frame as the count of unfinished tasks.
         let back: HookEvent = serde_json::from_str(&wire).unwrap();
-        assert_eq!(back.background_tasks, Some(1));
+        assert_eq!(back.background_tasks, Some(Background { agents: 0, shells: 1, other: 0 }));
+    }
+
+    #[test]
+    fn background_tasks_split_into_agents_shells_and_the_rest() {
+        let input = json!({"hook_event_name":"Stop","session_id":"c","background_tasks":[
+            {"id":"a1","type":"local_agent","status":"running"},
+            {"id":"a2","type":"remote_agent","status":"pending"},
+            {"id":"a3","type":"local_agent","status":"completed"},
+            {"id":"b1","type":"local_bash","status":"running"},
+            {"id":"w1","type":"artifact_watch","status":"running"}]});
+        let event: HookEvent = serde_json::from_value(input).unwrap();
+        let bg = event.background_tasks.unwrap();
+        assert_eq!(bg, Background { agents: 2, shells: 1, other: 1 });
+        assert_eq!(bg.total(), 4);
     }
 
     #[test]

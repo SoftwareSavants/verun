@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- "Your turn, work still running" now says what is running (for terminal sessions: "2 agents and 1 shell"), so subagents still working read apart from a lone shell or watcher
+- A status key in the sidebar footer explains every task status icon
 - Recent tasks in the sidebar are two-line tiles: the title gets the full width, with project, age and shortcut on the line below
 - Opening a task from Needs you, or a project from search, keeps the sidebar on All projects instead of switching it to that project's group
 
