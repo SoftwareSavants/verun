@@ -15,6 +15,15 @@ test('groups are flat sections, focused scope filters projects, and search cross
   expect(groupState().scope).toBe(clients)
   expect(visibleProjects(projects).map(p => p.id)).toEqual(['p'])
 })
+test('revealing a project from All projects keeps All projects and only expands its group', () => {
+  const products = addGroup('Products')
+  moveProject('v', products); toggleGroup(products)
+  revealProject('m')
+  expect(groupState().scope).toBe('all')
+  revealProject('v')
+  expect(groupState().scope).toBe('all')
+  expect(visibleProjects(projects).map(p => p.id)).toEqual(['v', 'm', 'p'])
+})
 test('collapsed sections hide tasks from navigation but remain searchable', () => {
   const group = addGroup('Products'); moveProject('v', group); toggleGroup(group)
   expect(visibleProjects(projects).map(p => p.id)).not.toContain('v')

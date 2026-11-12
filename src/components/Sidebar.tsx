@@ -312,8 +312,8 @@ export const Sidebar: Component = () => {
 
   const closeMenu = () => setContextMenu(null);
 
-  // One task row, shared by the project and status views. `meta` adds the
-  // status view's project and age.
+  // One task row, shared by the project and recent views. `meta` turns it into
+  // a two-line tile: the title keeps the full width, project and age go below.
   const renderTaskRow = (task: Task, meta?: () => JSX.Element) => {
     const status = () => taskStatus(task.id);
     const creating = () => isTaskCreating(task.id);
@@ -328,13 +328,17 @@ export const Sidebar: Component = () => {
     const handleClick = () => focusOrSelectTask(task);
 
     const isSelected = () => !windowed() && selectedTaskId() === task.id;
+    // The shortcut and archive button sit on the meta line in a tile, beside
+    // the title in a plain row.
+    const trailing = meta ? 'bottom-[3px]' : 'top-1/2 -translate-y-1/2';
     const tooltip = () => windowed() ? 'Open in separate window — click to focus'
       : `${task.name || 'New task'}\n${task.branch} · ${hasError() ? 'Setup failed' : cloudPhase() ?? status().label}`;
 
     return (
       <div
         class={clsx(
-          "group/task relative pl-2 pr-2 py-1.5 rounded-md flex items-center gap-2 cursor-pointer",
+          "group/task relative pl-2 pr-2 py-1.5 rounded-md flex gap-2 cursor-pointer",
+          meta ? "items-start" : "items-center",
           isSelected()
             ? "bg-surface-2"
             : "hover:bg-surface-2",
@@ -347,8 +351,11 @@ export const Sidebar: Component = () => {
         onContextMenu={(e) => { if (!disabled() && !hasError()) showTaskMenu(e, task.id) }}
         title={tooltip()}
       >
-        <TaskStatusIcon kind={hasError() ? 'failed' : status().kind} label={hasError() ? 'Setup failed' : status().label} />
-        <div class={clsx("flex-1 min-w-0 flex items-center gap-1.5", bindingIdx() !== null && !meta && "pr-5")}>
+        <span class={clsx("shrink-0 flex", meta && "h-4 items-center")}>
+          <TaskStatusIcon kind={hasError() ? 'failed' : status().kind} label={hasError() ? 'Setup failed' : status().label} />
+        </span>
+        <div class="flex-1 min-w-0 flex flex-col gap-0.5">
+        <div class={clsx("min-w-0 flex items-center gap-1.5", meta ? "h-4" : bindingIdx() !== null && "pr-5")}>
           <Show when={renamingTaskId() === task.id} fallback={
             <span class={clsx(
               "text-xs truncate",
@@ -394,19 +401,20 @@ export const Sidebar: Component = () => {
           </Show>
         </div>
         <Show when={meta}>
-          <span class="shrink-0 min-w-0 max-w-[45%] pr-5 flex items-center gap-1.5 text-[10px] text-text-dim">{meta!()}</span>
+          <span class="min-w-0 h-3.5 pr-7 flex items-center gap-1.5 text-[10px] text-text-dim">{meta!()}</span>
         </Show>
+        </div>
         <Show when={hasError() && getCloudTaskPhase(task.id)}>
           <button class="btn-ghost text-xs" onClick={e => { e.stopPropagation(); retryCloudTaskImport(task.id) }}>Retry</button>
         </Show>
         <Show when={!archiving() && !getCloudTaskPhase(task.id)}>
           <Show when={bindingIdx() !== null}>
-            <kbd class="absolute right-2 top-1/2 -translate-y-1/2 -mt-px h-5 flex items-center leading-none text-[10px] font-mono text-text-dim pointer-events-none group-hover/task:opacity-0 transition-opacity">
+            <kbd class={`absolute right-2 ${trailing} h-5 flex items-center leading-none text-[10px] font-mono text-text-dim pointer-events-none group-hover/task:opacity-0 transition-opacity`}>
               {'\u2318'}{bindingIdx()! + 1}
             </kbd>
           </Show>
           <button
-            class="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 text-text-dim hover:text-text-muted bg-surface-2"
+            class={`absolute right-2 ${trailing} w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 text-text-dim hover:text-text-muted bg-surface-2`}
             onClick={(e) => {
               e.stopPropagation();
               setArchiveTaskTarget(task.id);
@@ -526,6 +534,7 @@ export const Sidebar: Component = () => {
           <Show when={!projectQuery().trim() && sidebarView() === 'recent'}>
             <RecentTaskList recent={recentView().recent} quiet={recentView().quiet} row={r => renderTaskRow(r.task, () => <>
               <span class="truncate">{projectById(r.task.projectId)?.name}</span>
+              <span aria-hidden="true" class="shrink-0">·</span>
               <span class="tabular-nums shrink-0">{formatAgo(r.lastActive, minute())}</span>
             </>)} />
           </Show>
