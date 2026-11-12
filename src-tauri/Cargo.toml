@@ -70,6 +70,10 @@ core-foundation = "0.10.1"
 # Voice dictation: microphone capture.
 cpal = "0.15"
 
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+# Voice dictation: on-device Whisper (whisper.cpp with Metal). Needs cmake to build.
+transcribe-rs = { version = "0.3.12", features = ["whisper-cpp", "whisper-metal"] }
+
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 tauri-plugin-notifications = { version = "0.4", default-features = false, features = ["notify-rust"] }
 
