@@ -1,12 +1,17 @@
-import { Component, Show } from 'solid-js'
+import { Component, Show, createSignal } from 'solid-js'
 import { CheckCircle2, Loader2, RefreshCw, X, AlertTriangle } from 'lucide-solid'
 import {
   updateAvailable, updateProgress, updateReady, updateError,
   updateChecking, updateUpToDate, dismissed,
   downloadAndInstall, restartApp, dismissUpdate,
 } from '../lib/updater'
+import { workingTaskCount } from '../store/taskStatus'
 
 export const UpdateToast: Component = () => {
+  // Restarting stops every agent, so with work in flight it asks first.
+  const [confirming, setConfirming] = createSignal(false)
+  const restart = () => workingTaskCount() > 0 && !confirming() ? setConfirming(true) : void restartApp()
+  const plural = (n: number) => `${n} task${n === 1 ? ' is' : 's are'}`
   const visible = () =>
     !dismissed() && (
       updateAvailable() !== null
@@ -57,7 +62,19 @@ export const UpdateToast: Component = () => {
         <Show when={!updateError() && !updateChecking() && updateAvailable()}>
           {(info) => (
             <>
-              <Show when={updateReady()}>
+              <Show when={updateReady() && confirming()}>
+                <div class="flex items-start gap-2.5">
+                  <AlertTriangle size={15} class="text-status-waiting shrink-0 mt-0.5" />
+                  <div class="flex-1 min-w-0">
+                    <div class="text-sm text-text-primary">{plural(workingTaskCount())} still working. Restarting stops them.</div>
+                    <div class="mt-2 flex gap-1.5">
+                      <button class="px-2.5 py-1 rounded-lg bg-accent/10 text-accent hover:bg-accent/20 text-xs" onClick={() => void restartApp()}>Restart anyway</button>
+                      <button class="px-2.5 py-1 rounded-lg text-text-secondary hover:bg-surface-3 text-xs" onClick={() => setConfirming(false)}>Later</button>
+                    </div>
+                  </div>
+                </div>
+              </Show>
+              <Show when={updateReady() && !confirming()}>
                 <div class="flex items-center gap-2.5">
                   <RefreshCw size={15} class="text-accent shrink-0" />
                   <div class="flex-1 min-w-0">
@@ -66,7 +83,7 @@ export const UpdateToast: Component = () => {
                   </div>
                   <button
                     class="px-2.5 py-1 rounded-lg bg-accent/10 text-accent hover:bg-accent/20 text-xs flex items-center gap-1.5 shrink-0"
-                    onClick={restartApp}
+                    onClick={restart}
                   >
                     Restart
                   </button>

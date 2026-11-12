@@ -36,6 +36,15 @@ test('background work after the turn ended reads as your turn, not running', () 
   expect(taskBoardState({ background: true, running: true }).kind).toBe('running')
   expect(taskBoardState({ background: true, approval: true }).kind).toBe('input')
 })
+test('background status says what is still running when the counts are known', () => {
+  const label = (agents: number, shells: number, total: number) =>
+    taskBoardState({ background: true, backgroundWork: { agents, shells, total } }).label
+  expect(label(2, 1, 3)).toBe('Your turn, 2 agents and 1 shell still running')
+  expect(label(1, 0, 1)).toBe('Your turn, 1 agent still running')
+  expect(label(0, 2, 2)).toBe('Your turn, 2 shells still running')
+  expect(label(2, 0, 3)).toBe('Your turn, 2 agents and 1 other task still running')
+  expect(label(0, 0, 2)).toBe('Your turn, 2 background tasks still running')
+})
 test('keep-awake counts background work: the Mac sleeping would stall it', () => {
   expect(agentsWorking(taskBoardState({ running: true }))).toBe(true)
   expect(agentsWorking(taskBoardState({ background: true }))).toBe(true)
