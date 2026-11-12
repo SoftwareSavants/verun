@@ -182,18 +182,24 @@ export const reopenSession = (sessionId: string) =>
 export const getSession = (id: string) =>
   invoke<Session | null>('get_session', { id })
 
-export const forkSessionInTask = (sessionId: string, forkAfterMessageUuid: string) =>
-  invoke<Session>('fork_session_in_task', { sessionId, forkAfterMessageUuid })
+/** The account a fork runs on when it isn't the parent's; `accountId: null` is Default. */
+export interface ForkTarget { accountId: string | null }
+
+/** `forkAfterMessageUuid: null` forks the whole session. */
+export const forkSessionInTask = (sessionId: string, forkAfterMessageUuid: string | null, target?: ForkTarget) =>
+  invoke<Session>('fork_session_in_task', { sessionId, forkAfterMessageUuid, target })
 
 export const forkSessionToNewTask = (
   sessionId: string,
-  forkAfterMessageUuid: string,
+  forkAfterMessageUuid: string | null,
   worktreeState: 'snapshot' | 'current',
+  target?: ForkTarget,
 ) =>
   invoke<TaskWithSession>('fork_session_to_new_task', {
     sessionId,
     forkAfterMessageUuid,
     worktreeState,
+    target,
   })
 
 export const ensureQuickProject = () => invoke<Project>('ensure_quick_project')

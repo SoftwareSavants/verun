@@ -1,5 +1,5 @@
 import { Component, For, Show, Switch, Match, batch, createEffect, createMemo, on, createSignal, onMount, onCleanup, untrack, type JSX } from 'solid-js'
-import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
+import { createStore, reconcile, unwrap } from 'solid-js/store'
 import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { OutputItem, SessionStatus, AttachmentRef, AgentProgress } from '../types'
@@ -17,20 +17,23 @@ import { BlobImage } from './BlobImage'
 import { FileChip } from './FileChip'
 import { Popover } from './Popover'
 import { parseMentions } from '../lib/mentions'
-import * as ipc from '../lib/ipc'
 import {
   dismissSideQuestionUnread,
   openSideQuestion,
   sideQuestionPanel,
   sideQuestionState,
 } from '../store/sideQuestion'
-import { addToast, setSelectedTaskId, setSelectedSessionIdForTask } from '../store/ui'
-import { sessionById, setSessions, loadOutputLines, loadOlderOutputLines, hasMoreOutputLines, sendMessage, pendingApprovals } from '../store/sessions'
+import { addToast } from '../store/ui'
+import { ContinueOnAccount } from './ContinueOnAccount'
+import { isUsageLimit } from '../lib/usageLimit'
+import { sessionById, loadOlderOutputLines, hasMoreOutputLines, sendMessage, pendingApprovals } from '../store/sessions'
 import { planModeForSession, thinkingModeForSession, fastModeForSession } from '../store/sessionContext'
-import { taskById, setTasks } from '../store/tasks'
+import { taskById } from '../store/tasks'
 import { formatCost, formatTokens } from '../lib/format'
 import { failureText } from '../lib/accountErrors'
-import { inheritedSelection } from '../lib/accounts'
+import { accountChoicesFor, inheritedSelection, otherAccountChoices } from '../lib/accounts'
+import type { ForkTarget } from '../lib/ipc'
+import { forkInTask as forkSessionInTask, forkToNewTask as forkSessionToNewTask } from '../store/fork'
 import { openNewSession } from '../lib/newSession'
 
 function formatDuration(ms: number): string {
@@ -749,20 +752,32 @@ export const ForkButton: Component<{ sessionId: string; messageUuid: string }> =
   const [submenuOpen, setSubmenuOpen] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
+  // Which account the fork runs on: the session's own unless another is picked.
+  const parent = () => sessionById(props.sessionId)
+  const accountChoices = () => {
+    const s = parent()
+    if (!s || s.agentType !== 'claude') return []
+    const others = otherAccountChoices('claude', s.accountId, taskById(s.taskId)?.projectId)
+    if (others.length === 0) return []
+    const own = accountChoicesFor('claude', taskById(s.taskId)?.projectId).find(c => (c.selection.kind === 'account' ? c.selection.id : null) === s.accountId)
+    return [...(own ? [{ ...own, target: undefined as ForkTarget | undefined }] : []), ...others]
+  }
+  // The picked choice's key; `null` is the session's own account.
+  const [picked, setPicked] = createSignal<string | null>(null)
+  const ownKey = () => accountChoices()[0]?.key
+  const target = () => accountChoices().find(c => c.key === picked())?.target
 
   const close = () => {
     setOpen(false)
     setSubmenuOpen(false)
     setError(null)
+    setPicked(null)
   }
 
   const forkInTask = async () => {
     setBusy(true)
     try {
-      const session = await ipc.forkSessionInTask(props.sessionId, props.messageUuid)
-      setSessions(produce(s => { if (!s.find(x => x.id === session.id)) s.push(session) }))
-      await loadOutputLines(session.id)
-      setSelectedSessionIdForTask(session.taskId, session.id)
+      await forkSessionInTask(props.sessionId, props.messageUuid, target())
       addToast('Forked in this task', 'success')
       close()
     } catch (e) {
@@ -775,12 +790,7 @@ export const ForkButton: Component<{ sessionId: string; messageUuid: string }> =
   const forkToNewTask = async (worktreeState: 'snapshot' | 'current') => {
     setBusy(true)
     try {
-      const tws = await ipc.forkSessionToNewTask(props.sessionId, props.messageUuid, worktreeState)
-      setTasks(produce(t => { if (!t.find(x => x.id === tws.task.id)) t.unshift(tws.task) }))
-      setSessions(produce(s => { if (!s.find(x => x.id === tws.session.id)) s.push(tws.session) }))
-      await loadOutputLines(tws.session.id)
-      setSelectedTaskId(tws.task.id)
-      setSelectedSessionIdForTask(tws.task.id, tws.session.id)
+      await forkSessionToNewTask(props.sessionId, props.messageUuid, worktreeState, target())
       addToast('Forked to new task', 'success')
       close()
     } catch (e) {
@@ -807,6 +817,28 @@ export const ForkButton: Component<{ sessionId: string; messageUuid: string }> =
         onClose={close}
         class="py-1 min-w-44 absolute bottom-full left-0 mb-1"
       >
+        <Show when={accountChoices().length > 0}>
+          <div role="radiogroup" aria-label="Account" class="px-1.5 pt-0.5 pb-1.5 mb-1 border-b-1 border-b-solid border-b-outline/8 flex flex-col gap-0.5">
+            <span class="px-1 pb-0.5 text-[10px] text-text-dim">Run the fork on</span>
+            <For each={accountChoices()}>{choice => {
+              const checked = () => (picked() ?? ownKey()) === choice.key
+              return (
+                <button
+                  role="radio"
+                  aria-checked={checked()}
+                  aria-label={choice.label}
+                  class={`w-full flex items-center gap-2 text-left px-1 py-0.5 rounded text-[11px] ${checked() ? 'bg-surface-3 text-text-primary' : 'text-text-secondary hover:bg-surface-3'}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setPicked(choice.target ? choice.key : null)}
+                >
+                  <span class="w-2 h-2 rounded-full shrink-0 ring-1 ring-outline/20" style={{ background: choice.color ?? 'transparent' }} />
+                  <span class="flex-1 truncate">{choice.label}</span>
+                  <Show when={checked()}><Check size={11} class="text-accent shrink-0" /></Show>
+                </button>
+              )
+            }}</For>
+          </div>
+        </Show>
         <button
           class="w-full flex items-center gap-2 text-left px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-35 disabled:pointer-events-none"
           disabled={busy()}
@@ -1298,6 +1330,10 @@ export const ErrorBlockView: Component<{
         <span class="text-xs text-status-error whitespace-pre-wrap break-words">{props.message}</span>
       </div>
       <div class="flex items-center gap-2 ml-5.5 flex-wrap">
+        {/* Out of usage on this account: carry the session over to another. */}
+        <Show when={props.sessionId && isUsageLimit(props.message, props.raw)}>
+          <ContinueOnAccount sessionId={props.sessionId!} message={(hasProgress() ? undefined : retryMessage()) ?? 'continue'} />
+        </Show>
         <Show when={retryMessage()}>
           <button
             class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-status-error/12 text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-50"

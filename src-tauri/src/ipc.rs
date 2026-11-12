@@ -893,16 +893,19 @@ pub async fn create_session_handoff(
     .await
 }
 
-/// Fork an existing session at a specific assistant message uuid into a new
-/// session inside the SAME task. The worktree is unchanged.
+/// Fork an existing session into a new session inside the SAME task. The
+/// worktree is unchanged. `fork_after_message_uuid: None` forks the whole
+/// session; `target` runs the fork on another account (the parent's without).
 #[tauri::command]
 pub async fn fork_session_in_task(
     app: AppHandle,
     pool: State<'_, SqlitePool>,
     session_id: String,
-    fork_after_message_uuid: String,
+    fork_after_message_uuid: Option<String>,
+    target: Option<task::ForkTarget>,
 ) -> Result<Session, String> {
-    task::fork_session_in_task(&app, pool.inner(), session_id, fork_after_message_uuid).await
+    task::fork_session_in_task(&app, pool.inner(), session_id, fork_after_message_uuid, target)
+        .await
 }
 
 /// Fork an existing session at a specific assistant message uuid into a new
@@ -920,8 +923,9 @@ pub async fn fork_session_to_new_task(
     hook_pty_map: State<'_, HookPtyMap>,
     setup_in_progress: State<'_, SetupInProgress>,
     session_id: String,
-    fork_after_message_uuid: String,
+    fork_after_message_uuid: Option<String>,
     worktree_state: task::WorktreeForkState,
+    target: Option<task::ForkTarget>,
 ) -> Result<TaskWithSession, String> {
     let (new_task, new_session, setup_env) = task::fork_session_to_new_task(
         &app,
@@ -929,6 +933,7 @@ pub async fn fork_session_to_new_task(
         session_id,
         fork_after_message_uuid,
         worktree_state,
+        target,
     )
     .await?;
 

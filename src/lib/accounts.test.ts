@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }))
 vi.mock('./ipc', () => ({ listAccounts: vi.fn() }))
 
-import { accountChoicesFor, accountKey, agentRows, inheritedSelection, PROJECT_DEFAULT, selectedChoice, type AccountChoice } from './accounts'
+import { accountChoicesFor, accountKey, agentRows, inheritedSelection, otherAccountChoices, PROJECT_DEFAULT, selectedChoice, type AccountChoice } from './accounts'
 import { applySnapshot } from '../store/accounts'
 import { makeAccount, makeIdentity, makeSnapshot } from '../test/accountFixtures'
 import type { AccountSelection, AgentInfo, AgentType, ProjectAccount } from '../types'
@@ -227,5 +227,19 @@ describe('agentRows', () => {
     applySnapshot(makeSnapshot({ accounts: [acme] }))
 
     expect(rowsOf([agent('claude', 'Claude Code', { installed: false })])).toEqual([{ key: 'claude', name: 'Claude Code', detail: null }])
+  })
+})
+
+describe('otherAccountChoices', () => {
+  test('lists every account but the one the session runs on, as fork targets', () => {
+    applySnapshot(makeSnapshot({ accounts: [acme, beta] }))
+    expect(otherAccountChoices('claude', null, 'p1').map(c => c.target)).toEqual([{ accountId: acme.id }, { accountId: 'a2' }])
+    expect(otherAccountChoices('claude', 'a2', 'p1').map(c => c.target)).toEqual([{ accountId: null }, { accountId: acme.id }])
+  })
+
+  test('nothing to offer without added accounts or for another harness', () => {
+    expect(otherAccountChoices('claude', null, 'p1')).toEqual([])
+    applySnapshot(makeSnapshot({ accounts: [acme] }))
+    expect(otherAccountChoices('codex', null, 'p1')).toEqual([])
   })
 })

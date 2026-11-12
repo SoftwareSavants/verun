@@ -15,6 +15,8 @@ import { ForkButton } from './ChatView'
 import { setSessions } from '../store/sessions'
 import { setTasks } from '../store/tasks'
 import { toasts, setToasts } from '../store/ui'
+import { applySnapshot } from '../store/accounts'
+import { makeAccount, makeSnapshot } from '../test/accountFixtures'
 import type { Session, Task } from '../types'
 
 const secret = 'ACCOUNT_ERROR:{"kind":"secret","accountId":"a1","label":"Acme","projects":[],"message":"ANTHROPIC_API_KEY has no stored value"}'
@@ -73,6 +75,7 @@ beforeEach(() => {
   setTasks([task])
   setSessions([session])
   setToasts([])
+  applySnapshot(makeSnapshot())
 })
 
 afterEach(() => cleanup())
@@ -85,7 +88,7 @@ describe('ForkButton', () => {
     forkToNewTask('Current code')
 
     await screen.findByText("Couldn't read a secret for Acme from the keychain.")
-    expect(ipc.forkSessionToNewTask).toHaveBeenCalledWith('s-001', 'm-001', 'current')
+    expect(ipc.forkSessionToNewTask).toHaveBeenCalledWith('s-001', 'm-001', 'current', undefined)
     expect(screen.queryByText(/ACCOUNT_ERROR/)).toBeNull()
     expect(toasts().map(t => ({ title: t.title, message: t.message }))).toEqual([
       { title: 'Keychain error', message: "Couldn't read a secret for Acme from the keychain." },
@@ -99,7 +102,7 @@ describe('ForkButton', () => {
     forkToNewTask('Code as of this message')
 
     await screen.findByText("Couldn't read a secret for Acme from the keychain.")
-    expect(ipc.forkSessionToNewTask).toHaveBeenCalledWith('s-001', 'm-001', 'snapshot')
+    expect(ipc.forkSessionToNewTask).toHaveBeenCalledWith('s-001', 'm-001', 'snapshot', undefined)
   })
 
   test('so does a fork in this task, whatever reaches it', async () => {
@@ -143,5 +146,23 @@ describe('ForkButton', () => {
     fireEvent.click(screen.getByText('Current code'))
 
     await waitFor(() => expect(ipc.forkSessionToNewTask).toHaveBeenCalledTimes(2))
+  })
+
+  test('with more than one account, the fork can run on another one', async () => {
+    applySnapshot(makeSnapshot({ accounts: [makeAccount({ id: 'a1', label: 'Acme' }), makeAccount({ id: 'a2', label: 'Beta' })] }))
+    ipc.forkSessionInTask.mockResolvedValue({ ...session, id: 's-002', accountId: 'a2' })
+    openMenu()
+
+    // The session's own account is picked to start with.
+    expect(screen.getByRole('radio', { name: 'Acme' }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(screen.getByRole('radio', { name: 'Beta' }))
+    fireEvent.click(screen.getByText('Fork in this task'))
+
+    await waitFor(() => expect(ipc.forkSessionInTask).toHaveBeenCalledWith('s-001', 'm-001', { accountId: 'a2' }))
+  })
+
+  test('with a single account there is nothing to pick', () => {
+    openMenu()
+    expect(screen.queryByRole('radiogroup')).toBeNull()
   })
 })

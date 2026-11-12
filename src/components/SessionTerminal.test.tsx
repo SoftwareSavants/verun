@@ -74,6 +74,25 @@ beforeEach(() => {
 })
 
 describe('SessionTerminal', () => {
+  test('a session stuck on its usage limit floats a way to continue on another account', async () => {
+    const { setOutputItems, setSessions } = await import('../store/sessions')
+    const { setTasks } = await import('../store/tasks')
+    const { applySnapshot } = await import('../store/accounts')
+    const { makeAccount, makeSnapshot } = await import('../test/accountFixtures')
+    applySnapshot(makeSnapshot({ accounts: [makeAccount({ id: 'a1', label: 'Acme' }), makeAccount({ id: 'a2', label: 'Beta' })] }))
+    setTasks([{ id: 't-1', projectId: 'p-1' } as never])
+    setSessions([{ id: 's-1', taskId: 't-1', agentType: 'claude', accountId: 'a1' } as never])
+    setOutputItems('s-1', [{ kind: 'errorMessage', message: "You've hit your limit · resets 5pm", raw: '{"error":"rate_limit"}' }])
+    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
+    const { findByRole, queryByRole, getByText } = render(() => <SessionTerminal sessionId="s-1" />)
+    await findByRole('button', { name: 'Continue on Beta' })
+    expect(getByText('Usage limit reached')).toBeTruthy()
+    // Typing a new prompt in the terminal ends it.
+    setOutputItems('s-1', items => [...items, { kind: 'transcriptUserMessage', text: 'hi' } as never])
+    await flush()
+    expect(queryByRole('button', { name: 'Continue on Beta' })).toBeNull()
+  })
+
   test('opens the claude terminal on mount and renders ShellTerminal', async () => {
     ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
     const { getByTestId } = render(() => <SessionTerminal sessionId="s-1" />)

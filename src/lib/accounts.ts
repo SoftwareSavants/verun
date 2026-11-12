@@ -76,6 +76,22 @@ export function selectedChoice(choices: AccountChoice[], selection: AccountSelec
   }
 }
 
+/** An account a session can be forked to. */
+export interface ForkChoice extends AccountChoice {
+  /** What the fork sends: `accountId: null` is the Default account. */
+  target: { accountId: string | null }
+}
+
+/**
+ * The accounts a session on `accountId` can be forked to: every account of the
+ * harness but its own. Empty while the harness has no added account.
+ */
+export function otherAccountChoices(agentType: AgentType, accountId: string | null, projectId: string | null | undefined): ForkChoice[] {
+  return accountChoicesFor(agentType, projectId)
+    .map((c): ForkChoice => ({ ...c, target: { accountId: c.selection.kind === 'account' ? c.selection.id : null } }))
+    .filter((c) => c.target.accountId !== accountId)
+}
+
 /**
  * The account a session started from another one runs on: the one that session
  * runs on, explicitly. A later change of the project's account moves neither.
