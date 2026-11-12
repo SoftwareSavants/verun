@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- In the Recent sidebar view, ⌘⌥↑/↓ and ⌘1-9 follow the order on screen (Needs you, then most recent) instead of the project order
+
 ## 0.16.6 - 2026-11-12
 
 - Fork a Claude session onto another account: the fork menu picks which account the fork runs on, copying the transcript into that account's home
