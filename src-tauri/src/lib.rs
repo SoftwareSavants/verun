@@ -42,6 +42,7 @@ mod transcript_source;
 mod tsgo_check;
 mod wakeup;
 mod watcher;
+mod voice;
 mod window_session;
 mod workspace;
 mod worktree;
