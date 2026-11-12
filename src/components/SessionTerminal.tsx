@@ -7,6 +7,9 @@ import * as ipc from '../lib/ipc'
 import { notifyAccountError } from '../lib/accountErrors'
 import { formatDroppedPathsForTerminal, takePendingTerminalPrompt } from '../lib/terminalMode'
 import type { PtyExitedEvent, PtyOutputEvent } from '../types'
+import { outputItems } from '../store/sessions'
+import { pendingUsageLimit } from '../lib/usageLimit'
+import { ContinueOnAccount, continueChoices } from './ContinueOnAccount'
 
 interface TauriDragDropPayload {
   paths: string[]
@@ -150,6 +153,16 @@ export const SessionTerminal: Component<Props> = (props) => {
             {(id) => (
               <div class="flex-1 min-h-0 relative">
                 <ShellTerminal terminalId={id()} />
+                {/* Claude ran out of usage on this account: the terminal can't
+                    offer a way out, so float one, styled like the side question pill. */}
+                <Show when={continueChoices(props.sessionId).length > 0 && pendingUsageLimit(outputItems[props.sessionId] ?? [])}>
+                  {(limit) => (
+                    <div class="absolute top-3 right-4 z-10 flex items-center gap-1.5 animate-in" title={limit()}>
+                      <span class="h-7 px-2.5 flex items-center rounded-full bg-surface-2 ring-1 ring-status-waiting/30 shadow-lg text-[11px] text-status-waiting whitespace-nowrap">Usage limit reached</span>
+                      <ContinueOnAccount sessionId={props.sessionId} message="continue" variant="floating" />
+                    </div>
+                  )}
+                </Show>
                 <Show when={!ready()}>
                   <div
                     data-testid="claude-terminal-loading"

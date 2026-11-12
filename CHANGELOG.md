@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fork a Claude session onto another account: the fork menu picks which account the fork runs on, copying the transcript into that account's home
+- A usage-limit error offers "Continue on <account>": it forks the whole session to that account and picks up where it stopped. Terminal sessions show the same as a floating pill
+- Terminal sessions show API errors (usage limit, prompt too long) as errors in their chat history, as chat sessions do
 - Opening a task from Needs you, or a project from search, keeps the sidebar on All projects instead of switching it to that project's group
 
 ## 0.16.5 - 2026-11-11

@@ -3972,14 +3972,16 @@ pub enum WorktreeForkState {
 
 /// Session row for a fork of `parent` after `fork_after_message_uuid`, placed
 /// in `task_id`. It starts idle with the usage accrued up to that message and
-/// keeps the parent's agent, model and account: a transcript never moves
-/// between account homes.
+/// keeps the parent's agent and model, and its account unless `target` names
+/// another one.
+#[allow(clippy::too_many_arguments)]
 fn forked_session(
     parent: &Session,
     task_id: &str,
     id: String,
     resume_session_id: String,
-    fork_after_message_uuid: &str,
+    fork_after_message_uuid: Option<&str>,
+    target: Option<&ForkTarget>,
     usage: &db::SessionUsageDelta,
     started_at: i64,
 ) -> Session {
@@ -3997,55 +3999,89 @@ fn forked_session(
         cache_read_tokens: usage.cache_read_tokens,
         cache_write_tokens: usage.cache_write_tokens,
         parent_session_id: Some(parent.id.clone()),
-        forked_at_message_uuid: Some(fork_after_message_uuid.to_string()),
+        forked_at_message_uuid: fork_after_message_uuid.map(str::to_string),
         agent_type: parent.agent_type.clone(),
         model: parent.model.clone(),
         closed_at: None,
-        account_id: parent.account_id.clone(),
+        account_id: match target {
+            Some(t) => t.account_id.clone(),
+            None => parent.account_id.clone(),
+        },
     }
 }
 
-/// Writes the fork's Claude transcript: the parent's, cut after
-/// `fork_after_message_uuid` and renumbered `fork_csid`. Both files sit in
-/// `home`, the parent's, because a transcript never moves between account
-/// homes; they differ only in the folder of their worktree. Blocking file I/O.
+/// The account a fork runs on, when it isn't the parent's. `account_id: None`
+/// is the Default account.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkTarget {
+    pub account_id: Option<String>,
+}
+
+/// Where a fork reads the parent's transcript and where it writes its own:
+/// the parent's account home and the fork's.
+#[derive(Clone, Debug, PartialEq)]
+struct ForkHomes {
+    from: ClaudeHome,
+    to: ClaudeHome,
+}
+
+/// Writes the fork's Claude transcript: the parent's, cut after `cut_after`
+/// (the whole of it when `None`) and renumbered `fork_csid`, in the fork's
+/// account home. The parent's stays as it was. Blocking file I/O.
 fn fork_claude_transcript(
-    home: &ClaudeHome,
+    homes: &ForkHomes,
     parent_cwd: &std::path::Path,
     parent_csid: &str,
     fork_cwd: &std::path::Path,
     fork_csid: &str,
-    fork_after_message_uuid: &str,
+    cut_after: Option<&str>,
 ) -> Result<(), String> {
-    crate::claude_jsonl::truncate_after_message(
-        &home.session_path(parent_cwd, parent_csid),
-        &home.session_path(fork_cwd, fork_csid),
+    crate::claude_jsonl::copy_transcript(
+        &homes.from.session_path(parent_cwd, parent_csid),
+        &homes.to.session_path(fork_cwd, fork_csid),
         fork_csid,
-        fork_after_message_uuid,
+        cut_after,
     )
     .map_err(|e| e.to_string())
 }
 
-/// The Claude home a fork of `parent` writes its transcript in: the home of the
-/// parent's account. `None` for a harness that keeps no Claude transcript.
-/// `process_default` is `claude_home::process_default()`.
+/// The Claude homes of a fork of `parent`: the parent's account's, and the
+/// target account's (the parent's again without a target). `None` for a
+/// harness that keeps no Claude transcript. `process_default` is
+/// `claude_home::process_default()`.
 ///
 /// Unlike a spawn, a fork has to find the parent's transcript, so a Default
 /// session with no `$HOME` is an error here, as it was before accounts.
 async fn fork_claude_home(
     pool: &SqlitePool,
     parent: &Session,
+    target: Option<&ForkTarget>,
     process_default: Option<ClaudeHome>,
-) -> Result<Option<ClaudeHome>, String> {
+) -> Result<Option<ForkHomes>, String> {
     let keeps_claude_transcript = AgentKind::parse(&parent.agent_type)
         .implementation()
         .uses_claude_jsonl();
     if !keeps_claude_transcript {
-        return Ok(None);
+        return match target {
+            Some(_) => Err("Only Claude sessions can be forked to another account".into()),
+            None => Ok(None),
+        };
     }
-    claude_home::for_account_with_default(pool, parent.account_id.as_deref(), process_default)
-        .await
-        .map(Some)
+    let from = claude_home::for_account_with_default(
+        pool,
+        parent.account_id.as_deref(),
+        process_default.clone(),
+    )
+    .await?;
+    let to = match target {
+        Some(t) => {
+            claude_home::for_account_with_default(pool, t.account_id.as_deref(), process_default)
+                .await?
+        }
+        None => from.clone(),
+    };
+    Ok(Some(ForkHomes { from, to }))
 }
 
 /// Fork a session at a specific assistant message uuid into a NEW session
@@ -4063,7 +4099,8 @@ pub async fn fork_session_in_task(
     app: &AppHandle,
     pool: &sqlx::sqlite::SqlitePool,
     source_session_id: String,
-    fork_after_message_uuid: String,
+    fork_after_message_uuid: Option<String>,
+    target: Option<ForkTarget>,
 ) -> Result<Session, String> {
     let parent = db::get_session(pool, &source_session_id)
         .await?
@@ -4077,8 +4114,9 @@ pub async fn fork_session_in_task(
         .await?
         .ok_or_else(|| format!("Task {} not found", parent.task_id))?;
 
-    // Claude only: its transcript goes in the home of the parent's account.
-    let claude_home = fork_claude_home(pool, &parent, claude_home::process_default()).await?;
+    // Claude only: its transcript goes in the home of the fork's account.
+    let claude_home =
+        fork_claude_home(pool, &parent, target.as_ref(), claude_home::process_default()).await?;
     let new_csid = Uuid::new_v4().to_string();
     let new_verun_sid = Uuid::new_v4().to_string();
     let now = epoch_ms();
@@ -4097,7 +4135,7 @@ pub async fn fork_session_in_task(
                 &parent_csid_for_blocking,
                 wt,
                 &new_csid_for_blocking,
-                &fork_uuid_for_blocking,
+                fork_uuid_for_blocking.as_deref(),
             )
         })
         .await
@@ -4107,14 +4145,16 @@ pub async fn fork_session_in_task(
     // Load parent output_lines outside the transaction so we can hold the
     // boundary check's error path separate from DB state.
     let parent_lines = db::get_output_lines(pool, &parent.id, None, None).await?;
-    let fork_usage = session_usage_up_to_marker(&parent_lines, &fork_after_message_uuid)?;
+    let kept_lines = lines_to_copy(&parent_lines, fork_after_message_uuid.as_deref())?;
+    let fork_usage = usage_of(kept_lines);
 
     let new_session = forked_session(
         &parent,
         &parent.task_id,
         new_verun_sid.clone(),
         new_csid,
-        &fork_after_message_uuid,
+        fork_after_message_uuid.as_deref(),
+        target.as_ref(),
         &fork_usage,
         now,
     );
@@ -4124,13 +4164,7 @@ pub async fn fork_session_in_task(
     // BEFORE committing so the DB stays clean.
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     insert_session_row_tx(&mut tx, &new_session).await?;
-    copy_output_lines_up_to_marker_tx(
-        &mut tx,
-        &parent_lines,
-        &new_verun_sid,
-        &fork_after_message_uuid,
-    )
-    .await?;
+    copy_output_lines_tx(&mut tx, kept_lines, &new_verun_sid).await?;
     copy_turn_snapshots_tx(&mut tx, &parent.id, &new_verun_sid).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
 
@@ -4139,20 +4173,45 @@ pub async fn fork_session_in_task(
     Ok(new_session)
 }
 
-/// Copy parent output_lines to the new session up to and including the
-/// `verun_turn_snapshot` marker whose `messageUuid` matches `fork_uuid`.
-/// Fails with a clear error if the marker is missing — otherwise the copy
-/// silently includes the entire parent session.
-async fn copy_output_lines_up_to_marker_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    parent_lines: &[crate::db::OutputLine],
-    new_session_id: &str,
-    fork_uuid: &str,
-) -> Result<(), String> {
+/// The parent's output_lines a fork keeps: up to and including the
+/// `verun_turn_snapshot` marker whose `messageUuid` is `fork_uuid`, or all of
+/// them for a whole-session fork. A missing marker is an error, otherwise the
+/// copy would silently include the entire parent session.
+fn lines_to_copy<'a>(
+    parent_lines: &'a [crate::db::OutputLine],
+    fork_uuid: Option<&str>,
+) -> Result<&'a [crate::db::OutputLine], String> {
+    let Some(fork_uuid) = fork_uuid else {
+        return Ok(parent_lines);
+    };
     let needle = format!("\"messageUuid\":\"{fork_uuid}\"");
-    let mut found = false;
-    let mut insert_count = 0usize;
-    for ol in parent_lines {
+    parent_lines
+        .iter()
+        .position(|ol| ol.line.contains("\"verun_turn_snapshot\"") && ol.line.contains(&needle))
+        .map(|i| &parent_lines[..=i])
+        .ok_or_else(|| format!("fork marker not found for message {fork_uuid}"))
+}
+
+/// What the kept lines cost, carried over to the fork.
+fn usage_of(lines: &[crate::db::OutputLine]) -> crate::db::SessionUsageDelta {
+    let mut totals = crate::db::SessionUsageDelta::default();
+    for ol in lines {
+        let delta = crate::db::usage_delta_from_output_line(&ol.line);
+        totals.total_cost += delta.total_cost;
+        totals.input_tokens += delta.input_tokens;
+        totals.output_tokens += delta.output_tokens;
+        totals.cache_read_tokens += delta.cache_read_tokens;
+        totals.cache_write_tokens += delta.cache_write_tokens;
+    }
+    totals
+}
+
+async fn copy_output_lines_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    lines: &[crate::db::OutputLine],
+    new_session_id: &str,
+) -> Result<(), String> {
+    for ol in lines {
         sqlx::query("INSERT INTO output_lines (session_id, line, emitted_at) VALUES (?, ?, ?)")
             .bind(new_session_id)
             .bind(&ol.line)
@@ -4160,44 +4219,8 @@ async fn copy_output_lines_up_to_marker_tx(
             .execute(&mut **tx)
             .await
             .map_err(|e| format!("insert output_line: {e}"))?;
-        insert_count += 1;
-        if ol.line.contains("\"verun_turn_snapshot\"") && ol.line.contains(&needle) {
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        return Err(format!(
-            "fork marker not found for message {fork_uuid} (scanned {insert_count} rows)"
-        ));
     }
     Ok(())
-}
-
-fn session_usage_up_to_marker(
-    parent_lines: &[crate::db::OutputLine],
-    fork_uuid: &str,
-) -> Result<crate::db::SessionUsageDelta, String> {
-    let needle = format!("\"messageUuid\":\"{fork_uuid}\"");
-    let mut found = false;
-    let mut totals = crate::db::SessionUsageDelta::default();
-    for ol in parent_lines {
-        let delta = crate::db::usage_delta_from_output_line(&ol.line);
-        totals.total_cost += delta.total_cost;
-        totals.input_tokens += delta.input_tokens;
-        totals.output_tokens += delta.output_tokens;
-        totals.cache_read_tokens += delta.cache_read_tokens;
-        totals.cache_write_tokens += delta.cache_write_tokens;
-        if ol.line.contains("\"verun_turn_snapshot\"") && ol.line.contains(&needle) {
-            found = true;
-            break;
-        }
-    }
-    if found {
-        Ok(totals)
-    } else {
-        Err(format!("fork marker not found for message {fork_uuid}"))
-    }
 }
 
 /// Copy `turn_snapshots` rows from the parent session to the newly-forked
@@ -4296,8 +4319,9 @@ pub async fn fork_session_to_new_task(
     app: &AppHandle,
     pool: &sqlx::sqlite::SqlitePool,
     source_session_id: String,
-    fork_after_message_uuid: String,
+    fork_after_message_uuid: Option<String>,
     worktree_state: WorktreeForkState,
+    target: Option<ForkTarget>,
 ) -> Result<(Task, Session, EnvPatch), String> {
     let parent_session = db::get_session(pool, &source_session_id)
         .await?
@@ -4321,7 +4345,13 @@ pub async fn fork_session_to_new_task(
     // Snapshot SHA lookup for "code as it was at this message" mode.
     let snapshot_sha = match worktree_state {
         WorktreeForkState::Snapshot => Some(
-            db::get_turn_snapshot(pool, &parent_session.id, &fork_after_message_uuid)
+            db::get_turn_snapshot(
+                pool,
+                &parent_session.id,
+                fork_after_message_uuid
+                    .as_deref()
+                    .ok_or("a whole-session fork has no snapshot; use the current code")?,
+            )
                 .await?
                 .ok_or_else(|| {
                     "no snapshot exists for this message — try 'current code' instead".to_string()
@@ -4334,13 +4364,18 @@ pub async fn fork_session_to_new_task(
     // Load parent output_lines BEFORE creating the worktree so a missing
     // marker fails fast without leaving stray filesystem state behind.
     let parent_lines = db::get_output_lines(pool, &parent_session.id, None, None).await?;
-    validate_fork_marker_present(&parent_lines, &fork_after_message_uuid)?;
-    let fork_usage = session_usage_up_to_marker(&parent_lines, &fork_after_message_uuid)?;
+    let kept_lines = lines_to_copy(&parent_lines, fork_after_message_uuid.as_deref())?;
+    let fork_usage = usage_of(kept_lines);
 
-    // Claude only: its transcript goes in the home of the parent's account.
+    // Claude only: its transcript goes in the home of the fork's account.
     // Resolve it before the worktree exists, for the same reason.
-    let claude_home =
-        fork_claude_home(pool, &parent_session, claude_home::process_default()).await?;
+    let claude_home = fork_claude_home(
+        pool,
+        &parent_session,
+        target.as_ref(),
+        claude_home::process_default(),
+    )
+    .await?;
     // The project's accounts for its setup hook, for the same reason.
     let setup_env = hook_account_env(app, &project.id, &project.setup_hook).await?;
 
@@ -4448,7 +4483,7 @@ pub async fn fork_session_to_new_task(
                 &parent_csid_for_blocking,
                 std::path::Path::new(&new_wt_for_blocking),
                 &new_csid_for_blocking,
-                &fork_uuid_for_blocking,
+                fork_uuid_for_blocking.as_deref(),
             )
         })
         .await
@@ -4460,7 +4495,8 @@ pub async fn fork_session_to_new_task(
         &new_task.id,
         new_verun_sid.clone(),
         new_csid,
-        &fork_after_message_uuid,
+        fork_after_message_uuid.as_deref(),
+        target.as_ref(),
         &fork_usage,
         now,
     );
@@ -4472,13 +4508,7 @@ pub async fn fork_session_to_new_task(
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     insert_task_row_tx(&mut tx, &new_task).await?;
     insert_session_row_tx(&mut tx, &new_session).await?;
-    copy_output_lines_up_to_marker_tx(
-        &mut tx,
-        &parent_lines,
-        &new_verun_sid,
-        &fork_after_message_uuid,
-    )
-    .await?;
+    copy_output_lines_tx(&mut tx, kept_lines, &new_verun_sid).await?;
     copy_turn_snapshots_tx(&mut tx, &parent_session.id, &new_verun_sid).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
 
@@ -4489,25 +4519,6 @@ pub async fn fork_session_to_new_task(
     let _ = app.emit("session-created", &new_session);
 
     Ok((new_task, new_session, setup_env))
-}
-
-/// Scan parent output_lines for a `verun_turn_snapshot` marker whose
-/// `messageUuid` matches. Fails fast before we spin up worktrees or open
-/// transactions when the fork point doesn't exist in the parent session.
-fn validate_fork_marker_present(
-    parent_lines: &[crate::db::OutputLine],
-    fork_uuid: &str,
-) -> Result<(), String> {
-    let needle = format!("\"messageUuid\":\"{fork_uuid}\"");
-    let found = parent_lines
-        .iter()
-        .any(|ol| ol.line.contains("\"verun_turn_snapshot\"") && ol.line.contains(&needle));
-    if !found {
-        return Err(format!(
-            "no turn-snapshot marker for message {fork_uuid} in parent session — the fork point must be an assistant turn that was snapshotted on turn-end"
-        ));
-    }
-    Ok(())
 }
 
 /// Run a git command in `cwd` with inherited `GIT_*` env vars stripped so
@@ -4999,7 +5010,8 @@ mod tests {
             "t-002",
             "s-fork".into(),
             "resume-fork".into(),
-            "msg-1",
+            Some("msg-1"),
+            None,
             &usage,
             9000,
         );
@@ -5037,7 +5049,8 @@ mod tests {
             "t-001",
             "s-fork".into(),
             "resume-fork".into(),
-            "msg-1",
+            Some("msg-1"),
+            None,
             &db::SessionUsageDelta::default(),
             9000,
         );
@@ -5087,9 +5100,30 @@ mod tests {
     // -- Claude home of a session --
 
     #[test]
+    fn a_fork_to_another_account_writes_its_transcript_in_that_accounts_home() {
+        let (from_dir, to_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let homes = ForkHomes {
+            from: ClaudeHome::for_config_dir(from_dir.path().to_str().unwrap()),
+            to: ClaudeHome::for_config_dir(to_dir.path().to_str().unwrap()),
+        };
+        let wt = tempfile::tempdir().unwrap();
+        let src = homes.from.session_path(wt.path(), "parent-csid");
+        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::fs::write(&src, "{\"uuid\":\"u1\",\"sessionId\":\"parent-csid\"}\n{\"uuid\":\"a1\",\"sessionId\":\"parent-csid\"}\n").unwrap();
+
+        // No cut: the whole conversation carries over.
+        fork_claude_transcript(&homes, wt.path(), "parent-csid", wt.path(), "fork-csid", None).unwrap();
+        let dest = homes.to.session_path(wt.path(), "fork-csid");
+        assert!(dest.starts_with(to_dir.path()), "got: {dest:?}");
+        assert_eq!(std::fs::read_to_string(&dest).unwrap().lines().count(), 2);
+        assert!(src.exists(), "the source stays where it was");
+    }
+
+    #[test]
     fn fork_transcript_stays_in_the_source_accounts_home() {
         let account_dir = tempfile::tempdir().unwrap();
         let home = ClaudeHome::for_config_dir(account_dir.path().to_str().unwrap());
+        let homes = ForkHomes { from: home.clone(), to: home.clone() };
         let parent_wt = tempfile::tempdir().unwrap();
         let fork_wt = tempfile::tempdir().unwrap();
         let src = home.session_path(parent_wt.path(), "parent-csid");
@@ -5108,12 +5142,12 @@ mod tests {
         .unwrap();
 
         fork_claude_transcript(
-            &home,
+            &homes,
             parent_wt.path(),
             "parent-csid",
             fork_wt.path(),
             "fork-csid",
-            "a1",
+            Some("a1"),
         )
         .unwrap();
 
@@ -5130,10 +5164,11 @@ mod tests {
     fn fork_transcript_reports_a_missing_source() {
         let account_dir = tempfile::tempdir().unwrap();
         let home = ClaudeHome::for_config_dir(account_dir.path().to_str().unwrap());
+        let homes = ForkHomes { from: home.clone(), to: home };
         let wt = tempfile::tempdir().unwrap();
 
-        let err =
-            fork_claude_transcript(&home, wt.path(), "gone", wt.path(), "new", "a1").unwrap_err();
+        let err = fork_claude_transcript(&homes, wt.path(), "gone", wt.path(), "new", Some("a1"))
+            .unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
     }
 
@@ -5173,10 +5208,61 @@ mod tests {
         let mut parent = make_session("t-001");
         parent.account_id = Some("a1".into());
 
+        let a1 = ClaudeHome::for_config_dir("/tmp/verun-accounts/a1");
         assert_eq!(
-            fork_claude_home(&pool, &parent, None).await,
-            Ok(Some(ClaudeHome::for_config_dir("/tmp/verun-accounts/a1")))
+            fork_claude_home(&pool, &parent, None, None).await,
+            Ok(Some(ForkHomes { from: a1.clone(), to: a1 }))
         );
+    }
+
+    #[tokio::test]
+    async fn a_fork_to_another_account_reads_from_the_parents_home_and_writes_to_the_targets() {
+        let pool = test_pool().await;
+        upsert_account_confirmed(&pool, make_account("a1", 1)).await.unwrap();
+        upsert_account_confirmed(&pool, make_account("a2", 2)).await.unwrap();
+        let mut parent = make_session("t-001");
+        parent.account_id = Some("a1".into());
+        let to_a2 = ForkTarget { account_id: Some("a2".into()) };
+        assert_eq!(
+            fork_claude_home(&pool, &parent, Some(&to_a2), None).await,
+            Ok(Some(ForkHomes {
+                from: ClaudeHome::for_config_dir("/tmp/verun-accounts/a1"),
+                to: ClaudeHome::for_config_dir("/tmp/verun-accounts/a2"),
+            }))
+        );
+        // To the Default account: its home is the process default.
+        let default = ClaudeHome::default_home(std::path::Path::new("/Users/me"), None);
+        let to_default = ForkTarget { account_id: None };
+        assert_eq!(
+            fork_claude_home(&pool, &parent, Some(&to_default), Some(default.clone())).await.unwrap().unwrap().to,
+            default
+        );
+        // A target that isn't a Claude account is refused.
+        let to_missing = ForkTarget { account_id: Some("nope".into()) };
+        assert!(fork_claude_home(&pool, &parent, Some(&to_missing), None).await.is_err());
+    }
+
+    #[test]
+    fn a_fork_to_another_account_runs_on_it() {
+        let mut parent = make_session("t-001");
+        parent.account_id = Some("a1".into());
+        let usage = db::SessionUsageDelta::default();
+        let target = ForkTarget { account_id: Some("a2".into()) };
+        let fork = forked_session(&parent, "t-001", "s".into(), "r".into(), None, Some(&target), &usage, 1);
+        assert_eq!(fork.account_id.as_deref(), Some("a2"));
+        assert_eq!(fork.forked_at_message_uuid, None);
+    }
+
+    #[test]
+    fn a_whole_session_fork_copies_every_line_and_all_usage() {
+        let lines: Vec<crate::db::OutputLine> = [r#"{"type":"text"}"#, r#"{"type":"verun_turn_snapshot","messageUuid":"m1"}"#, r#"{"type":"text"}"#]
+            .iter()
+            .enumerate()
+            .map(|(i, l)| crate::db::OutputLine { id: i as i64, session_id: "p".into(), line: l.to_string(), emitted_at: 0 })
+            .collect();
+        assert_eq!(lines_to_copy(&lines, None).unwrap().len(), 3);
+        assert_eq!(lines_to_copy(&lines, Some("m1")).unwrap().len(), 2);
+        assert!(lines_to_copy(&lines, Some("gone")).is_err());
     }
 
     #[tokio::test]
@@ -5186,13 +5272,13 @@ mod tests {
         // was before accounts.
         let pool = test_pool().await;
         let parent = make_session("t-001");
-        let err = fork_claude_home(&pool, &parent, None).await.unwrap_err();
+        let err = fork_claude_home(&pool, &parent, None, None).await.unwrap_err();
         assert!(err.contains("HOME"), "got: {err}");
 
         let default = ClaudeHome::default_home(std::path::Path::new("/Users/me"), None);
         assert_eq!(
-            fork_claude_home(&pool, &parent, Some(default.clone())).await,
-            Ok(Some(default))
+            fork_claude_home(&pool, &parent, None, Some(default.clone())).await,
+            Ok(Some(ForkHomes { from: default.clone(), to: default }))
         );
     }
 
@@ -5202,7 +5288,7 @@ mod tests {
         let mut parent = make_session("t-001");
         parent.account_id = Some("nope".into());
 
-        let err = fork_claude_home(&pool, &parent, None).await.unwrap_err();
+        let err = fork_claude_home(&pool, &parent, None, None).await.unwrap_err();
         assert!(err.contains("nope"), "got: {err}");
     }
 
@@ -5214,7 +5300,7 @@ mod tests {
         parent.agent_type = "codex".into();
         parent.account_id = Some("codex-account".into());
 
-        assert_eq!(fork_claude_home(&pool, &parent, None).await, Ok(None));
+        assert_eq!(fork_claude_home(&pool, &parent, None, None).await, Ok(None));
     }
 
     #[tokio::test]

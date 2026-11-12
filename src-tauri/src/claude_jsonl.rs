@@ -48,14 +48,14 @@ impl std::fmt::Display for JsonlError {
 
 impl std::error::Error for JsonlError {}
 
-/// Truncate a session JSONL to end at (and include) the line whose `uuid`
-/// equals `last_kept_uuid`, rewriting every kept line's `sessionId` to
-/// `new_session_id`. The result is written to `dest`.
-pub fn truncate_after_message(
+/// Copy a session JSONL to `dest`, rewriting every kept line's `sessionId` to
+/// `new_session_id`. With `cut_after`, the copy ends at (and includes) the
+/// line whose `uuid` equals it; without, the whole transcript is copied.
+pub fn copy_transcript(
     src: &Path,
     dest: &Path,
     new_session_id: &str,
-    last_kept_uuid: &str,
+    cut_after: Option<&str>,
 ) -> Result<(), JsonlError> {
     if !src.exists() {
         return Err(JsonlError::NotFound(src.to_path_buf()));
@@ -69,7 +69,7 @@ pub fn truncate_after_message(
     let out_file = File::create(dest).map_err(|e| JsonlError::Io(e.to_string()))?;
     let mut out = BufWriter::new(out_file);
 
-    let mut found = false;
+    let mut found = cut_after.is_none();
     for (idx, line_res) in reader.lines().enumerate() {
         let line_no = idx + 1;
         let line = line_res.map_err(|e| JsonlError::Io(e.to_string()))?;
@@ -93,8 +93,8 @@ pub fn truncate_after_message(
         let uuid_match = value
             .get("uuid")
             .and_then(|v| v.as_str())
-            .map(|u| u == last_kept_uuid)
-            .unwrap_or(false);
+            .zip(cut_after)
+            .is_some_and(|(u, cut)| u == cut);
 
         let serialized = serde_json::to_string(&value).map_err(|e| JsonlError::MalformedLine {
             line_no,
@@ -114,7 +114,7 @@ pub fn truncate_after_message(
         // Best-effort cleanup of the half-written destination so the caller
         // doesn't see a misleading file.
         let _ = std::fs::remove_file(dest);
-        return Err(JsonlError::MessageUuidNotFound(last_kept_uuid.to_string()));
+        return Err(JsonlError::MessageUuidNotFound(cut_after.unwrap_or_default().to_string()));
     }
 
     Ok(())
@@ -388,10 +388,27 @@ fn parse_transcript_assistant(value: &serde_json::Value) -> Vec<OutputItem> {
         None => return Vec::new(),
     };
 
+    // An API error (usage limit, prompt too long) arrives as a synthetic
+    // assistant message; chat shows it as an error, so the terminal's mirror does too.
+    let synthetic = value
+        .get("message")
+        .and_then(|m| m.get("model"))
+        .and_then(|m| m.as_str())
+        == Some("<synthetic>");
     let mut items = Vec::new();
     for block in content {
         let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match kind {
+            "text" if synthetic => {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        items.push(OutputItem::ErrorMessage {
+                            message: text.to_string(),
+                            raw: serde_json::to_string(value).ok(),
+                        });
+                    }
+                }
+            }
             "text" => {
                 if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                     if !text.is_empty() {
@@ -462,6 +479,32 @@ fn extract_tool_result_text(content: Option<&serde_json::Value>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_synthetic_api_error_in_a_terminal_transcript_is_an_error_like_in_chat() {
+        let line = r#"{"type":"assistant","error":"rate_limit","isApiErrorMessage":true,"uuid":"e1","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You've hit your weekly limit · resets Oct 18 at 5pm (UTC)"}]}}"#;
+        let items = parse_transcript_line(line);
+        assert_eq!(items.len(), 1, "{items:?}");
+        match &items[0] {
+            OutputItem::ErrorMessage { message, raw } => {
+                assert!(message.starts_with("You've hit your weekly limit"));
+                assert!(raw.as_deref().unwrap().contains("\"rate_limit\""));
+            }
+            other => panic!("expected ErrorMessage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_whole_transcript_copies_renumbered_when_there_is_no_cut() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.jsonl");
+        let dest = dir.path().join("other/b.jsonl");
+        std::fs::write(&src, "{\"uuid\":\"u1\",\"sessionId\":\"old\"}\n{\"uuid\":\"u2\",\"sessionId\":\"old\"}\n").unwrap();
+        copy_transcript(&src, &dest, "new", None).unwrap();
+        let text = std::fs::read_to_string(&dest).unwrap();
+        assert_eq!(text.lines().count(), 2);
+        assert!(text.lines().all(|l| l.contains("\"new\"")));
+    }
+
     use super::*;
     use tempfile::TempDir;
 
@@ -485,7 +528,7 @@ mod tests {
 "#,
         );
 
-        truncate_after_message(&src, &dest, "new-id", "a1").unwrap();
+        copy_transcript(&src, &dest, "new-id", Some("a1")).unwrap();
 
         let out = std::fs::read_to_string(&dest).unwrap();
         let lines: Vec<&str> = out.lines().collect();
@@ -504,7 +547,7 @@ mod tests {
         let src = dir.path().join("orig.jsonl");
         let dest = dir.path().join("forked.jsonl");
         write(&src, r#"{"type":"user","uuid":"u1"}"#);
-        let err = truncate_after_message(&src, &dest, "new-id", "missing").unwrap_err();
+        let err = copy_transcript(&src, &dest, "new-id", Some("missing")).unwrap_err();
         assert!(matches!(err, JsonlError::MessageUuidNotFound(_)));
         assert!(!dest.exists(), "dest should be cleaned up on error");
     }
