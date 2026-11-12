@@ -2,4 +2,7 @@
 #![allow(dead_code)]
 
 pub mod catalog;
+pub mod hold;
+#[cfg(target_os = "macos")]
+pub mod hotkey_macos;
 pub mod session;

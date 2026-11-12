@@ -6461,6 +6461,8 @@ name = "verun"
 version = "0.16.6"
 dependencies = [
  "base64 0.22.1",
+ "core-foundation 0.10.1",
+ "core-graphics",
  "dashmap",
  "grep-matcher",
  "grep-regex",
