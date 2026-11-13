@@ -2,7 +2,30 @@ fn main() {
     ensure_relay_sidecar_placeholder();
     #[cfg(target_os = "macos")]
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    link_clang_runtime();
     tauri_build::build()
+}
+
+/// whisper.cpp's Metal code checks the macOS version at run time
+/// (`@available`), which calls `__isPlatformVersionAtLeast` from clang's
+/// runtime. Rust's compiler_builtins only has a weak copy of it, which the
+/// release build's LTO drops, so link the real one from the toolchain.
+fn link_clang_runtime() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    let Ok(out) = std::process::Command::new("xcrun")
+        .args(["clang", "--print-resource-dir"])
+        .output()
+    else {
+        return;
+    };
+    let resource_dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let darwin = std::path::Path::new(&resource_dir).join("lib/darwin");
+    if out.status.success() && darwin.join("libclang_rt.osx.a").exists() {
+        println!("cargo:rustc-link-search=native={}", darwin.display());
+        println!("cargo:rustc-link-lib=static=clang_rt.osx");
+    }
 }
 
 /// tauri-build's `bundle.externalBin` validation requires the sidecar file to
