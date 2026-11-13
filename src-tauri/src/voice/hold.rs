@@ -1,7 +1,13 @@
 //! Pure hold-to-talk key logic: turns raw key events into dictation actions.
 //! Platform independent; the macOS event tap in `hotkey_macos` feeds it.
 
+use std::time::{Duration, Instant};
+
 use serde::{Deserialize, Serialize};
+
+/// A hold arms this long after key down. A release or another key before then
+/// (a tap, Fn+arrow, Fn+Delete) never opens the microphone.
+pub const ARM_DELAY: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -21,16 +27,31 @@ pub enum KeyEvent {
 
 #[derive(Debug, PartialEq)]
 pub enum HoldAction {
-    Begin,
+    /// Start a take for `window`, the window focused at key down. The take is
+    /// timed from `down_at`, so the minimum hold counts from key down.
+    Begin { window: String, down_at: Instant },
     End,
     Cancel,
     None,
 }
 
-#[derive(Default)]
+enum Phase {
+    Up,
+    /// Down for a focused window, not armed yet.
+    Arming { window: String, down_at: Instant },
+    /// Down and a take was begun for it.
+    Active,
+}
+
+/// Fed key events and the time; arms a hold `ARM_DELAY` after key down.
 pub struct HoldDetector {
-    /// The hold key is down and a dictation was begun for it.
-    active: bool,
+    phase: Phase,
+}
+
+impl Default for HoldDetector {
+    fn default() -> Self {
+        Self { phase: Phase::Up }
+    }
 }
 
 impl HoldDetector {
@@ -38,24 +59,81 @@ impl HoldDetector {
         Self::default()
     }
 
-    /// `verun_frontmost` only gates starting: a release always ends a hold
-    /// that began, even if focus moved away meanwhile.
-    pub fn on(&mut self, ev: KeyEvent, verun_frontmost: bool) -> HoldAction {
-        match ev {
-            KeyEvent::HoldDown if !self.active && verun_frontmost => {
-                self.active = true;
-                HoldAction::Begin
+    /// A key event at `now`. `focused` (the focused Verun window) only matters
+    /// for `HoldDown`: a release always ends a hold that began, even if focus
+    /// moved away meanwhile. Call `on_time(now)` first so a deadline that
+    /// passed before this event is honoured.
+    pub fn on_key(&mut self, ev: KeyEvent, focused: Option<String>, now: Instant) -> HoldAction {
+        match (ev, &self.phase) {
+            (KeyEvent::HoldDown, Phase::Up) => {
+                if let Some(window) = focused {
+                    self.phase = Phase::Arming { window, down_at: now };
+                }
+                HoldAction::None
             }
-            KeyEvent::HoldUp if self.active => {
-                self.active = false;
+            (KeyEvent::HoldUp | KeyEvent::OtherKeyDown, Phase::Arming { .. }) => {
+                self.phase = Phase::Up;
+                HoldAction::None
+            }
+            (KeyEvent::HoldUp, Phase::Active) => {
+                self.phase = Phase::Up;
                 HoldAction::End
             }
-            KeyEvent::OtherKeyDown if self.active => {
-                self.active = false;
+            (KeyEvent::OtherKeyDown, Phase::Active) => {
+                self.phase = Phase::Up;
                 HoldAction::Cancel
             }
             _ => HoldAction::None,
         }
+    }
+
+    /// Arms a pending hold once `ARM_DELAY` has passed since its key down.
+    pub fn on_time(&mut self, now: Instant) -> HoldAction {
+        let due = matches!(&self.phase, Phase::Arming { down_at, .. } if now >= *down_at + ARM_DELAY);
+        if !due {
+            return HoldAction::None;
+        }
+        match std::mem::replace(&mut self.phase, Phase::Active) {
+            Phase::Arming { window, down_at } => HoldAction::Begin { window, down_at },
+            _ => HoldAction::None,
+        }
+    }
+
+    /// When the pending hold arms, if one is pending.
+    pub fn deadline(&self) -> Option<Instant> {
+        match &self.phase {
+            Phase::Arming { down_at, .. } => Some(*down_at + ARM_DELAY),
+            _ => None,
+        }
+    }
+
+    /// The window `label` is gone: a hold pending for it never arms.
+    pub fn forget_window(&mut self, label: &str) {
+        if matches!(&self.phase, Phase::Arming { window, .. } if window == label) {
+            self.phase = Phase::Up;
+        }
+    }
+}
+
+/// What macOS does when Fn (the Globe key) is pressed, from Keyboard settings.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FnSystemAction {
+    None,
+    InputSource,
+    Emoji,
+    Dictation,
+    Unknown,
+}
+
+/// Maps the `AppleFnUsageType` user default (domain `com.apple.HIToolbox`).
+pub fn fn_action_from_pref(value: Option<i64>) -> FnSystemAction {
+    match value {
+        Some(0) => FnSystemAction::None,
+        Some(1) => FnSystemAction::InputSource,
+        Some(2) => FnSystemAction::Emoji,
+        Some(3) => FnSystemAction::Dictation,
+        _ => FnSystemAction::Unknown,
     }
 }
 
@@ -135,7 +213,6 @@ fn modifier_mask(keycode: i64) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use HoldAction::{Begin, Cancel, End};
     use KeyEvent::*;
 
     #[test]
@@ -143,51 +220,152 @@ mod tests {
         assert_eq!(HoldKey::default(), HoldKey::Fn);
     }
 
-    #[test]
-    fn down_then_up_begins_and_ends() {
-        let mut d = HoldDetector::new();
-        assert_eq!(d.on(HoldDown, true), Begin);
-        assert_eq!(d.on(HoldUp, true), End);
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    fn begin(window: &str, down_at: Instant) -> HoldAction {
+        HoldAction::Begin { window: window.into(), down_at }
+    }
+
+    fn main() -> Option<String> {
+        Some("main".into())
     }
 
     #[test]
-    fn down_when_verun_is_not_frontmost_does_nothing() {
+    fn arm_delay_is_150ms() {
+        assert_eq!(ARM_DELAY, ms(150));
+    }
+
+    #[test]
+    fn a_tap_under_the_arm_delay_begins_nothing() {
+        let t0 = Instant::now();
         let mut d = HoldDetector::new();
-        assert_eq!(d.on(HoldDown, false), HoldAction::None);
-        assert_eq!(d.on(HoldUp, false), HoldAction::None);
-        assert_eq!(d.on(HoldUp, true), HoldAction::None);
+        assert_eq!(d.on_key(HoldDown, main(), t0), HoldAction::None);
+        assert_eq!(d.deadline(), Some(t0 + ARM_DELAY));
+        assert_eq!(d.on_time(t0 + ms(100)), HoldAction::None);
+        assert_eq!(d.on_key(HoldUp, None, t0 + ms(149)), HoldAction::None);
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.on_time(t0 + ms(500)), HoldAction::None);
+    }
+
+    #[test]
+    fn another_key_within_the_arm_delay_begins_nothing() {
+        // Fn+arrow, Fn+Delete: the microphone never opens.
+        let t0 = Instant::now();
+        let mut d = HoldDetector::new();
+        d.on_key(HoldDown, main(), t0);
+        assert_eq!(d.on_key(OtherKeyDown, None, t0 + ms(80)), HoldAction::None);
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.on_time(t0 + ms(400)), HoldAction::None);
+        assert_eq!(d.on_key(HoldUp, None, t0 + ms(500)), HoldAction::None);
+    }
+
+    #[test]
+    fn held_past_the_arm_delay_begins_from_key_down() {
+        let t0 = Instant::now();
+        let mut d = HoldDetector::new();
+        d.on_key(HoldDown, Some("task-2".into()), t0);
+        assert_eq!(d.on_time(t0 + ms(149)), HoldAction::None);
+        assert_eq!(d.on_time(t0 + ms(150)), begin("task-2", t0));
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.on_time(t0 + ms(300)), HoldAction::None);
+        assert_eq!(d.on_key(HoldUp, None, t0 + ms(900)), HoldAction::End);
+    }
+
+    #[test]
+    fn release_at_200ms_begins_then_ends() {
+        let t0 = Instant::now();
+        let mut d = HoldDetector::new();
+        d.on_key(HoldDown, main(), t0);
+        // The release is the first thing seen after the deadline.
+        assert_eq!(d.on_time(t0 + ms(200)), begin("main", t0));
+        assert_eq!(d.on_key(HoldUp, None, t0 + ms(200)), HoldAction::End);
+    }
+
+    #[test]
+    fn another_key_after_arming_cancels() {
+        let t0 = Instant::now();
+        let mut d = HoldDetector::new();
+        d.on_key(HoldDown, main(), t0);
+        assert_eq!(d.on_time(t0 + ms(150)), begin("main", t0));
+        assert_eq!(d.on_key(OtherKeyDown, None, t0 + ms(400)), HoldAction::Cancel);
+        assert_eq!(d.on_key(HoldUp, None, t0 + ms(500)), HoldAction::None);
+        // A fresh hold works again afterwards.
+        d.on_key(HoldDown, main(), t0 + ms(1000));
+        assert_eq!(d.on_time(t0 + ms(1150)), begin("main", t0 + ms(1000)));
+        assert_eq!(d.on_key(HoldUp, None, t0 + ms(1600)), HoldAction::End);
+    }
+
+    #[test]
+    fn down_with_no_focused_window_does_nothing() {
+        let t0 = Instant::now();
+        let mut d = HoldDetector::new();
+        assert_eq!(d.on_key(HoldDown, None, t0), HoldAction::None);
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.on_time(t0 + ms(500)), HoldAction::None);
+        assert_eq!(d.on_key(HoldUp, None, t0 + ms(600)), HoldAction::None);
     }
 
     #[test]
     fn release_after_losing_focus_still_ends() {
+        let t0 = Instant::now();
         let mut d = HoldDetector::new();
-        assert_eq!(d.on(HoldDown, true), Begin);
-        assert_eq!(d.on(HoldUp, false), End);
-    }
-
-    #[test]
-    fn other_key_during_hold_cancels() {
-        let mut d = HoldDetector::new();
-        assert_eq!(d.on(HoldDown, true), Begin);
-        assert_eq!(d.on(OtherKeyDown, true), Cancel);
-        assert_eq!(d.on(HoldUp, true), HoldAction::None);
-        // A fresh hold works again afterwards.
-        assert_eq!(d.on(HoldDown, true), Begin);
-        assert_eq!(d.on(HoldUp, true), End);
+        d.on_key(HoldDown, main(), t0);
+        d.on_time(t0 + ms(150));
+        assert_eq!(d.on_key(HoldUp, None, t0 + ms(800)), HoldAction::End);
     }
 
     #[test]
     fn other_key_without_hold_does_nothing() {
         let mut d = HoldDetector::new();
-        assert_eq!(d.on(OtherKeyDown, true), HoldAction::None);
+        assert_eq!(d.on_key(OtherKeyDown, main(), Instant::now()), HoldAction::None);
     }
 
     #[test]
-    fn repeated_down_is_ignored() {
+    fn repeated_down_keeps_the_first_key_down() {
+        let t0 = Instant::now();
         let mut d = HoldDetector::new();
-        assert_eq!(d.on(HoldDown, true), Begin);
-        assert_eq!(d.on(HoldDown, true), HoldAction::None);
-        assert_eq!(d.on(HoldUp, true), End);
+        d.on_key(HoldDown, main(), t0);
+        assert_eq!(d.on_key(HoldDown, Some("other".into()), t0 + ms(100)), HoldAction::None);
+        assert_eq!(d.on_time(t0 + ms(150)), begin("main", t0));
+        assert_eq!(d.on_key(HoldDown, main(), t0 + ms(200)), HoldAction::None);
+        assert_eq!(d.on_key(HoldUp, None, t0 + ms(500)), HoldAction::End);
+    }
+
+    #[test]
+    fn a_closed_window_drops_its_pending_arm_only() {
+        let t0 = Instant::now();
+        let mut d = HoldDetector::new();
+        d.on_key(HoldDown, Some("task-1".into()), t0);
+        d.forget_window("main");
+        assert_eq!(d.deadline(), Some(t0 + ARM_DELAY));
+        d.forget_window("task-1");
+        assert_eq!(d.deadline(), None);
+        assert_eq!(d.on_time(t0 + ms(400)), HoldAction::None);
+        assert_eq!(d.on_key(HoldUp, None, t0 + ms(500)), HoldAction::None);
+    }
+
+    #[test]
+    fn fn_action_maps_the_globe_key_setting() {
+        assert_eq!(fn_action_from_pref(Some(0)), FnSystemAction::None);
+        assert_eq!(fn_action_from_pref(Some(1)), FnSystemAction::InputSource);
+        assert_eq!(fn_action_from_pref(Some(2)), FnSystemAction::Emoji);
+        assert_eq!(fn_action_from_pref(Some(3)), FnSystemAction::Dictation);
+        assert_eq!(fn_action_from_pref(Some(4)), FnSystemAction::Unknown);
+        assert_eq!(fn_action_from_pref(Some(-1)), FnSystemAction::Unknown);
+        assert_eq!(fn_action_from_pref(None), FnSystemAction::Unknown);
+        let names: Vec<_> = [
+            FnSystemAction::None,
+            FnSystemAction::InputSource,
+            FnSystemAction::Emoji,
+            FnSystemAction::Dictation,
+            FnSystemAction::Unknown,
+        ]
+        .iter()
+        .map(|a| serde_json::to_value(a).unwrap())
+        .collect();
+        assert_eq!(names, ["none", "input-source", "emoji", "dictation", "unknown"]);
     }
 
     #[test]

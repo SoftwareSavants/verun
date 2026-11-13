@@ -14,7 +14,7 @@ vi.mock('../store/agents', () => ({ agents: [{ id: 'claude', name: 'Claude Code'
 vi.mock('../store/draftTask', () => ({ startDraftTask: mocks.start }))
 vi.mock('./AgentPicker', () => ({ AgentPicker: () => <span>Claude</span> }))
 vi.mock('./CloudSessionPicker', () => ({ CloudSessionPicker: () => null }))
-vi.mock('./DictationControl', () => ({ DictationControl: () => null }))
+vi.mock('./DictationControl', () => ({ DictationControl: (p: { available: boolean }) => <span data-testid="dictation" data-available={String(p.available)} /> }))
 vi.mock('../store/voice', () => ({
   registerDictationTarget: (t: (typeof mocks.targets)[number]) => {
     mocks.targets.push(t)
@@ -230,4 +230,16 @@ test('hidden behind a selected task or the task board, the new-task box is not a
   expect(mocks.targets).toEqual([])
   setShowTaskBoard(false)
   expect(mocks.targets.map(t => t.id)).toEqual(['new-task'])
+})
+test('the mic is available while the box is a dictation target, not while it sends', async () => {
+  let finish!: () => void
+  mocks.start.mockReturnValue(new Promise<void>(r => { finish = r }))
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  const mic = () => screen.getByTestId('dictation').dataset.available
+  expect(mic()).toBe('true')
+  fireEvent.input(prompt(), { target: { value: 'Fix it' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(mic()).toBe('false'))
+  expect(mocks.targets).toEqual([])
+  finish()
 })

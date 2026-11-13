@@ -8,13 +8,16 @@ use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 
 use core_foundation::base::TCFType;
+use core_foundation::number::CFNumber;
+use core_foundation::propertylist::{CFPropertyList, CFPropertyListRef};
+use core_foundation::string::{CFString, CFStringRef};
 use core_foundation::runloop::{kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopRunResult};
 use core_graphics::event::{
     CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
     CallbackResult, EventField,
 };
 
-use super::hold::{classify, HoldKey, KeyEvent, RawKind};
+use super::hold::{classify, fn_action_from_pref, FnSystemAction, HoldKey, KeyEvent, RawKind};
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
@@ -24,6 +27,28 @@ extern "C" {
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGEventTapEnable(tap: *mut c_void, enable: bool);
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFPreferencesCopyAppValue(key: CFStringRef, application_id: CFStringRef) -> CFPropertyListRef;
+}
+
+/// What macOS does on Fn (Keyboard settings, "Press Globe key to"): the
+/// `AppleFnUsageType` user default of `com.apple.HIToolbox`.
+pub fn fn_system_action() -> FnSystemAction {
+    let key = CFString::from_static_string("AppleFnUsageType");
+    let domain = CFString::from_static_string("com.apple.HIToolbox");
+    // SAFETY: both arguments are valid CFStrings that outlive the call. The
+    // result follows the Create rule (we own it) and may be NULL.
+    let value = unsafe { CFPreferencesCopyAppValue(key.as_concrete_TypeRef(), domain.as_concrete_TypeRef()) };
+    if value.is_null() {
+        return fn_action_from_pref(None);
+    }
+    // SAFETY: `value` is non-NULL and owned by us (Create rule); wrapping it
+    // hands that ownership to `CFPropertyList`, which releases it on drop.
+    let value = unsafe { CFPropertyList::wrap_under_create_rule(value) };
+    fn_action_from_pref(value.downcast::<CFNumber>().and_then(|n| n.to_i64()))
 }
 
 /// Whether Verun may observe global key events. Never prompts.
@@ -43,7 +68,7 @@ pub fn open_accessibility_settings() {
                 let _ = child.wait();
             });
         }
-        Err(e) => eprintln!("voice: could not open Accessibility settings: {e}"),
+        Err(e) => eprintln!("[verun][voice] could not open Accessibility settings: {e}"),
     }
 }
 
@@ -140,7 +165,7 @@ fn run_tap(
                 // A panic must not unwind across the extern "C" tap callback.
                 if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_event(ev))).is_err()
                 {
-                    eprintln!("voice: hotkey on_event panicked; event dropped");
+                    eprintln!("[verun][voice] hotkey on_event panicked; event dropped");
                 }
             }
             CallbackResult::Keep

@@ -404,9 +404,10 @@ export const MessageInput: Component<Props> = (props) => {
   }
   // Dictation target while a session is open and on screen (the task board hides
   // the task panel without unmounting it).
+  const dictationTarget = () => !!props.sessionId && !showTaskBoard()
   createEffect(() => {
     const sid = props.sessionId
-    if (!sid || showTaskBoard()) return
+    if (!sid || !dictationTarget()) return
     onCleanup(registerDictationTarget({ id: `session:${sid}`, sessionId: sid, insert: insertDictated }))
   })
   /** Dictated text goes in as one plain text node (never a badge): at the caret when focused, else at the end without touching focus or the selection. */
@@ -2560,7 +2561,7 @@ export const MessageInput: Component<Props> = (props) => {
           </div>
 
           <div class="flex items-center gap-1">
-            <DictationControl />
+            <DictationControl available={dictationTarget()} />
             {/* Attach button */}
             <button
               class="w-7 h-7 flex items-center justify-center rounded-lg text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors shrink-0 disabled:opacity-30"

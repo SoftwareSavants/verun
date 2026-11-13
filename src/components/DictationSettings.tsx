@@ -1,7 +1,7 @@
 import { Component, For, Show, createSignal, onCleanup, onMount } from 'solid-js'
 import { Toggle } from './Toggle'
 import { ConfirmDialog } from './ConfirmDialog'
-import { MIC_DENIED_HELP, ModelDownload, SMALL_BUTTON, stableKeys } from './DictationParts'
+import { FnConflictHint, MIC_DENIED_HELP, ModelDownload, SMALL_BUTTON, stableKeys } from './DictationParts'
 import {
   voiceStatus, openDictationSetup, refreshVoiceStatus, setDictationEnabled, setDictationLanguage,
   setDictationHoldKey, deleteDictationModel, requestMicrophone, openAccessibilitySettings, watchVoiceStatusOnFocus,
@@ -109,6 +109,7 @@ const Body: Component<{ status: VoiceStatus }> = (props) => {
               <For each={HOLD_KEYS}>{(key) => <option value={key}>{holdKeyName(key)}</option>}</For>
             </select>
           </div>
+          <FnConflictHint status={props.status} class="text-xs text-status-waiting -mt-2" />
         </div>
       </section>
 

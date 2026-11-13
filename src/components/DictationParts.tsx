@@ -1,12 +1,32 @@
 import { Component, Show, createMemo, type Accessor } from 'solid-js'
 import { modelDownloads, downloadDictationModel } from '../store/voice'
 import { formatDownloadSize } from '../lib/format'
-import type { ModelStatus } from '../types/voice'
+import type { FnSystemAction, ModelStatus, VoiceStatus } from '../types/voice'
 
 // Pieces shared by Settings -> Dictation and the setup dialog.
 
 export const MIC_DENIED_HELP =
   'Microphone access is turned off for Verun. Turn it on in System Settings > Privacy & Security > Microphone.'
+
+const FN_ACTIONS: Partial<Record<FnSystemAction, string>> = {
+  'input-source': 'change the input source',
+  emoji: 'show the emoji picker',
+  dictation: 'start macOS dictation',
+}
+
+/** One line when Fn is the hold key and macOS also acts on Fn; nothing otherwise. */
+export const FnConflictHint: Component<{ status: VoiceStatus; class?: string }> = (props) => {
+  const action = () => (props.status.holdKey === 'fn' ? FN_ACTIONS[props.status.fnSystemAction] : undefined)
+  return (
+    <Show when={action()}>
+      {(a) => (
+        <p class={props.class ?? 'text-xs text-status-waiting'}>
+          macOS also uses the Fn key to {a()}. Turn that off in System Settings &gt; Keyboard, or choose another hold key.
+        </p>
+      )}
+    </Show>
+  )
+}
 
 export const SMALL_BUTTON = 'shrink-0 px-2.5 py-1 rounded-lg text-xs bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary transition-colors'
 

@@ -10,6 +10,9 @@ export type VoiceState = 'idle' | 'recording' | 'transcribing'
 
 export type MicPermission = 'granted' | 'denied' | 'undetermined'
 
+/** What macOS itself does on Fn (Keyboard settings, the Globe key); 'unknown' when it cannot be read. */
+export type FnSystemAction = 'none' | 'input-source' | 'emoji' | 'dictation' | 'unknown'
+
 export type VoiceError = 'mic-denied' | 'mic-unavailable' | 'model-missing' | 'disabled' | { engine: string }
 
 export interface ModelStatus {
@@ -32,6 +35,7 @@ export interface VoiceStatus {
   language: Language
   holdKey: HoldKey
   accessibility: boolean
+  fnSystemAction: FnSystemAction
   microphone: MicPermission
   state: VoiceState
   models: ModelStatus[]

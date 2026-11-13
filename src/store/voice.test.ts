@@ -53,7 +53,7 @@ const makeTarget = (sid: string | null = 's1'): TestTarget => ({
 const registerDictationTarget = register
 
 const status = (over: Partial<VoiceStatus> = {}): VoiceStatus => ({
-  supported: true, enabled: true, language: 'en', holdKey: 'fn', accessibility: true,
+  supported: true, enabled: true, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none',
   microphone: 'granted', state: 'idle', models: [], languages: [], ...over,
 })
 
@@ -304,6 +304,15 @@ describe('state', () => {
     expect(voiceState()).toBe('idle')
   })
 
+  test('a new recording starts its meter at zero, not at the last take\'s level', () => {
+    registerDictationTarget(makeTarget())
+    rec(1)
+    fire('voice-level', { level: 0.8 })
+    dropped(1)
+    rec(2)
+    expect(voiceLevel()).toBe(0)
+  })
+
   test('level applies only while this window records', () => {
     fire('voice-level', { level: 0.5 })
     expect(voiceLevel()).toBe(0)
@@ -371,6 +380,28 @@ describe('toggleDictation', () => {
     vi.mocked(ipc.voiceBegin).mockRejectedValue(error)
     toggleDictation()
     await vi.waitFor(() => expect(addToast).toHaveBeenCalledWith(msg, 'error'))
+  })
+
+  test('a second toggle while the begin is in flight is ignored', async () => {
+    let resolve!: () => void
+    vi.mocked(ipc.voiceBegin).mockReturnValueOnce(new Promise<void>(r => { resolve = r }))
+    toggleDictation()
+    toggleDictation()
+    expect(ipc.voiceBegin).toHaveBeenCalledTimes(1)
+    expect(ipc.voiceEnd).not.toHaveBeenCalled()
+    resolve()
+    await vi.waitFor(() => {
+      toggleDictation()
+      expect(ipc.voiceBegin).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  test('a rejected begin clears the in-flight guard', async () => {
+    vi.mocked(ipc.voiceBegin).mockRejectedValueOnce({ engine: 'x' })
+    toggleDictation()
+    await vi.waitFor(() => expect(addToast).toHaveBeenCalled())
+    toggleDictation()
+    expect(ipc.voiceBegin).toHaveBeenCalledTimes(2)
   })
 
   test('a rejected begin with disabled opens setup, no toast', async () => {
@@ -502,6 +533,117 @@ describe('focus re-check', () => {
     stopB()
     window.dispatchEvent(new Event('focus'))
     expect(ipc.voiceStatus).toHaveBeenCalledTimes(before + 2)
+  })
+})
+
+describe('Accessibility granted after setup', () => {
+  const reads = () => vi.mocked(ipc.voiceStatus).mock.calls.length
+  const focus = () => window.dispatchEvent(new Event('focus'))
+
+  test('while dictation is on without Accessibility, focusing the window re-reads the status', async () => {
+    vi.mocked(ipc.voiceStatus).mockResolvedValue(status({ accessibility: false }))
+    fire('voice-status-changed', status({ accessibility: false }))
+    const before = reads()
+    focus()
+    expect(reads()).toBe(before + 1)
+    // One watcher, however many status events say the same.
+    fire('voice-status-changed', status({ accessibility: false }))
+    focus()
+    expect(reads()).toBe(before + 2)
+  })
+
+  test('stops once Accessibility is granted', async () => {
+    fire('voice-status-changed', status({ accessibility: false }))
+    fire('voice-status-changed', status({ accessibility: true }))
+    const before = reads()
+    focus()
+    expect(reads()).toBe(before)
+  })
+
+  test('stops once dictation is turned off, and never runs while it is off', async () => {
+    fire('voice-status-changed', status({ accessibility: false }))
+    fire('voice-status-changed', status({ accessibility: false, enabled: false }))
+    const before = reads()
+    focus()
+    expect(reads()).toBe(before)
+  })
+
+  test('does not stop a watcher a view holds', async () => {
+    const stop = watchVoiceStatusOnFocus()
+    fire('voice-status-changed', status({ accessibility: false }))
+    fire('voice-status-changed', status({ accessibility: true }))
+    const before = reads()
+    focus()
+    expect(reads()).toBe(before + 1)
+    stop()
+  })
+})
+
+describe('pins of a window that closed', () => {
+  const KEY = 'verun:voicePins'
+  const stored = () => JSON.parse(localStorage.getItem(KEY) ?? '{}')
+
+  test('a pin is stored while its take is out and removed on its terminal event', () => {
+    registerDictationTarget(makeTarget('a'))
+    rec(1)
+    expect(stored()).toEqual({ 1: { targetId: 'session:a', sessionId: 'a' } })
+    transcript('x', 1)
+    expect(stored()).toEqual({})
+  })
+
+  test('a normal take leaves no stored pin behind', () => {
+    registerDictationTarget(makeTarget('a'))
+    rec(1)
+    state('transcribing', 'main')
+    dropped(1)
+    rec(2)
+    failed(2, { engine: 'x' })
+    rec(3)
+    state('idle', null)
+    expect(stored()).toEqual({})
+  })
+
+  test('global idle clears only the stored pins this window created', () => {
+    localStorage.setItem(KEY, JSON.stringify({ 9: { targetId: 'session:b', sessionId: 'b' } }))
+    registerDictationTarget(makeTarget('a'))
+    rec(1)
+    state('idle', null)
+    expect(stored()).toEqual({ 9: { targetId: 'session:b', sessionId: 'b' } })
+  })
+
+  test('an orphaned transcript with a stored pin for a live session goes to its draft', () => {
+    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', sessionId: 'a' } }))
+    vi.mocked(sessionById).mockReturnValue({ id: 'a' } as never)
+    saveDraftMessage('a', 'draft')
+    transcript('more', 7)
+    expect(loadDraftMessage('a')).toBe('draft more')
+    expect(addToast).toHaveBeenCalledWith('Dictation saved to the draft of the chat you were in.', 'info')
+    expect(stored()).toEqual({})
+  })
+
+  test('an orphaned transcript whose session is gone is dropped and forgotten', () => {
+    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', sessionId: 'a' } }))
+    vi.mocked(sessionById).mockReturnValue(undefined)
+    transcript('lost', 7)
+    expect(loadDraftMessage('a')).toBeNull()
+    expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
+    expect(stored()).toEqual({})
+  })
+
+  test('an orphaned transcript with no stored pin shows the dropped toast', () => {
+    localStorage.setItem(KEY, JSON.stringify({ 8: { targetId: 'new-task', sessionId: null } }))
+    transcript('lost', 7)
+    expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
+    expect(stored()).toEqual({ 8: { targetId: 'new-task', sessionId: null } })
+  })
+
+  test('unreadable stored pins are ignored', () => {
+    localStorage.setItem(KEY, 'not json')
+    registerDictationTarget(makeTarget('a'))
+    rec(1)
+    transcript('x', 1)
+    transcript('y', 5)
+    expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
   })
 })
 

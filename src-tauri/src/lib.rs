@@ -40,9 +40,9 @@ mod task;
 mod terminal_links;
 mod transcript_source;
 mod tsgo_check;
+mod voice;
 mod wakeup;
 mod watcher;
-mod voice;
 mod window_session;
 mod workspace;
 mod worktree;
@@ -352,6 +352,9 @@ pub fn run() {
             if let WindowEvent::Destroyed = event {
                 if let Some(map) = window.try_state::<pty::ActivePtyMap>() {
                     pty::detach_window(&map, window.label());
+                }
+                if let Some(voice) = window.try_state::<voice::runtime::VoiceService>() {
+                    voice.window_closed(window.label());
                 }
             }
             if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_))

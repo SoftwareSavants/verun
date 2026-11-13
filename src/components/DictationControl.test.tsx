@@ -1,5 +1,6 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, fireEvent, screen } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import type { VoiceStatus, VoiceState } from '../types/voice'
 
 const mocks = vi.hoisted(() => ({
@@ -36,7 +37,7 @@ vi.mock('../lib/ipc', () => ({ voiceSetLanguage: mocks.voiceSetLanguage }))
 import { DictationControl } from './DictationControl'
 
 const status = (over: Partial<VoiceStatus> = {}): VoiceStatus => ({
-  supported: true, enabled: true, language: 'en', holdKey: 'fn', accessibility: true,
+  supported: true, enabled: true, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none',
   microphone: 'granted', state: 'idle', models: [],
   languages: [
     { code: 'en', model: 'whisper-turbo', installed: true },
@@ -61,14 +62,14 @@ afterEach(cleanup)
 describe('DictationControl', () => {
   test('renders nothing before the status is known, or where dictation is not supported', () => {
     voice.setStatus(null)
-    const { container } = render(() => <DictationControl />)
+    const { container } = render(() => <DictationControl available />)
     expect(container.innerHTML).toBe('')
     voice.setStatus(status({ supported: false }))
     expect(container.innerHTML).toBe('')
   })
 
   test('shows the mic button when supported; clicking it toggles dictation without taking focus', () => {
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     expect(mic().getAttribute('aria-pressed')).toBe('false')
     const down = fireEvent.mouseDown(mic())
     expect(down).toBe(false) // default prevented: the composer keeps its caret
@@ -82,19 +83,19 @@ describe('DictationControl', () => {
     ['right-command', 'Dictate (hold Right Command)'],
   ] as const)('the tooltip names the hold key %s', (holdKey, title) => {
     voice.setStatus(status({ holdKey }))
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     expect(mic().title).toBe(title)
   })
 
   test('before dictation is set up the button offers setup and there is no language switcher', () => {
     voice.setStatus(status({ enabled: false }))
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     expect(mic().title).toBe('Set up dictation')
     expect(screen.queryByRole('button', { name: /Dictation language/ })).toBeNull()
   })
 
   test('while recording: pressed, a live level meter, and nothing moves', () => {
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     const size = (el: HTMLElement) => el.className.split(' ').filter(c => /^(w|h)-/.test(c))
     const idleSize = size(mic())
     voice.setState('recording')
@@ -114,19 +115,19 @@ describe('DictationControl', () => {
   })
 
   test('while transcribing: a working state in the same place', () => {
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     voice.setState('transcribing')
     expect(screen.getByRole('status').textContent).toBe('Transcribing')
     expect(mic().getAttribute('aria-pressed')).toBe('false')
   })
 
   test('idle has no recording or working state', () => {
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     expect(screen.getByRole('status').textContent).toBe('')
   })
 
   test('the switcher shows the language and lists only installed ones, by name, with the current one checked', () => {
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     const switcher = screen.getByRole('button', { name: 'Dictation language: English' })
     expect(switcher.textContent).toBe('EN')
     fireEvent.click(switcher)
@@ -136,7 +137,7 @@ describe('DictationControl', () => {
   })
 
   test('choosing a language sets it and closes the menu', () => {
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     fireEvent.click(screen.getByRole('button', { name: 'Dictation language: English' }))
     // Picking from the menu must not take focus (and the caret) from the composer.
     expect(fireEvent.mouseDown(screen.getByRole('menuitemradio', { name: 'French' }))).toBe(false)
@@ -149,7 +150,7 @@ describe('DictationControl', () => {
   })
 
   test('a status event keeps the menu rows, so a focused item stays focused', () => {
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     fireEvent.click(screen.getByRole('button', { name: 'Dictation language: English' }))
     const french = screen.getByRole('menuitemradio', { name: 'French' })
     french.focus()
@@ -158,8 +159,25 @@ describe('DictationControl', () => {
     expect(document.activeElement).toBe(french)
   })
 
+  test.each([true, false])('where its composer is not a dictation target the mic is disabled (enabled: %s)', (enabled) => {
+    voice.setStatus(status({ enabled }))
+    render(() => <DictationControl available={false} />)
+    expect((mic() as HTMLButtonElement).disabled).toBe(true)
+    expect(mic().title).toBe('Dictation is not available here')
+    fireEvent.click(mic())
+    expect(mocks.toggleDictation).not.toHaveBeenCalled()
+  })
+
+  test('the mic comes back when its composer becomes a target again', () => {
+    const [available, setAvailable] = createSignal(false)
+    render(() => <DictationControl available={available()} />)
+    setAvailable(true)
+    expect((mic() as HTMLButtonElement).disabled).toBe(false)
+    expect(mic().title).toBe('Dictate (hold Fn)')
+  })
+
   test('Add language... opens dictation setup', () => {
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     fireEvent.click(screen.getByRole('button', { name: 'Dictation language: English' }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add language...' }))
     expect(mocks.openDictationSetup).toHaveBeenCalledOnce()

@@ -11,8 +11,11 @@ import { stableKeys } from './DictationParts'
 // Each bar follows the level with its own gain, so speech reads as movement.
 const BAR_GAINS = [0.6, 1, 0.75]
 
-/** Mic button, recording/transcribing state and quick language switcher, shared by both composers. */
-export function DictationControl() {
+/**
+ * Mic button, recording/transcribing state and quick language switcher, shared by both composers.
+ * `available`: the composer is a dictation target right now; the mic is disabled otherwise.
+ */
+export function DictationControl(props: { available: boolean }) {
   const [menuOpen, setMenuOpen] = createSignal(false)
   const supported = () => {
     const s = voiceStatus()
@@ -94,10 +97,14 @@ export function DictationControl() {
             class={clsx(
               'w-7 h-7 flex items-center justify-center rounded-lg transition-colors shrink-0',
               voiceState() === 'recording' ? 'text-accent bg-accent/10 hover:bg-accent/20' : 'text-text-dim hover:text-text-muted hover:bg-surface-2',
+              'disabled:opacity-40 disabled:pointer-events-none',
             )}
             aria-label="Dictate"
             aria-pressed={voiceState() === 'recording'}
-            title={status().enabled ? `Dictate (hold ${holdKeyName(status().holdKey)})` : 'Set up dictation'}
+            disabled={!props.available}
+            title={!props.available
+              ? 'Dictation is not available here'
+              : status().enabled ? `Dictate (hold ${holdKeyName(status().holdKey)})` : 'Set up dictation'}
             onMouseDown={e => e.preventDefault()}
             onClick={() => toggleDictation()}
           >

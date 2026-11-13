@@ -17,7 +17,7 @@ vi.mock('../store/voice', () => ({
     return () => { mocks.targets = mocks.targets.filter(x => x !== t) }
   },
 }))
-vi.mock('./DictationControl', () => ({ DictationControl: () => null }))
+vi.mock('./DictationControl', () => ({ DictationControl: (p: { available: boolean }) => <span data-testid="dictation" data-available={String(p.available)} /> }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve(undefined)) }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(() => Promise.resolve(() => {})), emit: vi.fn() }))
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ label: 'main', onDragDropEvent: () => Promise.resolve(() => {}) }) }))
@@ -93,9 +93,15 @@ describe('MessageInput as a dictation target', () => {
     expect(mocks.targets.map(t => t.id)).toEqual(['session:s2'])
   })
 
-  test('a composer with no session cannot be typed in, so it is not a target', () => {
+  test('a composer with no session cannot be typed in, so it is not a target and its mic is unavailable', () => {
     render(() => <MessageInput sessionId={null} isRunning={false} />)
     expect(mocks.targets).toEqual([])
+    expect(screen.getByTestId('dictation').dataset.available).toBe('false')
+  })
+
+  test('with a session its mic is available', () => {
+    render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    expect(screen.getByTestId('dictation').dataset.available).toBe('true')
   })
 
   test('hidden behind the task board it is not a target; back in view it is again', () => {

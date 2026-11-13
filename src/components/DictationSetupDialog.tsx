@@ -1,6 +1,6 @@
 import { Component, For, Match, Show, Switch, createSignal, onCleanup, onMount, type JSX } from 'solid-js'
 import { Dialog } from './Dialog'
-import { DownloadProgress, MIC_DENIED_HELP, ModelDownload, downloadPhase, focusOnMount, stableKeys } from './DictationParts'
+import { DownloadProgress, FnConflictHint, MIC_DENIED_HELP, ModelDownload, downloadPhase, focusOnMount, stableKeys } from './DictationParts'
 import {
   voiceStatus, dictationSetupRequest, clearDictationSetupRequest, refreshVoiceStatus, requestMicrophone,
   chooseDictationLanguage, pendingDictationLanguage, setDictationEnabled, openAccessibilitySettings,
@@ -176,6 +176,7 @@ const Wizard: Component<{ status: VoiceStatus; request: DictationSetupRequest }>
             Holding {holdKeyName(props.status.holdKey)} to talk needs Accessibility permission. Turn on Verun in
             System Settings &gt; Privacy &amp; Security &gt; Accessibility.
           </p>
+          <FnConflictHint status={props.status} class="text-sm text-status-waiting mb-4" />
           <div class="flex flex-wrap justify-end gap-2">
             <button type="button" class="btn-ghost" onClick={() => setSkippedAccessibility(true)}>Skip, use the button only</button>
             <button type="button" class="btn-ghost" onClick={() => void refreshVoiceStatus()}>Check again</button>
@@ -206,6 +207,7 @@ const Wizard: Component<{ status: VoiceStatus; request: DictationSetupRequest }>
                 Hold {holdKeyName(props.status.holdKey)} to talk, or click the mic button.
               </Show>
             </p>
+            <FnConflictHint status={props.status} class="text-sm text-status-waiting mb-4" />
           </Show>
           <div class="flex justify-end">
             <button type="button" class="btn-primary" ref={focusOnMount} disabled={finishing()} onClick={() => void finish()}>Done</button>

@@ -130,6 +130,13 @@ mod tests {
     }
 
     #[test]
+    fn every_language_serializes_as_its_code() {
+        for l in Language::ALL {
+            assert_eq!(serde_json::to_string(&l).unwrap(), format!("\"{}\"", l.code()));
+        }
+    }
+
+    #[test]
     fn catalog_entries_are_complete() {
         for id in [ModelId::WhisperTurbo] {
             let s = spec(id);

@@ -33,7 +33,7 @@ const CODES: Language[] = ['en', 'fr', 'es', 'ar', 'zh', 'hi', 'pt', 'ru', 'bn',
 function status(over: Partial<VoiceStatus> & { installed?: boolean } = {}): VoiceStatus {
   const { installed = true, ...rest } = over
   return {
-    supported: true, enabled: false, language: 'en', holdKey: 'fn', accessibility: true,
+    supported: true, enabled: false, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none',
     microphone: 'granted', state: 'idle',
     models: [{ id: 'whisper-turbo', displayName: 'Whisper Turbo', installed, bytes: 574041195 }],
     languages: CODES.map(code => ({ code, model: 'whisper-turbo', installed })),
@@ -191,6 +191,27 @@ describe('permissions', () => {
     const rows = screen.getByRole('list', { name: 'Permissions' })
     expect(within(rows).getAllByText('Ready')).toHaveLength(2)
     expect(screen.queryByText('Needs Accessibility permission')).toBeNull()
+  })
+})
+
+describe('Fn also used by macOS', () => {
+  test.each([
+    ['input-source', 'macOS also uses the Fn key to change the input source. Turn that off in System Settings > Keyboard, or choose another hold key.'],
+    ['emoji', 'macOS also uses the Fn key to show the emoji picker. Turn that off in System Settings > Keyboard, or choose another hold key.'],
+    ['dictation', 'macOS also uses the Fn key to start macOS dictation. Turn that off in System Settings > Keyboard, or choose another hold key.'],
+  ] as const)('with Fn as the hold key and macOS set to %s, says so beside the hold key', async (fnSystemAction, line) => {
+    await setup(status({ fnSystemAction }))
+    expect(screen.getByText(line)).toBeTruthy()
+  })
+
+  test.each(['none', 'unknown'] as const)('nothing when macOS does %s with Fn', async (fnSystemAction) => {
+    await setup(status({ fnSystemAction }))
+    expect(screen.queryByText(/macOS also uses the Fn key/)).toBeNull()
+  })
+
+  test('nothing with another hold key', async () => {
+    await setup(status({ fnSystemAction: 'emoji', holdKey: 'right-option' }))
+    expect(screen.queryByText(/macOS also uses the Fn key/)).toBeNull()
   })
 })
 

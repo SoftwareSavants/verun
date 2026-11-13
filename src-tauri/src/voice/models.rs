@@ -87,6 +87,13 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Downloads one file to `<file>.part`, verifies size and SHA-256, renames into place.
 /// `base` is the number of bytes already received for earlier files.
+/// Opens a file to write a download into.
+type OpenPart<'a> = &'a dyn Fn(&Path) -> std::io::Result<Box<dyn Write>>;
+
+fn create_part(path: &Path) -> std::io::Result<Box<dyn Write>> {
+    Ok(Box::new(std::fs::File::create(path)?))
+}
+
 fn download_file(
     dir: &Path,
     file: &ModelFile,
@@ -94,6 +101,7 @@ fn download_file(
     base: u64,
     total: u64,
     on_progress: &dyn Fn(u64, u64),
+    open: OpenPart,
 ) -> Result<(), DownloadError> {
     let final_path = dir.join(file.rel_path);
     let part_path = dir.join(format!("{}.part", file.rel_path));
@@ -103,7 +111,7 @@ fn download_file(
         std::fs::create_dir_all(parent).map_err(io)?;
     }
     remove_if_exists(&part_path).map_err(io)?;
-    let mut out = std::fs::File::create(&part_path).map_err(io)?;
+    let mut out = open(&part_path).map_err(io)?;
     let mut hasher = Sha256::new();
     let mut received: u64 = 0;
     // Set when the sink aborts the transfer (write failure or oversized body).
@@ -152,6 +160,17 @@ pub fn download_spec(
     fetch: &dyn Fetch,
     on_progress: &dyn Fn(u64, u64),
 ) -> Result<(), DownloadError> {
+    download_spec_with(dir, spec, fetch, on_progress, &create_part)
+}
+
+/// `download_spec` writing each `.part` file through `open`.
+fn download_spec_with(
+    dir: &Path,
+    spec: &ModelSpec,
+    fetch: &dyn Fetch,
+    on_progress: &dyn Fn(u64, u64),
+    open: OpenPart,
+) -> Result<(), DownloadError> {
     std::fs::create_dir_all(dir).map_err(|e| DownloadError::Io(e.to_string()))?;
     let total = total_bytes(spec);
     let mut base = 0;
@@ -161,7 +180,7 @@ pub fn download_spec(
             on_progress(base, total);
             continue;
         }
-        download_file(dir, file, fetch, base, total, on_progress)?;
+        download_file(dir, file, fetch, base, total, on_progress, open)?;
         base += file.bytes;
     }
     on_progress(total, total);
@@ -177,8 +196,6 @@ pub fn download(
     download_spec(dir, spec(id), fetch, on_progress)
 }
 
-/// Real network fetch. Uses `reqwest::blocking`, which panics inside an async
-/// runtime: only call it from a blocking thread (e.g. `spawn_blocking`).
 /// No bytes for this long aborts the download.
 const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -210,6 +227,8 @@ fn pump(
     }
 }
 
+/// Real network fetch. Uses `reqwest::blocking`, which panics inside an async
+/// runtime: only call it from a blocking thread (e.g. `spawn_blocking`).
 pub struct HttpFetch {
     client: reqwest::blocking::Client,
 }
@@ -528,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn sink_write_failure_is_io_and_leaves_no_part() {
+    fn part_file_that_cannot_be_created_is_io() {
         let tmp = tempfile::tempdir().unwrap();
         // "sub" is a regular file, so creating "sub/m.bin.part" must fail.
         std::fs::write(tmp.path().join("sub"), b"x").unwrap();
@@ -536,6 +555,40 @@ mod tests {
         let r = download_spec(tmp.path(), spec, &ok_fetch(), &|_, _| {});
         assert!(matches!(r, Err(DownloadError::Io(_))), "{r:?}");
         assert_eq!(files_in(tmp.path()), vec!["sub".to_string()]);
+    }
+
+    /// Creates the real `.part` file but fails every write after `ok_writes`.
+    struct FailingPart {
+        _file: std::fs::File,
+        ok_writes: usize,
+    }
+
+    impl Write for FailingPart {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.ok_writes == 0 {
+                return Err(std::io::Error::other("disk full"));
+            }
+            self.ok_writes -= 1;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sink_write_failure_is_io_and_leaves_no_part() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fetch = ok_fetch();
+        let opened = std::cell::Cell::new(false);
+        let open = |p: &Path| -> std::io::Result<Box<dyn Write>> {
+            opened.set(true);
+            Ok(Box::new(FailingPart { _file: std::fs::File::create(p)?, ok_writes: 1 }))
+        };
+        let r = download_spec_with(tmp.path(), test_spec(), &fetch, &|_, _| {}, &open);
+        assert!(opened.get());
+        assert_eq!(r, Err(DownloadError::Io("disk full".into())));
+        assert!(files_in(tmp.path()).is_empty(), "{:?}", files_in(tmp.path()));
     }
 
     #[test]

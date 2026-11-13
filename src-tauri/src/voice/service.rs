@@ -21,7 +21,7 @@ use sqlx::SqlitePool;
 
 use super::catalog::{model_for, spec, Language, ModelId};
 use super::engine::{Engine, ModelLoader};
-use super::hold::{HoldAction, HoldKey};
+use super::hold::{FnSystemAction, HoldAction, HoldKey};
 use super::models::{self, DownloadError, Fetch, ModelStatus};
 use super::session::{
     Capture, Dictation, EndOutcome, PendingTake, TakeRef, VoiceError, VoiceState,
@@ -30,6 +30,11 @@ use crate::db;
 
 /// Dictation is built and shown on Apple Silicon Macs only.
 pub const SUPPORTED: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+
+/// Label of the main window: Tauri's default for the first window in
+/// `tauri.conf.json`, which `lib.rs` also checks for by this name. Transcripts
+/// for a window that has closed go here.
+pub const MAIN_WINDOW: &str = "main";
 
 pub const KEY_ENABLED: &str = "voice.enabled";
 pub const KEY_LANGUAGE: &str = "voice.language";
@@ -147,6 +152,8 @@ pub struct VoiceStatus {
     pub language: Language,
     pub hold_key: HoldKey,
     pub accessibility: bool,
+    /// What macOS itself does on Fn (the Globe key setting).
+    pub fn_system_action: FnSystemAction,
     pub microphone: MicPermission,
     pub state: VoiceState,
     pub models: Vec<ModelStatus>,
@@ -162,6 +169,7 @@ pub fn unsupported_status() -> VoiceStatus {
         language: settings.language,
         hold_key: settings.hold_key,
         accessibility: false,
+        fn_system_action: FnSystemAction::Unknown,
         microphone: MicPermission::Undetermined,
         state: VoiceState::Idle,
         models: Vec::new(),
@@ -244,6 +252,8 @@ pub trait VoiceEvents: Send + Sync + 'static {
 }
 
 pub type MicCheck = Box<dyn Fn() -> MicPermission + Send + Sync>;
+/// Whether a window with this label still exists. Must not block.
+pub type WindowCheck = Box<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Latest input level, handed from the audio thread without blocking or
 /// allocating. `take` empties it.
@@ -288,6 +298,9 @@ struct Inner<C: Capture> {
     worker: Option<mpsc::Sender<Job>>,
     /// Last `voice-state` sent, so only changes are emitted.
     shown: StatePayload,
+    /// The id of the last take the hold key began. Hold-key ends and cancels
+    /// only touch the recording take when it is this one.
+    hold_take: Option<u64>,
 }
 
 type Downloading = Arc<Mutex<HashSet<ModelId>>>;
@@ -311,6 +324,7 @@ pub struct VoiceCore<C: Capture, E: VoiceEvents> {
     events: Arc<E>,
     models_dir: PathBuf,
     mic: MicCheck,
+    window_exists: WindowCheck,
     downloading: Downloading,
 }
 
@@ -336,6 +350,7 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         models_dir: PathBuf,
         events: Arc<E>,
         mic: MicCheck,
+        window_exists: WindowCheck,
     ) -> Arc<Self> {
         let core = Arc::new(Self {
             inner: Mutex::new(Inner {
@@ -343,10 +358,12 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
                 settings,
                 worker: None,
                 shown: idle(),
+                hold_take: None,
             }),
             events,
             models_dir: models_dir.clone(),
             mic,
+            window_exists,
             downloading: Arc::new(Mutex::new(HashSet::new())),
         });
         let (tx, rx) = mpsc::channel();
@@ -395,14 +412,15 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
     }
 
     /// Hold-key path. Ignored while disabled; begin errors become `voice-error`.
-    pub fn hold(&self, action: HoldAction, focused: Option<String>, now: Instant) {
+    /// `End` and `Cancel` only act on a take the hold key began, so they never
+    /// touch a take started with the mic button.
+    pub fn hold(&self, action: HoldAction, now: Instant) {
         if !self.settings().enabled {
             return;
         }
         match action {
-            HoldAction::Begin => {
-                let Some(window) = focused else { return };
-                if let Err(error) = self.begin(window.clone(), now) {
+            HoldAction::Begin { window, down_at } => {
+                if let Err(error) = self.begin_take(window.clone(), down_at, true) {
                     self.events.error(ErrorPayload {
                         window: Some(window),
                         take: None,
@@ -410,16 +428,34 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
                     });
                 }
             }
-            HoldAction::End => self.end(now),
-            HoldAction::Cancel => self.cancel(),
+            HoldAction::End => {
+                let mut inner = lock(&self.inner);
+                if Self::hold_take_recording(&inner) {
+                    self.end_locked(&mut inner, now);
+                }
+            }
+            HoldAction::Cancel => {
+                let mut inner = lock(&self.inner);
+                if Self::hold_take_recording(&inner) {
+                    self.cancel_locked(&mut inner);
+                }
+            }
             HoldAction::None => {}
         }
     }
 
-    /// Starts recording for `window`. Errors are returned, not emitted.
-    /// A begin while already recording is a no-op. May block while the
-    /// microphone opens: call from a blocking thread.
+    fn hold_take_recording(inner: &Inner<C>) -> bool {
+        inner.hold_take.is_some() && inner.dictation.recording().map(|t| t.take) == inner.hold_take
+    }
+
+    /// Starts recording for `window` (mic-button path). Errors are returned,
+    /// not emitted. A begin while already recording is a no-op. May block
+    /// while the microphone opens: call from a blocking thread.
     pub fn begin(&self, window: String, now: Instant) -> Result<(), VoiceError> {
+        self.begin_take(window, now, false)
+    }
+
+    fn begin_take(&self, window: String, now: Instant, from_hold: bool) -> Result<(), VoiceError> {
         let mut inner = lock(&self.inner);
         if !inner.settings.enabled {
             return Err(VoiceError::Disabled);
@@ -435,8 +471,22 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
             return Err(VoiceError::ModelMissing);
         }
         inner.dictation.begin(window, lang, now)?;
+        inner.hold_take = if from_hold {
+            inner.dictation.recording().map(|t| t.take)
+        } else {
+            None
+        };
         self.show_state(&mut inner);
         Ok(())
+    }
+
+    /// The window `label` is gone: cancels the take recording for it, if any.
+    /// Takes it already finished still transcribe (see `finished`).
+    pub fn window_closed(&self, label: &str) {
+        let mut inner = lock(&self.inner);
+        if inner.dictation.recording().is_some_and(|t| t.window == label) {
+            self.cancel_locked(&mut inner);
+        }
     }
 
     /// Ends the take: queues it for transcription, or drops it (too short,
@@ -470,7 +520,7 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         }
     }
 
-    pub fn status(&self, accessibility: bool) -> VoiceStatus {
+    pub fn status(&self, accessibility: bool, fn_system_action: FnSystemAction) -> VoiceStatus {
         let (settings, state) = {
             let inner = lock(&self.inner);
             (inner.settings, inner.dictation.state())
@@ -481,6 +531,7 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
             language: settings.language,
             hold_key: settings.hold_key,
             accessibility,
+            fn_system_action,
             microphone: (self.mic)(),
             state,
             models: models::status(&self.models_dir),
@@ -500,35 +551,40 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         lock(&self.downloading).contains(&id)
     }
 
-    /// Downloads the claimed model, emitting throttled progress and a final
-    /// `done` event; the claim is released when this returns or unwinds.
-    /// Blocks for the whole download: call from a blocking thread.
+    /// Downloads the claimed model, emitting throttled progress, then a final
+    /// `done` event, then releasing the claim, then calling `then` (the runtime
+    /// broadcasts the status there). A panic in the download ends it the same
+    /// way, as an error. Blocks for the whole download: call from a blocking thread.
     pub fn run_download<F: Fetch>(
         &self,
         claim: DownloadClaim,
         fetch: Result<F, String>,
+        then: impl FnOnce(),
     ) -> Result<(), String> {
         let id = claim.id;
         let total: u64 = spec(id).files.iter().map(|f| f.bytes).sum();
         let received = Cell::new(0u64);
         let throttle = Throttle::new(PROGRESS_EVERY);
-        let result = fetch.and_then(|fetch| {
-            let on_progress = |got: u64, total: u64| {
-                received.set(got);
-                if throttle.ready(Instant::now()) {
-                    self.events.model_progress(ModelProgress {
-                        model: id,
-                        received: got,
-                        total,
-                        done: false,
-                        error: None,
-                    });
-                }
-            };
-            models::download(&self.models_dir, id, &fetch, &on_progress)
-                .map_err(|e| download_error_text(&e))
-        });
-        drop(claim);
+        let run = || {
+            fetch.and_then(|fetch| {
+                let on_progress = |got: u64, total: u64| {
+                    received.set(got);
+                    if throttle.ready(Instant::now()) {
+                        self.events.model_progress(ModelProgress {
+                            model: id,
+                            received: got,
+                            total,
+                            done: false,
+                            error: None,
+                        });
+                    }
+                };
+                models::download(&self.models_dir, id, &fetch, &on_progress)
+                    .map_err(|e| download_error_text(&e))
+            })
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
+            .unwrap_or_else(|_| Err("download panicked".to_string()));
         self.events.model_progress(ModelProgress {
             model: id,
             received: received.get(),
@@ -536,6 +592,8 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
             done: true,
             error: result.as_ref().err().cloned(),
         });
+        drop(claim);
+        then();
         result
     }
 
@@ -633,7 +691,7 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
                 reason: DropReason::Empty,
             }),
             Ok(text) => self.events.transcript(TranscriptPayload {
-                window: take.window.clone(),
+                window: self.deliver_to(&take.window),
                 take: take.take,
                 seq: take.seq,
                 text,
@@ -649,9 +707,19 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         self.show_state(&mut inner);
     }
 
+    /// The window a transcript for `window` goes to: the main window once
+    /// `window` has closed, so the text is not lost.
+    fn deliver_to(&self, window: &str) -> String {
+        if (self.window_exists)(window) {
+            window.to_string()
+        } else {
+            MAIN_WINDOW.to_string()
+        }
+    }
+
     /// Waits until the worker has handled every job sent so far.
     #[cfg(test)]
-    fn flush(&self) {
+    pub(crate) fn flush(&self) {
         let worker = lock(&self.inner).worker.clone().expect("worker running");
         let (ack, done) = mpsc::channel();
         worker.send(Job::Flush(ack)).unwrap();
@@ -732,8 +800,9 @@ pub fn download_error_text(e: &DownloadError) -> String {
     }
 }
 
+/// Fakes and a rig shared by the service and runtime tests.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::voice::engine::Transcriber;
     use std::collections::VecDeque;
@@ -741,18 +810,22 @@ mod tests {
     // ---- fakes ----
 
     #[derive(Clone, Default)]
-    struct FakeCapture(Arc<Mutex<CapState>>);
+    pub(crate) struct FakeCapture(Arc<Mutex<CapState>>);
 
     #[derive(Default)]
-    struct CapState {
+    pub(crate) struct CapState {
         starts: usize,
+        cancels: usize,
         /// Result of each `stop`, in order; a loud clip once empty.
         stops: VecDeque<Result<Vec<f32>, VoiceError>>,
     }
 
     impl FakeCapture {
-        fn starts(&self) -> usize {
+        pub(crate) fn starts(&self) -> usize {
             self.0.lock().unwrap().starts
+        }
+        pub(crate) fn cancels(&self) -> usize {
+            self.0.lock().unwrap().cancels
         }
         fn next_stop(&self, r: Result<Vec<f32>, VoiceError>) {
             self.0.lock().unwrap().stops.push_back(r);
@@ -767,7 +840,9 @@ mod tests {
         fn stop(&mut self) -> Result<Vec<f32>, VoiceError> {
             self.0.lock().unwrap().stops.pop_front().unwrap_or_else(|| Ok(loud()))
         }
-        fn cancel(&mut self) {}
+        fn cancel(&mut self) {
+            self.0.lock().unwrap().cancels += 1;
+        }
     }
 
     fn loud() -> Vec<f32> {
@@ -784,13 +859,13 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct Script {
+    pub(crate) struct Script {
         replies: Arc<Mutex<VecDeque<Reply>>>,
         loads: Arc<Mutex<usize>>,
     }
 
     impl Script {
-        fn texts(texts: &[&str]) -> Self {
+        pub(crate) fn texts(texts: &[&str]) -> Self {
             let s = Script::default();
             for t in texts {
                 s.push(Reply::Text(Ok(t.to_string())));
@@ -831,7 +906,7 @@ mod tests {
     }
 
     #[derive(Debug, Clone, PartialEq)]
-    enum Ev {
+    pub(crate) enum Ev {
         State(VoiceState, Option<String>, Option<u64>),
         Level,
         Transcript(String, u64, u64, String),
@@ -852,17 +927,25 @@ mod tests {
         }
     }
 
+    /// Every event, in order. `on_progress` runs inside `model_progress`.
     #[derive(Default)]
-    struct Recorder(Mutex<Vec<Ev>>);
+    pub(crate) struct Recorder {
+        events: Mutex<Vec<Ev>>,
+        #[allow(clippy::type_complexity)]
+        on_progress: Mutex<Option<Box<dyn Fn(&ModelProgress) + Send>>>,
+    }
 
     impl Recorder {
-        fn all(&self) -> Vec<Ev> {
-            self.0.lock().unwrap().clone()
+        fn push(&self, e: Ev) {
+            self.events.lock().unwrap().push(e);
+        }
+        pub(crate) fn all(&self) -> Vec<Ev> {
+            self.events.lock().unwrap().clone()
         }
         fn pick<T>(&self, f: impl Fn(Ev) -> Option<T>) -> Vec<T> {
             self.all().into_iter().filter_map(f).collect()
         }
-        fn transcripts(&self) -> Vec<(String, u64, u64, String)> {
+        pub(crate) fn transcripts(&self) -> Vec<(String, u64, u64, String)> {
             self.pick(|e| match e {
                 Ev::Transcript(w, t, s, x) => Some((w, t, s, x)),
                 _ => None,
@@ -874,19 +957,19 @@ mod tests {
                 _ => None,
             })
         }
-        fn dropped(&self) -> Vec<(String, u64, DropReason)> {
+        pub(crate) fn dropped(&self) -> Vec<(String, u64, DropReason)> {
             self.pick(|e| match e {
                 Ev::Dropped(w, t, r) => Some((w, t, r)),
                 _ => None,
             })
         }
-        fn states(&self) -> Vec<(VoiceState, Option<String>, Option<u64>)> {
+        pub(crate) fn states(&self) -> Vec<(VoiceState, Option<String>, Option<u64>)> {
             self.pick(|e| match e {
                 Ev::State(s, w, t) => Some((s, w, t)),
                 _ => None,
             })
         }
-        fn last_state(&self) -> Option<(VoiceState, Option<String>, Option<u64>)> {
+        pub(crate) fn last_state(&self) -> Option<(VoiceState, Option<String>, Option<u64>)> {
             self.states().pop()
         }
         fn progress(&self) -> Vec<ModelProgress> {
@@ -899,42 +982,54 @@ mod tests {
 
     impl VoiceEvents for Recorder {
         fn state(&self, p: StatePayload) {
-            self.0.lock().unwrap().push(Ev::State(p.state, p.window, p.take));
+            self.push(Ev::State(p.state, p.window, p.take));
         }
         fn level(&self, _p: LevelPayload) {
-            self.0.lock().unwrap().push(Ev::Level);
+            self.push(Ev::Level);
         }
         fn transcript(&self, p: TranscriptPayload) {
-            self.0.lock().unwrap().push(Ev::Transcript(p.window, p.take, p.seq, p.text));
+            self.push(Ev::Transcript(p.window, p.take, p.seq, p.text));
         }
         fn error(&self, p: ErrorPayload) {
-            self.0.lock().unwrap().push(Ev::Error(p.window, p.take, p.error));
+            self.push(Ev::Error(p.window, p.take, p.error));
         }
         fn take_dropped(&self, p: TakeDroppedPayload) {
-            self.0.lock().unwrap().push(Ev::Dropped(p.window, p.take, p.reason));
+            self.push(Ev::Dropped(p.window, p.take, p.reason));
         }
         fn model_progress(&self, p: ModelProgress) {
-            self.0.lock().unwrap().push(Ev::Progress(p));
+            if let Some(hook) = self.on_progress.lock().unwrap().as_ref() {
+                hook(&p);
+            }
+            self.push(Ev::Progress(p));
         }
         fn status_changed(&self, _s: &VoiceStatus) {
-            self.0.lock().unwrap().push(Ev::Status);
+            self.push(Ev::Status);
         }
     }
 
-    type TestCore = VoiceCore<FakeCapture, Recorder>;
+    pub(crate) type TestCore = VoiceCore<FakeCapture, Recorder>;
 
-    struct Rig {
-        core: Arc<TestCore>,
-        rec: Arc<Recorder>,
-        cap: FakeCapture,
+    pub(crate) struct Rig {
+        pub(crate) core: Arc<TestCore>,
+        pub(crate) rec: Arc<Recorder>,
+        pub(crate) cap: FakeCapture,
         script: Script,
         dir: tempfile::TempDir,
+        /// Labels of windows that no longer exist.
+        closed: Arc<Mutex<HashSet<String>>>,
     }
 
-    struct Opts {
-        enabled: bool,
-        installed: bool,
-        mic: MicPermission,
+    impl Rig {
+        /// The window is gone as far as `window_exists` is concerned.
+        fn close_window(&self, label: &str) {
+            self.closed.lock().unwrap().insert(label.to_string());
+        }
+    }
+
+    pub(crate) struct Opts {
+        pub(crate) enabled: bool,
+        pub(crate) installed: bool,
+        pub(crate) mic: MicPermission,
     }
 
     impl Default for Opts {
@@ -955,7 +1050,7 @@ mod tests {
         }
     }
 
-    fn rig(script: Script, opts: Opts) -> Rig {
+    pub(crate) fn rig(script: Script, opts: Opts) -> Rig {
         let dir = tempfile::tempdir().unwrap();
         if opts.installed {
             install(dir.path());
@@ -963,6 +1058,8 @@ mod tests {
         let cap = FakeCapture::default();
         let rec = Arc::new(Recorder::default());
         let mic = opts.mic;
+        let closed = Arc::new(Mutex::new(HashSet::new()));
+        let gone = Arc::clone(&closed);
         let core = VoiceCore::start(
             cap.clone(),
             FakeLoader(script.clone()),
@@ -973,11 +1070,16 @@ mod tests {
             dir.path().to_path_buf(),
             Arc::clone(&rec),
             Box::new(move || mic),
+            Box::new(move |w: &str| !gone.lock().unwrap().contains(w)),
         );
-        Rig { core, rec, cap, script, dir }
+        Rig { core, rec, cap, script, dir, closed }
     }
 
-    fn ms(n: u64) -> Duration {
+    pub(crate) fn begin_hold(window: &str, down_at: Instant) -> HoldAction {
+        HoldAction::Begin { window: window.into(), down_at }
+    }
+
+    pub(crate) fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
     }
 
@@ -990,7 +1092,7 @@ mod tests {
         (w.to_string(), take, seq, t.to_string())
     }
 
-    fn rec_state(w: &str, take: u64) -> (VoiceState, Option<String>, Option<u64>) {
+    pub(crate) fn rec_state(w: &str, take: u64) -> (VoiceState, Option<String>, Option<u64>) {
         (VoiceState::Recording, Some(w.into()), Some(take))
     }
 
@@ -998,7 +1100,7 @@ mod tests {
         (VoiceState::Transcribing, Some(w.into()), None)
     }
 
-    const IDLE: (VoiceState, Option<String>, Option<u64>) = (VoiceState::Idle, None, None);
+    pub(crate) const IDLE: (VoiceState, Option<String>, Option<u64>) = (VoiceState::Idle, None, None);
 
     // ---- tests ----
 
@@ -1113,7 +1215,7 @@ mod tests {
         // The mic-button path returns the error and emits nothing.
         assert!(r.rec.all().is_empty());
 
-        r.core.hold(HoldAction::Begin, Some("main".into()), t0);
+        r.core.hold(begin_hold("main", t0), t0);
         assert_eq!(r.cap.starts(), 0);
         assert_eq!(
             r.rec.all(),
@@ -1127,7 +1229,7 @@ mod tests {
         let t0 = Instant::now();
         assert_eq!(r.core.begin("main".into(), t0), Err(VoiceError::MicDenied));
         assert_eq!(r.cap.starts(), 0);
-        r.core.hold(HoldAction::Begin, Some("main".into()), t0);
+        r.core.hold(begin_hold("main", t0), t0);
         assert_eq!(r.cap.starts(), 0);
         assert_eq!(r.rec.errors(), vec![(Some("main".into()), None, VoiceError::MicDenied)]);
     }
@@ -1185,31 +1287,115 @@ mod tests {
     fn disabled_service_ignores_hold_events() {
         let r = rig(Script::texts(&["x"]), Opts { enabled: false, ..Opts::default() });
         let t0 = Instant::now();
-        r.core.hold(HoldAction::Begin, Some("main".into()), t0);
-        r.core.hold(HoldAction::End, None, t0 + ms(400));
+        r.core.hold(begin_hold("main", t0), t0);
+        r.core.hold(HoldAction::End, t0 + ms(400));
         r.core.flush();
         assert_eq!(r.cap.starts(), 0);
         assert!(r.rec.all().is_empty());
     }
 
     #[test]
-    fn hold_records_in_the_focused_window_only() {
+    fn hold_records_in_the_window_it_began_for() {
         let r = rig(Script::texts(&["hello"]), Opts::default());
         let t0 = Instant::now();
-        r.core.hold(HoldAction::Begin, None, t0);
-        assert_eq!(r.cap.starts(), 0);
-        r.core.hold(HoldAction::Begin, Some("task-7".into()), t0);
-        r.core.hold(HoldAction::End, None, t0 + ms(400));
+        r.core.hold(begin_hold("task-7", t0), t0 + ms(150));
+        r.core.hold(HoldAction::End, t0 + ms(400));
         r.core.flush();
         assert_eq!(r.rec.transcripts(), vec![tr("task-7", 1, 1, "hello")]);
+    }
+
+    #[test]
+    fn a_hold_take_is_timed_from_key_down() {
+        let r = rig(Script::default(), Opts::default());
+        let t0 = Instant::now();
+        // Armed 150 ms after key down, released at 299 ms: shorter than MIN_HOLD.
+        r.core.hold(begin_hold("main", t0), t0 + ms(150));
+        r.core.hold(HoldAction::End, t0 + ms(299));
+        assert_eq!(r.rec.dropped(), vec![("main".into(), 1, DropReason::TooShort)]);
+    }
+
+    #[test]
+    fn hold_key_events_leave_a_mic_button_take_alone() {
+        let r = rig(Script::texts(&["kept"]), Opts::default());
+        let t0 = Instant::now();
+        r.core.begin("main".into(), t0).unwrap();
+        // Fn held past the arming delay while the mic-button take records, then
+        // released (a long tap), then Fn+arrow.
+        r.core.hold(begin_hold("main", t0 + ms(1000)), t0 + ms(1150));
+        r.core.hold(HoldAction::End, t0 + ms(1500));
+        r.core.hold(begin_hold("main", t0 + ms(2000)), t0 + ms(2150));
+        r.core.hold(HoldAction::Cancel, t0 + ms(2200));
+        assert_eq!(r.core.state(), VoiceState::Recording);
+        assert_eq!(r.cap.starts(), 1);
+        assert!(r.rec.dropped().is_empty());
+        assert_eq!(r.rec.states(), vec![rec_state("main", 1)]);
+        r.core.end(t0 + ms(3000));
+        r.core.flush();
+        assert_eq!(r.rec.transcripts(), vec![tr("main", 1, 1, "kept")]);
+    }
+
+    #[test]
+    fn hold_end_still_ends_the_hold_take_after_an_earlier_mic_take() {
+        let r = rig(Script::texts(&["one", "two"]), Opts::default());
+        let t0 = Instant::now();
+        take(&r.core, "main", t0);
+        r.core.hold(begin_hold("main", t0 + ms(1000)), t0 + ms(1150));
+        r.core.hold(HoldAction::End, t0 + ms(1500));
+        r.core.flush();
+        assert_eq!(r.rec.transcripts(), vec![tr("main", 1, 1, "one"), tr("main", 2, 2, "two")]);
+    }
+
+    #[test]
+    fn closing_the_recording_window_cancels_its_take() {
+        let r = rig(Script::default(), Opts::default());
+        let t0 = Instant::now();
+        r.core.begin("b".into(), t0).unwrap();
+        r.core.window_closed("a");
+        assert_eq!(r.core.state(), VoiceState::Recording);
+        assert_eq!(r.cap.cancels(), 0);
+        assert!(r.rec.dropped().is_empty());
+
+        r.core.window_closed("b");
+        assert_eq!(r.rec.dropped(), vec![("b".into(), 1, DropReason::Cancelled)]);
+        assert_eq!(r.cap.cancels(), 1);
+        assert_eq!(r.core.state(), VoiceState::Idle);
+        assert_eq!(r.rec.last_state(), Some(IDLE));
+    }
+
+    #[test]
+    fn closing_a_window_leaves_takes_already_transcribing() {
+        let script = Script::default();
+        let (release, gate) = mpsc::channel();
+        script.push(Reply::Gated(Ok("late".into()), gate));
+        let r = rig(script, Opts::default());
+        take(&r.core, "b", Instant::now());
+        r.core.window_closed("b");
+        assert!(r.rec.dropped().is_empty());
+        release.send(()).unwrap();
+        r.core.flush();
+        assert_eq!(r.rec.transcripts(), vec![tr("b", 1, 1, "late")]);
+    }
+
+    #[test]
+    fn a_transcript_for_a_closed_window_goes_to_the_main_window() {
+        let r = rig(Script::texts(&["orphan", "kept"]), Opts::default());
+        let t0 = Instant::now();
+        take(&r.core, "task-3", t0);
+        r.close_window("task-3");
+        take(&r.core, "task-4", t0 + ms(1000));
+        r.core.flush();
+        assert_eq!(
+            r.rec.transcripts(),
+            vec![tr(MAIN_WINDOW, 1, 1, "orphan"), tr("task-4", 2, 2, "kept")]
+        );
     }
 
     #[test]
     fn hold_cancel_drops_the_take() {
         let r = rig(Script::default(), Opts::default());
         let t0 = Instant::now();
-        r.core.hold(HoldAction::Begin, Some("main".into()), t0);
-        r.core.hold(HoldAction::Cancel, None, t0 + ms(400));
+        r.core.hold(begin_hold("main", t0), t0);
+        r.core.hold(HoldAction::Cancel, t0 + ms(400));
         r.core.flush();
         assert!(r.rec.transcripts().is_empty());
         assert_eq!(r.rec.dropped(), vec![("main".into(), 1, DropReason::Cancelled)]);
@@ -1299,7 +1485,7 @@ mod tests {
         let claim = r.core.claim_download(id).expect("first claim");
         assert!(r.core.claim_download(id).is_none());
         assert!(r.core.is_downloading(id));
-        let result = r.core.run_download(claim, Ok(BadFetch));
+        let result = r.core.run_download(claim, Ok(BadFetch), || {});
         assert!(result.is_err());
         assert!(!r.core.is_downloading(id));
         let progress = r.rec.progress();
@@ -1316,7 +1502,7 @@ mod tests {
         let r = rig(Script::default(), Opts { installed: false, ..Opts::default() });
         let id = ModelId::WhisperTurbo;
         let claim = r.core.claim_download(id).unwrap();
-        let result = r.core.run_download::<BadFetch>(claim, Err("no tls".into()));
+        let result = r.core.run_download::<BadFetch>(claim, Err("no tls".into()), || {});
         assert_eq!(result, Err("no tls".to_string()));
         let progress = r.rec.progress();
         assert_eq!(progress.len(), 1);
@@ -1326,16 +1512,51 @@ mod tests {
     }
 
     #[test]
-    fn download_claim_is_released_when_the_download_panics() {
+    fn a_panicking_download_still_ends_with_done_and_a_status_event() {
         let r = rig(Script::default(), Opts { installed: false, ..Opts::default() });
         let id = ModelId::WhisperTurbo;
         let claim = r.core.claim_download(id).unwrap();
         let core = Arc::clone(&r.core);
+        let rec = Arc::clone(&r.rec);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            core.run_download(claim, Ok(PanicFetch))
+            core.run_download(claim, Ok(PanicFetch), || {
+                rec.status_changed(&unsupported_status())
+            })
         }));
-        assert!(outcome.is_err());
+        assert_eq!(outcome.ok(), Some(Err("download panicked".to_string())));
         assert!(!r.core.is_downloading(id));
+        let events = r.rec.all();
+        let done = events
+            .iter()
+            .position(|e| matches!(e, Ev::Progress(p) if p.done))
+            .expect("a final done event");
+        match &events[done] {
+            Ev::Progress(p) => assert_eq!(p.error.as_deref(), Some("download panicked")),
+            _ => unreachable!(),
+        }
+        assert_eq!(events.last(), Some(&Ev::Status), "{events:?}");
+        assert!(done < events.len() - 1);
+    }
+
+    #[test]
+    fn the_claim_is_released_only_after_the_final_done_event() {
+        let r = rig(Script::default(), Opts { installed: false, ..Opts::default() });
+        let id = ModelId::WhisperTurbo;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (weak, log) = (Arc::downgrade(&r.core), Arc::clone(&seen));
+        *r.rec.on_progress.lock().unwrap() = Some(Box::new(move |p: &ModelProgress| {
+            if let Some(core) = weak.upgrade() {
+                log.lock().unwrap().push((p.done, core.is_downloading(p.model)));
+            }
+        }));
+        for fetch in [Ok(BadFetch), Err("no tls".to_string())] {
+            seen.lock().unwrap().clear();
+            let claim = r.core.claim_download(id).unwrap();
+            let _ = r.core.run_download(claim, fetch, || {});
+            let seen = seen.lock().unwrap().clone();
+            assert_eq!(seen.last(), Some(&(true, true)), "{seen:?}");
+            assert!(!r.core.is_downloading(id));
+        }
     }
 
     #[test]
@@ -1351,9 +1572,17 @@ mod tests {
     }
 
     #[test]
+    fn status_reports_what_macos_does_with_fn() {
+        let r = rig(Script::default(), Opts::default());
+        let json = serde_json::to_value(r.core.status(true, FnSystemAction::Emoji)).unwrap();
+        assert_eq!(json["fnSystemAction"], "emoji");
+        assert_eq!(json["accessibility"], true);
+    }
+
+    #[test]
     fn status_lists_every_language_with_its_model() {
         let r = rig(Script::default(), Opts::default());
-        let languages = r.core.status(true).languages;
+        let languages = r.core.status(true, FnSystemAction::Unknown).languages;
         assert_eq!(
             languages.iter().map(|l| l.code).collect::<Vec<_>>(),
             Language::ALL.to_vec()
@@ -1395,6 +1624,7 @@ mod tests {
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["supported"], false);
         assert_eq!(json["holdKey"], "fn");
+        assert_eq!(json["fnSystemAction"], "unknown");
         assert_eq!(json["microphone"], "undetermined");
         assert_eq!(json["state"], "idle");
         assert_eq!(json["models"], serde_json::json!([]));

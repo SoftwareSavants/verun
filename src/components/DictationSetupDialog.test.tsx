@@ -44,7 +44,7 @@ const CODES: Language[] = ['en', 'fr', 'es', 'ar', 'zh', 'hi', 'pt', 'ru', 'bn',
 function status(over: Partial<VoiceStatus> & { installed?: boolean; missing?: Language[] } = {}): VoiceStatus {
   const { installed = true, missing = [], ...rest } = over
   return {
-    supported: true, enabled: false, language: 'en', holdKey: 'fn', accessibility: true,
+    supported: true, enabled: false, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none',
     microphone: 'granted', state: 'idle',
     models: [{ id: 'whisper-turbo', displayName: 'Whisper Turbo', installed, bytes: 574041195 }],
     languages: CODES.map(code => ({ code, model: 'whisper-turbo', installed: installed && !missing.includes(code) })),
@@ -52,6 +52,7 @@ function status(over: Partial<VoiceStatus> & { installed?: boolean; missing?: La
   }
 }
 
+const HINT_EMOJI = 'macOS also uses the Fn key to show the emoji picker. Turn that off in System Settings > Keyboard, or choose another hold key.'
 const fire = (event: string, payload: unknown) => listeners.get(event)!({ payload })
 const setStatus = (s: VoiceStatus) => fire('voice-status-changed', s)
 const progress = (over: Record<string, unknown>) =>
@@ -323,7 +324,8 @@ describe('accessibility step', () => {
   })
 
   test('the focus re-check goes away with the dialog', async () => {
-    await setup(status({ enabled: true, accessibility: false }), { reason: 'model-missing' })
+    // Off, so the store's own Accessibility watch (while on without it) is not in play.
+    await setup(status({ accessibility: false }))
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(dictationSetupRequest()).toBeNull()
     const before = vi.mocked(ipc.voiceStatus).mock.calls.length
@@ -353,6 +355,34 @@ describe('accessibility step', () => {
     await flush()
     expect(ipc.voiceSetEnabled).toHaveBeenCalledWith(true)
     expect(dictationSetupRequest()).toBeNull()
+  })
+})
+
+describe('Fn also used by macOS', () => {
+  test.each([
+    ['input-source', 'macOS also uses the Fn key to change the input source. Turn that off in System Settings > Keyboard, or choose another hold key.'],
+    ['emoji', 'macOS also uses the Fn key to show the emoji picker. Turn that off in System Settings > Keyboard, or choose another hold key.'],
+    ['dictation', 'macOS also uses the Fn key to start macOS dictation. Turn that off in System Settings > Keyboard, or choose another hold key.'],
+  ] as const)('the hold key step says macOS also acts on Fn (%s)', async (fnSystemAction, line) => {
+    await setup(status({ enabled: true, accessibility: false, fnSystemAction }), { reason: 'model-missing' })
+    expect(screen.getByText(/holding Fn to talk/i)).toBeTruthy()
+    expect(screen.getByText(line)).toBeTruthy()
+  })
+
+  test('so does the last step, which names the hold key', async () => {
+    await setup(status({ enabled: true, fnSystemAction: 'emoji' }), { reason: 'model-missing' })
+    expect(screen.getByText('Dictation is ready.')).toBeTruthy()
+    expect(screen.getByText(HINT_EMOJI)).toBeTruthy()
+  })
+
+  test.each(['none', 'unknown'] as const)('nothing when macOS does %s with Fn', async (fnSystemAction) => {
+    await setup(status({ enabled: true, accessibility: false, fnSystemAction }), { reason: 'model-missing' })
+    expect(screen.queryByText(/macOS also uses the Fn key/)).toBeNull()
+  })
+
+  test('nothing with another hold key', async () => {
+    await setup(status({ enabled: true, accessibility: false, holdKey: 'right-command', fnSystemAction: 'dictation' }), { reason: 'model-missing' })
+    expect(screen.queryByText(/macOS also uses the Fn key/)).toBeNull()
   })
 })
 
@@ -435,7 +465,7 @@ describe('a pending language is applied only for the latest choice, with its dow
 
   test('a newer choice in the composer switcher drops it', async () => {
     await chooseJapanese()
-    render(() => <DictationControl />)
+    render(() => <DictationControl available />)
     click('Dictation language: English')
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'French' }))
     await flush()

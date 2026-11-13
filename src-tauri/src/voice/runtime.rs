@@ -3,13 +3,15 @@
 //! listener, settings persistence and the managed `VoiceService` behind the
 //! `voice_*` commands. The logic lives in `service`.
 //!
-//! Threads: the hotkey tap thread only pushes key events into a channel, and
-//! the audio thread only stores the input level in an atomic. The
-//! "voice-control" thread drains the channel, asks Tauri which window is
-//! focused and drives the core; while recording it wakes every 66 ms to emit
-//! `voice-level` and end overdue takes. The core's "voice-transcribe" worker
-//! runs the engine. Both exit when their channel disconnects, which in the
-//! app means at process exit.
+//! Threads: the hotkey tap thread only pushes time-stamped key events into a
+//! channel, and the audio thread only stores the input level in an atomic.
+//! The "voice-control" thread drains the channel, asks Tauri which window is
+//! focused, arms a hold `ARM_DELAY` after key down and drives the core; while
+//! recording it wakes every 66 ms to emit `voice-level` and end overdue takes.
+//! Listener resets and closed windows go through the same channel, so they are
+//! handled after the key events queued ahead of them. The core's
+//! "voice-transcribe" worker runs the engine. Both exit when their channel
+//! disconnects, which in the app means at process exit.
 //!
 //! Lock order: `listener`, then the core's lock. Only command threads (never
 //! the async runtime, the tap thread or the audio thread) take `listener`,
@@ -25,7 +27,7 @@ use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::catalog::{Language, ModelId};
-use super::hold::{HoldDetector, HoldKey, KeyEvent};
+use super::hold::{HoldAction, HoldDetector, HoldKey, KeyEvent};
 use super::models::HttpFetch;
 use super::service::{
     hold_key_name, load_settings, save_setting, unsupported_status, ErrorPayload, LevelCell,
@@ -33,7 +35,7 @@ use super::service::{
     TranscriptPayload, VoiceCore, VoiceEvents, VoiceStatus, KEY_ENABLED, KEY_HOLD_KEY,
     KEY_LANGUAGE, SUPPORTED,
 };
-use super::session::{VoiceError, VoiceState};
+use super::session::{Capture, VoiceError, VoiceState};
 
 /// While recording, the control thread wakes this often: `voice-level` goes
 /// out at most this often (about 15 per second) and overdue takes are ended.
@@ -73,7 +75,9 @@ mod platform {
     pub use crate::voice::capture::MicCapture as Mic;
     pub use crate::voice::engine::TranscribeRsLoader as Loader;
     pub use crate::voice::hotkey_macos::HotkeyListener as Listener;
-    pub use crate::voice::hotkey_macos::{accessibility_granted, open_accessibility_settings};
+    pub use crate::voice::hotkey_macos::{
+        accessibility_granted, fn_system_action, open_accessibility_settings,
+    };
     pub use crate::voice::mic_permission_macos::{microphone_permission, request_microphone};
     use crate::voice::hold::{HoldKey, KeyEvent};
 
@@ -93,7 +97,7 @@ mod platform {
 mod platform {
     use crate::voice::catalog::{Language, ModelId};
     use crate::voice::engine::{ModelLoader, Transcriber};
-    use crate::voice::hold::{HoldKey, KeyEvent};
+    use crate::voice::hold::{FnSystemAction, HoldKey, KeyEvent};
     use crate::voice::service::MicPermission;
     use crate::voice::session::{Capture, VoiceError};
     use std::path::Path;
@@ -136,6 +140,9 @@ mod platform {
     pub fn accessibility_granted() -> bool {
         false
     }
+    pub fn fn_system_action() -> FnSystemAction {
+        FnSystemAction::Unknown
+    }
     pub fn open_accessibility_settings() {}
     pub fn microphone_permission() -> MicPermission {
         MicPermission::Undetermined
@@ -164,11 +171,15 @@ struct Running {
 }
 
 enum Control {
-    Key(KeyEvent),
+    /// A key event and when the tap saw it.
+    Key(KeyEvent, Instant),
     /// A take started outside the hold path: start ticking.
     Wake,
-    /// The listener stopped or restarted: forget any half-seen hold.
+    /// The listener stopped or restarted: forget any half-seen hold and
+    /// cancel a take the hold key began.
     Reset,
+    /// The window with this label was destroyed.
+    WindowClosed(String),
 }
 
 /// Managed state. `None` where dictation is unsupported. Every method except
@@ -204,6 +215,7 @@ impl VoiceService {
         let audio_level = Arc::clone(&level);
         // Runs on the audio thread: only an atomic store.
         let capture = platform::new_capture(move |l| audio_level.set(l));
+        let windows = app.clone();
         let core = VoiceCore::start(
             capture,
             platform::Loader,
@@ -211,13 +223,15 @@ impl VoiceService {
             super::models::models_dir(app_data),
             Arc::new(TauriEvents(app.clone())),
             Box::new(platform::microphone_permission),
+            Box::new(move |label: &str| windows.get_webview_window(label).is_some()),
         );
 
         let (control, control_rx) = mpsc::channel();
-        let (thread_app, thread_core) = (app.clone(), Arc::clone(&core));
+        let thread_app = app.clone();
+        let state = ControlState::new(Arc::clone(&core), level);
         if let Err(e) = std::thread::Builder::new()
             .name("voice-control".into())
-            .spawn(move || run_control(thread_app, thread_core, level, control_rx))
+            .spawn(move || run_control(thread_app, state, control_rx))
         {
             eprintln!("[verun][voice] could not start the control thread: {e}");
         }
@@ -305,6 +319,14 @@ impl VoiceService {
         }
     }
 
+    /// A window was destroyed: a take recording for it is cancelled, and a
+    /// hold pending for it never starts. Never blocks (the control thread does it).
+    pub fn window_closed(&self, label: &str) {
+        if let Some(rt) = &self.0 {
+            let _ = rt.control.send(Control::WindowClosed(label.to_string()));
+        }
+    }
+
     /// Returns at once; progress arrives as `voice-model-progress`. A second
     /// call while that model is downloading is ignored.
     pub fn download(&self, app: &AppHandle, model: ModelId) {
@@ -314,10 +336,11 @@ impl VoiceService {
         tauri::async_runtime::spawn_blocking(move || {
             let service = app.state::<VoiceService>();
             let Some(rt) = &service.0 else { return };
-            if let Err(e) = rt.core.run_download(claim, HttpFetch::new()) {
+            if let Err(e) = rt.core.run_download(claim, HttpFetch::new(), || {
+                rt.changed();
+            }) {
                 eprintln!("[verun][voice] model download failed: {e}");
             }
-            rt.changed();
         });
     }
 
@@ -362,7 +385,7 @@ impl Running {
     }
 
     fn status(&self) -> VoiceStatus {
-        self.core.status(platform::accessibility_granted())
+        self.core.status(platform::accessibility_granted(), platform::fn_system_action())
     }
 
     /// Current status, also sent as `voice-status-changed`.
@@ -387,15 +410,17 @@ impl Running {
             return false;
         }
         let tx = self.control.clone();
-        // Runs on the tap thread: only a non-blocking send.
+        // Runs on the tap thread: only a clock read and a non-blocking send.
         *slot = platform::start_listener(settings.hold_key, move |ev| {
-            let _ = tx.send(Control::Key(ev));
+            let _ = tx.send(Control::Key(ev, Instant::now()));
         });
         slot.is_some()
     }
 
     /// With the listener lock held: drops the listener (blocks while its
-    /// thread exits), resets the hold detector and cancels a take in progress.
+    /// thread exits), then queues a `Reset` behind the key events it sent, so
+    /// the control thread forgets the hold and cancels a take the hold key
+    /// began after handling them.
     fn stop_listener(&self, slot: &mut Option<platform::Listener>) {
         let old = slot.take();
         if old.is_none() {
@@ -403,53 +428,91 @@ impl Running {
         }
         drop(old);
         let _ = self.control.send(Control::Reset);
-        self.core.cancel();
     }
 }
 
 /// Voice-control thread body. Exits when every control sender is dropped.
-fn run_control(app: AppHandle, core: Arc<Core>, level: Arc<LevelCell>, rx: mpsc::Receiver<Control>) {
-    let mut detector = HoldDetector::new();
-    let level_throttle = Throttle::new(LEVEL_EVERY);
+fn run_control(app: AppHandle, mut state: ControlState<platform::Mic, TauriEvents>, rx: mpsc::Receiver<Control>) {
     loop {
-        let msg = if core.state() == VoiceState::Recording {
-            match rx.recv_timeout(LEVEL_EVERY) {
+        let msg = match state.wait(Instant::now()) {
+            Some(timeout) => match rx.recv_timeout(timeout) {
                 Ok(m) => Some(m),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => return,
-            }
-        } else {
-            match rx.recv() {
+            },
+            None => match rx.recv() {
                 Ok(m) => Some(m),
                 Err(_) => return,
-            }
+            },
         };
+        state.step(msg, Instant::now(), || focused_window(&app));
+    }
+}
+
+/// The voice-control thread's state, fed one message (or a timeout) at a time
+/// with the time passed in, so it is tested without a thread or Tauri.
+struct ControlState<C: Capture + 'static, E: VoiceEvents> {
+    core: Arc<VoiceCore<C, E>>,
+    detector: HoldDetector,
+    level: Arc<LevelCell>,
+    level_throttle: Throttle,
+}
+
+impl<C: Capture + 'static, E: VoiceEvents> ControlState<C, E> {
+    fn new(core: Arc<VoiceCore<C, E>>, level: Arc<LevelCell>) -> Self {
+        Self {
+            core,
+            detector: HoldDetector::new(),
+            level,
+            level_throttle: Throttle::new(LEVEL_EVERY),
+        }
+    }
+
+    /// How long to wait for the next message at `now`: until a pending hold
+    /// arms, and at most `LEVEL_EVERY` while recording. `None` waits for one.
+    fn wait(&self, now: Instant) -> Option<Duration> {
+        let level = (self.core.state() == VoiceState::Recording).then_some(LEVEL_EVERY);
+        let arm = self.detector.deadline().map(|d| d.saturating_duration_since(now));
+        match (level, arm) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Handles `msg` (`None` for a timeout) at `now`. `focused` is asked only
+    /// for a hold-key press.
+    fn step(&mut self, msg: Option<Control>, now: Instant, focused: impl FnOnce() -> Option<String>) {
         match msg {
-            Some(Control::Key(ev)) => {
-                // Focus only matters for starting; skip the window lookup for
-                // the stream of ordinary key presses.
-                let focused = if ev == KeyEvent::HoldDown {
-                    focused_window(&app)
-                } else {
-                    None
-                };
-                let action = detector.on(ev, focused.is_some());
-                core.hold(action, focused, Instant::now());
+            Some(Control::Key(ev, at)) => {
+                // A deadline that passed before this event arms first.
+                let armed = self.detector.on_time(at);
+                self.core.hold(armed, at);
+                let focused = if ev == KeyEvent::HoldDown { focused() } else { None };
+                let action = self.detector.on_key(ev, focused, at);
+                self.core.hold(action, at);
             }
-            Some(Control::Reset) => detector = HoldDetector::new(),
+            Some(Control::Reset) => {
+                self.detector = HoldDetector::new();
+                self.core.hold(HoldAction::Cancel, now);
+            }
+            Some(Control::WindowClosed(label)) => {
+                self.detector.forget_window(&label);
+                self.core.window_closed(&label);
+            }
             Some(Control::Wake) | None => {}
         }
-        let now = Instant::now();
-        core.tick(now);
-        if core.state() == VoiceState::Recording {
-            if level_throttle.ready(now) {
-                if let Some(level) = level.take() {
-                    core.events().level(LevelPayload { level });
+        let armed = self.detector.on_time(now);
+        self.core.hold(armed, now);
+        self.core.tick(now);
+        if self.core.state() == VoiceState::Recording {
+            if self.level_throttle.ready(now) {
+                if let Some(level) = self.level.take() {
+                    self.core.events().level(LevelPayload { level });
                 }
             }
         } else {
             // A level left over from the last take must not leak into the next.
-            level.take();
+            self.level.take();
         }
     }
 }
@@ -460,4 +523,189 @@ fn focused_window(app: &AppHandle) -> Option<String> {
         .into_iter()
         .find(|(_, w)| w.is_focused().unwrap_or(false))
         .map(|(label, _)| label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::voice::hold::ARM_DELAY;
+    use crate::voice::service::tests::{
+        ms, rec_state, rig, FakeCapture, Opts, Recorder, Rig, Script, IDLE,
+    };
+    use crate::voice::service::DropReason;
+    use KeyEvent::{HoldDown, HoldUp, OtherKeyDown};
+
+    fn control(r: &Rig) -> ControlState<FakeCapture, Recorder> {
+        ControlState::new(Arc::clone(&r.core), Arc::new(LevelCell::new()))
+    }
+
+    fn key(ev: KeyEvent, at: Instant) -> Option<Control> {
+        Some(Control::Key(ev, at))
+    }
+
+    fn main_window() -> Option<String> {
+        Some("main".into())
+    }
+
+    fn no_window() -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn a_hold_key_tap_opens_no_microphone() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        c.step(key(HoldDown, t0), t0, main_window);
+        assert_eq!(c.wait(t0), Some(ARM_DELAY));
+        c.step(key(HoldUp, t0 + ms(120)), t0 + ms(120), main_window);
+        assert_eq!(c.wait(t0 + ms(120)), None);
+        c.step(None, t0 + ms(400), main_window);
+        assert_eq!(r.cap.starts(), 0);
+        assert!(r.rec.all().is_empty(), "{:?}", r.rec.all());
+    }
+
+    #[test]
+    fn fn_arrow_opens_no_microphone() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        c.step(key(HoldDown, t0), t0, main_window);
+        c.step(key(OtherKeyDown, t0 + ms(40)), t0 + ms(40), main_window);
+        c.step(None, t0 + ms(400), main_window);
+        c.step(key(HoldUp, t0 + ms(500)), t0 + ms(500), main_window);
+        assert_eq!(r.cap.starts(), 0);
+        assert!(r.rec.all().is_empty(), "{:?}", r.rec.all());
+    }
+
+    #[test]
+    fn a_held_key_records_from_key_down_in_the_window_focused_then() {
+        let r = rig(Script::texts(&["hello"]), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        c.step(key(HoldDown, t0), t0, || Some("task-2".into()));
+        c.step(None, t0 + ms(149), no_window);
+        assert_eq!(r.cap.starts(), 0);
+        c.step(None, t0 + ms(150), no_window);
+        assert_eq!(r.rec.states(), vec![rec_state("task-2", 1)]);
+        // Released 300 ms after key down: long enough, though armed at 150 ms.
+        c.step(key(HoldUp, t0 + ms(300)), t0 + ms(300), no_window);
+        r.core.flush();
+        assert_eq!(
+            r.rec.transcripts(),
+            vec![("task-2".to_string(), 1, 1, "hello".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_release_seen_after_the_deadline_begins_then_ends_too_short() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        c.step(key(HoldDown, t0), t0, main_window);
+        c.step(key(HoldUp, t0 + ms(200)), t0 + ms(200), main_window);
+        assert_eq!(r.rec.states(), vec![rec_state("main", 1), IDLE]);
+        assert_eq!(r.rec.dropped(), vec![("main".into(), 1, DropReason::TooShort)]);
+    }
+
+    #[test]
+    fn another_key_after_arming_cancels_the_take() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        c.step(key(HoldDown, t0), t0, main_window);
+        c.step(None, t0 + ms(150), main_window);
+        c.step(key(OtherKeyDown, t0 + ms(400)), t0 + ms(400), main_window);
+        assert_eq!(r.rec.dropped(), vec![("main".into(), 1, DropReason::Cancelled)]);
+        assert_eq!(r.rec.last_state(), Some(IDLE));
+    }
+
+    #[test]
+    fn hold_key_leaves_a_mic_button_take_recording() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        r.core.begin("main".into(), t0).unwrap();
+        c.step(Some(Control::Wake), t0, main_window);
+        let at = |n| t0 + ms(n);
+        // A tap, Fn+arrow, a long press released, a long press then another key.
+        for (ev, n) in [
+            (HoldDown, 1000), (HoldUp, 1050),
+            (HoldDown, 2000), (OtherKeyDown, 2040), (HoldUp, 2100),
+            (HoldDown, 3000), (HoldUp, 3500),
+            (HoldDown, 4000), (OtherKeyDown, 4400), (HoldUp, 4500),
+        ] {
+            c.step(key(ev, at(n)), at(n), main_window);
+            c.step(None, at(n + 200), main_window);
+        }
+        assert_eq!(r.core.state(), VoiceState::Recording);
+        assert_eq!(r.cap.starts(), 1);
+        assert_eq!(r.rec.states(), vec![rec_state("main", 1)]);
+        assert!(r.rec.dropped().is_empty());
+    }
+
+    #[test]
+    fn reset_cancels_a_take_begun_by_old_key_events_queued_before_it() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        // The old key's press is drained late, after its arm delay: it begins a take.
+        c.step(key(HoldDown, t0), t0 + ms(200), main_window);
+        assert_eq!(r.core.state(), VoiceState::Recording);
+        // The listener was replaced; the Reset queued behind that press arrives.
+        c.step(Some(Control::Reset), t0 + ms(210), main_window);
+        assert_eq!(r.rec.dropped(), vec![("main".into(), 1, DropReason::Cancelled)]);
+        assert_eq!(r.core.state(), VoiceState::Idle);
+        assert_eq!(c.wait(t0 + ms(210)), None);
+    }
+
+    #[test]
+    fn reset_forgets_a_pending_arm() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        c.step(key(HoldDown, t0), t0, main_window);
+        c.step(Some(Control::Reset), t0 + ms(10), main_window);
+        c.step(None, t0 + ms(400), main_window);
+        assert_eq!(r.cap.starts(), 0);
+        assert!(r.rec.all().is_empty());
+    }
+
+    #[test]
+    fn reset_leaves_a_mic_button_take_alone() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        r.core.begin("main".into(), Instant::now()).unwrap();
+        c.step(Some(Control::Reset), Instant::now(), main_window);
+        assert_eq!(r.core.state(), VoiceState::Recording);
+    }
+
+    #[test]
+    fn closing_a_window_cancels_its_take_only() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        r.core.begin("b".into(), t0).unwrap();
+        c.step(Some(Control::WindowClosed("a".into())), t0, main_window);
+        assert_eq!(r.core.state(), VoiceState::Recording);
+        assert_eq!(r.cap.cancels(), 0);
+        c.step(Some(Control::WindowClosed("b".into())), t0, main_window);
+        assert_eq!(r.rec.dropped(), vec![("b".into(), 1, DropReason::Cancelled)]);
+        assert_eq!(r.cap.cancels(), 1);
+        assert_eq!(r.core.state(), VoiceState::Idle);
+        assert_eq!(r.rec.last_state(), Some(IDLE));
+    }
+
+    #[test]
+    fn closing_the_window_of_a_pending_arm_begins_nothing() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        c.step(key(HoldDown, t0), t0, || Some("b".into()));
+        c.step(Some(Control::WindowClosed("b".into())), t0 + ms(50), main_window);
+        c.step(None, t0 + ms(400), main_window);
+        c.step(key(HoldUp, t0 + ms(500)), t0 + ms(500), main_window);
+        assert_eq!(r.cap.starts(), 0);
+        assert!(r.rec.all().is_empty());
+    }
 }

@@ -70,8 +70,9 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
 
   // Dictation target while this box is on screen: Layout keeps the draft mounted
   // but hidden behind a selected task, and the task board hides both.
+  const dictationTarget = () => source() === 'local' && !sending() && !selectedTaskId() && !showTaskBoard()
   createEffect(() => {
-    if (source() !== 'local' || sending() || selectedTaskId() || showTaskBoard()) return
+    if (!dictationTarget()) return
     onCleanup(registerDictationTarget({ id: 'new-task', sessionId: null, insert: insertDictated }))
   })
   function insertDictated(take: string) {
@@ -167,7 +168,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
                 </div>
               </Show>
               </div>
-              <DictationControl />
+              <DictationControl available={dictationTarget()} />
               <button aria-label="Send" title={sendBlocker() || 'Start the task (Enter) · Shift+Enter for a new line'} disabled={!!sendBlocker() || sending()} onClick={send}
                 class="w-8 h-8 rounded-lg flex items-center justify-center bg-accent text-surface-0 disabled:bg-transparent disabled:ring-1 disabled:ring-outline/15 disabled:text-text-dim transition-colors">
                 <Show when={sending()} fallback={<ArrowUp size={16} />}><Loader2 size={16} class="animate-spin" /></Show>

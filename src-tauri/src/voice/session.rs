@@ -401,6 +401,17 @@ mod tests {
     }
 
     #[test]
+    fn a_loud_partial_window_counts_only_from_a_tenth_of_a_window() {
+        // A quiet full window, then a loud tail: 159 samples are ignored, 160 count.
+        let mut short = vec![0.0; SILENCE_WINDOW];
+        short.extend(sine(0.1, SILENCE_WINDOW / 10 - 1));
+        assert!(is_silent(&short));
+        let mut enough = vec![0.0; SILENCE_WINDOW];
+        enough.extend(sine(0.1, SILENCE_WINDOW / 10));
+        assert!(!is_silent(&enough));
+    }
+
+    #[test]
     fn steady_low_noise_is_silent() {
         assert!(is_silent(&sine(0.002, 80_000)));
     }

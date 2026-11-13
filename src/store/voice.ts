@@ -78,6 +78,7 @@ function pendingModel(): ModelId | null {
 
 function applyStatus(s: VoiceStatus) {
   setStatus(s)
+  watchAccessibility(s)
   forgetInstalled()
   const pending = pendingLanguage()
   if (pending && s.languages.find(l => l.code === pending)?.installed) {
@@ -170,6 +171,18 @@ export function watchVoiceStatusOnFocus(): () => void {
   }
 }
 
+/** The watcher kept while the hold key waits for Accessibility, which the user may grant after skipping it in setup. */
+let accessibilityWatch: (() => void) | null = null
+
+function watchAccessibility(s: VoiceStatus) {
+  const waiting = s.supported && s.enabled && !s.accessibility
+  if (waiting && !accessibilityWatch) accessibilityWatch = watchVoiceStatusOnFocus()
+  else if (!waiting && accessibilityWatch) {
+    accessibilityWatch()
+    accessibilityWatch = null
+  }
+}
+
 export function openAccessibilitySettings(): void {
   ipc.voiceOpenAccessibilitySettings().catch(e => console.error('voice open accessibility settings:', e))
 }
@@ -234,8 +247,45 @@ export function registerDictationTarget(t: DictationTarget): () => void {
 
 const label = () => windowContext.windowLabel
 
+/**
+ * Every window's pins, also kept in localStorage (one origin for all Verun
+ * windows) so the main window can deliver a take whose window closed: the
+ * backend sends that transcript to the main window.
+ */
+const STORED_PINS_KEY = 'verun:voicePins'
+interface StoredPin { targetId: string; sessionId: string | null }
+/** Takes whose stored pin this window wrote. */
+const storedHere = new Set<number>()
+
+function readStoredPins(): Record<string, StoredPin> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(STORED_PINS_KEY) ?? '{}')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, StoredPin> : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeStoredPins(update: (pins: Record<string, StoredPin>) => void) {
+  try {
+    const all = readStoredPins()
+    update(all)
+    localStorage.setItem(STORED_PINS_KEY, JSON.stringify(all))
+  } catch (e) {
+    console.error('voice stored pins:', e)
+  }
+}
+
+function forgetStoredPins(takes: number[]) {
+  for (const take of takes) storedHere.delete(take)
+  if (takes.length === 0 || !takes.some(take => String(take) in readStoredPins())) return
+  writeStoredPins(all => { for (const take of takes) delete all[take] })
+}
+
 function pin(take: number, t: DictationTarget) {
   setPins(new Map(pins()).set(take, t))
+  storedHere.add(take)
+  writeStoredPins(all => { all[take] = { targetId: t.id, sessionId: t.sessionId } })
 }
 
 /** Remove and return the pin for `take`; the recording take is over once it has a terminal event. */
@@ -247,7 +297,15 @@ function release(take: number): DictationTarget | undefined {
     next.delete(take)
     setPins(next)
   }
+  forgetStoredPins([take])
   return t
+}
+
+/** The stored pin of a take this window does not hold (its window closed), removed as it is read. */
+function takeStoredPin(take: number): StoredPin | undefined {
+  const found = readStoredPins()[take]
+  if (found) forgetStoredPins([take])
+  return found
 }
 
 function handleError(error: VoiceError) {
@@ -265,11 +323,16 @@ function handleError(error: VoiceError) {
 function onState({ state, window, take }: VoiceStateEvent) {
   // Any state event supersedes a recording this window had; only a recording event for us restarts it.
   setRecordingTake(null)
-  if (state === 'idle' && window === null) setPins(new Map())
+  if (state === 'idle' && window === null) {
+    setPins(new Map())
+    forgetStoredPins([...storedHere])
+  }
   if (state !== 'recording' || window !== label() || take === null) return
   const target = targets[targets.length - 1]
   if (target) {
     pin(take, target)
+    // The meter starts from silence, not from the last take's final level.
+    setLevel(0)
     setRecordingTake(take)
   } else {
     ipc.voiceCancel().catch(e => console.error('voice cancel:', e))
@@ -279,12 +342,15 @@ function onState({ state, window, take }: VoiceStateEvent) {
 
 function onTranscript({ window, take, text }: VoiceTranscriptEvent) {
   if (window !== label()) return
-  const pinned = release(take)
+  const held = pins().has(take)
+  const pinned = held ? release(take) : undefined
   // A remounted composer for the same chat has a new object with the same id.
   const live = pinned && [...targets].reverse().find(t => t.id === pinned.id)
   if (live) return live.insert(text)
-  if (pinned?.sessionId && sessionById(pinned.sessionId)) {
-    appendToDraft(pinned.sessionId, text)
+  // Not pinned here: a take from a window that closed, sent to this one.
+  const sessionId = held ? pinned?.sessionId : takeStoredPin(take)?.sessionId
+  if (sessionId && sessionById(sessionId)) {
+    appendToDraft(sessionId, text)
     addToast('Dictation saved to the draft of the chat you were in.', 'info')
   } else {
     addToast('Dictation dropped: that chat is gone.', 'info')
@@ -304,12 +370,17 @@ export async function initVoice(): Promise<void> {
       listen<VoiceLevelEvent>('voice-level', e => { setLevel(e.payload.level) }),
       listen<VoiceTranscriptEvent>('voice-transcript', e => onTranscript(e.payload)),
       listen<VoiceErrorEvent>('voice-error', e => {
-        if (e.payload.window !== label()) return
+        // The take is over in every window, also for a stored pin whose window closed.
+        if (e.payload.window !== label()) {
+          if (e.payload.take !== null) forgetStoredPins([e.payload.take])
+          return
+        }
         if (e.payload.take !== null) release(e.payload.take)
         handleError(e.payload.error)
       }),
       listen<VoiceTakeDroppedEvent>('voice-take-dropped', e => {
         if (e.payload.window === label()) release(e.payload.take)
+        else forgetStoredPins([e.payload.take])
       }),
       listen<VoiceStatus>('voice-status-changed', e => { statusEventSeen = true; applyStatus(e.payload) }),
       listen<VoiceModelProgressEvent>('voice-model-progress', e => {
@@ -330,14 +401,21 @@ export async function initVoice(): Promise<void> {
   }
 }
 
+/** A `voice_begin` on its way, so a second click does not end or repeat it. */
+let beginInFlight = false
+
 export function toggleDictation(): void {
+  if (beginInFlight) return
   const s = status()
   if (!s || !s.enabled) return openDictationSetup({ reason: 'enable' })
   if (recordingTake() !== null) {
     ipc.voiceEnd().catch(e => console.error('voice end:', e))
     return
   }
-  ipc.voiceBegin(label()).catch((e: VoiceError) => handleError(e))
+  beginInFlight = true
+  ipc.voiceBegin(label())
+    .catch((e: VoiceError) => handleError(e))
+    .finally(() => { beginInFlight = false })
 }
 
 /** Test-only: drop all module state so tests never leak into each other. */
@@ -355,6 +433,9 @@ export function __resetVoiceForTests(): void {
   setDownloads({})
   setPendingLanguage(null)
   languageInFlight = null
+  beginInFlight = false
+  storedHere.clear()
+  accessibilityWatch = null
   if (focusWatchers > 0) window.removeEventListener('focus', onWindowFocus)
   focusWatchers = 0
   focusGeneration++
