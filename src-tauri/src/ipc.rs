@@ -1423,8 +1423,10 @@ pub async fn get_output_lines(
 
 #[tauri::command]
 pub async fn set_trust_level(
+    app: AppHandle,
     db_tx: State<'_, DbWriteTx>,
     active: State<'_, ActiveMap>,
+    pending_ctrl: State<'_, PendingControlResponses>,
     task_id: String,
     trust_level: String,
 ) -> Result<(), String> {
@@ -1452,12 +1454,36 @@ pub async fn set_trust_level(
 
     db_tx
         .send(db::DbWrite::SetTrustLevel {
-            task_id,
+            task_id: task_id.clone(),
             trust_level,
             updated_at: crate::task::epoch_ms(),
         })
         .await
         .map_err(|e| format!("DB write failed: {e}"))?;
+
+    // And switch their permission mode (Claude: auto <-> default), so a turn
+    // already running follows the new tier. A session in Plan keeps it. The
+    // CLI's answer can wait behind an open approval card, so nothing here
+    // waits for it: a refused auto mode is reported whenever it's read.
+    let switches =
+        task::switch_live_permission_modes(active.inner(), pending_ctrl.inner(), &task_id, parsed)
+            .await;
+    for switch in switches {
+        let (app, pending_ctrl) = (app.clone(), pending_ctrl.inner().clone());
+        tauri::async_runtime::spawn(async move {
+            let refusal = task::auto_mode_refusal(
+                switch.mode,
+                &switch.request_id,
+                switch.answer,
+                &pending_ctrl,
+                task::MODE_SWITCH_ANSWER_LIMIT,
+            )
+            .await;
+            if let Some(reason) = refusal {
+                crate::stream::emit_auto_mode_unavailable(&app, &switch.session_id, Some(reason));
+            }
+        });
+    }
 
     Ok(())
 }
@@ -2662,7 +2688,11 @@ pub fn pty_listen(
     let handle = pty_map
         .get(&terminal_id)
         .ok_or_else(|| format!("Terminal {terminal_id} not found"))?;
-    handle.output.attach(window.label(), after_seq);
+    let redraw = handle.output.attach(window.label(), after_seq);
+    drop(handle);
+    if redraw {
+        crate::pty::request_redraw(&pty_map, &terminal_id);
+    }
     Ok(())
 }
 

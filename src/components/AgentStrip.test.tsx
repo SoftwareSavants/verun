@@ -6,6 +6,7 @@ const reveal = vi.fn()
 vi.mock('./AgentBlockView', async (orig) => ({ ...(await orig<typeof import('./AgentBlockView')>()), revealAgent: (id: string) => reveal(id) }))
 
 import { AgentStrip } from './AgentStrip'
+import { setAgentOnScreen } from './AgentBlockView'
 
 afterEach(() => { cleanup(); reveal.mockReset() })
 
@@ -18,6 +19,17 @@ const items: OutputItem[] = [
 ]
 
 describe('AgentStrip', () => {
+  test("an agent whose block is on screen isn't repeated here; with nothing left, the strip hides", () => {
+    setAgentOnScreen('toolu_A', true)
+    const { container } = render(() => <AgentStrip status="background" items={items} />)
+    expect(container.textContent).not.toContain('Review diff')
+    expect(container.textContent).toContain('pnpm dev')
+    cleanup()
+    const onlyAgent = items.filter(i => (i as { taskId?: string }).taskId !== 'b')
+    expect(render(() => <AgentStrip status="background" items={onlyAgent} />).container.textContent).toBe('')
+    setAgentOnScreen('toolu_A', false)
+  })
+
   test('hidden unless the session is in the background state', () => {
     const { container } = render(() => <AgentStrip status="idle" items={items} />)
     expect(container.textContent).toBe('')

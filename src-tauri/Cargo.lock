@@ -6843,6 +6843,8 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "plist",
  "portable-pty",
  "reqwest",

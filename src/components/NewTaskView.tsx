@@ -20,7 +20,13 @@ import { Select } from './Select'
 import { CloudSessionPicker } from './CloudSessionPicker'
 import { DictationControl } from './DictationControl'
 
-export function NewTaskView(props: { projectId: string; onClose: () => void }) {
+export function NewTaskView(props: {
+  projectId: string
+  onClose: () => void
+  /** With onProjectChange, the header picks the draft's project; the prompt carries over. */
+  projectOptions?: { value: string; label: string }[]
+  onProjectChange?: (projectId: string) => void
+}) {
   const project = () => projectById(props.projectId)
   // The prompt is the project's new-task draft, so it survives this box being
   // hidden or unmounted, and a dictated take for it lands there in any case.
@@ -51,7 +57,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
   const unavailable = () => agents.find(a => a.id === agent())?.installed === false
   let textarea!: HTMLTextAreaElement
 
-  createEffect(on(() => [props.projectId, project()?.id], () => {
+  createEffect(on(() => [props.projectId, project()?.id], (_, previous) => {
     let cancelled = false
     onCleanup(() => { cancelled = true })
     const p = project()
@@ -69,6 +75,10 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
     if (isQuickProject(props.projectId) && p) {
       setWorkspace('folder')
       ipc.inspectTaskDirectory(p.repoPath).then(info => { if (!cancelled) setFolder(info) }).catch(() => {})
+    } else if (previous && isQuickProject(previous[0])) {
+      // The quick task's folder was its default, not a choice for this project.
+      setFolder(null)
+      setWorkspace('worktree')
     } else if (workspace() === 'folder' && !folder()) {
       setWorkspace('worktree')
     }
@@ -123,21 +133,37 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
   const send = async () => {
     if (!message().trim() || sending() || choosing() || unavailable()) return
     const sent = message()
+    const projectId = props.projectId
+    const sentDraft = newTaskDraftId(projectId)
     setSending(true)
     setError('')
-    clearDraft(draftId())
+    clearDraft(sentDraft)
     try {
-      await startDraftTask({ projectId: props.projectId, baseBranch: baseBranch(), agentType: agent(), model: selectedModel(), directory: directory(), account: account(), message: sent.trim(), viewMode: agent() === 'claude' ? viewMode() : undefined })
-      setMessage(loadDraftMessage(draftId()) ?? '')
-      props.onClose()
+      await startDraftTask({ projectId, baseBranch: baseBranch(), agentType: agent(), model: selectedModel(), directory: directory(), account: account(), message: sent.trim(), viewMode: agent() === 'claude' ? viewMode() : undefined })
+      // Moved to another project while sending: that box stays open on its own draft.
+      if (props.projectId === projectId) {
+        setMessage(loadDraftMessage(sentDraft) ?? '')
+        props.onClose()
+      }
     } catch (e) {
-      const landed = loadDraftMessage(draftId())
-      updateMessage(landed ? insertDictation(sent, landed, null).text : sent)
+      const landed = loadDraftMessage(sentDraft)
+      const back = landed ? insertDictation(sent, landed, null).text : sent
+      if (props.projectId === projectId) updateMessage(back)
+      else saveDraftMessage(sentDraft, back)
       // The account the task would run on can be unusable: that gets the account
       // toast, and the draft says what is wrong instead of printing the raw error.
       setError(failureText(e))
     }
     finally { setSending(false) }
+  }
+  /** The header's project picker: the prompt moves with the draft to that project. */
+  const changeProject = (id: string) => {
+    if (id === props.projectId) return
+    if (message()) {
+      saveDraftMessage(newTaskDraftId(id), message())
+      clearDraft(draftId())
+    }
+    props.onProjectChange?.(id)
   }
   /** Close (X): the user is done with this draft. */
   const discard = () => {
@@ -154,7 +180,11 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
 
   return <section class="flex flex-col h-full min-h-0 bg-surface-0" aria-label="New task">
     <header class="flex items-center justify-between pt-10 px-5 pb-3 drag-region" data-tauri-drag-region>
-      <div class="flex items-center gap-2 text-xs text-text-muted"><span>New task</span><span class="text-text-dim">/</span><span class="text-text-secondary">{project()?.name}</span></div>
+      <div class="min-w-0 flex items-center gap-2 text-xs text-text-muted"><span class="shrink-0">New task</span><span class="text-text-dim">/</span>
+        <Show when={props.onProjectChange && props.projectOptions} fallback={<span class="text-text-secondary truncate">{project()?.name}</span>}>
+          <div class="min-w-0 no-drag"><Select size="compact" label="Project" value={props.projectId} options={props.projectOptions!} disabled={sending()} onChange={changeProject} /></div>
+        </Show>
+      </div>
       <button class="btn-ghost no-drag" aria-label="Close draft" disabled={sending()} onClick={discard}><X size={14} /></button>
     </header>
     <div class="flex-1 min-h-0 overflow-auto flex flex-col px-6 pt-4 sm:pt-8 pb-10">

@@ -47,6 +47,9 @@ describe('AgentBlockView', () => {
       <AgentBlockView block={base({ progress: { taskId: 't', status: 'failed', error: 'Rate limited' } })} />
     ))
     expect(failed.container.querySelector('[class*="text-status-error"]')).not.toBeNull()
+    // The status word itself reads as a failure, not just its icon.
+    const word = [...failed.container.querySelectorAll('span')].filter(s => s.textContent === 'Failed' && !s.querySelector('span')).pop()
+    expect(word?.className).toContain('text-status-error')
   })
 
   test('names an untyped agent general-purpose, and says Starting before progress', () => {
@@ -99,6 +102,57 @@ describe('AgentBlockView', () => {
     expect(header(container).getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(header(container))
     expect(header(container).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  test('the task leads the header; the agent type follows it', () => {
+    const { container } = render(() => <AgentBlockView block={base({ progress: { taskId: 't', status: 'running' } })} />)
+    const text = header(container).textContent ?? ''
+    expect(text.indexOf('Review diff')).toBeLessThan(text.indexOf('code-reviewer'))
+  })
+
+  test('while it runs, its last three steps show under the header', () => {
+    const read = (n: number) => ({ type: 'tool' as const, id: `c${n}`, tool: 'Read', input: JSON.stringify({ file_path: `/r/.verun/worktrees/w/src/file${n}.ts` }), result: { text: 'ok', isError: false } })
+    const { container } = render(() => (
+      <AgentBlockView block={base({ progress: { taskId: 't', status: 'running' }, children: [read(1), read(2), read(3), read(4), read(5)] })} />
+    ))
+    const text = container.textContent ?? ''
+    for (const n of [3, 4, 5]) expect(text).toContain(`src/file${n}.ts`)
+    for (const n of [1, 2]) expect(text).not.toContain(`src/file${n}.ts`)
+    // A preview of a longer log says so.
+    expect(text).toContain('2 earlier steps')
+    cleanup()
+    // Done, it folds back to its result.
+    const done = render(() => <AgentBlockView block={base({ result: { text: 'All good', isError: false }, children: [read(1)] })} />)
+    expect(done.container.textContent).not.toContain('src/file1.ts')
+  })
+
+  test('its preview rows are the same step rows as its log, and the earlier-steps line opens the log', () => {
+    const kids = [1, 2, 3, 4, 5].map(n => ({ type: 'tool' as const, id: `c${n}`, tool: 'Read', input: '{}', result: { text: 'ok', isError: false } }))
+    const { container, getByRole } = render(() => (
+      <AgentBlockView
+        block={base({ progress: { taskId: 't', status: 'running' }, children: kids })}
+        renderChild={c => <div data-row>{(c as { id: string }).id}</div>}
+      />
+    ))
+    expect([...container.querySelectorAll('[data-row]')].map(e => e.textContent)).toEqual(['c3', 'c4', 'c5'])
+    fireEvent.click(getByRole('button', { name: '2 earlier steps' }))
+    expect(header(container).getAttribute('aria-expanded')).toBe('true')
+    expect([...getByRole('log').querySelectorAll('[data-row]')].map(e => e.textContent)).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
+  })
+
+  test('opened, its whole log scrolls in a pane of its own, above the report', () => {
+    const { container, getByRole } = render(() => (
+      <AgentBlockView block={base({ result: { text: 'Report body', isError: false } })}>
+        <div>step row</div>
+      </AgentBlockView>
+    ))
+    fireEvent.click(header(container))
+    const log = getByRole('log')
+    expect(log.textContent).toContain('step row')
+    expect(log.className).toMatch(/max-h-/)
+    expect(log.className).toContain('overflow-y-auto')
+    expect(log.textContent).not.toContain('Report body')
+    expect(container.textContent).toContain('Report body')
   })
 
   test('revealAgent scrolls to the block and highlights it', () => {

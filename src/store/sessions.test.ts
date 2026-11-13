@@ -803,6 +803,33 @@ describe('rate limits per account', () => {
   })
 })
 
+// A session on the Auto tier whose model or account can't use Claude's auto
+// mode runs in the default mode instead, and Verun asks for what Claude
+// would have decided. Every turn reports it again; the user hears it once.
+describe("Claude's auto mode unavailable", () => {
+  beforeAll(async () => {
+    await initSessionListeners()
+  })
+
+  beforeEach(() => {
+    setToasts([])
+  })
+
+  const fire = (sessionId: string) =>
+    listenCallbacks.get('claude-auto-mode-unavailable')!({ payload: { sessionId, reason: null } })
+
+  test('says so once per session', () => {
+    fire('s-auto-1')
+    fire('s-auto-1')
+    expect(toasts().map(t => t.message)).toEqual([
+      "Claude's auto mode isn't available for this model or account, so Verun will ask instead.",
+    ])
+
+    fire('s-auto-2')
+    expect(toasts()).toHaveLength(2)
+  })
+})
+
 describe('handOffSession', () => {
   beforeEach(() => {
     setSessions([])

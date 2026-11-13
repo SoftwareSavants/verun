@@ -1,10 +1,10 @@
 import { TaskBoardPage } from './TaskBoardPage'
 import { showTaskBoard, setShowTaskBoard } from '../store/ui'
-import { visibleProjects } from '../store/projectGroups'
 import { Component, Show, onMount, onCleanup, createSignal, createEffect } from 'solid-js'
 import { listen } from '@tauri-apps/api/event'
 import { Sidebar } from './Sidebar'
 import { openQuickTask } from '../store/quickTasks'
+import { draftProjectOptions, openNewTask } from '../store/newTask'
 import { TaskPanel } from './TaskPanel'
 import { SettingsPage, selectSettingsSection, settingsSectionForShortcut, setSettingsSaveRequested } from './SettingsPage'
 import { ArchivedPage } from './ArchivedPage'
@@ -15,7 +15,7 @@ import { BtsBuilderDialog } from './BtsBuilderDialog'
 import { sidebarWidth, setSidebarWidth, showSettings, setShowSettings, showArchived, setShowArchived, newTaskProjectId, setNewTaskProjectId, requestNewTaskForProject, focusOrSelectTask, pickAndAddProject, addProjectPath, setAddProjectPath, showBtsBuilder, setShowBtsBuilder, showCloneRepo, setShowCloneRepo, setSelectedProjectId, siblingTaskInList, setupProject, setSetupProject } from '../store/ui'
 import * as ipc from '../lib/ipc'
 import { hydrateTerminalsForTask } from '../store/terminals'
-import { activeTasksForProject } from '../store/tasks'
+import { numberedTasks, navigationTasks } from '../store/sidebarOrder'
 import { projects } from '../store/projects'
 import { selectedProjectId, selectedTaskId, setSelectedTaskId } from '../store/ui'
 import { modPressed } from '../lib/platform'
@@ -105,10 +105,7 @@ export const Layout: Component = () => {
       }
       if (modPressed(e) && e.key === 'n') {
         e.preventDefault()
-        const pid = selectedProjectId()
-        if (pid) requestNewTaskForProject(pid)
-        else if (projects.length > 0) requestNewTaskForProject(projects[projects.length - 1].id)
-        else pickAndAddProject()
+        openNewTask()
       }
       if (modPressed(e) && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
@@ -119,8 +116,8 @@ export const Layout: Component = () => {
           const section = settingsSectionForShortcut(idx + 1, projects.map(p => p.id))
           if (section) selectSettingsSection(section)
         } else {
-          // Match sidebar ordering: iterate projects, then tasks within each project
-          const ordered = visibleProjects(projects).flatMap(p => activeTasksForProject(p.id))
+          // The sidebar's numbering, in whichever view it shows.
+          const ordered = numberedTasks()
           if (idx < ordered.length) {
             focusOrSelectTask(ordered[idx])
           }
@@ -155,8 +152,7 @@ export const Layout: Component = () => {
       // Cmd+Alt+Down / Cmd+Alt+Up — move to next/previous task in the sidebar
       if (modPressed(e) && e.altKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
         e.preventDefault()
-        const ordered = visibleProjects(projects).flatMap(p => activeTasksForProject(p.id))
-        const next = siblingTaskInList(ordered, selectedTaskId(), e.key === 'ArrowDown' ? 'down' : 'up')
+        const next = siblingTaskInList(navigationTasks(), selectedTaskId(), e.key === 'ArrowDown' ? 'down' : 'up')
         if (next) focusOrSelectTask(next)
       }
     }
@@ -200,9 +196,10 @@ export const Layout: Component = () => {
             <button class="text-xs text-text-muted text-left px-5 pt-9 pb-2 bg-surface-1 hover:text-text-primary" onClick={() => setSelectedTaskId(null)}>New task · Draft</button>
           </Show>
           <div class="flex-1 min-h-0" style={{ display: newTaskProjectId() && !selectedTaskId() ? 'none' : undefined }}><TaskPanel /></div>
-          <Show when={newTaskProjectId()} keyed>{projectId =>
+          {/* One draft, not one per project: moving it to another project keeps what was typed. */}
+          <Show when={newTaskProjectId()}>{projectId =>
             <div class="flex-1 min-h-0" style={{ display: selectedTaskId() ? 'none' : undefined }}>
-              <NewTaskView projectId={projectId} onClose={() => { if (newTaskProjectId() === projectId) closeDraft() }} />
+              <NewTaskView projectId={projectId()} projectOptions={draftProjectOptions()} onProjectChange={requestNewTaskForProject} onClose={closeDraft} />
             </div>
           }</Show>
           </div>

@@ -471,6 +471,14 @@ export interface PolicyAutoApprovedEvent {
   reason: string;
 }
 
+/** A Claude session on the Auto tier runs without Claude's auto mode (its
+ *  model or account can't use it), so Verun asks instead. */
+export interface AutoModeUnavailableEvent {
+  sessionId: string;
+  /** What gave it away, for the log. */
+  reason: string | null;
+}
+
 // Git types
 
 export type ConflictKind =

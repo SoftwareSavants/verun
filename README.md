@@ -10,7 +10,7 @@ Spin up multiple AI coding agents - in isolated git worktrees or existing folder
 
 Task headers identify the owning project, including in detached windows. Terminal-mode Claude tasks are automatically named from their conversation.
 
-New tasks open as drafts. Write a prompt, pick a harness and model from the combined selector, choose where to run it below the composer, and send to start. Use a new worktree for an isolated branch and ports, the project folder to work in place, or any existing folder, including non-Git directories. Tasks sharing a folder see the same files; archiving or removing a direct-folder task preserves those files. For isolated worktrees, lifecycle hooks copy `.env` files, install dependencies, and start dev servers automatically so each agent starts ready to work. Define your setup once in a `.verun.json` and the whole team gets the same config.
+New tasks open as drafts from **New task** (`⌘N`) at the top of the sidebar, in either sidebar view; the draft's header switches its project without losing what you typed. Write a prompt, pick a harness and model from the combined selector, choose where to run it below the composer, and send to start. Use a new worktree for an isolated branch and ports, the project folder to work in place, or any existing folder, including non-Git directories. Tasks sharing a folder see the same files; archiving or removing a direct-folder task preserves those files. For isolated worktrees, lifecycle hooks copy `.env` files, install dependencies, and start dev servers automatically so each agent starts ready to work. Define your setup once in a `.verun.json` and the whole team gets the same config.
 
 ## Multi-agent support
 
@@ -18,7 +18,7 @@ Pluggable agent backend with first-class support for Claude Code, Codex, and Gro
 
 Hand a session off to another agent mid-task: Verun starts a linked session on the other harness in the same worktree and seeds it with the conversation so far and the branch's git state, so switching from Claude to Codex (or any other pair) needs no copy-paste.
 
-Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Astra.
+Choose models per session, including Claude Opus 5.5, Claude Fable 5.2, GPT-6.1 Sol, and GPT-6 Astra.
 
 - **Multiple accounts per harness** - add several Claude, Codex, Gemini, Grok, or OpenCode logins (Cursor via API key) in Settings and bind each project to the account it should use; Default keeps behaving as before.
 
@@ -26,12 +26,13 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 
 - **Task board** - scan live Needs you, Running, Idle, In review and Done columns across projects and groups; search tasks, open a card, or reveal archived work. Columns follow agent activity automatically. Claude terminal sessions report activity through per-launch observer hooks; unavailable status is shown separately. Terminal detection is partial, and approvals stay in Claude.
 
-- **Subagents in chat** - each Claude subagent is one quiet block showing its type, task, live progress and result; expand it to see its own tool calls. Background agents and shells still running after a turn are listed above the composer
+- **Readable work logs** - a finished turn shows your prompt, one "Worked for 3m 12s · 14 steps" row and the final reply, so scrolling back reads as a conversation. Steps read as sentences ("Read src/lib/markdown.ts", "Run the markdown tests", "+3 −1" on edits), and older steps of a running turn group into one line while the latest three stay live. Failures nothing fixed, subagents and work still going on never fold away
+- **Subagents in chat** - each Claude subagent is one quiet block with its task, type and status; while it runs it shows its last three steps, and opened, its whole log scrolls in a pane of its own that starts at the newest step. Background agents and shells still running after a turn are listed above the composer when their block isn't on screen
 - **Steps** - queue follow-up prompts while an agent is working; arm them to auto-send on idle, or fire manually
 - **Voice dictation** - hold a key (Fn by default, or Right Option / Right Command) or click the mic in the chat or new-task box, speak, and release: the words land in the composer for you to review before sending. Transcribed on-device with Whisper, in 12 languages; audio is never saved or sent anywhere. Off by default and Apple Silicon only; turning it on downloads a ~574 MB model once. Separate from Claude Code's own `/voice` in terminal sessions
 - **Side question (`/btw`)** - type `/btw <question>` mid-stream (or click the "Ask sideways" button that appears in the corner of the chat while Claude is working) to ask an ephemeral question - the answer shows in a floating panel and never enters conversation history
 - **Fork from any message** - hover any past reply to rewind the conversation in place, or branch into a new task with the worktree restored to the code as it was at that exact turn. Verun takes a git snapshot at every turn, so you can undo an entire direction - not just a line of code. With more than one Claude account, a fork can run on another account, and a session that hits its usage limit offers "Continue on <account>" in chat and in the terminal view
-- **Tool approval** - configurable trust levels per task: supervised, normal, or full auto
+- **Tool approval** - a tool policy per task: Ask every time, Auto (Claude sessions run in Claude Code's own auto mode, with Verun's worktree guard), or Full auto
 - **MCP servers** - answer MCP servers' questions in chat, and see servers that failed or need sign-in from a composer chip with one-click Sign in / Reconnect; hide the ones you never use
 - **Catch up on long sessions** - a session opens at what finished since you last looked, and a turn outline on the chat's edge jumps between prompts
 - **UI / Terminal toggle for Claude** - flip any Claude session into a real PTY running `claude --resume` to use the unmodified TUI, while history, fork, and search keep working because Verun tails the on-disk transcript. The mode is sticky per session with an app-wide default in Settings. On macOS, allow microphone access when prompted to use Claude Code's `/voice` dictation

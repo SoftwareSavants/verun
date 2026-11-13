@@ -71,12 +71,15 @@ core-graphics = "0.25.0"
 core-foundation = "0.10.1"
 # Voice dictation: microphone capture.
 cpal = "0.15"
+# Clipboard reads in-process (NSPasteboard). Tauri already builds these crates.
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSDictionary", "NSString", "NSURL", "NSValue"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSImageRep", "NSBitmapImageRep"] }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 # Voice dictation: on-device Whisper (whisper.cpp with Metal). Needs cmake to build.
 transcribe-rs = { version = "0.3.12", features = ["whisper-cpp", "whisper-metal"] }
 # Voice dictation: microphone permission through AVFoundation.
-objc2 = "0.6.4"
 block2 = "0.6.2"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
