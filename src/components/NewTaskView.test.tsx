@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-const mocks = vi.hoisted(() => ({ start: vi.fn(), open: vi.fn(), inspect: vi.fn(), project: { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' } as Record<string, string> }))
+const mocks = vi.hoisted(() => ({ start: vi.fn(), open: vi.fn(), inspect: vi.fn(), project: { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' } as Record<string, string>, byId: {} as Record<string, Record<string, string>> }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open }))
 vi.mock('../lib/ipc', () => ({
   getRepoInfo: vi.fn().mockResolvedValue({ branches: ['main', 'develop'], currentBranch: 'develop' }),
@@ -9,7 +9,7 @@ vi.mock('../lib/ipc', () => ({
   claudeCloudAvailability: vi.fn().mockResolvedValue({ available: false, reason: null }),
   inspectTaskDirectory: mocks.inspect,
 }))
-vi.mock('../store/projects', () => ({ projectById: () => mocks.project, projects: [] }))
+vi.mock('../store/projects', () => ({ projectById: (id: string) => mocks.byId[id] ?? mocks.project, projects: [] }))
 vi.mock('../store/agents', () => ({ agents: [{ id: 'claude', name: 'Claude Code', installed: true, supportsModelSelection: true, models: [{ id: 'opus', label: 'Opus', description: '' }] }, { id: 'codex', name: 'Codex', installed: true, supportsModelSelection: true, models: [{ id: 'gpt', label: 'GPT', description: '' }] }] }))
 vi.mock('../store/draftTask', () => ({ startDraftTask: mocks.start }))
 vi.mock('./AgentPicker', () => ({ AgentPicker: () => <span>Claude</span> }))
@@ -19,7 +19,7 @@ import { toasts, setToasts } from '../store/ui'
 import { applySnapshot } from '../store/accounts'
 import { makeAccount, makeSnapshot } from '../test/accountFixtures'
 afterEach(cleanup)
-beforeEach(() => { vi.clearAllMocks(); mocks.project = { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' }; localStorage.clear(); setToasts([]); applySnapshot(makeSnapshot()); mocks.start.mockResolvedValue(undefined) })
+beforeEach(() => { vi.clearAllMocks(); mocks.project = { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' }; mocks.byId = {}; localStorage.clear(); setToasts([]); applySnapshot(makeSnapshot()); mocks.start.mockResolvedValue(undefined) })
 function select(label: string, option: string) {
   fireEvent.click(screen.getByRole('combobox', { name: label }))
   fireEvent.click(screen.getByRole('option', { name: option }))
@@ -186,4 +186,51 @@ test('the chat or terminal choice for a Claude task is shown and sent', async ()
   fireEvent.input(screen.getByRole('textbox', { name: 'Task prompt' }), { target: { value: 'Fix the bug' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ viewMode: 'terminal' })))
+})
+
+// A draft opened from anywhere can move to the project it belongs in without
+// losing what was typed.
+const projectOptions = [{ value: 'q', label: 'Quokka' }, { value: 'p', label: 'Project' }]
+const prompt = () => screen.getByRole('textbox', { name: 'Task prompt' }) as HTMLTextAreaElement
+
+test('the draft moves to another project from its header and keeps the prompt', () => {
+  const [projectId, setProjectId] = createSignal('p')
+  const move = vi.fn((id: string) => setProjectId(id))
+  render(() => <NewTaskView projectId={projectId()} projectOptions={projectOptions} onProjectChange={move} onClose={() => {}} />)
+  fireEvent.input(prompt(), { target: { value: 'Fix the flaky test' } })
+  select('Project', 'Quokka')
+  expect(move).toHaveBeenCalledWith('q')
+  expect(screen.getByRole('combobox', { name: 'Project' }).textContent).toContain('Quokka')
+  expect(prompt().value).toBe('Fix the flaky test')
+})
+
+test('a draft without a project picker names its project', () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  expect(screen.queryByRole('combobox', { name: 'Project' })).toBeNull()
+  expect(screen.getByText('Project')).toBeTruthy()
+})
+
+test('a send that lands after the draft moved to another project leaves that draft open and empty', async () => {
+  let finish!: () => void
+  mocks.start.mockReturnValue(new Promise<void>(resolve => { finish = resolve }))
+  const [projectId, setProjectId] = createSignal('p')
+  const close = vi.fn()
+  render(() => <NewTaskView projectId={projectId()} onClose={close} />)
+  send('Fix the bug')
+  setProjectId('q')
+  finish()
+  await waitFor(() => expect(prompt().value).toBe(''))
+  expect(close).not.toHaveBeenCalled()
+})
+
+test('moving a quick task to a project runs it in a new worktree again', async () => {
+  mocks.byId = { 'quick-tasks': { id: 'quick-tasks', name: 'Quick tasks', repoPath: '/Users/me', baseBranch: '', defaultAgentType: 'claude' } }
+  mocks.inspect.mockResolvedValue({ path: '/Users/me', branch: '', isGit: false })
+  const [projectId, setProjectId] = createSignal('quick-tasks')
+  render(() => <NewTaskView projectId={projectId()} onClose={() => {}} />)
+  await screen.findByText('/Users/me')
+  setProjectId('p')
+  expect(screen.getByText(/new branch from/i)).toBeTruthy()
+  send('Fix the bug')
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'p', directory: undefined })))
 })

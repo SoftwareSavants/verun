@@ -27,6 +27,7 @@ import { refreshTaskGit } from "../store/git";
 import { syncWatchedWorktrees } from "../store/worktreeWatch";
 import { newTaskIds } from "../lib/taskDiff";
 import { GroupHeading, GroupToolbar } from './ProjectGroups';
+import { NewTaskButton } from './NewTaskButton';
 import { Dialog } from './Dialog';
 import { Select } from './Select';
 import { groupState, projectQuery, projectSections, visibleProjects, projectGroup, groupName, moveProject, revealProject, syncProjectGroups } from '../store/projectGroups';
@@ -480,6 +481,7 @@ export const Sidebar: Component = () => {
             <Plus size={14} />
           </button>
         </div>
+        <div class="px-2 pb-1.5 no-drag"><NewTaskButton /></div>
 
         <GroupToolbar attention={otherAttention()} onAttention={jumpToAttention} />
         {/* Project + task list */}
