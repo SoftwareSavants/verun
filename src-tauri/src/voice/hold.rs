@@ -115,6 +115,32 @@ impl HoldDetector {
     }
 }
 
+/// Lets through, on the tap thread, only the key events the hold logic needs:
+/// the hold key's own presses and releases, and other keys only while the
+/// hold key is down. Ordinary typing in any app then wakes nothing. It opens
+/// on the hold key's press inside the tap callback itself, so a key pressed
+/// right after it (during the arming delay) is never missed.
+#[derive(Default)]
+pub struct KeyGate {
+    hold_down: std::cell::Cell<bool>,
+}
+
+impl KeyGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether `ev` should be forwarded.
+    pub fn pass(&self, ev: KeyEvent) -> bool {
+        match ev {
+            KeyEvent::HoldDown => self.hold_down.set(true),
+            KeyEvent::HoldUp => self.hold_down.set(false),
+            KeyEvent::OtherKeyDown => return self.hold_down.get(),
+        }
+        true
+    }
+}
+
 /// What macOS does when Fn (the Globe key) is pressed, from Keyboard settings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -344,6 +370,22 @@ mod tests {
         assert_eq!(d.deadline(), None);
         assert_eq!(d.on_time(t0 + ms(400)), HoldAction::None);
         assert_eq!(d.on_key(HoldUp, None, t0 + ms(500)), HoldAction::None);
+    }
+
+    #[test]
+    fn the_gate_passes_other_keys_only_while_the_hold_key_is_down() {
+        let g = KeyGate::new();
+        // Ordinary typing sends nothing.
+        assert!(!g.pass(OtherKeyDown));
+        assert!(!g.pass(OtherKeyDown));
+        // The hold key always passes, and opens the gate at once.
+        assert!(g.pass(HoldDown));
+        assert!(g.pass(OtherKeyDown));
+        assert!(g.pass(HoldDown));
+        assert!(g.pass(HoldUp));
+        assert!(!g.pass(OtherKeyDown));
+        // A release with the gate closed still passes.
+        assert!(g.pass(HoldUp));
     }
 
     #[test]

@@ -19,7 +19,7 @@ use core_graphics::event::{
     CallbackResult, EventField,
 };
 
-use super::hold::{classify, fn_action_from_pref, FnSystemAction, HoldKey, KeyEvent, RawKind};
+use super::hold::{classify, fn_action_from_pref, FnSystemAction, HoldKey, KeyEvent, KeyGate, RawKind};
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
@@ -107,8 +107,8 @@ pub fn open_accessibility_settings() {
     }
 }
 
-/// `on_event` runs on the tap thread for every key event system-wide, so it
-/// must not block or panic (a panic is caught and logged, and the event is
+/// `on_event` runs on the tap thread for the hold key's events, and for other
+/// keys only while the hold key is down (see `KeyGate`), so it must not block or panic (a panic is caught and logged, and the event is
 /// dropped). Dropping the listener blocks up to about 500 ms while the tap
 /// thread exits: drop it off the async runtime (e.g. `spawn_blocking`) and
 /// never from inside `on_event`.
@@ -175,6 +175,8 @@ fn run_tap(
     // address, filled in below.
     let port = Arc::new(AtomicUsize::new(0));
     let cb_port = Arc::clone(&port);
+    // Only the tap thread touches it.
+    let gate = KeyGate::new();
     let tap = CGEventTap::new(
         CGEventTapLocation::Session,
         CGEventTapPlacement::HeadInsertEventTap,
@@ -196,7 +198,8 @@ fn run_tap(
                 _ => return CallbackResult::Keep,
             };
             let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
-            if let Some(ev) = classify(key, raw, keycode, event.get_flags().bits()) {
+            let ev = classify(key, raw, keycode, event.get_flags().bits()).filter(|ev| gate.pass(*ev));
+            if let Some(ev) = ev {
                 // A panic must not unwind across the extern "C" tap callback.
                 if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_event(ev))).is_err()
                 {
