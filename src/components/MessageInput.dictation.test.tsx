@@ -492,6 +492,24 @@ describe('a focused take is one undo step, like a paste', () => {
     expect(saved()).toBe('hello')
   })
 
+  test('a focused take the webview refuses to type still goes in at the caret, by Range', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeIn(el, 'fix')
+    execCommand.mockImplementationOnce(() => false)
+    target().insert('it')
+    expect(execCommand).toHaveBeenCalledWith('insertText', false, ' it')
+    expect(el.textContent).toBe('fix it')
+    expect(saved()).toBe('fix it')
+    // The caret sits right after the take.
+    const sel = window.getSelection()!
+    const pre = document.createRange()
+    pre.setStart(el, 0)
+    pre.setEnd(sel.getRangeAt(0).startContainer, sel.getRangeAt(0).startOffset)
+    expect(pre.toString()).toBe('fix it')
+  })
+
   test('unfocused it is not typed: that would need focus, which a take must not steal', () => {
     const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
     const el = editor(container)

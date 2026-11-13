@@ -410,14 +410,15 @@ export const MessageInput: Component<Props> = (props) => {
       docSel.removeAllRanges()
       docSel.addRange(range)
       dictating = true
+      let inserted = false
       try {
-        insertTextAtSelection(text)
+        inserted = insertTextAtSelection(text)
       } finally {
         dictating = false
       }
       // The caret move queues a selectionchange, handled a frame later: hold the
       // popovers closed for exactly what the take left, until the user changes it.
-      overlaysHeldFor = { value: message(), caret: getCursorOffset() }
+      if (inserted) overlaysHeldFor = { value: message(), caret: getCursorOffset() }
     } else {
       const node = document.createTextNode(text)
       range.deleteContents()
@@ -1642,26 +1643,24 @@ export const MessageInput: Component<Props> = (props) => {
   /**
    * Puts plain text at the focused input's selection as typing would: through
    * `insertText`, so it is one Cmd+Z step and fires `input` (which runs
-   * `handleInput`). Past 10k characters it goes in by Range instead, for speed,
-   * outside the undo history. Shared by paste and dictation.
+   * `handleInput`). Past 10k characters, or when the webview refuses to type it,
+   * it goes in by Range instead, outside the undo history. Shared by paste and
+   * dictation. `false` when there was no selection to put it at.
    */
-  function insertTextAtSelection(text: string) {
-    if (text.length <= 10_000) {
-      typeText(text)
-      return
-    }
+  function insertTextAtSelection(text: string): boolean {
+    if (text.length <= 10_000 && typeText(text)) return true
     const sel = window.getSelection()
-    if (sel && sel.rangeCount > 0) {
-      const range = sel.getRangeAt(0)
-      range.deleteContents()
-      const textNode = document.createTextNode(text)
-      range.insertNode(textNode)
-      range.setStartAfter(textNode)
-      range.collapse(true)
-      sel.removeAllRanges()
-      sel.addRange(range)
-    }
+    if (!sel || sel.rangeCount === 0) return false
+    const range = sel.getRangeAt(0)
+    range.deleteContents()
+    const textNode = document.createTextNode(text)
+    range.insertNode(textNode)
+    range.setStartAfter(textNode)
+    range.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(range)
     handleInput()
+    return true
   }
 
   // File drops arrive as native Tauri events (with paths) — the webview never
