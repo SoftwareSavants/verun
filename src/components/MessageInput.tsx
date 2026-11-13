@@ -30,7 +30,7 @@ import { clearDraft, loadDraftAttachments, loadDraftMessage, onDraftAppended, sa
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 import { decidePlanAction } from '../lib/planAction'
 import { isImagePath, mentionPathForFile } from '../lib/composerFiles'
-import { formatMention, parseMentions } from '../lib/mentions'
+import { parseMentions } from '../lib/mentions'
 import { decideQuestionKeyAction, QUESTION_SKIP_MESSAGE } from '../lib/questionKeyAction'
 import { decideApprovalKeyAction } from '../lib/approvalKeyAction'
 import { ELICITATION_TOOL_NAME } from '../lib/mcpElicitation'
@@ -40,7 +40,7 @@ import { accountKey, inheritedSelection } from '../lib/accounts'
 import { openNewSession } from '../lib/newSession'
 import { registerDictationTarget } from '../store/voice'
 import { insertDictation, dictationInsertText } from '../lib/dictationInsert'
-import { serializeComposer, composerSelection } from '../lib/composerText'
+import { serializeComposer, composerSelection, composerRangeOffsets, composerEndRange, moveOutOfMentions } from '../lib/composerText'
 import { DictationControl } from './DictationControl'
 
 interface Props {
@@ -306,34 +306,8 @@ export const MessageInput: Component<Props> = (props) => {
     return frag
   }
 
-  const getCursorOffset = (): number => {
-    const sel = window.getSelection()
-    if (!sel || sel.rangeCount === 0 || !inputRef) return 0
-    const range = sel.getRangeAt(0)
-    const preRange = document.createRange()
-    preRange.setStart(inputRef, 0)
-    preRange.setEnd(range.startContainer, range.startOffset)
-    // Serialize the pre-cursor content to count the offset in text terms
-    const frag = preRange.cloneContents()
-    const tmp = document.createElement('div')
-    tmp.appendChild(frag)
-    let offset = 0
-    const walk = (node: Node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        offset += (node.textContent ?? '').replace(/\u200B/g, '').length
-      } else if (node instanceof HTMLElement) {
-        if (node.dataset.mention) {
-          offset += formatMention(node.dataset.mention).length
-        } else if (node.tagName === 'BR') {
-          offset += 1
-        } else {
-          for (const child of node.childNodes) walk(child)
-        }
-      }
-    }
-    for (const child of tmp.childNodes) walk(child)
-    return offset
-  }
+  /** The caret's offset into `serializeInput()`, block line breaks included; 0 when the caret is not in the input. */
+  const getCursorOffset = (): number => (inputRef ? composerSelection(inputRef)?.start : undefined) ?? 0
 
   const setCursorToEnd = () => {
     if (!inputRef) return
@@ -410,23 +384,29 @@ export const MessageInput: Component<Props> = (props) => {
     if (!sid || !dictationTarget()) return
     onCleanup(registerDictationTarget({ id: `session:${sid}`, sessionId: sid, insert: insertDictated }))
   })
-  /** Dictated text goes in as one plain text node (never a badge): at the caret when focused, else at the end without touching focus or the selection. */
+  /**
+   * Dictated text goes in as one plain text node (never a badge): at the caret when focused, else at the end of
+   * the last line shown, without touching focus or the selection.
+   */
   function insertDictated(take: string) {
     if (!inputRef) return
     const current = serializeInput()
-    const focused = document.activeElement === inputRef
-    const sel = focused ? composerSelection(inputRef) : null
-    const text = dictationInsertText(current, take, sel)
+    const docSel = window.getSelection()
+    const focused = document.activeElement === inputRef && composerSelection(inputRef) !== null
+    let range = focused && docSel ? docSel.getRangeAt(0) : composerEndRange(inputRef)
+    // Text put inside a badge would vanish with it: an edge inside one moves to just after it.
+    if (focused) moveOutOfMentions(range, inputRef)
+    const text = dictationInsertText(current, take, composerRangeOffsets(inputRef, range))
     if (!text) return
     // An empty input may hold a stray <br>; text after it would start a new line.
-    if (current === '') inputRef.textContent = ''
+    if (current === '') {
+      inputRef.textContent = ''
+      range = composerEndRange(inputRef)
+    }
     const node = document.createTextNode(text)
-    const docSel = window.getSelection()
-    const range = sel && docSel ? docSel.getRangeAt(0) : document.createRange()
-    if (!sel) { range.selectNodeContents(inputRef); range.collapse(false) }
     range.deleteContents()
     range.insertNode(node)
-    if (sel && docSel) {
+    if (focused && docSel) {
       range.setStartAfter(node)
       range.collapse(true)
       docSel.removeAllRanges()

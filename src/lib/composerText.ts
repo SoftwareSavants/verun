@@ -36,19 +36,64 @@ export function serializeComposer(root: Node): string {
   return text === '\n' ? '' : text
 }
 
+/** The offset into `serializeComposer(root)` of the DOM position (`node`, `offset`) inside `root`. */
+export function composerOffset(root: Node, node: Node, offset: number): number {
+  const doc = root.ownerDocument ?? document
+  const pre = doc.createRange()
+  pre.setStart(root, 0)
+  pre.setEnd(node, offset)
+  const tmp = doc.createElement('div')
+  tmp.appendChild(pre.cloneContents())
+  return serializeChildren(tmp).length
+}
+
+/** `range` as offsets into `serializeComposer(root)`. */
+export function composerRangeOffsets(root: Node, range: Range): Selection {
+  return { start: composerOffset(root, range.startContainer, range.startOffset), end: composerOffset(root, range.endContainer, range.endOffset) }
+}
+
 /** The document selection as offsets into `serializeComposer(root)`, or null when it is not inside `root`. */
 export function composerSelection(root: HTMLElement): Selection | null {
   const sel = root.ownerDocument.getSelection()
   if (!sel || sel.rangeCount === 0) return null
   const range = sel.getRangeAt(0)
   if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null
-  const offsetOf = (node: Node, offset: number) => {
-    const pre = root.ownerDocument.createRange()
-    pre.setStart(root, 0)
-    pre.setEnd(node, offset)
-    const tmp = root.ownerDocument.createElement('div')
-    tmp.appendChild(pre.cloneContents())
-    return serializeChildren(tmp).length
+  return composerRangeOffsets(root, range)
+}
+
+const isBlock = (node: Node | null): node is HTMLElement =>
+  node instanceof HTMLElement && !node.dataset.mention && BLOCK_TAGS.has(node.tagName)
+
+/**
+ * A collapsed range at the end of what the composer shows: inside its deepest
+ * last block (a line of its own), and before a trailing placeholder <br>, so
+ * text put there joins the last line as typing at the end would.
+ */
+export function composerEndRange(root: HTMLElement): Range {
+  let line: HTMLElement = root
+  while (isBlock(line.lastChild)) line = line.lastChild
+  const range = root.ownerDocument.createRange()
+  const last = line.lastChild
+  if (last instanceof HTMLElement && last.tagName === 'BR') {
+    range.setStartBefore(last)
+    range.collapse(true)
+  } else {
+    range.selectNodeContents(line)
+    range.collapse(false)
   }
-  return { start: offsetOf(range.startContainer, range.startOffset), end: offsetOf(range.endContainer, range.endOffset) }
+  return range
+}
+
+/** Moves each edge of `range` that is inside a `data-mention` badge in `root` to just after that badge. */
+export function moveOutOfMentions(range: Range, root: HTMLElement): void {
+  const badgeOf = (node: Node): HTMLElement | null => {
+    for (let n: Node | null = node; n && n !== root; n = n.parentNode) {
+      if (n instanceof HTMLElement && n.dataset.mention) return n
+    }
+    return null
+  }
+  const startBadge = badgeOf(range.startContainer)
+  const endBadge = badgeOf(range.endContainer)
+  if (endBadge) range.setEndAfter(endBadge)
+  if (startBadge) range.setStartAfter(startBadge)
 }

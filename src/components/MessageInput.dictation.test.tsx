@@ -49,6 +49,7 @@ vi.mock('./BlobImage', () => ({ BlobImage: () => null }))
 import { MessageInput } from './MessageInput'
 import { appendToDraft, loadDraftMessage, saveDraftMessage } from '../store/sessionDrafts'
 import { setShowTaskBoard } from '../store/ui'
+import { outputItems } from '../store/sessions'
 
 const ZWS = '​'
 const editor = (container: HTMLElement) => container.querySelector('[contenteditable="true"]') as HTMLElement
@@ -264,5 +265,185 @@ describe('a take saved to the draft of a chat the composer is not showing', () =
     saveDraftMessage('s9', 'x')
     appendToDraft('s9', 'y')
     expect(loadDraftMessage('s9')).toBe('x y')
+  })
+})
+
+/** Sets the composer's DOM to `html` and puts the caret at `offset` into `node(el)`, as the browser would after typing. */
+function typeHtml(el: HTMLElement, html: string, node: (el: HTMLElement) => Node, offset: number) {
+  el.innerHTML = html
+  caret(node(el), offset)
+  fireEvent.input(el)
+}
+
+describe('the caret offset the composer reads', () => {
+  test('one line: a half-typed @mention before the caret opens the popover with its query', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeHtml(el, 'see @src/ma', e => e.firstChild!, 11)
+    expect(screen.getByTestId('file-mention').textContent).toBe('src/ma')
+    // Caret moved back before the @: no mention query.
+    caret(el.firstChild!, 3)
+    fireEvent.input(el)
+    expect(screen.queryByTestId('file-mention')).toBeNull()
+  })
+
+  test('several lines: the query is read at the caret on the last line', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeHtml(el, '<div>first</div><div>fix @sr</div>', e => e.lastChild!.firstChild!, 7)
+    expect(screen.getByTestId('file-mention').textContent).toBe('sr')
+  })
+
+  test('several lines: a caret on an earlier line reads that line', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeHtml(el, '<div>a @x</div><div>b</div><div>c</div>', e => e.firstChild!.firstChild!, 4)
+    expect(screen.getByTestId('file-mention').textContent).toBe('x')
+  })
+
+  test('ArrowUp in an empty composer, caret at the start, edits the last unsent message', () => {
+    const items = outputItems as Record<string, unknown[]>
+    items.s1 = [{ kind: 'userMessage', text: 'previous ask' }]
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    caret(el, 0)
+    fireEvent.keyDown(el, { key: 'ArrowUp' })
+    expect(el.textContent).toBe('previous ask')
+    delete items.s1
+  })
+
+  test('ArrowUp with text in the composer does not', () => {
+    const items = outputItems as Record<string, unknown[]>
+    items.s1 = [{ kind: 'userMessage', text: 'previous ask' }]
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeIn(el, 'draft')
+    caret(el.firstChild!, 0)
+    fireEvent.keyDown(el, { key: 'ArrowUp' })
+    expect(el.textContent).toBe('draft')
+    delete items.s1
+  })
+})
+
+describe('focused insert next to a badge', () => {
+  const badge = (el: HTMLElement) => el.querySelector<HTMLElement>('[data-mention]')!
+
+  test('a caret inside a badge puts the take just after the badge, not into it', () => {
+    saveDraftMessage('s1', 'see @src/a.ts')
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    caret(badge(el).firstChild!, 2)
+    target().insert('now')
+    expect(badge(el).textContent).toBe('a.ts')
+    expect(badges(el)).toEqual(['src/a.ts'])
+    expect(saved()).toBe('see @src/a.ts now')
+    expect(badge(el).nextSibling?.textContent).toBe(' now')
+  })
+
+  test('a selection ending inside a badge ends after it', () => {
+    saveDraftMessage('s1', 'fix @src/a.ts please')
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    const range = document.createRange()
+    range.setStart(el.firstChild!, 0)
+    range.setEnd(badge(el).firstChild!, 1)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    target().insert('check')
+    expect(badges(el)).toEqual([])
+    expect(saved()).toBe('check please')
+  })
+
+  test('a selection starting inside a badge starts after it', () => {
+    saveDraftMessage('s1', 'fix @src/a.ts please')
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    const text = [...el.childNodes].find(n => n.textContent === ' please')!
+    const range = document.createRange()
+    range.setStart(badge(el).firstChild!, 2)
+    range.setEnd(text, 7)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    target().insert('now')
+    expect(badges(el)).toEqual(['src/a.ts'])
+    expect(badge(el).textContent).toBe('a.ts')
+    expect(saved()).toBe('fix @src/a.ts now')
+  })
+})
+
+describe('unfocused insert lands at the end of what is shown', () => {
+  const blurred = (el: HTMLElement) => { el.blur(); window.getSelection()?.removeAllRanges() }
+
+  test('after a last line in its own block, the take joins that line', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    typeHtml(el, 'line1<div>line2</div>', e => e.lastChild!.firstChild!, 5)
+    blurred(el)
+    target().insert('take')
+    const last = el.lastChild as HTMLElement
+    expect(last.tagName).toBe('DIV')
+    expect(last.textContent).toBe('line2 take')
+    expect(saved()).toBe('line1\nline2 take')
+  })
+
+  test('nested blocks: the deepest last one', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    typeHtml(el, '<div>a<div>b</div></div>', e => e.firstChild!.lastChild!.firstChild!, 1)
+    blurred(el)
+    target().insert('c')
+    expect((el.firstChild!.lastChild as HTMLElement).textContent).toBe('b c')
+    expect(saved()).toBe('a\nb c')
+  })
+
+  test('an empty last line (placeholder <br> in a block): the take fills that line', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    typeHtml(el, 'line1<div><br></div>', e => e.lastChild!, 0)
+    blurred(el)
+    target().insert('take')
+    const last = el.lastChild as HTMLElement
+    expect(last.firstChild?.textContent).toBe('take')
+    expect((last.lastChild as HTMLElement).tagName).toBe('BR')
+    // As typing on that line would: no space after the line break.
+    expect(saved()).toBe('line1\ntake\n')
+  })
+
+  test('hello<br><br>: the take goes on the empty last line, before its placeholder <br>', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    typeHtml(el, 'hello<br><br>', e => e, 2)
+    blurred(el)
+    target().insert('take')
+    const nodes = [...el.childNodes].map(n => n.nodeName === 'BR' ? 'BR' : n.textContent)
+    expect(nodes).toEqual(['hello', 'BR', 'take', 'BR'])
+    expect(saved()).toBe('hello\ntake\n')
+  })
+
+  test('a trailing badge: the take follows it with a space', () => {
+    saveDraftMessage('s1', 'see @src/a.ts')
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    target().insert('now')
+    expect(badges(el)).toEqual(['src/a.ts'])
+    expect(saved()).toBe('see @src/a.ts now')
+  })
+
+  test('a trailing zero-width space: the take follows it', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    typeHtml(el, `hi ${ZWS}`, e => e.firstChild!, 4)
+    blurred(el)
+    target().insert('there')
+    expect(saved()).toBe('hi there')
+    expect(el.textContent!.split(ZWS).join('')).toBe('hi there')
   })
 })
