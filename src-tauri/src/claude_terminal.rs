@@ -685,28 +685,31 @@ pub(crate) fn with_initial_prompt(command: &str, prompt: Option<&str>) -> String
 /// Append the permission flags of the task's tier and the `--settings`
 /// (`hook_settings`: the activity hooks, `""` when there are none).
 ///
-/// The Auto tier starts the TUI in Claude's auto mode with Verun's worktree
-/// guard, as a chat session of that tier runs, so switching views keeps the
-/// behaviour. Full auto does the same: in a terminal the TUI asks the user
-/// directly and Verun is never asked, so Verun's "allow everything" can't
-/// apply there, and auto mode is the mode with the fewest prompts that still
-/// honours the guard's ask rules. Ask starts it in the default mode:
-/// interactive Claude would otherwise start new sessions in auto mode and
-/// resume in whatever mode a session ended in, and not ask. The CLI takes one
-/// `--settings`, so the guard joins the hooks in it.
+/// In a terminal the TUI asks the user itself and Verun is never asked, so
+/// each tier picks the Claude mode closest to its chat behaviour:
+/// - Ask: the default mode. Interactive Claude would otherwise start new
+///   sessions in auto mode and resume in whatever mode a session ended in.
+/// - Auto: Claude's auto mode, as a chat session of that tier runs.
+/// - Full auto: bypass permissions, Claude's "no prompts". It still prompts for
+///   the guard's ask rules, and the inline `skipDangerousModePermissionPrompt`
+///   skips the warning a bypass session opens with, without writing the
+///   user's settings. Where an admin turned bypass off, Claude starts in the
+///   default mode instead.
+///
+/// Every tier carries Verun's worktree guard: Shift+Tab can move the TUI into
+/// auto mode, and in the default mode its ask rules just prompt. The CLI
+/// takes one `--settings`, so the guard joins the hooks in it.
 pub(crate) fn with_permission_flags(
     command: &str,
     trust: crate::policy::TrustLevel,
     hook_settings: &str,
 ) -> String {
-    if trust == crate::policy::TrustLevel::Supervised {
-        let command = format!("{command} --permission-mode 'default'");
-        return if hook_settings.is_empty() {
-            command
-        } else {
-            format!("{command} --settings {}", shell_quote(hook_settings))
-        };
-    }
+    use crate::policy::TrustLevel;
+    let mode = match trust {
+        TrustLevel::Supervised => "default",
+        TrustLevel::Normal => "auto",
+        TrustLevel::FullAuto => "bypassPermissions",
+    };
     let mut settings = serde_json::from_str::<Value>(hook_settings)
         .ok()
         .filter(Value::is_object)
@@ -716,9 +719,12 @@ pub(crate) fn with_permission_flags(
         crate::agent::claude::worktree_guard_settings(),
     ) {
         settings.extend(guard);
+        if trust == TrustLevel::FullAuto {
+            settings.insert("skipDangerousModePermissionPrompt".into(), Value::Bool(true));
+        }
     }
     format!(
-        "{command} --permission-mode 'auto' --settings {}",
+        "{command} --permission-mode '{mode}' --settings {}",
         shell_quote(&settings.to_string())
     )
 }
@@ -1514,6 +1520,8 @@ mod tests {
         assert_eq!(settings["hooks"], hooks["hooks"]);
         assert_eq!(settings["permissions"], guard["permissions"]);
         assert_eq!(settings["autoMode"], guard["autoMode"]);
+        // Only the bypass tier skips bypass mode's warning.
+        assert!(settings.get(SKIP_BYPASS_WARNING).is_none(), "{settings}");
     }
 
     #[test]
@@ -1524,36 +1532,51 @@ mod tests {
     }
 
     #[test]
-    fn an_ask_tier_terminal_asks_even_where_claude_would_start_in_auto_mode() {
+    fn an_ask_tier_terminal_asks_and_keeps_the_guard() {
         use crate::policy::TrustLevel;
         // Interactive Claude starts new sessions in auto mode by default and
-        // resumes in the mode a session ended in, so Ask has to say so.
-        assert_eq!(
-            with_permission_flags("exec claude", TrustLevel::Supervised, HOOKS),
-            format!("exec claude --permission-mode 'default' --settings {}", shell_quote(HOOKS))
-        );
-        assert_eq!(
-            with_permission_flags("exec claude", TrustLevel::Supervised, ""),
-            "exec claude --permission-mode 'default'"
-        );
-    }
-
-    #[test]
-    fn a_full_auto_terminal_runs_in_auto_mode_with_the_guard() {
-        // Verun isn't asked in a terminal, so it can't allow everything there;
-        // auto mode is the fewest prompts that still honours the guard.
-        use crate::policy::TrustLevel;
-        let command = with_permission_flags("exec claude", TrustLevel::FullAuto, HOOKS);
-        assert!(command.starts_with("exec claude --permission-mode 'auto' --settings '"), "{command}");
+        // resumes in the mode a session ended in, so Ask has to say so. The
+        // guard still comes along: Shift+Tab can take the TUI into auto mode,
+        // and in the default mode its ask rules just prompt.
+        let command = with_permission_flags("exec claude", TrustLevel::Supervised, HOOKS);
+        assert!(command.starts_with("exec claude --permission-mode 'default' --settings '"), "{command}");
         let settings = settings_of(&command);
         let guard = crate::agent::claude::worktree_guard_settings();
         let hooks: serde_json::Value = serde_json::from_str(HOOKS).unwrap();
         assert_eq!(settings["hooks"], hooks["hooks"]);
         assert_eq!(settings["permissions"], guard["permissions"]);
         assert_eq!(settings["autoMode"], guard["autoMode"]);
+        assert!(settings.get(SKIP_BYPASS_WARNING).is_none(), "{settings}");
+
+        let without_hooks = with_permission_flags("exec claude", TrustLevel::Supervised, "");
+        assert_eq!(settings_of(&without_hooks), guard);
+    }
+
+    const SKIP_BYPASS_WARNING: &str = "skipDangerousModePermissionPrompt";
+
+    #[test]
+    fn a_full_auto_terminal_bypasses_permissions_but_keeps_the_guard() {
+        // "No prompts. Anything goes." Claude still asks for the guard's ask
+        // rules in bypass mode, and the inline setting skips the warning a
+        // bypass session opens with, without writing the user's settings.
+        use crate::policy::TrustLevel;
+        let command = with_permission_flags("exec claude", TrustLevel::FullAuto, HOOKS);
+        assert!(
+            command.starts_with("exec claude --permission-mode 'bypassPermissions' --settings '"),
+            "{command}"
+        );
+        let settings = settings_of(&command);
+        let guard = crate::agent::claude::worktree_guard_settings();
+        let hooks: serde_json::Value = serde_json::from_str(HOOKS).unwrap();
+        assert_eq!(settings["hooks"], hooks["hooks"]);
+        assert_eq!(settings["permissions"], guard["permissions"]);
+        assert_eq!(settings["autoMode"], guard["autoMode"]);
+        assert_eq!(settings[SKIP_BYPASS_WARNING], true);
 
         let without_hooks = with_permission_flags("exec claude", TrustLevel::FullAuto, "");
-        assert_eq!(settings_of(&without_hooks), guard);
+        let mut expected = guard;
+        expected[SKIP_BYPASS_WARNING] = serde_json::json!(true);
+        assert_eq!(settings_of(&without_hooks), expected);
     }
 
     #[test]

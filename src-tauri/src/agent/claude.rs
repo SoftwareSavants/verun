@@ -415,12 +415,21 @@ or deleting its files, `git clean`, `git checkout`): it is this task's own workt
 /// - `permissions.ask` rules are checked before the classifier, so a match
 ///   comes to Verun's approval card even in auto mode. They cover the forms
 ///   Verun hard-blocks (`git worktree remove/prune`, `rm` on `.verun`,
-///   including `sudo`, `env`, `bash -c` and `git -C`), and the usual ways out
-///   of the session's own worktree that don't name `.verun`: `rm` through
-///   `../`, `find ... -delete` through `..` or `.verun`, and `xargs rm`. A `*`
-///   matches any text, spaces included: the leading one covers wrappers, the
-///   one after `git` options such as `-C <dir>`. Deletes in the session's own
-///   worktree by a relative path don't match.
+///   including `sudo`, `env`, `bash -c` and `git -C`), `mv` on `.verun`, and
+///   the usual ways out of the session's own worktree that don't name
+///   `.verun`: `rm` and `mv` through `../`, `find ... -delete` through `..` or
+///   `.verun`, and `xargs rm`. A `*` matches any text, spaces included: the
+///   leading one covers wrappers, the one after `git` options such as
+///   `-C <dir>`, the one between `worktree` and its subcommand extra spaces.
+///   Deletes and moves in the session's own worktree by a relative path
+///   don't match.
+///
+///   Claude matches each part of a compound command on its own, so a rule
+///   can't follow the working directory across parts: `cd .. && rm -rf other`
+///   is left to the classifier. For the same reason the rules can't tell the
+///   session's own worktree from another task's by an absolute path, which
+///   names `.verun` either way: an `rm` or `mv` by absolute path inside the
+///   session's own worktree asks too.
 /// - `autoMode.soft_deny` adds one classifier rule for other phrasings;
 ///   `$defaults` keeps Claude's built-in rules.
 ///
@@ -429,10 +438,12 @@ pub(crate) fn worktree_guard_settings() -> serde_json::Value {
     serde_json::json!({
         "permissions": {
             "ask": [
-                "Bash(*git *worktree remove*)",
-                "Bash(*git *worktree prune*)",
+                "Bash(*git *worktree*remove*)",
+                "Bash(*git *worktree*prune*)",
                 "Bash(*rm *.verun*)",
                 "Bash(*rm *../*)",
+                "Bash(*mv *.verun*)",
+                "Bash(*mv *../*)",
                 "Bash(*find *.verun*-delete*)",
                 "Bash(*find *..*-delete*)",
                 "Bash(*xargs *rm *)",
@@ -521,14 +532,19 @@ mod tests {
         assert_eq!(
             guard["permissions"]["ask"],
             serde_json::json!([
-                "Bash(*git *worktree remove*)",
-                "Bash(*git *worktree prune*)",
+                // `*` between the words: `git worktree  remove` with two
+                // spaces is the same command.
+                "Bash(*git *worktree*remove*)",
+                "Bash(*git *worktree*prune*)",
                 "Bash(*rm *.verun*)",
                 // A session runs inside `.verun/worktrees/<task>`, so another
                 // task's worktree is reached through `..` without naming
                 // `.verun`. Not a bare `rm -rf ..`: Claude refuses that
                 // itself, and an ask rule would bring it to the card instead.
                 "Bash(*rm *../*)",
+                // Moving a worktree away removes it as surely as `rm`.
+                "Bash(*mv *.verun*)",
+                "Bash(*mv *../*)",
                 "Bash(*find *.verun*-delete*)",
                 "Bash(*find *..*-delete*)",
                 // `xargs rm` deletes a list no rule can see.
