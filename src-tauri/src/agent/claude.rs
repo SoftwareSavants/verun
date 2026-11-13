@@ -109,15 +109,11 @@ impl Agent for Claude {
         }
 
         // Plan wins. Otherwise the Auto tier starts in Claude's own auto
-        // mode; Ask and Full auto keep the default mode, where Verun decides.
-        let mode = if args.plan_mode {
-            "plan"
-        } else {
-            self.base_permission_mode(args.trust_level)
-        };
-        if mode != "default" {
-            v.extend(["--permission-mode".into(), mode.into()]);
-        }
+        // mode; Ask and Full auto in the default mode, where Verun decides.
+        // Always named: left out, Claude would take the user's `defaultMode`
+        // (auto, say) or resume a session that ended in Plan in Plan.
+        let mode = crate::task::want_permission_mode(self, args.trust_level, args.plan_mode);
+        v.extend(["--permission-mode".into(), mode.into()]);
         // In every tier: a running session can be switched into auto mode,
         // and `--settings` is only read at spawn.
         v.extend(["--settings".into(), worktree_guard_settings().to_string()]);
@@ -400,24 +396,31 @@ fn plan_name(organization_type: &str) -> String {
 }
 
 /// What auto mode's classifier is told about Verun's worktrees, for removals
-/// the ask rules don't catch.
+/// the ask rules don't catch. The session's own worktree is under
+/// `.verun/worktrees/` too, so the rule says its files are the session's to
+/// change.
 const WORKTREE_GUARD_RULE: &str = "Verun Worktrees [named+specifics — **must name:** the \
-worktree or `.verun` path to remove]: This session runs inside Verun, which creates the git \
-worktrees under `.verun/` and removes them itself when the user archives a task. Do not run \
-`git worktree remove` or `git worktree prune` in any form (`git -C <dir> worktree ...`, under \
-`sudo`, inside `sh -c` or a script), and do not delete, move or overwrite anything under a \
-`.verun` directory (`rm`, `find -delete`, `shutil.rmtree`, `rsync --delete`, ...): it breaks \
-Verun's tasks.";
+worktree or directory to remove]: This session runs inside Verun, in a git worktree Verun \
+created under `.verun/worktrees/`, and Verun creates and removes those worktrees itself. Block \
+running `git worktree remove` or `git worktree prune` in any form (`git -C <dir> worktree ...`, \
+under `sudo`, inside `sh -c` or a script); deleting a worktree's root directory, \
+`.verun/worktrees/` or `.verun` itself; and changing or deleting files inside another task's \
+worktree (a sibling directory under `.verun/worktrees/`, often reached as `../<name>`). Normal \
+file operations inside this session's own working directory are fine (creating, editing, moving \
+or deleting its files, `git clean`, `git checkout`): it is this task's own worktree.";
 
 /// The inline `--settings` that keep Verun's worktree guard working in auto
 /// mode, where commands that look safe never reach Verun.
 ///
-/// - `permissions.ask` rules match the forms Verun hard-blocks (`git worktree
-///   remove/prune`, `rm` on `.verun`, including `sudo`, `env`, `bash -c` and
-///   `git -C`) and are checked before the classifier, so those calls come to
-///   Verun's approval card even in auto mode. A `*` matches any text, spaces
-///   included: the leading one covers wrappers, the one after `git` options
-///   such as `-C <dir>`.
+/// - `permissions.ask` rules are checked before the classifier, so a match
+///   comes to Verun's approval card even in auto mode. They cover the forms
+///   Verun hard-blocks (`git worktree remove/prune`, `rm` on `.verun`,
+///   including `sudo`, `env`, `bash -c` and `git -C`), and the usual ways out
+///   of the session's own worktree that don't name `.verun`: `rm` through
+///   `../`, `find ... -delete` through `..` or `.verun`, and `xargs rm`. A `*`
+///   matches any text, spaces included: the leading one covers wrappers, the
+///   one after `git` options such as `-C <dir>`. Deletes in the session's own
+///   worktree by a relative path don't match.
 /// - `autoMode.soft_deny` adds one classifier rule for other phrasings;
 ///   `$defaults` keeps Claude's built-in rules.
 ///
@@ -429,6 +432,11 @@ pub(crate) fn worktree_guard_settings() -> serde_json::Value {
                 "Bash(*git *worktree remove*)",
                 "Bash(*git *worktree prune*)",
                 "Bash(*rm *.verun*)",
+                "Bash(*rm *../*)",
+                "Bash(*find *.verun*-delete*)",
+                "Bash(*find *..*-delete*)",
+                "Bash(*xargs *rm *)",
+                "Bash(*xargs *rm)",
             ],
         },
         "autoMode": {
@@ -516,6 +524,16 @@ mod tests {
                 "Bash(*git *worktree remove*)",
                 "Bash(*git *worktree prune*)",
                 "Bash(*rm *.verun*)",
+                // A session runs inside `.verun/worktrees/<task>`, so another
+                // task's worktree is reached through `..` without naming
+                // `.verun`. Not a bare `rm -rf ..`: Claude refuses that
+                // itself, and an ask rule would bring it to the card instead.
+                "Bash(*rm *../*)",
+                "Bash(*find *.verun*-delete*)",
+                "Bash(*find *..*-delete*)",
+                // `xargs rm` deletes a list no rule can see.
+                "Bash(*xargs *rm *)",
+                "Bash(*xargs *rm)",
             ])
         );
         assert_eq!(keys(&guard["autoMode"]), ["soft_deny"]);
@@ -524,9 +542,27 @@ mod tests {
         assert_eq!(soft_deny.len(), 2);
         assert_eq!(soft_deny[0], "$defaults");
         let rule = soft_deny[1].as_str().unwrap();
-        for words in ["Verun", "git worktree remove", "git worktree prune", ".verun"] {
+        for words in [
+            "Verun",
+            "git worktree remove",
+            "git worktree prune",
+            "`.verun`",
+            "another task's worktree",
+            "own working directory",
+        ] {
             assert!(rule.contains(words), "{words}: {rule}");
         }
+    }
+
+    #[test]
+    fn worktree_guard_leaves_the_sessions_own_files_alone() {
+        // The session's own worktree is under `.verun/worktrees/` too, so a
+        // rule against everything under `.verun` would block its ordinary
+        // `rm`, `mv`, `sed -i` and `git clean`.
+        let guard = worktree_guard_settings();
+        let rule = guard["autoMode"]["soft_deny"][1].as_str().unwrap();
+        assert!(!rule.contains("anything under"), "{rule}");
+        assert!(rule.contains("are fine"), "{rule}");
     }
 
     #[test]

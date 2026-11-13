@@ -996,6 +996,8 @@ mod tests {
 
     #[test]
     fn claude_build_args_ask_and_full_auto_start_in_the_default_mode() {
+        // Named, not left out: without the flag Claude takes the user's
+        // `defaultMode` (which can be auto) or resumes a session in plan.
         for trust in [
             crate::policy::TrustLevel::Supervised,
             crate::policy::TrustLevel::FullAuto,
@@ -1004,7 +1006,28 @@ mod tests {
                 trust_level: trust,
                 ..default_args()
             });
-            assert!(flag_values(&args, "--permission-mode").is_empty(), "{trust:?}");
+            assert_eq!(flag_values(&args, "--permission-mode"), vec!["default"], "{trust:?}");
+        }
+    }
+
+    #[test]
+    fn claude_build_args_start_in_the_mode_verun_records() {
+        // The spawn records `want_permission_mode` as the process's mode; the
+        // flag has to say the same, in every tier, with and without Plan.
+        use crate::policy::TrustLevel;
+        for trust in [TrustLevel::Normal, TrustLevel::Supervised, TrustLevel::FullAuto] {
+            for plan_mode in [false, true] {
+                let args = Claude.build_session_args(&SessionArgs {
+                    trust_level: trust,
+                    plan_mode,
+                    ..default_args()
+                });
+                assert_eq!(
+                    flag_values(&args, "--permission-mode"),
+                    vec![crate::task::want_permission_mode(&Claude, trust, plan_mode)],
+                    "{trust:?}, plan {plan_mode}"
+                );
+            }
         }
     }
 

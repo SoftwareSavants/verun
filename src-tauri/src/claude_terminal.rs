@@ -687,22 +687,20 @@ pub(crate) fn with_initial_prompt(command: &str, prompt: Option<&str>) -> String
 ///
 /// The Auto tier starts the TUI in Claude's auto mode with Verun's worktree
 /// guard, as a chat session of that tier runs, so switching views keeps the
-/// behaviour. Ask starts it in the default mode: interactive Claude would
-/// otherwise start new sessions in auto mode and resume in whatever mode a
-/// session ended in, and not ask. Full auto keeps the TUI's own choice. The
-/// CLI takes one `--settings`, so the guard joins the hooks in it.
+/// behaviour. Full auto does the same: in a terminal the TUI asks the user
+/// directly and Verun is never asked, so Verun's "allow everything" can't
+/// apply there, and auto mode is the mode with the fewest prompts that still
+/// honours the guard's ask rules. Ask starts it in the default mode:
+/// interactive Claude would otherwise start new sessions in auto mode and
+/// resume in whatever mode a session ended in, and not ask. The CLI takes one
+/// `--settings`, so the guard joins the hooks in it.
 pub(crate) fn with_permission_flags(
     command: &str,
     trust: crate::policy::TrustLevel,
     hook_settings: &str,
 ) -> String {
-    use crate::agent::Agent;
-    if crate::agent::Claude.base_permission_mode(trust) != "auto" {
-        let command = if trust == crate::policy::TrustLevel::Supervised {
-            format!("{command} --permission-mode 'default'")
-        } else {
-            command.to_string()
-        };
+    if trust == crate::policy::TrustLevel::Supervised {
+        let command = format!("{command} --permission-mode 'default'");
         return if hook_settings.is_empty() {
             command
         } else {
@@ -1541,13 +1539,21 @@ mod tests {
     }
 
     #[test]
-    fn a_full_auto_terminal_keeps_claudes_own_mode_and_no_guard() {
+    fn a_full_auto_terminal_runs_in_auto_mode_with_the_guard() {
+        // Verun isn't asked in a terminal, so it can't allow everything there;
+        // auto mode is the fewest prompts that still honours the guard.
         use crate::policy::TrustLevel;
-        assert_eq!(
-            with_permission_flags("exec claude", TrustLevel::FullAuto, HOOKS),
-            format!("exec claude --settings {}", shell_quote(HOOKS))
-        );
-        assert_eq!(with_permission_flags("exec claude", TrustLevel::FullAuto, ""), "exec claude");
+        let command = with_permission_flags("exec claude", TrustLevel::FullAuto, HOOKS);
+        assert!(command.starts_with("exec claude --permission-mode 'auto' --settings '"), "{command}");
+        let settings = settings_of(&command);
+        let guard = crate::agent::claude::worktree_guard_settings();
+        let hooks: serde_json::Value = serde_json::from_str(HOOKS).unwrap();
+        assert_eq!(settings["hooks"], hooks["hooks"]);
+        assert_eq!(settings["permissions"], guard["permissions"]);
+        assert_eq!(settings["autoMode"], guard["autoMode"]);
+
+        let without_hooks = with_permission_flags("exec claude", TrustLevel::FullAuto, "");
+        assert_eq!(settings_of(&without_hooks), guard);
     }
 
     #[test]

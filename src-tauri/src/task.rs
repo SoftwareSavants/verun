@@ -2191,43 +2191,120 @@ pub(crate) fn note_permission_mode(active: &ActiveMap, session_id: &str, mode: &
     }
 }
 
+/// The CLI's answer to a `set_permission_mode` nobody waits on inline.
+pub(crate) type ModeAnswer = oneshot::Receiver<Result<serde_json::Value, String>>;
+
+/// How long a tier change waits for the CLI's answer to its switch. An open
+/// approval card holds the answer back until the user responds; past this,
+/// the session's next turn reports the mode it runs in anyway.
+pub(crate) const MODE_SWITCH_ANSWER_LIMIT: Duration = Duration::from_secs(30 * 60);
+
+/// A `set_permission_mode` a tier change sent a live process.
+#[derive(Debug)]
+pub(crate) struct ModeSwitch {
+    pub session_id: String,
+    pub mode: &'static str,
+    pub request_id: String,
+    pub answer: ModeAnswer,
+}
+
 /// Move the live processes of `task_id` to the base mode of their new tier,
 /// so a tier change applies to a turn already running. Processes in Plan, and
-/// agents without permission modes, are left as they are. Returns how each
-/// switch went.
+/// agents without permission modes, are left as they are.
+///
+/// Nothing waits for the CLI's answers, which an open approval card holds
+/// back until the user responds; they are returned to be read later.
 pub(crate) async fn switch_live_permission_modes(
     active: &ActiveMap,
     pending: &PendingControlResponses,
     task_id: &str,
     trust: TrustLevel,
-) -> Vec<(String, Result<ModeApplied, String>)> {
-    // Decided under the map's locks, sent after: each send waits on the CLI.
-    let switches: Vec<_> = active
+) -> Vec<ModeSwitch> {
+    let candidates: Vec<_> = active
         .iter()
         .filter(|entry| entry.value().task_id == task_id)
-        .filter_map(|entry| {
-            let process = entry.value();
-            let agent = process.kind.implementation();
-            if !agent.persists_across_turns() || agent.uses_rpc() {
-                return None;
-            }
-            let mode = tier_switch_mode(
-                &process.current_permission_mode,
-                agent.base_permission_mode(trust),
-            )?;
-            Some((entry.key().clone(), process.kind, process.stdin.clone(), mode))
+        .filter(|entry| {
+            let agent = entry.value().kind.implementation();
+            agent.persists_across_turns() && !agent.uses_rpc()
         })
+        .map(|entry| (entry.key().clone(), entry.value().kind, entry.value().stdin.clone()))
         .collect();
 
-    let mut outcomes = Vec::with_capacity(switches.len());
-    for (session_id, kind, stdin, mode) in switches {
-        let outcome = apply_permission_mode(&stdin, pending, &*kind.implementation(), mode).await;
-        if outcome.is_ok() {
-            note_permission_mode(active, &session_id, mode);
+    let mut switches = Vec::with_capacity(candidates.len());
+    for (session_id, kind, stdin) in candidates {
+        let agent = kind.implementation();
+        let mode = agent.base_permission_mode(trust);
+        // Checked, sent and recorded while holding the process's stdin. A
+        // turn records Plan first and then sends it through that stdin, so a
+        // switch either sees Plan and stays out, or lands before it.
+        let mut stdin_guard = stdin.lock().await;
+        let Some(seen) = active
+            .get(&session_id)
+            .map(|process| process.current_permission_mode.clone())
+        else {
+            continue;
+        };
+        if tier_switch_mode(&seen, mode).is_none() {
+            continue;
         }
-        outcomes.push((session_id, outcome));
+        let Some(writer) = stdin_guard.as_mut() else {
+            continue;
+        };
+        let request_id = new_control_request_id();
+        let bytes = match agent.encode_stream_set_permission_mode(&request_id, mode) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("[verun][{session_id}] switching to {mode}: {e}");
+                continue;
+            }
+        };
+        let (tx, answer) = oneshot::channel();
+        pending.insert(request_id.clone(), tx);
+        if let Err(e) = write_and_flush(writer, &bytes).await {
+            pending.remove(&request_id);
+            eprintln!("[verun][{session_id}] switching to {mode}: {e}");
+            continue;
+        }
+        // Recorded unless a turn changed it meanwhile (to Plan, which then
+        // follows this switch on stdin).
+        if let Some(mut process) = active.get_mut(&session_id) {
+            if process.current_permission_mode == seen {
+                process.current_permission_mode = mode.to_string();
+            }
+        }
+        drop(stdin_guard);
+        switches.push(ModeSwitch {
+            session_id,
+            mode,
+            request_id,
+            answer,
+        });
     }
-    outcomes
+    switches
+}
+
+/// What became of a mode switch whose answer nobody waited for: the CLI's
+/// reason when it refused auto mode. `None` for anything else, including no
+/// answer within `limit` (the request then stops being awaited).
+pub(crate) async fn auto_mode_refusal(
+    mode: &str,
+    request_id: &str,
+    answer: ModeAnswer,
+    pending: &PendingControlResponses,
+    limit: Duration,
+) -> Option<String> {
+    match tokio::time::timeout(limit, answer).await {
+        Ok(Ok(Err(reason))) if mode == "auto" => Some(reason),
+        Ok(Ok(Err(reason))) => {
+            eprintln!("[verun] set_permission_mode {mode} refused: {reason}");
+            None
+        }
+        Ok(_) => None,
+        Err(_) => {
+            pending.remove(request_id);
+            None
+        }
+    }
 }
 
 /// Write a payload to the session's stdin, keeping the fd open afterwards.
@@ -2240,6 +2317,11 @@ async fn write_to_stdin(
     let writer = guard
         .as_mut()
         .ok_or_else(|| "Session stdin is closed".to_string())?;
+    write_and_flush(writer, bytes).await
+}
+
+/// `write_to_stdin` for a caller already holding the stdin lock.
+async fn write_and_flush(writer: &mut ChildStdin, bytes: &[u8]) -> Result<(), String> {
     writer
         .write_all(bytes)
         .await
@@ -6036,25 +6118,43 @@ mod tests {
         process
     }
 
+    /// Read the next frame the stand-in was sent, without answering it.
+    async fn next_request(
+        lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    ) -> serde_json::Value {
+        let line = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+            .await
+            .expect("a frame")
+            .unwrap()
+            .expect("a control request");
+        serde_json::from_str(&line).unwrap()
+    }
+
     #[tokio::test]
-    async fn a_tier_change_moves_the_tasks_live_processes_to_its_mode() {
+    async fn a_tier_change_switches_a_live_process_without_waiting_for_the_cli() {
+        // While an approval card is open the stream reader waits on the user,
+        // so the CLI's answer can't be read: the switch mustn't wait for it.
         let (_child, stdin, mut lines) = echo_cli();
         let pending = new_pending_control_responses();
         let active = new_active_map();
         active.insert("s1".to_string(), live_claude("t1", stdin, "auto"));
 
-        let cli = answer_next(&mut lines, &pending, Ok(serde_json::json!({"mode": "default"})));
-        let (outcomes, request) = tokio::time::timeout(Duration::from_secs(10), async {
-            tokio::join!(
-                switch_live_permission_modes(&active, &pending, "t1", TrustLevel::Supervised),
-                cli
-            )
-        })
+        let switches = tokio::time::timeout(
+            Duration::from_secs(2),
+            switch_live_permission_modes(&active, &pending, "t1", TrustLevel::Supervised),
+        )
         .await
-        .expect("the switch was sent");
+        .expect("the switch returns before anyone answers");
 
-        assert_eq!(request["mode"], "default");
-        assert_eq!(outcomes, vec![("s1".to_string(), Ok(ModeApplied::Applied))]);
+        let request = next_request(&mut lines).await;
+        assert_eq!(request["request"]["subtype"], "set_permission_mode");
+        assert_eq!(request["request"]["mode"], "default");
+        assert_eq!(switches.len(), 1);
+        assert_eq!(switches[0].session_id, "s1");
+        assert_eq!(switches[0].mode, "default");
+        assert_eq!(request["request_id"], switches[0].request_id.as_str());
+        // Its answer is read whenever the stream reader gets to it.
+        assert!(pending.contains_key(&switches[0].request_id));
         assert_eq!(active.get("s1").unwrap().current_permission_mode, "default");
     }
 
@@ -6073,40 +6173,94 @@ mod tests {
             p
         });
 
-        let outcomes =
+        let switches =
             switch_live_permission_modes(&active, &pending, "t1", TrustLevel::Normal).await;
 
-        assert!(outcomes.is_empty(), "{outcomes:?}");
+        assert!(switches.is_empty());
         assert_eq!(active.get("planning").unwrap().current_permission_mode, "plan");
         assert_eq!(active.get("other-task").unwrap().current_permission_mode, "default");
     }
 
     #[tokio::test]
-    async fn a_tier_change_to_auto_the_cli_refuses_reports_the_fall_back() {
+    async fn a_tier_change_never_undoes_plan_asked_for_while_it_waited() {
+        // A turn records Plan, then sends it through the process's stdin. A
+        // tier switch that was waiting for that stdin must see Plan once it
+        // gets it and stay out of the way, or its mode would land after Plan.
         let (_child, stdin, mut lines) = echo_cli();
         let pending = new_pending_control_responses();
         let active = new_active_map();
-        active.insert("s1".to_string(), live_claude("t1", stdin, "default"));
+        active.insert("s1".to_string(), live_claude("t1", stdin.clone(), "default"));
 
-        let cli = async {
-            answer_next(&mut lines, &pending, Err(AUTO_REFUSED.into())).await;
-            answer_next(&mut lines, &pending, Ok(serde_json::json!({"mode": "default"}))).await;
-        };
-        let (outcomes, ()) = tokio::time::timeout(Duration::from_secs(10), async {
-            tokio::join!(
-                switch_live_permission_modes(&active, &pending, "t1", TrustLevel::Normal),
-                cli
-            )
-        })
-        .await
-        .expect("both requests answered");
+        let held = stdin.lock().await;
+        let switch = tokio::spawn({
+            let (active, pending) = (active.clone(), pending.clone());
+            async move {
+                switch_live_permission_modes(&active, &pending, "t1", TrustLevel::Normal).await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        note_permission_mode(&active, "s1", "plan");
+        drop(held);
 
-        assert!(
-            matches!(outcomes.as_slice(), [(sid, Ok(ModeApplied::FellBack { .. }))] if sid == "s1"),
-            "{outcomes:?}"
+        let switches = switch.await.unwrap();
+        assert!(switches.is_empty());
+        assert_eq!(active.get("s1").unwrap().current_permission_mode, "plan");
+        // Nothing reached the process.
+        let wrote = tokio::time::timeout(Duration::from_millis(300), lines.next_line()).await;
+        assert!(wrote.is_err(), "{wrote:?}");
+    }
+
+    /// A pending answer to a mode switch, and the end the CLI answers through.
+    fn mode_answer(
+        pending: &PendingControlResponses,
+        request_id: &str,
+    ) -> oneshot::Receiver<Result<serde_json::Value, String>> {
+        let (tx, rx) = oneshot::channel();
+        pending.insert(request_id.to_string(), tx);
+        rx
+    }
+
+    /// Answer the switch `request_id` as the CLI would.
+    fn answer_switch(
+        pending: &PendingControlResponses,
+        request_id: &str,
+        answer: Result<serde_json::Value, String>,
+    ) {
+        let (_, tx) = pending.remove(request_id).unwrap();
+        tx.send(answer).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refused_auto_switch_is_reported_when_its_answer_comes() {
+        let pending = new_pending_control_responses();
+        let limit = Duration::from_secs(5);
+
+        let answer = mode_answer(&pending, "r1");
+        answer_switch(&pending, "r1", Err(AUTO_REFUSED.into()));
+        assert_eq!(
+            auto_mode_refusal("auto", "r1", answer, &pending, limit).await,
+            Some(AUTO_REFUSED.to_string())
         );
-        // Asked for and refused: the next turn doesn't ask again until the
-        // model changes.
-        assert_eq!(active.get("s1").unwrap().current_permission_mode, "auto");
+
+        // Only auto can be unavailable.
+        let answer = mode_answer(&pending, "r2");
+        answer_switch(&pending, "r2", Err("no".into()));
+        assert_eq!(auto_mode_refusal("default", "r2", answer, &pending, limit).await, None);
+
+        let answer = mode_answer(&pending, "r3");
+        answer_switch(&pending, "r3", Ok(serde_json::json!({"mode": "auto"})));
+        assert_eq!(auto_mode_refusal("auto", "r3", answer, &pending, limit).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_switch_nobody_answers_stops_being_awaited() {
+        let pending = new_pending_control_responses();
+        let answer = mode_answer(&pending, "r1");
+
+        let refusal =
+            auto_mode_refusal("auto", "r1", answer, &pending, Duration::from_millis(50)).await;
+
+        assert_eq!(refusal, None);
+        assert!(!pending.contains_key("r1"));
     }
 }

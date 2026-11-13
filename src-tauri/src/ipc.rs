@@ -1462,22 +1462,28 @@ pub async fn set_trust_level(
         .map_err(|e| format!("DB write failed: {e}"))?;
 
     // And switch their permission mode (Claude: auto <-> default), so a turn
-    // already running follows the new tier. A session in Plan keeps it. In the
-    // background: the tier is set, and the menu needn't wait on the CLI.
-    let (active, pending_ctrl) = (active.inner().clone(), pending_ctrl.inner().clone());
-    tauri::async_runtime::spawn(async move {
-        let outcomes =
-            task::switch_live_permission_modes(&active, &pending_ctrl, &task_id, parsed).await;
-        for (session_id, outcome) in outcomes {
-            match outcome {
-                Ok(task::ModeApplied::Applied) => {}
-                Ok(task::ModeApplied::FellBack { reason }) => {
-                    crate::stream::emit_auto_mode_unavailable(&app, &session_id, Some(reason));
-                }
-                Err(e) => eprintln!("[verun][{session_id}] tier change: {e}"),
+    // already running follows the new tier. A session in Plan keeps it. The
+    // CLI's answer can wait behind an open approval card, so nothing here
+    // waits for it: a refused auto mode is reported whenever it's read.
+    let switches =
+        task::switch_live_permission_modes(active.inner(), pending_ctrl.inner(), &task_id, parsed)
+            .await;
+    for switch in switches {
+        let (app, pending_ctrl) = (app.clone(), pending_ctrl.inner().clone());
+        tauri::async_runtime::spawn(async move {
+            let refusal = task::auto_mode_refusal(
+                switch.mode,
+                &switch.request_id,
+                switch.answer,
+                &pending_ctrl,
+                task::MODE_SWITCH_ANSWER_LIMIT,
+            )
+            .await;
+            if let Some(reason) = refusal {
+                crate::stream::emit_auto_mode_unavailable(&app, &switch.session_id, Some(reason));
             }
-        }
-    });
+        });
+    }
 
     Ok(())
 }

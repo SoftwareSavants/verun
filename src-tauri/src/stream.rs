@@ -2680,9 +2680,6 @@ async fn handle_control_request(
     }
 }
 
-/// The answer the CLI will send to a `set_permission_mode`.
-type ModeSwitchAnswer = tokio::sync::oneshot::Receiver<Result<serde_json::Value, String>>;
-
 /// Write the answer to a `can_use_tool` request. With `leave_plan_for`, the
 /// answer approves a plan, and a switch to that mode is written first: the CLI
 /// applies its stdin in order, so ExitPlanMode leaves Plan for that mode. Its
@@ -2695,7 +2692,7 @@ async fn write_tool_answer(
     cli_request_id: &str,
     response: serde_json::Value,
     leave_plan_for: Option<&str>,
-) -> Option<(String, ModeSwitchAnswer)> {
+) -> Option<(String, crate::task::ModeAnswer)> {
     let switch = match leave_plan_for {
         Some(mode) => match crate::task::send_permission_mode(stdin, pending, agent, mode).await {
             Ok(switch) => Some(switch),
@@ -2733,7 +2730,7 @@ fn watch_plan_exit_switch(
     pending: &PendingControlResponses,
     mode: &'static str,
     switch_id: String,
-    answer: ModeSwitchAnswer,
+    answer: crate::task::ModeAnswer,
 ) {
     use tauri::Manager;
     if let Some(active) = app.try_state::<crate::task::ActiveMap>() {
@@ -2741,17 +2738,12 @@ fn watch_plan_exit_switch(
     }
     let (app, session_id, pending) = (app.clone(), session_id.to_string(), pending.clone());
     tokio::spawn(async move {
-        match tokio::time::timeout(Duration::from_secs(10), answer).await {
-            Ok(Ok(Err(reason))) if mode == "auto" => {
-                emit_auto_mode_unavailable(&app, &session_id, Some(reason));
-            }
-            Ok(Ok(Err(reason))) => {
-                eprintln!("[verun][{session_id}] leaving Plan for {mode}: {reason}");
-            }
-            Ok(_) => {}
-            Err(_) => {
-                pending.remove(&switch_id);
-            }
+        // This stream reads the answer as soon as the approval is written.
+        let limit = Duration::from_secs(10);
+        if let Some(reason) =
+            crate::task::auto_mode_refusal(mode, &switch_id, answer, &pending, limit).await
+        {
+            emit_auto_mode_unavailable(&app, &session_id, Some(reason));
         }
     });
 }
