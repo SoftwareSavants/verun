@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Voice dictation in the chat and new-task boxes: hold Fn (or Right Option / Right Command) or click the mic, speak, and the text lands in the draft, transcribed on your Mac by Whisper in 12 languages
+- Dictation is off by default, Apple Silicon only: Settings > Dictation or the mic button walks through microphone, language, a one-time 574 MB model and Accessibility for the hold key
+- The model download can be cancelled, and stops up front when the disk has too little free space
+- Each project's new-task box keeps its prompt as a draft until the task is sent or the box is closed, so dictation finishing while it is hidden is not lost
+- Cmd+Z undoes a dictated take in a focused chat or new-task box
+- Building from source on Apple Silicon needs cmake for whisper.cpp (`brew install cmake`)
 - The "Auto-safe" tool policy is now "Auto": Claude chat sessions run in Claude Code's own auto mode instead of Verun's rules, and whatever Claude still asks about comes to you. Every session starts in its tier's mode by name (auto for Auto, default for Ask and Full auto), so a `defaultMode` in your Claude settings can't put an Ask session in auto. Switching tiers mid-turn (even with an approval open), leaving Plan, and approving a plan put a session in its tier's mode
 - Verun's worktree guard holds in auto mode: per-session ask rules bring `git worktree remove`/`prune`, deletes and moves under `.verun` (with `sudo`, `bash -c` or `git -C` too), and the usual ways into another task's worktree (`rm` or `mv` with `../`, `find ... -delete` with `..` or `.verun`, `xargs rm`) to the approval card. An auto mode rule covers other phrasings, and leaves the session's own files to it. Nothing is written to your Claude settings
 - When Claude's auto mode isn't available for a session's model or account, Verun says so once and asks instead

@@ -17,6 +17,7 @@ import { initOpenFilesRefresh } from '../store/fileSync'
 import { initSetupListeners } from '../store/setup'
 import { initResourceMonitor } from '../store/resource-monitor'
 import { initProblemsListener } from '../store/problems'
+import { initVoice } from '../store/voice'
 import { loadTasks, taskById } from '../store/tasks'
 import { loadSessions } from '../store/sessions'
 import { refreshTaskGit } from '../store/git'
@@ -90,6 +91,9 @@ export async function initListeners() {
   // Problems panel stays empty there even with the LSP running. Function is
   // idempotent (initialized guard) so calling from both shells is safe.
   initProblemsListener()
+  // Dictation: every window listens for its own takes. Idempotent; a failure
+  // leaves dictation hidden and must not hold up the window.
+  initVoice().catch(e => console.error('voice init:', e))
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') clearDeliveredNotifications()
   })

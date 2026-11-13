@@ -1940,7 +1940,7 @@ pub async fn get_session_token_totals(
     Ok(totals)
 }
 
-async fn read_meta(pool: &SqlitePool, key: &str) -> Result<Option<String>, String> {
+pub(crate) async fn read_meta(pool: &SqlitePool, key: &str) -> Result<Option<String>, String> {
     let row: Option<(String,)> = sqlx::query_as("SELECT value FROM app_meta WHERE key = ?")
         .bind(key)
         .fetch_optional(pool)
@@ -1949,7 +1949,7 @@ async fn read_meta(pool: &SqlitePool, key: &str) -> Result<Option<String>, Strin
     Ok(row.map(|r| r.0))
 }
 
-async fn write_meta(pool: &SqlitePool, key: &str, value: &str) -> Result<(), String> {
+pub(crate) async fn write_meta(pool: &SqlitePool, key: &str, value: &str) -> Result<(), String> {
     sqlx::query(
         "INSERT INTO app_meta (key, value) VALUES (?, ?) \
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",

@@ -24,6 +24,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(() => Promise.resolve(() => {})), emit: vi.fn() }))
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ label: 'main' }) }))
 vi.mock('../lib/ipc', () => ({
+  voiceSetTarget: vi.fn(() => Promise.resolve()),
   getTrustLevel: vi.fn(() => Promise.resolve('normal')),
   setTrustLevel: vi.fn(() => Promise.resolve()),
   listWorktreeFiles: vi.fn(() => Promise.resolve([])),

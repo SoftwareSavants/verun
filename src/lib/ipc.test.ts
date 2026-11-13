@@ -292,6 +292,33 @@ describe('ipc', () => {
     })
   })
 
+  describe('voice dictation', () => {
+    test('each wrapper invokes its command with the documented argument keys', async () => {
+      vi.mocked(invoke).mockResolvedValue(undefined)
+      const cases: [() => Promise<unknown>, string, Record<string, unknown> | undefined][] = [
+        [() => ipc.voiceStatus(), 'voice_status', undefined],
+        [() => ipc.voiceSetEnabled(true), 'voice_set_enabled', { enabled: true }],
+        [() => ipc.voiceSetLanguage('fr'), 'voice_set_language', { language: 'fr' }],
+        [() => ipc.voiceSetHoldKey('right-option'), 'voice_set_hold_key', { key: 'right-option' }],
+        [() => ipc.voiceBegin('task-3', 's1'), 'voice_begin', { window: 'task-3', draft: 's1' }],
+        [() => ipc.voiceSetTarget('task-3', null), 'voice_set_target', { window: 'task-3', draft: null }],
+        [() => ipc.voiceEnd(), 'voice_end', undefined],
+        [() => ipc.voiceCancel(), 'voice_cancel', undefined],
+        [() => ipc.voiceDownloadModel('whisper-turbo'), 'voice_download_model', { model: 'whisper-turbo' }],
+        [() => ipc.voiceCancelDownload('whisper-turbo'), 'voice_cancel_download', { model: 'whisper-turbo' }],
+        [() => ipc.voiceDeleteModel('whisper-turbo'), 'voice_delete_model', { model: 'whisper-turbo' }],
+        [() => ipc.voiceRequestMicrophone(), 'voice_request_microphone', undefined],
+        [() => ipc.voiceOpenAccessibilitySettings(), 'voice_open_accessibility_settings', undefined],
+      ]
+      for (const [call, command, args] of cases) {
+        vi.mocked(invoke).mockClear()
+        await call()
+        if (args === undefined) expect(invoke).toHaveBeenCalledWith(command)
+        else expect(invoke).toHaveBeenCalledWith(command, args)
+      }
+    })
+  })
+
   describe('mcp server controls', () => {
     test('wrap the mcp commands', async () => {
       vi.mocked(invoke).mockResolvedValue(undefined)

@@ -4244,6 +4244,103 @@ pub async fn get_resource_usage_now(
     .await)
 }
 
+// ---------------------------------------------------------------------------
+// Voice dictation. Each command runs on a blocking thread: they touch the
+// microphone, the key listener and the models directory.
+// ---------------------------------------------------------------------------
+
+use crate::voice::catalog::{Language, ModelId};
+use crate::voice::hold::HoldKey;
+use crate::voice::runtime::VoiceService;
+use crate::voice::service::{MicPermission, VoiceStatus};
+use crate::voice::session::VoiceError;
+
+async fn voice_blocking<T: Send + 'static>(
+    app: AppHandle,
+    f: impl FnOnce(&VoiceService) -> T + Send + 'static,
+) -> Result<T, VoiceError> {
+    tauri::async_runtime::spawn_blocking(move || f(&app.state::<VoiceService>()))
+        .await
+        .map_err(|e| VoiceError::Engine(format!("voice command failed: {e}")))
+}
+
+#[tauri::command]
+pub async fn voice_status(app: AppHandle) -> Result<VoiceStatus, VoiceError> {
+    voice_blocking(app, VoiceService::status).await
+}
+
+#[tauri::command]
+pub async fn voice_set_enabled(app: AppHandle, enabled: bool) -> Result<VoiceStatus, VoiceError> {
+    voice_blocking(app, move |v| v.set_enabled(enabled)).await
+}
+
+#[tauri::command]
+pub async fn voice_set_language(
+    app: AppHandle,
+    language: Language,
+) -> Result<VoiceStatus, VoiceError> {
+    voice_blocking(app, move |v| v.set_language(language)).await
+}
+
+#[tauri::command]
+pub async fn voice_set_hold_key(app: AppHandle, key: HoldKey) -> Result<VoiceStatus, VoiceError> {
+    voice_blocking(app, move |v| v.set_hold_key(key)).await
+}
+
+#[tauri::command]
+pub async fn voice_begin(
+    app: AppHandle,
+    window: String,
+    draft: Option<String>,
+) -> Result<(), VoiceError> {
+    voice_blocking(app, move |v| v.begin(window, draft)).await?
+}
+
+/// Sync, so it runs on the main thread in the order the window sent it; it
+/// only takes a short lock that nothing holds for long.
+#[tauri::command]
+pub fn voice_set_target(app: AppHandle, window: String, draft: Option<String>) {
+    app.state::<VoiceService>().set_target(&window, draft);
+}
+
+#[tauri::command]
+pub async fn voice_end(app: AppHandle) -> Result<(), VoiceError> {
+    voice_blocking(app, VoiceService::end).await
+}
+
+#[tauri::command]
+pub async fn voice_cancel(app: AppHandle) -> Result<(), VoiceError> {
+    voice_blocking(app, VoiceService::cancel).await
+}
+
+#[tauri::command]
+pub async fn voice_download_model(app: AppHandle, model: ModelId) -> Result<(), VoiceError> {
+    let handle = app.clone();
+    voice_blocking(app, move |v| v.download(&handle, model)).await
+}
+
+#[tauri::command]
+pub async fn voice_cancel_download(app: AppHandle, model: ModelId) -> Result<(), VoiceError> {
+    voice_blocking(app, move |v| v.cancel_download(model)).await
+}
+
+#[tauri::command]
+pub async fn voice_delete_model(app: AppHandle, model: ModelId) -> Result<VoiceStatus, VoiceError> {
+    voice_blocking(app, move |v| v.delete_model(model)).await
+}
+
+#[tauri::command]
+pub async fn voice_request_microphone(app: AppHandle) -> Result<MicPermission, VoiceError> {
+    let permission = app.state::<VoiceService>().request_microphone().await;
+    voice_blocking(app, VoiceService::notify_status_changed).await?;
+    Ok(permission)
+}
+
+#[tauri::command]
+pub async fn voice_open_accessibility_settings(app: AppHandle) -> Result<(), VoiceError> {
+    voice_blocking(app, VoiceService::open_accessibility_settings).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

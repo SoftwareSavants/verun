@@ -1,7 +1,7 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
 import { sendMessage, abortMessage, steerSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, respondToElicitation, sessionCosts, sessionTokens, outputItems, tryDrainSteps, sessionById, updateSessionModel, rateLimitFor, sendStep } from '../store/sessions'
 import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession, codexLivePlanForSession } from '../store/sessionContext'
-import { selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
+import { selectedTaskId, chatPrefillRequest, setChatPrefillRequest, showTaskBoard } from '../store/ui'
 import { isSetupRunning, setupFailed, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
@@ -26,11 +26,11 @@ import { BlobImage } from './BlobImage'
 import { FileChip } from './FileChip'
 import { openSideQuestion } from '../store/sideQuestion'
 import { serializeAttachments, deserializeAttachments, uploadAttachments } from '../lib/binary'
-import { clearDraft, loadDraftAttachments, loadDraftMessage, saveDraftAttachments, saveDraftMessage } from '../store/sessionDrafts'
+import { clearDraft, loadDraftAttachments, loadDraftMessage, onDraftAppended, saveDraftAttachments, saveDraftMessage } from '../store/sessionDrafts'
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 import { decidePlanAction } from '../lib/planAction'
 import { isImagePath, mentionPathForFile } from '../lib/composerFiles'
-import { formatMention, parseMentions } from '../lib/mentions'
+import { parseMentions } from '../lib/mentions'
 import { decideQuestionKeyAction, QUESTION_SKIP_MESSAGE } from '../lib/questionKeyAction'
 import { decideApprovalKeyAction } from '../lib/approvalKeyAction'
 import { ELICITATION_TOOL_NAME } from '../lib/mcpElicitation'
@@ -38,6 +38,11 @@ import { McpElicitationCard } from './McpElicitationCard'
 import { McpStatusChip } from './McpStatusChip'
 import { accountKey, inheritedSelection } from '../lib/accounts'
 import { openNewSession } from '../lib/newSession'
+import { typeText } from '../lib/typeText'
+import { registerDictationTarget } from '../store/voice'
+import { insertDictation, dictationInsertText } from '../lib/dictationInsert'
+import { serializeComposer, composerSelection, composerRangeOffsets, composerEndRange, moveOutOfMentions } from '../lib/composerText'
+import { DictationControl } from './DictationControl'
 
 interface Props {
   sessionId: string | null
@@ -272,31 +277,7 @@ export const MessageInput: Component<Props> = (props) => {
   // `data-mention` spans are non-editable inline badges.
   // serializeInput() reads the DOM and returns plain text with @path tokens.
 
-  const serializeInput = (): string => {
-    if (!inputRef) return ''
-    let text = ''
-    const BLOCK_TAGS = new Set(['DIV', 'P', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
-    const walk = (node: Node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        text += (node.textContent ?? '').replace(/\u200B/g, '')
-      } else if (node instanceof HTMLElement) {
-        if (node.dataset.mention) {
-          text += formatMention(node.dataset.mention)
-        } else if (node.tagName === 'BR') {
-          text += '\n'
-        } else {
-          // Block elements (div, p) represent line breaks in contenteditable
-          if (BLOCK_TAGS.has(node.tagName) && text.length > 0 && !text.endsWith('\n')) {
-            text += '\n'
-          }
-          for (const child of node.childNodes) walk(child)
-        }
-      }
-    }
-    for (const child of inputRef.childNodes) walk(child)
-    // Browser may leave a trailing <br> → lone '\n'; treat as empty
-    return text === '\n' ? '' : text
-  }
+  const serializeInput = (): string => (inputRef ? serializeComposer(inputRef) : '')
 
   const setInputContent = (text: string) => {
     if (!inputRef) return
@@ -336,34 +317,8 @@ export const MessageInput: Component<Props> = (props) => {
     return frag
   }
 
-  const getCursorOffset = (): number => {
-    const sel = window.getSelection()
-    if (!sel || sel.rangeCount === 0 || !inputRef) return 0
-    const range = sel.getRangeAt(0)
-    const preRange = document.createRange()
-    preRange.setStart(inputRef, 0)
-    preRange.setEnd(range.startContainer, range.startOffset)
-    // Serialize the pre-cursor content to count the offset in text terms
-    const frag = preRange.cloneContents()
-    const tmp = document.createElement('div')
-    tmp.appendChild(frag)
-    let offset = 0
-    const walk = (node: Node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        offset += (node.textContent ?? '').replace(/\u200B/g, '').length
-      } else if (node instanceof HTMLElement) {
-        if (node.dataset.mention) {
-          offset += formatMention(node.dataset.mention).length
-        } else if (node.tagName === 'BR') {
-          offset += 1
-        } else {
-          for (const child of node.childNodes) walk(child)
-        }
-      }
-    }
-    for (const child of tmp.childNodes) walk(child)
-    return offset
-  }
+  /** The caret's offset into `serializeInput()`, block line breaks included; 0 when the caret is not in the input. */
+  const getCursorOffset = (): number => (inputRef ? composerSelection(inputRef)?.start : undefined) ?? 0
 
   const setCursorToEnd = () => {
     if (!inputRef) return
@@ -432,6 +387,68 @@ export const MessageInput: Component<Props> = (props) => {
       autoResizeInput()
     }
   }
+  // Dictation target while a session is open and on screen (the task board hides
+  // the task panel without unmounting it).
+  const dictationTarget = () => !!props.sessionId && !showTaskBoard()
+  createEffect(() => {
+    const sid = props.sessionId
+    if (!sid || !dictationTarget()) return
+    onCleanup(registerDictationTarget({ draftId: sid, insert: insertDictated }))
+  })
+  /**
+   * Dictated text goes in as plain text (never a badge) and never opens or leaves
+   * open the mention or command popover. Focused: at the caret, typed in like a
+   * paste so Cmd+Z undoes it. Unfocused: at the end of the last line shown,
+   * without touching focus or the selection (typing it would need focus).
+   */
+  function insertDictated(take: string) {
+    if (!inputRef) return
+    const current = serializeInput()
+    const docSel = window.getSelection()
+    const focused = document.activeElement === inputRef && composerSelection(inputRef) !== null
+    let range = focused && docSel ? docSel.getRangeAt(0) : composerEndRange(inputRef)
+    // Text put inside a badge would vanish with it: an edge inside one moves to just after it.
+    if (focused) moveOutOfMentions(range, inputRef)
+    const text = dictationInsertText(current, take, composerRangeOffsets(inputRef, range))
+    if (!text) return
+    // An empty input may hold a stray <br>; text after it would start a new line.
+    if (current === '') {
+      inputRef.textContent = ''
+      range = composerEndRange(inputRef)
+    }
+    if (focused && docSel) {
+      docSel.removeAllRanges()
+      docSel.addRange(range)
+      dictating = true
+      let inserted = false
+      try {
+        inserted = insertTextAtSelection(text)
+      } finally {
+        dictating = false
+      }
+      // The caret move queues a selectionchange, handled a frame later: hold the
+      // popovers closed for exactly what the take left, until the user changes it.
+      if (inserted) overlaysHeldFor = { value: message(), caret: getCursorOffset() }
+    } else {
+      const node = document.createTextNode(text)
+      range.deleteContents()
+      range.insertNode(node)
+      // Overlays follow the caret, which is elsewhere; the input's blur already closed them.
+      setMessageRaw(serializeInput())
+      autoResizeInput()
+    }
+  }
+  // A take saved to the stored draft of a session this composer holds in memory
+  // (the user switched away while it was transcribing): merge it here too, or the
+  // in-memory draft would win on switching back and overwrite storage.
+  onCleanup(onDraftAppended((sid, take) => {
+    if (sid === props.sessionId) return insertDictated(take)
+    const mem = sessionMessages()[sid]
+    if (mem === undefined) return
+    const next = insertDictation(mem, take, null).text
+    setSessionMessages(prev => ({ ...prev, [sid]: next }))
+    saveDraftMessage(sid, next)
+  }))
   const attachments = () => sessionAttachments()[props.sessionId ?? ''] ?? []
   const setAttachments = (v: AttachmentRef[] | ((prev: AttachmentRef[]) => AttachmentRef[])) => {
     const sid = props.sessionId
@@ -1518,6 +1535,15 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
 
+  /** Set while a dictated take is typed in: its input is text, not a shortcut or a popover trigger. */
+  let dictating = false
+  /**
+   * The text and caret a focused take left. The popovers stay closed while both
+   * are unchanged (the selectionchange and focus after a take re-check them), and
+   * follow the caret again once the user types or moves it.
+   */
+  let overlaysHeldFor: { value: string; caret: number } | null = null
+
   const handleInput = () => {
     const val = serializeInput()
     setMessageRaw(val)
@@ -1525,6 +1551,12 @@ export const MessageInput: Component<Props> = (props) => {
     // Clean up stale browser artifacts when empty
     if (val.length === 0 && inputRef && inputRef.childNodes.length > 0) {
       inputRef.textContent = ''
+    }
+
+    if (dictating) {
+      setShowPalette(false)
+      setShowFileMention(false)
+      return
     }
 
     // /plan + space → toggle plan mode and clear
@@ -1542,6 +1574,15 @@ export const MessageInput: Component<Props> = (props) => {
   /** Check cursor position and show/hide command palette + file mention overlay */
   const updateOverlays = (val?: string) => {
     if (val === undefined) val = message()
+
+    if (overlaysHeldFor) {
+      if (overlaysHeldFor.value === val && overlaysHeldFor.caret === getCursorOffset()) {
+        setShowPalette(false)
+        setShowFileMention(false)
+        return
+      }
+      overlaysHeldFor = null
+    }
 
     // Show/hide command palette
     if (val.startsWith('/') && val.indexOf(' ') === -1) {
@@ -1605,25 +1646,32 @@ export const MessageInput: Component<Props> = (props) => {
     const text = e.clipboardData?.getData('text/plain')
     if (text) {
       e.preventDefault()
-      if (text.length > 10_000) {
-        // Large paste — bypass undo manager via Range API for speed
-        const sel = window.getSelection()
-        if (sel && sel.rangeCount > 0) {
-          const range = sel.getRangeAt(0)
-          range.deleteContents()
-          const textNode = document.createTextNode(text)
-          range.insertNode(textNode)
-          range.setStartAfter(textNode)
-          range.collapse(true)
-          sel.removeAllRanges()
-          sel.addRange(range)
-        }
-        handleInput()
-      } else {
-        document.execCommand('insertText', false, text)
-      }
+      insertTextAtSelection(text)
       if (inputRef) inputRef.scrollTop = inputRef.scrollHeight
     }
+  }
+
+  /**
+   * Puts plain text at the focused input's selection as typing would: through
+   * `insertText`, so it is one Cmd+Z step and fires `input` (which runs
+   * `handleInput`). Past 10k characters, or when the webview refuses to type it,
+   * it goes in by Range instead, outside the undo history. Shared by paste and
+   * dictation. `false` when there was no selection to put it at.
+   */
+  function insertTextAtSelection(text: string): boolean {
+    if (text.length <= 10_000 && typeText(text)) return true
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return false
+    const range = sel.getRangeAt(0)
+    range.deleteContents()
+    const textNode = document.createTextNode(text)
+    range.insertNode(textNode)
+    range.setStartAfter(textNode)
+    range.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(range)
+    handleInput()
+    return true
   }
 
   // File drops arrive as native Tauri events (with paths) — the webview never
@@ -2545,6 +2593,7 @@ export const MessageInput: Component<Props> = (props) => {
           </div>
 
           <div class="flex items-center gap-1">
+            <DictationControl available={dictationTarget()} />
             {/* Attach button */}
             <button
               class="w-7 h-7 flex items-center justify-center rounded-lg text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors shrink-0 disabled:opacity-30"

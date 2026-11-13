@@ -5,12 +5,13 @@ const ipc = vi.hoisted(() => ({
   claudeCloudAvailability: vi.fn(), refreshAgents: vi.fn().mockResolvedValue(undefined),
   getRepoInfo: vi.fn().mockResolvedValue({ branches: ['main'] }),
   beginCloudImport: vi.fn(), cancelCloudImport: vi.fn().mockResolvedValue(undefined),
+  voiceSetTarget: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('../lib/ipc', () => ipc)
 vi.mock('../store/projects', () => ({ projectById: () => ({ repoPath: '/repo', baseBranch: 'main' }), updateProjectDefaultAgentInStore: vi.fn() }))
 vi.mock('../store/tasks', () => ({ startTaskCreation: vi.fn(), startCloudTaskImport: vi.fn(), setTasks: vi.fn() }))
 vi.mock('../store/sessions', () => ({ setSessions: vi.fn() }))
-vi.mock('../store/ui', () => ({ setSelectedTaskId: vi.fn(), setSelectedProjectId: vi.fn(), setSelectedSessionIdForTask: vi.fn(), setShowArchived: vi.fn() }))
+vi.mock('../store/ui', () => ({ selectedTaskId: () => null, showTaskBoard: () => false, setSelectedTaskId: vi.fn(), setSelectedProjectId: vi.fn(), setSelectedSessionIdForTask: vi.fn(), setShowArchived: vi.fn() }))
 vi.mock('../store/agents', () => ({ agents: [] }))
 vi.mock('./AgentPicker', () => ({ AgentPicker: () => <div /> }))
 vi.mock('../store/draftTask', () => ({ startDraftTask: vi.fn() }))

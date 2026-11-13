@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
-import { render, cleanup } from '@solidjs/testing-library'
+import { render, cleanup, screen } from '@solidjs/testing-library'
 
 // Issue #166 — detached task windows mounted TaskWindowShell but never
 // hydrated the projects + agents stores, so the new-session menu showed
@@ -151,6 +151,7 @@ vi.mock('./ToastContainer', () => ({ ToastContainer: () => null }))
 vi.mock('./SelectionMenu', () => ({ SelectionMenu: () => null }))
 vi.mock('./ModelPicker', () => ({ ModelPicker: () => null }))
 vi.mock('./FileConflictDialog', () => ({ FileConflictDialog: () => null }))
+vi.mock('./DictationSetupDialog', () => ({ DictationSetupDialog: () => <div data-testid="dictation-setup-dialog" /> }))
 
 import { TaskWindowShell } from './TaskWindowShell'
 
@@ -189,5 +190,10 @@ describe('TaskWindowShell hydration (issue #166)', () => {
     expect(initListenersMock).toHaveBeenCalledTimes(1)
     // ctx.projectId is set in the mock, so loadTasks(projectId) runs too.
     expect(loadTasksMock).toHaveBeenCalledWith('p-001')
+  })
+
+  test('mounts the window dialogs, dictation setup among them, like the main window', () => {
+    render(() => <TaskWindowShell />)
+    expect(screen.getByTestId('dictation-setup-dialog')).toBeTruthy()
   })
 })

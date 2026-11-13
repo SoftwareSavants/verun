@@ -19,7 +19,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { ToastContainer } from './ToastContainer'
 import { SelectionMenu } from './SelectionMenu'
 import { TaskModelPickerHost } from './TaskModelPickerHost'
-import { FileConflictDialog } from './FileConflictDialog'
+import { WindowDialogs } from './WindowDialogs'
 import * as ipc from '../lib/ipc'
 
 export const TaskWindowShell: Component = () => {
@@ -163,7 +163,7 @@ export const TaskWindowShell: Component = () => {
         onCancel={() => setShowSetupCloseConfirm(false)}
       />
       <TaskModelPickerHost />
-      <FileConflictDialog />
+      <WindowDialogs />
     </>
   )
 }

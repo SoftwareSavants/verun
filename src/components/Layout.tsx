@@ -112,7 +112,7 @@ export const Layout: Component = () => {
         const idx = parseInt(e.key) - 1
         if (showSettings()) {
           // In settings: CMD+Number switches between sections
-          // 1 = General, 2 = Appearance, 3 = Accounts, 4+ = projects by order
+          // The built-in sections in nav order (General, Appearance, Accounts, Dictation where supported), then projects
           const section = settingsSectionForShortcut(idx + 1, projects.map(p => p.id))
           if (section) selectSettingsSection(section)
         } else {

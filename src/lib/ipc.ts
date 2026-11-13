@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import type { HoldKey, Language, MicPermission, ModelId, VoiceStatus } from '../types/voice'
 import type { Project, Task, TaskWithSession, Session, OutputLine, RepoInfo, AttachmentRef, AgentSkill, AgentInfo, AgentType, GitStatus, FileDiff, DiffContents, BranchCommit, GitHubRepo, PrInfo, CiCheck, WorkflowRun, WorkflowJob, ToolApprovalRequest, McpServerStatus, TrustLevel, AuditEntry, PtySpawnResult, PtyListEntry, FileEntry, Step, BlobRef, StorageStats, GitHubOverviewSnapshot, GitHubActionsSnapshot, WorkflowJobsSnapshot, WorkflowLogSnapshot, RemoteFetchMode, SideQuestionResponse, GhStatus, RemoteRepo, ClipboardPaste, AccountSelection, AccountsSnapshot, NewAccountInput, UpdateAccountInput, AccountTerminal, AccountTerminalAction, SessionHandoff } from '../types'
 
 const DEMO = import.meta.env.VITE_DEMO_MODE === 'true'
@@ -762,3 +763,36 @@ export const keepAwakeSetManual = (minutes: number | null) =>
   invoke<void>('keep_awake_set_manual', { minutes })
 export const keepAwakeClearManual = () =>
   invoke<void>('keep_awake_clear_manual')
+
+// Voice dictation. Fallible commands reject with a `VoiceError`.
+export const voiceStatus = () =>
+  invoke<VoiceStatus>('voice_status')
+export const voiceSetEnabled = (enabled: boolean) =>
+  invoke<VoiceStatus>('voice_set_enabled', { enabled })
+export const voiceSetLanguage = (language: Language) =>
+  invoke<VoiceStatus>('voice_set_language', { language })
+export const voiceSetHoldKey = (key: HoldKey) =>
+  invoke<VoiceStatus>('voice_set_hold_key', { key })
+/** Starts recording for the composer in window `window` (mic button). */
+/** The take is pinned to `draft`, the visible target's draft. */
+export const voiceBegin = (window: string, draft: string | null) =>
+  invoke<void>('voice_begin', { window, draft })
+/** The draft of the dictation target `window` shows, or null; a hold in a window without one opens no microphone. */
+export const voiceSetTarget = (window: string, draft: string | null) =>
+  invoke<void>('voice_set_target', { window, draft })
+export const voiceEnd = () =>
+  invoke<void>('voice_end')
+export const voiceCancel = () =>
+  invoke<void>('voice_cancel')
+/** Returns at once; progress arrives as `voice-model-progress` events. */
+export const voiceDownloadModel = (model: ModelId) =>
+  invoke<void>('voice_download_model', { model })
+/** Stops a running download; its last progress event has `cancelled: true`. */
+export const voiceCancelDownload = (model: ModelId) =>
+  invoke<void>('voice_cancel_download', { model })
+export const voiceDeleteModel = (model: ModelId) =>
+  invoke<VoiceStatus>('voice_delete_model', { model })
+export const voiceRequestMicrophone = () =>
+  invoke<MicPermission>('voice_request_microphone')
+export const voiceOpenAccessibilitySettings = () =>
+  invoke<void>('voice_open_accessibility_settings')

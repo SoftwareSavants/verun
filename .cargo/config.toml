@@ -6,3 +6,7 @@ incremental = true
 # worktrees at once). Override locally with `CARGO_BUILD_JOBS=<n> cargo ...`
 # or a higher value in your global ~/.cargo/config.toml if you want more.
 jobs = 4
+
+[env]
+# whisper.cpp tunes to the build machine's CPU by default; a release built on a newer runner could crash older Macs.
+GGML_NATIVE = "OFF"
