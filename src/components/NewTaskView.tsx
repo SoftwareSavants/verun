@@ -9,7 +9,8 @@ import { startDraftTask } from '../store/draftTask'
 import { selectedTaskId, showTaskBoard } from '../store/ui'
 import { registerDictationTarget } from '../store/voice'
 import { clearDraft, loadDraftMessage, newTaskDraftId, onDraftAppended, saveDraftMessage } from '../store/sessionDrafts'
-import { insertDictation } from '../lib/dictationInsert'
+import { dictationInsertText, insertDictation } from '../lib/dictationInsert'
+import { typeText } from '../lib/typeText'
 import * as ipc from '../lib/ipc'
 import { failureText } from '../lib/accountErrors'
 import { PROJECT_DEFAULT } from '../lib/accounts'
@@ -85,10 +86,14 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
     const id = draftId()
     onCleanup(registerDictationTarget({ id, draftId: id, insert: insertDictated }))
   })
+  /** Focused: typed in at the caret, so Cmd+Z undoes it. Else appended without taking focus. */
   function insertDictated(take: string) {
     const focused = !!textarea && document.activeElement === textarea
-    const { text, cursor } = insertDictation(message(), take, focused ? { start: textarea.selectionStart, end: textarea.selectionEnd } : null)
-    updateMessage(text)
+    const sel = focused ? { start: textarea.selectionStart, end: textarea.selectionEnd } : null
+    const { text, cursor } = insertDictation(message(), take, sel)
+    // typeText fires `input`, which saves the draft.
+    if (!(sel && typeText(dictationInsertText(message(), take, sel)))) updateMessage(text)
+    // The caret goes right after the take, before any space added after it.
     if (focused) textarea.setSelectionRange(cursor, cursor)
   }
   // A take saved to this draft while the box was hidden: show it. While sending,

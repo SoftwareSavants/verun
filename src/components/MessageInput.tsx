@@ -38,6 +38,7 @@ import { McpElicitationCard } from './McpElicitationCard'
 import { McpStatusChip } from './McpStatusChip'
 import { accountKey, inheritedSelection } from '../lib/accounts'
 import { openNewSession } from '../lib/newSession'
+import { typeText } from '../lib/typeText'
 import { registerDictationTarget } from '../store/voice'
 import { insertDictation, dictationInsertText } from '../lib/dictationInsert'
 import { serializeComposer, composerSelection, composerRangeOffsets, composerEndRange, moveOutOfMentions } from '../lib/composerText'
@@ -1628,7 +1629,7 @@ export const MessageInput: Component<Props> = (props) => {
    */
   function insertTextAtSelection(text: string) {
     if (text.length <= 10_000) {
-      document.execCommand('insertText', false, text)
+      typeText(text)
       return
     }
     const sel = window.getSelection()

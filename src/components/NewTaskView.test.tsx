@@ -26,6 +26,15 @@ import { appendToDraft, loadDraftMessage, newTaskDraftId, saveDraftMessage } fro
 import { toasts, setToasts, setSelectedTaskId, setShowTaskBoard } from '../store/ui'
 import { applySnapshot } from '../store/accounts'
 import { makeAccount, makeSnapshot } from '../test/accountFixtures'
+/** jsdom has no execCommand: `insertText` into a focused textarea as WebKit does it (input event, caret after). */
+const execCommand = vi.fn((command: string, _ui?: boolean, text?: string): boolean => {
+  const el = document.activeElement
+  if (command !== 'insertText' || text === undefined || !(el instanceof HTMLTextAreaElement)) return false
+  el.setRangeText(text, el.selectionStart, el.selectionEnd, 'end')
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+  return true
+})
+Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true, writable: true })
 afterEach(cleanup)
 beforeEach(() => { vi.clearAllMocks(); mocks.targets = []; setSelectedTaskId(null); setShowTaskBoard(false); mocks.project = { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' }; localStorage.clear(); setToasts([]); applySnapshot(makeSnapshot()); mocks.start.mockResolvedValue(undefined) })
 function select(label: string, option: string) {
@@ -221,6 +230,23 @@ test('dictation goes in at the caret when the prompt is focused, and the caret f
   dictationTarget().insert('the login')
   expect(prompt().value).toBe('Fix the login bug')
   expect([prompt().selectionStart, prompt().selectionEnd]).toEqual([13, 13])
+  expect(draft()).toBe('Fix the login bug')
+})
+test('a focused take is typed in, so Cmd+Z undoes it', () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  fireEvent.input(prompt(), { target: { value: 'Fix bug' } })
+  prompt().focus()
+  prompt().setSelectionRange(4, 4)
+  dictationTarget().insert('the login')
+  expect(execCommand).toHaveBeenCalledWith('insertText', false, 'the login ')
+})
+test('an unfocused take is not typed: that would need focus', () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  fireEvent.input(prompt(), { target: { value: 'Fix' } })
+  ;(document.activeElement as HTMLElement | null)?.blur()
+  dictationTarget().insert('it')
+  expect(execCommand).not.toHaveBeenCalled()
+  expect(prompt().value).toBe('Fix it')
 })
 test('hidden behind a selected task or the task board, the new-task box is not a target', () => {
   render(() => <NewTaskView projectId="p" onClose={() => {}} />)
