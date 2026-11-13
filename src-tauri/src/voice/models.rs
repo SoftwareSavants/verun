@@ -7,6 +7,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelStatus {
     pub id: ModelId,
     pub display_name: &'static str,

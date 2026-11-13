@@ -22,6 +22,8 @@ pub enum VoiceError {
     MicDenied,
     MicUnavailable,
     ModelMissing,
+    /// Dictation is turned off.
+    Disabled,
     Engine(String),
 }
 
@@ -42,9 +44,18 @@ pub enum VoiceState {
     Transcribing,
 }
 
-/// A finished recording waiting for the engine. `seq` increases by one per take.
+/// A take that started recording. `take` ids are never reused by a `Dictation`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TakeRef {
+    pub take: u64,
+    pub window: String,
+}
+
+/// A finished recording waiting for the engine. `seq` increases by one per
+/// take that reaches the engine; `take` is the id it got when it began.
 pub struct PendingTake {
     pub seq: u64,
+    pub take: u64,
     pub window: String,
     pub lang: Language,
     pub samples: Vec<f32>,
@@ -52,14 +63,14 @@ pub struct PendingTake {
 
 pub enum EndOutcome {
     NotRecording,
-    TooShort,
-    Silent,
-    Failed { window: String, error: VoiceError },
+    TooShort(TakeRef),
+    Silent(TakeRef),
+    Failed { take: TakeRef, error: VoiceError },
     Pending(PendingTake),
 }
 
 struct Active {
-    window: String,
+    take: TakeRef,
     lang: Language,
     started: Instant,
 }
@@ -68,7 +79,9 @@ pub struct Dictation<C: Capture> {
     capture: C,
     active: Option<Active>,
     next_seq: u64,
-    pending: Vec<u64>,
+    next_take: u64,
+    /// Takes handed to the engine, oldest first.
+    pending: Vec<(u64, TakeRef)>,
 }
 
 impl<C: Capture> Dictation<C> {
@@ -77,6 +90,7 @@ impl<C: Capture> Dictation<C> {
             capture,
             active: None,
             next_seq: 1,
+            next_take: 1,
             pending: Vec::new(),
         }
     }
@@ -91,8 +105,10 @@ impl<C: Capture> Dictation<C> {
             return Ok(());
         }
         self.capture.start()?;
+        let take = self.next_take;
+        self.next_take += 1;
         self.active = Some(Active {
-            window,
+            take: TakeRef { take, window },
             lang,
             started: now,
         });
@@ -105,40 +121,52 @@ impl<C: Capture> Dictation<C> {
         };
         if now.saturating_duration_since(active.started) < MIN_HOLD {
             self.capture.cancel();
-            return EndOutcome::TooShort;
+            return EndOutcome::TooShort(active.take);
         }
         let samples = match self.capture.stop() {
             Ok(s) => s,
             Err(error) => {
                 return EndOutcome::Failed {
-                    window: active.window,
+                    take: active.take,
                     error,
                 }
             }
         };
         if is_silent(&samples) {
-            return EndOutcome::Silent;
+            return EndOutcome::Silent(active.take);
         }
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.pending.push(seq);
+        self.pending.push((seq, active.take.clone()));
         EndOutcome::Pending(PendingTake {
             seq,
-            window: active.window,
+            take: active.take.take,
+            window: active.take.window,
             lang: active.lang,
             samples,
         })
     }
 
-    pub fn cancel(&mut self) {
-        if self.active.take().is_some() {
-            self.capture.cancel();
-        }
+    /// Abandons the take being recorded, if any, and returns it.
+    pub fn cancel(&mut self) -> Option<TakeRef> {
+        let active = self.active.take()?;
+        self.capture.cancel();
+        Some(active.take)
     }
 
     /// Called when the engine has finished take `seq`.
     pub fn transcribed(&mut self, seq: u64) {
-        self.pending.retain(|&s| s != seq);
+        self.pending.retain(|(s, _)| *s != seq);
+    }
+
+    /// The take being recorded.
+    pub fn recording(&self) -> Option<&TakeRef> {
+        self.active.as_ref().map(|a| &a.take)
+    }
+
+    /// The newest take still waiting for the engine.
+    pub fn last_pending(&self) -> Option<&TakeRef> {
+        self.pending.last().map(|(_, t)| t)
     }
 
     /// Recording wins over Transcribing; Idle when neither.
@@ -237,7 +265,7 @@ mod tests {
         let t0 = Instant::now();
         let mut d = Dictation::new(FakeCapture::new(loud()));
         d.begin("w".into(), Language::En, t0).unwrap();
-        assert!(matches!(d.end(t0 + ms(299)), EndOutcome::TooShort));
+        assert!(matches!(d.end(t0 + ms(299)), EndOutcome::TooShort(TakeRef { take: 1, .. })));
         assert_eq!(d.capture.cancels, 1);
         assert_eq!(d.state(), VoiceState::Idle);
     }
@@ -259,7 +287,7 @@ mod tests {
         let t0 = Instant::now();
         let mut d = Dictation::new(FakeCapture::new(vec![0.0; 16_000]));
         d.begin("w".into(), Language::En, t0).unwrap();
-        assert!(matches!(d.end(t0 + ms(500)), EndOutcome::Silent));
+        assert!(matches!(d.end(t0 + ms(500)), EndOutcome::Silent(TakeRef { take: 1, .. })));
         assert_eq!(d.state(), VoiceState::Idle);
     }
 
@@ -306,8 +334,8 @@ mod tests {
         let mut d = Dictation::new(cap);
         d.begin("w".into(), Language::En, t0).unwrap();
         match d.end(t0 + ms(400)) {
-            EndOutcome::Failed { window, error } => {
-                assert_eq!(window, "w");
+            EndOutcome::Failed { take, error } => {
+                assert_eq!(take, TakeRef { take: 1, window: "w".into() });
                 assert_eq!(error, VoiceError::MicUnavailable);
             }
             _ => panic!("expected Failed"),
@@ -345,7 +373,8 @@ mod tests {
         let t0 = Instant::now();
         let mut d = Dictation::new(FakeCapture::new(loud()));
         d.begin("w".into(), Language::En, t0).unwrap();
-        d.cancel();
+        assert_eq!(d.cancel(), Some(TakeRef { take: 1, window: "w".into() }));
+        assert_eq!(d.cancel(), None);
         assert_eq!(d.state(), VoiceState::Idle);
         assert!(matches!(d.end(t0 + ms(500)), EndOutcome::NotRecording));
     }
@@ -387,5 +416,27 @@ mod tests {
         d.transcribed(seq);
         d.transcribed(seq);
         assert_eq!(d.state(), VoiceState::Idle);
+    }
+
+    #[test]
+    fn take_ids_are_assigned_at_begin_and_never_reused() {
+        let t0 = Instant::now();
+        let mut d = Dictation::new(FakeCapture::new(loud()));
+        d.begin("a".into(), Language::En, t0).unwrap();
+        assert_eq!(d.recording(), Some(&TakeRef { take: 1, window: "a".into() }));
+        d.cancel();
+        d.begin("b".into(), Language::En, t0 + ms(10)).unwrap();
+        // A begin while recording keeps the running take.
+        d.begin("c".into(), Language::En, t0 + ms(20)).unwrap();
+        let p = pending(d.end(t0 + ms(500)));
+        assert_eq!((p.seq, p.take, p.window.as_str()), (1, 2, "b"));
+        assert_eq!(d.recording(), None);
+        assert_eq!(d.last_pending(), Some(&TakeRef { take: 2, window: "b".into() }));
+        d.begin("c".into(), Language::En, t0 + ms(600)).unwrap();
+        let q = pending(d.end(t0 + ms(1000)));
+        assert_eq!((q.seq, q.take), (2, 3));
+        assert_eq!(d.last_pending().map(|t| t.take), Some(3));
+        d.transcribed(q.seq);
+        assert_eq!(d.last_pending().map(|t| t.take), Some(2));
     }
 }

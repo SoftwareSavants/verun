@@ -4274,8 +4274,8 @@ pub async fn voice_cancel(app: AppHandle) -> Result<(), VoiceError> {
 
 #[tauri::command]
 pub async fn voice_download_model(app: AppHandle, model: ModelId) -> Result<(), VoiceError> {
-    app.state::<VoiceService>().download(&app, model);
-    Ok(())
+    let handle = app.clone();
+    voice_blocking(app, move |v| v.download(&handle, model)).await
 }
 
 #[tauri::command]

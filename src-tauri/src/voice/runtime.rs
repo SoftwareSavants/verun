@@ -3,15 +3,22 @@
 //! listener, settings persistence and the managed `VoiceService` behind the
 //! `voice_*` commands. The logic lives in `service`.
 //!
-//! Threads: the hotkey tap thread only pushes key events into a channel; the
-//! "voice-control" thread drains it, asks Tauri which window is focused and
-//! drives the core (waking every 500 ms while recording to end overdue
-//! takes); the core's "voice-transcribe" worker runs the engine. Both exit
-//! when their channel disconnects, which in the app means at process exit.
+//! Threads: the hotkey tap thread only pushes key events into a channel, and
+//! the audio thread only stores the input level in an atomic. The
+//! "voice-control" thread drains the channel, asks Tauri which window is
+//! focused and drives the core; while recording it wakes every 66 ms to emit
+//! `voice-level` and end overdue takes. The core's "voice-transcribe" worker
+//! runs the engine. Both exit when their channel disconnects, which in the
+//! app means at process exit.
+//!
+//! Lock order: `listener`, then the core's lock. Only command threads (never
+//! the async runtime, the tap thread or the audio thread) take `listener`,
+//! and they hold it while a listener is checked, started and dropped, so
+//! enabling, disabling, re-keying and `voice_status` cannot interleave.
 
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use sqlx::SqlitePool;
@@ -19,16 +26,18 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::catalog::{Language, ModelId};
 use super::hold::{HoldDetector, HoldKey, KeyEvent};
-use super::models::{self, HttpFetch};
+use super::models::HttpFetch;
 use super::service::{
-    hold_key_name, load_settings, save_setting, unsupported_status, ErrorPayload, LevelPayload,
-    MicPermission, ModelProgress, StatePayload, TranscriptPayload, VoiceCore, VoiceEvents,
-    VoiceStatus, KEY_ENABLED, KEY_HOLD_KEY, KEY_LANGUAGE, SUPPORTED,
+    hold_key_name, load_settings, save_setting, unsupported_status, ErrorPayload, LevelCell,
+    LevelPayload, MicPermission, ModelProgress, StatePayload, TakeDroppedPayload, Throttle,
+    TranscriptPayload, VoiceCore, VoiceEvents, VoiceStatus, KEY_ENABLED, KEY_HOLD_KEY,
+    KEY_LANGUAGE, SUPPORTED,
 };
 use super::session::{VoiceError, VoiceState};
 
-/// While recording, the control thread wakes this often to end overdue takes.
-const TICK: Duration = Duration::from_millis(500);
+/// While recording, the control thread wakes this often: `voice-level` goes
+/// out at most this often (about 15 per second) and overdue takes are ended.
+const LEVEL_EVERY: Duration = Duration::from_millis(66);
 
 /// Emits every voice event to all windows; the frontend filters by label.
 pub struct TauriEvents(AppHandle);
@@ -45,6 +54,9 @@ impl VoiceEvents for TauriEvents {
     }
     fn error(&self, p: ErrorPayload) {
         let _ = self.0.emit("voice-error", p);
+    }
+    fn take_dropped(&self, p: TakeDroppedPayload) {
+        let _ = self.0.emit("voice-take-dropped", p);
     }
     fn model_progress(&self, p: ModelProgress) {
         let _ = self.0.emit("voice-model-progress", p);
@@ -145,7 +157,7 @@ struct Running {
     core: Arc<Core>,
     /// Feeds the voice-control thread.
     control: mpsc::Sender<Control>,
-    /// Never held while a listener is started or dropped.
+    /// See the lock order in the module doc.
     listener: Mutex<Option<platform::Listener>>,
     /// Ordered, fire-and-forget `app_meta` writes.
     settings_tx: tokio::sync::mpsc::UnboundedSender<(&'static str, String)>,
@@ -155,11 +167,13 @@ enum Control {
     Key(KeyEvent),
     /// A take started outside the hold path: start ticking.
     Wake,
+    /// The listener stopped or restarted: forget any half-seen hold.
+    Reset,
 }
 
 /// Managed state. `None` where dictation is unsupported. Every method except
-/// `request_microphone` and `download` may block: call them off the async
-/// runtime (the commands use `spawn_blocking`).
+/// `request_microphone` may block: call them off the async runtime (the
+/// commands use `spawn_blocking`).
 pub struct VoiceService(Option<Running>);
 
 impl VoiceService {
@@ -186,15 +200,16 @@ impl VoiceService {
             }
         });
 
-        let events = Arc::new(TauriEvents(app.clone()));
-        let level_events = Arc::clone(&events);
-        let capture = platform::new_capture(move |level| level_events.level(LevelPayload { level }));
+        let level = Arc::new(LevelCell::new());
+        let audio_level = Arc::clone(&level);
+        // Runs on the audio thread: only an atomic store.
+        let capture = platform::new_capture(move |l| audio_level.set(l));
         let core = VoiceCore::start(
             capture,
             platform::Loader,
             settings,
-            models::models_dir(app_data),
-            events,
+            super::models::models_dir(app_data),
+            Arc::new(TauriEvents(app.clone())),
             Box::new(platform::microphone_permission),
         );
 
@@ -202,7 +217,7 @@ impl VoiceService {
         let (thread_app, thread_core) = (app.clone(), Arc::clone(&core));
         if let Err(e) = std::thread::Builder::new()
             .name("voice-control".into())
-            .spawn(move || run_control(thread_app, thread_core, control_rx))
+            .spawn(move || run_control(thread_app, thread_core, level, control_rx))
         {
             eprintln!("[verun][voice] could not start the control thread: {e}");
         }
@@ -217,27 +232,32 @@ impl VoiceService {
     /// Starts the hold-key listener if dictation is on and permitted.
     pub fn attach_listener(&self) {
         if let Some(rt) = &self.0 {
-            rt.ensure_listener();
+            rt.ensure_listener(&mut rt.listener());
         }
     }
 
     /// Re-checks Accessibility and attaches the listener once it is granted.
     pub fn status(&self) -> VoiceStatus {
         let Some(rt) = &self.0 else { return unsupported_status() };
-        if rt.ensure_listener() {
-            return rt.changed();
+        let started = rt.ensure_listener(&mut rt.listener());
+        if started {
+            rt.changed()
+        } else {
+            rt.status()
         }
-        rt.status()
     }
 
     pub fn set_enabled(&self, enabled: bool) -> VoiceStatus {
         let Some(rt) = &self.0 else { return unsupported_status() };
-        rt.core.set_enabled(enabled);
-        rt.persist(KEY_ENABLED, enabled.to_string());
-        if enabled {
-            rt.ensure_listener();
-        } else {
-            rt.stop_listener();
+        {
+            let mut slot = rt.listener();
+            rt.core.set_enabled(enabled);
+            rt.persist(KEY_ENABLED, enabled.to_string());
+            if enabled {
+                rt.ensure_listener(&mut slot);
+            } else {
+                rt.stop_listener(&mut slot);
+            }
         }
         rt.changed()
     }
@@ -251,11 +271,14 @@ impl VoiceService {
 
     pub fn set_hold_key(&self, key: HoldKey) -> VoiceStatus {
         let Some(rt) = &self.0 else { return unsupported_status() };
-        rt.core.set_hold_key(key);
-        rt.persist(KEY_HOLD_KEY, hold_key_name(key));
-        if rt.listener_running() {
-            rt.stop_listener();
-            rt.ensure_listener();
+        {
+            let mut slot = rt.listener();
+            rt.core.set_hold_key(key);
+            rt.persist(KEY_HOLD_KEY, hold_key_name(key));
+            if slot.is_some() {
+                rt.stop_listener(&mut slot);
+                rt.ensure_listener(&mut slot);
+            }
         }
         rt.changed()
     }
@@ -286,14 +309,12 @@ impl VoiceService {
     /// call while that model is downloading is ignored.
     pub fn download(&self, app: &AppHandle, model: ModelId) {
         let Some(rt) = &self.0 else { return };
-        if !rt.core.claim_download(model) {
-            return;
-        }
+        let Some(claim) = rt.core.claim_download(model) else { return };
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let service = app.state::<VoiceService>();
             let Some(rt) = &service.0 else { return };
-            if let Err(e) = rt.core.run_download(model, HttpFetch::new()) {
+            if let Err(e) = rt.core.run_download(claim, HttpFetch::new()) {
                 eprintln!("[verun][voice] model download failed: {e}");
             }
             rt.changed();
@@ -303,14 +324,14 @@ impl VoiceService {
     /// Refused (status unchanged) while that model is downloading.
     pub fn delete_model(&self, model: ModelId) -> VoiceStatus {
         let Some(rt) = &self.0 else { return unsupported_status() };
-        if rt.core.is_downloading(model) {
-            return rt.status();
+        match rt.core.delete_model(model) {
+            Ok(true) => rt.changed(),
+            Ok(false) => rt.status(),
+            Err(e) => {
+                eprintln!("[verun][voice] deleting model failed: {e}");
+                rt.changed()
+            }
         }
-        rt.core.unload_model(model);
-        if let Err(e) = models::delete(rt.core.models_dir(), model) {
-            eprintln!("[verun][voice] deleting model failed: {e}");
-        }
-        rt.changed()
     }
 
     /// Async: waits for the user to answer the system prompt.
@@ -336,6 +357,10 @@ impl VoiceService {
 }
 
 impl Running {
+    fn listener(&self) -> MutexGuard<'_, Option<platform::Listener>> {
+        self.listener.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn status(&self) -> VoiceStatus {
         self.core.status(platform::accessibility_granted())
     }
@@ -351,48 +376,44 @@ impl Running {
         let _ = self.settings_tx.send((key, value));
     }
 
-    fn listener_running(&self) -> bool {
-        self.listener.lock().unwrap_or_else(|e| e.into_inner()).is_some()
-    }
-
-    /// Starts the listener when enabled, permitted and not running. True if
-    /// it started one.
-    fn ensure_listener(&self) -> bool {
+    /// With the listener lock held: starts the listener with the current key
+    /// when enabled, permitted and not running. True if it started one.
+    fn ensure_listener(&self, slot: &mut Option<platform::Listener>) -> bool {
+        if slot.is_some() {
+            return false;
+        }
         let settings = self.core.settings();
-        if !settings.enabled || self.listener_running() || !platform::accessibility_granted() {
+        if !settings.enabled || !platform::accessibility_granted() {
             return false;
         }
         let tx = self.control.clone();
         // Runs on the tap thread: only a non-blocking send.
-        let Some(listener) = platform::start_listener(settings.hold_key, move |ev| {
+        *slot = platform::start_listener(settings.hold_key, move |ev| {
             let _ = tx.send(Control::Key(ev));
-        }) else {
-            return false;
-        };
-        let mut slot = self.listener.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.is_some() {
-            // Another call won the race; keep its listener, drop ours unlocked.
-            drop(slot);
-            drop(listener);
-            return false;
-        }
-        *slot = Some(listener);
-        true
+        });
+        slot.is_some()
     }
 
-    /// Drops the listener outside the lock (it blocks while its thread exits).
-    fn stop_listener(&self) {
-        let old = self.listener.lock().unwrap_or_else(|e| e.into_inner()).take();
+    /// With the listener lock held: drops the listener (blocks while its
+    /// thread exits), resets the hold detector and cancels a take in progress.
+    fn stop_listener(&self, slot: &mut Option<platform::Listener>) {
+        let old = slot.take();
+        if old.is_none() {
+            return;
+        }
         drop(old);
+        let _ = self.control.send(Control::Reset);
+        self.core.cancel();
     }
 }
 
 /// Voice-control thread body. Exits when every control sender is dropped.
-fn run_control(app: AppHandle, core: Arc<Core>, rx: mpsc::Receiver<Control>) {
+fn run_control(app: AppHandle, core: Arc<Core>, level: Arc<LevelCell>, rx: mpsc::Receiver<Control>) {
     let mut detector = HoldDetector::new();
+    let level_throttle = Throttle::new(LEVEL_EVERY);
     loop {
         let msg = if core.state() == VoiceState::Recording {
-            match rx.recv_timeout(TICK) {
+            match rx.recv_timeout(LEVEL_EVERY) {
                 Ok(m) => Some(m),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -403,18 +424,33 @@ fn run_control(app: AppHandle, core: Arc<Core>, rx: mpsc::Receiver<Control>) {
                 Err(_) => return,
             }
         };
-        if let Some(Control::Key(ev)) = msg {
-            // Focus only matters for starting; skip the window lookup for the
-            // stream of ordinary key presses.
-            let focused = if ev == KeyEvent::HoldDown {
-                focused_window(&app)
-            } else {
-                None
-            };
-            let action = detector.on(ev, focused.is_some());
-            core.hold(action, focused, Instant::now());
+        match msg {
+            Some(Control::Key(ev)) => {
+                // Focus only matters for starting; skip the window lookup for
+                // the stream of ordinary key presses.
+                let focused = if ev == KeyEvent::HoldDown {
+                    focused_window(&app)
+                } else {
+                    None
+                };
+                let action = detector.on(ev, focused.is_some());
+                core.hold(action, focused, Instant::now());
+            }
+            Some(Control::Reset) => detector = HoldDetector::new(),
+            Some(Control::Wake) | None => {}
         }
-        core.tick(Instant::now());
+        let now = Instant::now();
+        core.tick(now);
+        if core.state() == VoiceState::Recording {
+            if level_throttle.ready(now) {
+                if let Some(level) = level.take() {
+                    core.events().level(LevelPayload { level });
+                }
+            }
+        } else {
+            // A level left over from the last take must not leak into the next.
+            level.take();
+        }
     }
 }
 
