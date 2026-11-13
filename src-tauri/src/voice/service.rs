@@ -842,6 +842,7 @@ pub fn download_error_text(e: &DownloadError) -> String {
 pub(crate) mod tests {
     use super::*;
     use crate::voice::engine::Transcriber;
+    use crate::voice::session::MIN_HOLD;
     use std::collections::{HashSet, VecDeque};
 
     // ---- fakes ----
@@ -1343,12 +1344,20 @@ pub(crate) mod tests {
 
     #[test]
     fn a_hold_take_is_timed_from_key_down() {
-        let r = rig(Script::default(), Opts::default());
+        let r = rig(Script::texts(&["kept"]), Opts::default());
         let t0 = Instant::now();
-        // Armed 150 ms after key down, released at 299 ms: shorter than MIN_HOLD.
+        // Armed 150 ms after key down, released 300 ms after it: only 150 ms
+        // after arming, yet long enough because the hold counts from key down.
         r.core.hold(begin_hold("main", t0), t0 + ms(150));
-        r.core.hold(HoldAction::End, t0 + ms(299));
-        assert_eq!(r.rec.dropped(), vec![("main".into(), 1, DropReason::TooShort)]);
+        r.core.hold(HoldAction::End, t0 + MIN_HOLD);
+        r.core.flush();
+        assert!(r.rec.dropped().is_empty(), "{:?}", r.rec.dropped());
+        assert_eq!(r.rec.transcripts(), vec![tr("main", 1, 1, "kept")]);
+        // One millisecond less from key down is too short.
+        let t1 = t0 + ms(5000);
+        r.core.hold(begin_hold("main", t1), t1 + ms(150));
+        r.core.hold(HoldAction::End, t1 + MIN_HOLD - ms(1));
+        assert_eq!(r.rec.dropped(), vec![("main".into(), 2, DropReason::TooShort)]);
     }
 
     #[test]
