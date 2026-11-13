@@ -382,7 +382,7 @@ export const MessageInput: Component<Props> = (props) => {
   createEffect(() => {
     const sid = props.sessionId
     if (!sid || !dictationTarget()) return
-    onCleanup(registerDictationTarget({ id: `session:${sid}`, sessionId: sid, insert: insertDictated }))
+    onCleanup(registerDictationTarget({ id: `session:${sid}`, draftId: sid, insert: insertDictated }))
   })
   /**
    * Dictated text goes in as one plain text node (never a badge): at the caret when focused, else at the end of

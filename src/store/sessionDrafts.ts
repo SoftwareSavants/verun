@@ -2,10 +2,21 @@ import type { AttachmentRef } from '../types'
 import { insertDictation } from '../lib/dictationInsert'
 import { deserializeAttachments, serializeAttachments } from '../lib/binary'
 
-// Per-session composer drafts, persisted so they survive reloads and are
-// visible to every window (localStorage is shared across webviews). The
-// composer reads them when it switches to a session, so seeding one before
+// Composer drafts, persisted so they survive reloads and are visible to every
+// window (localStorage is shared across webviews). A draft id is a session id
+// (the chat composer) or `newTaskDraftId(projectId)` (a project's new-task box).
+// The composer reads them when it switches to a session, so seeding one before
 // selecting a session pre-fills its composer.
+
+const NEW_TASK_PREFIX = 'new-task:'
+
+/** The draft id of `projectId`'s new-task box. Never a session id (those are UUIDs). */
+export const newTaskDraftId = (projectId: string) => `${NEW_TASK_PREFIX}${projectId}`
+
+/** The project of a new-task draft id; `null` for a session's draft. */
+export function newTaskDraftProject(draftId: string): string | null {
+  return draftId.startsWith(NEW_TASK_PREFIX) ? draftId.slice(NEW_TASK_PREFIX.length) : null
+}
 
 const msgKey = (sid: string) => `verun:draft-msg:${sid}`
 const attKey = (sid: string) => `verun:draft-att:${sid}`
@@ -28,7 +39,7 @@ export function onDraftAppended(cb: DraftAppended): () => void {
   return () => { appendListeners.delete(cb) }
 }
 
-/** Append a dictated take to a session's draft, for a composer that is not showing it. */
+/** Append a dictated take to a draft, for a composer or new-task box that is not showing it. */
 export function appendToDraft(sid: string, take: string) {
   saveDraftMessage(sid, insertDictation(loadDraftMessage(sid) ?? '', take, null).text)
   for (const cb of [...appendListeners]) cb(sid, take)

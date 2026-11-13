@@ -8,6 +8,7 @@ import { agents } from '../store/agents'
 import { startDraftTask } from '../store/draftTask'
 import { selectedTaskId, showTaskBoard } from '../store/ui'
 import { registerDictationTarget } from '../store/voice'
+import { clearDraft, loadDraftMessage, newTaskDraftId, onDraftAppended, saveDraftMessage } from '../store/sessionDrafts'
 import { insertDictation } from '../lib/dictationInsert'
 import * as ipc from '../lib/ipc'
 import { failureText } from '../lib/accountErrors'
@@ -20,7 +21,15 @@ import { DictationControl } from './DictationControl'
 
 export function NewTaskView(props: { projectId: string; onClose: () => void }) {
   const project = () => projectById(props.projectId)
-  const [message, setMessage] = createSignal('')
+  // The prompt is the project's new-task draft, so it survives this box being
+  // hidden or unmounted, and a dictated take for it lands there in any case.
+  const draftId = () => newTaskDraftId(props.projectId)
+  const [message, setMessage] = createSignal(loadDraftMessage(draftId()) ?? '')
+  const updateMessage = (text: string) => {
+    setMessage(text)
+    saveDraftMessage(draftId(), text)
+  }
+  createEffect(on(() => props.projectId, () => setMessage(loadDraftMessage(draftId()) ?? ''), { defer: true }))
   const [agent, setAgent] = createSignal<AgentType>('claude')
   const [model, setModel] = createSignal<string>()
   const selectedModel = () => model() ?? agents.find(a => a.id === agent())?.models?.[0]?.id
@@ -73,14 +82,20 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
   const dictationTarget = () => source() === 'local' && !sending() && !selectedTaskId() && !showTaskBoard()
   createEffect(() => {
     if (!dictationTarget()) return
-    onCleanup(registerDictationTarget({ id: 'new-task', sessionId: null, insert: insertDictated }))
+    const id = draftId()
+    onCleanup(registerDictationTarget({ id, draftId: id, insert: insertDictated }))
   })
   function insertDictated(take: string) {
     const focused = !!textarea && document.activeElement === textarea
     const { text, cursor } = insertDictation(message(), take, focused ? { start: textarea.selectionStart, end: textarea.selectionEnd } : null)
-    setMessage(text)
+    updateMessage(text)
     if (focused) textarea.setSelectionRange(cursor, cursor)
   }
+  // A take saved to this draft while the box was hidden: show it. While sending,
+  // the draft is consumed and the take stays in storage (see `send`).
+  onCleanup(onDraftAppended((id) => {
+    if (id === draftId() && !sending()) setMessage(loadDraftMessage(id) ?? '')
+  }))
 
   const chooseWorkspace = async (value: string) => {
     if (value !== 'choose') { setWorkspace(value); return }
@@ -95,19 +110,34 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
     } catch (e) { setError(String(e)) }
     finally { setChoosing(false) }
   }
+  /**
+   * Starts the task with the prompt. The draft is consumed as the send starts: a
+   * take that lands meanwhile is kept as the project's next draft, and rejoins
+   * the prompt if the send fails.
+   */
   const send = async () => {
     if (!message().trim() || sending() || choosing() || unavailable()) return
+    const sent = message()
     setSending(true)
     setError('')
+    clearDraft(draftId())
     try {
-      await startDraftTask({ projectId: props.projectId, baseBranch: baseBranch(), agentType: agent(), model: selectedModel(), directory: directory(), account: account(), message: message().trim(), viewMode: agent() === 'claude' ? viewMode() : undefined })
+      await startDraftTask({ projectId: props.projectId, baseBranch: baseBranch(), agentType: agent(), model: selectedModel(), directory: directory(), account: account(), message: sent.trim(), viewMode: agent() === 'claude' ? viewMode() : undefined })
+      setMessage(loadDraftMessage(draftId()) ?? '')
       props.onClose()
     } catch (e) {
+      const landed = loadDraftMessage(draftId())
+      updateMessage(landed ? insertDictation(sent, landed, null).text : sent)
       // The account the task would run on can be unusable: that gets the account
       // toast, and the draft says what is wrong instead of printing the raw error.
       setError(failureText(e))
     }
     finally { setSending(false) }
+  }
+  /** Close (X): the user is done with this draft. */
+  const discard = () => {
+    clearDraft(draftId())
+    props.onClose()
   }
 
   const sendBlocker = () => !message().trim() ? 'Write what the agent should do' : unavailable() ? `${agents.find(a => a.id === agent())?.name} is not installed` : choosing() ? 'Choosing a folder…' : ''
@@ -120,7 +150,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
   return <section class="flex flex-col h-full min-h-0 bg-surface-0" aria-label="New task">
     <header class="flex items-center justify-between pt-10 px-5 pb-3 drag-region" data-tauri-drag-region>
       <div class="flex items-center gap-2 text-xs text-text-muted"><span>New task</span><span class="text-text-dim">/</span><span class="text-text-secondary">{project()?.name}</span></div>
-      <button class="btn-ghost no-drag" aria-label="Close draft" disabled={sending()} onClick={props.onClose}><X size={14} /></button>
+      <button class="btn-ghost no-drag" aria-label="Close draft" disabled={sending()} onClick={discard}><X size={14} /></button>
     </header>
     <div class="flex-1 min-h-0 overflow-auto flex flex-col px-6 pt-4 sm:pt-8 pb-10">
       <div class="w-full max-w-160 mx-auto">
@@ -139,7 +169,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
           <div class="rounded-xl bg-surface-1 ring-1 ring-outline/10 focus-within:ring-accent/40 transition-colors">
             <textarea ref={textarea} aria-label="Task prompt" placeholder={quick() ? 'What should the agent look into? e.g. find every repo under ~/code with uncommitted changes' : `What should the agent do in ${project()?.name ?? 'this project'}?`} value={message()} disabled={sending()}
               class="w-full min-h-20 max-h-64 resize-none bg-transparent text-sm text-text-primary p-4 outline-none leading-relaxed"
-              onInput={e => setMessage(e.currentTarget.value)}
+              onInput={e => updateMessage(e.currentTarget.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void send() } }} />
             <div class="flex items-end gap-2 px-3 pb-3">
               <div class="flex-1 min-w-0 flex flex-wrap items-center gap-2">

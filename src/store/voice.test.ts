@@ -21,10 +21,12 @@ vi.mock('../lib/ipc', () => ({
 }))
 vi.mock('./ui', () => ({ addToast: vi.fn() }))
 vi.mock('./sessions', () => ({ sessionById: vi.fn() }))
+vi.mock('./projects', () => ({ projectById: vi.fn() }))
 
 import * as ipc from '../lib/ipc'
 import { addToast } from './ui'
 import { sessionById } from './sessions'
+import { projectById } from './projects'
 import { loadDraftMessage, saveDraftMessage } from './sessionDrafts'
 import {
   initVoice, registerDictationTarget as register, toggleDictation, voiceState, voiceLevel, voiceStatus,
@@ -48,7 +50,7 @@ const dropped = (take: number, window = 'main') =>
 
 type TestTarget = DictationTarget & { insert: ReturnType<typeof vi.fn> }
 const makeTarget = (sid: string | null = 's1'): TestTarget => ({
-  id: sid ? `session:${sid}` : 'new-task', sessionId: sid, insert: vi.fn() as never,
+  id: sid ? `session:${sid}` : 'new-task:p', draftId: sid ?? 'new-task:p', insert: vi.fn() as never,
 })
 
 const registerDictationTarget = register
@@ -156,12 +158,40 @@ describe('delivery', () => {
     expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
   })
 
-  test('unregistered target without a session id is dropped', () => {
+  test('a take whose new-task box went away goes to that project\'s new-task draft', () => {
+    const a = makeTarget(null)
+    const off = registerDictationTarget(a)
+    rec(1)
+    off() // hidden behind a task, unmounted, or sending
+    vi.mocked(projectById).mockReturnValue({ id: 'p' } as never)
+    transcript('fix login', 1)
+    expect(a.insert).not.toHaveBeenCalled()
+    expect(loadDraftMessage('new-task:p')).toBe('fix login')
+    expect(addToast).toHaveBeenCalledWith('Dictation saved to the new task draft.', 'info')
+  })
+
+  test('a take begun in one project\'s new-task box never lands in another project\'s', () => {
+    const a = makeTarget(null)
+    const offA = registerDictationTarget(a)
+    rec(1)
+    offA()
+    const b: TestTarget = { id: 'new-task:q', draftId: 'new-task:q', insert: vi.fn() as never }
+    registerDictationTarget(b)
+    vi.mocked(projectById).mockReturnValue({ id: 'p' } as never)
+    transcript('for p', 1)
+    expect(b.insert).not.toHaveBeenCalled()
+    expect(loadDraftMessage('new-task:q')).toBeNull()
+    expect(loadDraftMessage('new-task:p')).toBe('for p')
+  })
+
+  test('a take for the new-task box of a removed project is dropped', () => {
     const a = makeTarget(null)
     const off = registerDictationTarget(a)
     rec(1)
     off()
+    vi.mocked(projectById).mockReturnValue(undefined)
     transcript('lost', 1)
+    expect(loadDraftMessage('new-task:p')).toBeNull()
     expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
   })
 
@@ -601,7 +631,7 @@ describe('pins of a window that closed', () => {
   test('a pin is stored while its take is out and removed on its terminal event', () => {
     registerDictationTarget(makeTarget('a'))
     rec(1)
-    expect(stored()).toEqual({ 1: { targetId: 'session:a', sessionId: 'a', run: 'run-1' } })
+    expect(stored()).toEqual({ 1: { targetId: 'session:a', draftId: 'a', run: 'run-1' } })
     transcript('x', 1)
     expect(stored()).toEqual({})
   })
@@ -619,15 +649,15 @@ describe('pins of a window that closed', () => {
   })
 
   test('global idle clears only the stored pins this window created', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 9: { targetId: 'session:b', sessionId: 'b', run: 'run-1' } }))
+    localStorage.setItem(KEY, JSON.stringify({ 9: { targetId: 'session:b', draftId: 'b', run: 'run-1' } }))
     registerDictationTarget(makeTarget('a'))
     rec(1)
     state('idle', null)
-    expect(stored()).toEqual({ 9: { targetId: 'session:b', sessionId: 'b', run: 'run-1' } })
+    expect(stored()).toEqual({ 9: { targetId: 'session:b', draftId: 'b', run: 'run-1' } })
   })
 
   test('an orphaned transcript with a stored pin for a live session goes to its draft', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', sessionId: 'a', run: 'run-1' } }))
+    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', draftId: 'a', run: 'run-1' } }))
     vi.mocked(sessionById).mockReturnValue({ id: 'a' } as never)
     saveDraftMessage('a', 'draft')
     transcript('more', 7)
@@ -637,7 +667,7 @@ describe('pins of a window that closed', () => {
   })
 
   test('an orphaned transcript whose session is gone is dropped and forgotten', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', sessionId: 'a', run: 'run-1' } }))
+    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', draftId: 'a', run: 'run-1' } }))
     vi.mocked(sessionById).mockReturnValue(undefined)
     transcript('lost', 7)
     expect(loadDraftMessage('a')).toBeNull()
@@ -646,15 +676,15 @@ describe('pins of a window that closed', () => {
   })
 
   test('an orphaned transcript with no stored pin shows the dropped toast', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 8: { targetId: 'new-task', sessionId: null, run: 'run-1' } }))
+    localStorage.setItem(KEY, JSON.stringify({ 8: { targetId: 'new-task:p', draftId: 'new-task:p', run: 'run-1' } }))
     transcript('lost', 7)
     expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
-    expect(stored()).toEqual({ 8: { targetId: 'new-task', sessionId: null, run: 'run-1' } })
+    expect(stored()).toEqual({ 8: { targetId: 'new-task:p', draftId: 'new-task:p', run: 'run-1' } })
   })
 
   test('a stored pin from an earlier run of the app is never honoured', () => {
     // Take ids restart with each run: take 7 of the last run is not this run's take 7.
-    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', sessionId: 'a', run: 'run-0' } }))
+    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', draftId: 'a', run: 'run-0' } }))
     vi.mocked(sessionById).mockReturnValue({ id: 'a' } as never)
     saveDraftMessage('a', 'draft')
     transcript('stray', 7)
@@ -663,10 +693,18 @@ describe('pins of a window that closed', () => {
   })
 
   test('storing a pin drops the pins of earlier runs', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 9: { targetId: 'session:b', sessionId: 'b', run: 'run-0' } }))
+    localStorage.setItem(KEY, JSON.stringify({ 9: { targetId: 'session:b', draftId: 'b', run: 'run-0' } }))
     registerDictationTarget(makeTarget('a'))
     rec(1)
-    expect(stored()).toEqual({ 1: { targetId: 'session:a', sessionId: 'a', run: 'run-1' } })
+    expect(stored()).toEqual({ 1: { targetId: 'session:a', draftId: 'a', run: 'run-1' } })
+  })
+
+  test('an orphaned transcript with a stored new-task pin goes to that project\'s draft', () => {
+    localStorage.setItem(KEY, JSON.stringify({ 4: { targetId: 'new-task:p', draftId: 'new-task:p', run: 'run-1' } }))
+    vi.mocked(projectById).mockReturnValue({ id: 'p' } as never)
+    transcript('from the closed window', 4)
+    expect(loadDraftMessage('new-task:p')).toBe('from the closed window')
+    expect(stored()).toEqual({})
   })
 
   test('unreadable stored pins are ignored', () => {

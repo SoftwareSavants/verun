@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-const mocks = vi.hoisted(() => ({ targets: [] as Array<{ id: string; sessionId: string | null; insert(take: string): void }>, start: vi.fn(), open: vi.fn(), inspect: vi.fn(), project: { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' } as Record<string, string> }))
+const mocks = vi.hoisted(() => ({ targets: [] as Array<{ id: string; draftId: string; insert(take: string): void }>, start: vi.fn(), open: vi.fn(), inspect: vi.fn(), project: { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' } as Record<string, string> }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open }))
 vi.mock('../lib/ipc', () => ({
   getRepoInfo: vi.fn().mockResolvedValue({ branches: ['main', 'develop'], currentBranch: 'develop' }),
@@ -22,6 +22,7 @@ vi.mock('../store/voice', () => ({
   },
 }))
 import { NewTaskView } from './NewTaskView'
+import { appendToDraft, loadDraftMessage, newTaskDraftId, saveDraftMessage } from '../store/sessionDrafts'
 import { toasts, setToasts, setSelectedTaskId, setShowTaskBoard } from '../store/ui'
 import { applySnapshot } from '../store/accounts'
 import { makeAccount, makeSnapshot } from '../test/accountFixtures'
@@ -198,9 +199,9 @@ test('the chat or terminal choice for a Claude task is shown and sent', async ()
 // Dictation: the new-task box is a target while it is the box on screen.
 const prompt = () => screen.getByRole('textbox', { name: 'Task prompt' }) as HTMLTextAreaElement
 const dictationTarget = () => mocks.targets[mocks.targets.length - 1]
-test('registers as the new-task dictation target and unregisters on unmount', () => {
+test('registers as the dictation target of its project\'s new-task box and unregisters on unmount', () => {
   const { unmount } = render(() => <NewTaskView projectId="p" onClose={() => {}} />)
-  expect(mocks.targets.map(t => ({ id: t.id, sessionId: t.sessionId }))).toEqual([{ id: 'new-task', sessionId: null }])
+  expect(mocks.targets.map(t => ({ id: t.id, draftId: t.draftId }))).toEqual([{ id: 'new-task:p', draftId: 'new-task:p' }])
   unmount()
   expect(mocks.targets).toEqual([])
 })
@@ -229,7 +230,7 @@ test('hidden behind a selected task or the task board, the new-task box is not a
   setShowTaskBoard(true)
   expect(mocks.targets).toEqual([])
   setShowTaskBoard(false)
-  expect(mocks.targets.map(t => t.id)).toEqual(['new-task'])
+  expect(mocks.targets.map(t => t.id)).toEqual(['new-task:p'])
 })
 test('the mic is available while the box is a dictation target, not while it sends', async () => {
   let finish!: () => void
@@ -242,4 +243,77 @@ test('the mic is available while the box is a dictation target, not while it sen
   await waitFor(() => expect(mic()).toBe('false'))
   expect(mocks.targets).toEqual([])
   finish()
+})
+
+// The new-task box keeps its prompt as the project's new-task draft, so a take
+// for it is never lost while it is hidden, unmounted or sending.
+const draft = () => loadDraftMessage(newTaskDraftId('p'))
+test('the prompt is kept as the project\'s new-task draft and comes back on remount', () => {
+  const { unmount } = render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  fireEvent.input(prompt(), { target: { value: 'Fix it' } })
+  expect(draft()).toBe('Fix it')
+  unmount()
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  expect(prompt().value).toBe('Fix it')
+})
+test('each project\'s new-task box has its own draft', () => {
+  saveDraftMessage(newTaskDraftId('q'), 'for q')
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  expect(prompt().value).toBe('')
+})
+test('a take saved for the box while it is hidden shows in its prompt', () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  fireEvent.input(prompt(), { target: { value: 'Fix the' } })
+  setSelectedTaskId('t1')
+  appendToDraft(newTaskDraftId('p'), 'login bug')
+  expect(prompt().value).toBe('Fix the login bug')
+  expect(draft()).toBe('Fix the login bug')
+})
+test('a take saved for another project\'s box leaves this prompt alone', () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  fireEvent.input(prompt(), { target: { value: 'Mine' } })
+  appendToDraft(newTaskDraftId('q'), 'theirs')
+  expect(prompt().value).toBe('Mine')
+})
+test('a take that lands while the task is sent is kept as the project\'s next draft', async () => {
+  let finish!: () => void
+  mocks.start.mockReturnValue(new Promise<void>(r => { finish = r }))
+  const close = vi.fn()
+  render(() => <NewTaskView projectId="p" onClose={close} />)
+  fireEvent.input(prompt(), { target: { value: 'Fix it' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(mocks.targets).toEqual([]))
+  appendToDraft(newTaskDraftId('p'), 'and the tests')
+  expect(prompt().value).toBe('Fix it')
+  finish()
+  await waitFor(() => expect(close).toHaveBeenCalledOnce())
+  expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ message: 'Fix it' }))
+  expect(draft()).toBe('and the tests')
+})
+test('a sent task leaves no draft behind', async () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  fireEvent.input(prompt(), { target: { value: 'Fix it' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(mocks.start).toHaveBeenCalled())
+  await waitFor(() => expect(draft()).toBeNull())
+})
+test('a take that lands while sending rejoins the prompt when the send fails', async () => {
+  let fail!: (e: unknown) => void
+  mocks.start.mockReturnValue(new Promise<void>((_, reject) => { fail = reject }))
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  fireEvent.input(prompt(), { target: { value: 'Fix it' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(mocks.targets).toEqual([]))
+  appendToDraft(newTaskDraftId('p'), 'and the tests')
+  fail(new Error('nope'))
+  await waitFor(() => expect(prompt().value).toBe('Fix it and the tests'))
+  expect(draft()).toBe('Fix it and the tests')
+})
+test('closing the box discards its draft', () => {
+  const close = vi.fn()
+  render(() => <NewTaskView projectId="p" onClose={close} />)
+  fireEvent.input(prompt(), { target: { value: 'Never mind' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Close draft' }))
+  expect(close).toHaveBeenCalledOnce()
+  expect(draft()).toBeNull()
 })

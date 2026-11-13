@@ -82,7 +82,7 @@ afterEach(() => {
 describe('MessageInput as a dictation target', () => {
   test('mounting with a session registers session:<sid>; unmounting unregisters', () => {
     const { unmount } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
-    expect(mocks.targets.map(t => ({ id: t.id, sessionId: t.sessionId }))).toEqual([{ id: 'session:s1', sessionId: 's1' }])
+    expect(mocks.targets.map(t => ({ id: t.id, draftId: t.draftId }))).toEqual([{ id: 'session:s1', draftId: 's1' }])
     unmount()
     expect(mocks.targets).toEqual([])
   })

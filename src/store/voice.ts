@@ -8,13 +8,15 @@ import type {
   VoiceState, VoiceStateEvent, VoiceStatus, VoiceTakeDroppedEvent, VoiceTranscriptEvent,
 } from '../types/voice'
 import { sessionById } from './sessions'
-import { appendToDraft } from './sessionDrafts'
+import { projectById } from './projects'
+import { appendToDraft, newTaskDraftProject } from './sessionDrafts'
 import { addToast } from './ui'
 
 export interface DictationTarget {
-  /** Stable id: `session:<sid>` or `new-task`. */
+  /** Stable id: `session:<sid>` or `new-task:<projectId>`. */
   id: string
-  sessionId: string | null
+  /** Where a take for this target goes once it is no longer the live one (see `sessionDrafts`). */
+  draftId: string
   insert(take: string): void
 }
 
@@ -268,7 +270,7 @@ const label = () => windowContext.windowLabel
  * earlier run (quit mid-take) is never honoured and is dropped on the next write.
  */
 const STORED_PINS_KEY = 'verun:voicePins'
-interface StoredPin { targetId: string; sessionId: string | null; run: string | null }
+interface StoredPin { targetId: string; draftId: string; run: string | null }
 
 const currentRun = (): string | null => status()?.runId ?? null
 const ofThisRun = (p: StoredPin | undefined): p is StoredPin => !!p && p.run !== null && p.run === currentRun()
@@ -306,7 +308,7 @@ function forgetStoredPins(takes: number[]) {
 function pin(take: number, t: DictationTarget) {
   setPins(new Map(pins()).set(take, t))
   storedHere.add(take)
-  writeStoredPins(all => { all[take] = { targetId: t.id, sessionId: t.sessionId, run: currentRun() } })
+  writeStoredPins(all => { all[take] = { targetId: t.id, draftId: t.draftId, run: currentRun() } })
 }
 
 /** Remove and return the pin for `take`; the recording take is over once it has a terminal event. */
@@ -368,14 +370,23 @@ function onTranscript({ window, take, text }: VoiceTranscriptEvent) {
   // A remounted composer for the same chat has a new object with the same id.
   const live = pinned && [...targets].reverse().find(t => t.id === pinned.id)
   if (live) return live.insert(text)
-  // Not pinned here: a take from a window that closed, sent to this one.
-  const sessionId = held ? pinned?.sessionId : takeStoredPin(take)?.sessionId
-  if (sessionId && sessionById(sessionId)) {
-    appendToDraft(sessionId, text)
-    addToast('Dictation saved to the draft of the chat you were in.', 'info')
+  // Its box is hidden, unmounted or sending, or the take is from a window that
+  // closed (sent to this one): it goes to that box's draft.
+  const draftId = held ? pinned?.draftId : takeStoredPin(take)?.draftId
+  if (typeof draftId === 'string' && draftExists(draftId)) {
+    appendToDraft(draftId, text)
+    addToast(newTaskDraftProject(draftId) !== null
+      ? 'Dictation saved to the new task draft.'
+      : 'Dictation saved to the draft of the chat you were in.', 'info')
   } else {
     addToast('Dictation dropped: that chat is gone.', 'info')
   }
+}
+
+/** The chat, or the project of a new-task box, a draft belongs to still exists. */
+function draftExists(draftId: string): boolean {
+  const projectId = newTaskDraftProject(draftId)
+  return projectId !== null ? !!projectById(projectId) : !!sessionById(draftId)
 }
 
 let initialized = false
