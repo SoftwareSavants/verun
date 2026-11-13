@@ -348,6 +348,9 @@ impl VoiceService {
     /// hold pending for it never starts. Never blocks (the control thread does it).
     pub fn window_closed(&self, label: &str) {
         if let Some(rt) = &self.0 {
+            // Now, not on the control thread: a window reopened under this
+            // label right after may report its own target before that runs.
+            rt.core.set_target(label, None);
             let _ = rt.control.send(Control::WindowClosed(label.to_string()));
         }
     }
@@ -808,6 +811,20 @@ mod tests {
         assert_eq!(r.cap.cancels(), 1);
         assert_eq!(r.core.state(), VoiceState::Idle);
         assert_eq!(r.rec.last_state(), Some(IDLE));
+    }
+
+    #[test]
+    fn a_window_reopened_under_the_same_label_keeps_its_target_when_the_old_close_is_handled() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        // task-2 closed and was reopened at once; the new page reported its
+        // composer before the control thread got to the old WindowClosed.
+        r.core.set_target("task-2", Some("s2".into()));
+        c.step(Some(Control::WindowClosed("task-2".into())), t0, main_window);
+        c.step(key(HoldDown, t0 + ms(10)), t0 + ms(10), || Some("task-2".into()));
+        c.step(None, t0 + ms(160), no_window);
+        assert_eq!(r.rec.states(), vec![rec_state("task-2", 1)]);
     }
 
     #[test]

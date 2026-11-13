@@ -548,8 +548,9 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
 
     /// The window `label` is gone: cancels the take recording for it, if any.
     /// Takes it already finished still transcribe (see `finished`).
+    /// Its target is not touched here: the runtime removes it at once when
+    /// the window is destroyed, before a new window can reuse the label.
     pub fn window_closed(&self, label: &str) {
-        lock(&self.targets).remove(label);
         let mut inner = lock(&self.inner);
         if inner.untargeted_hold.as_ref().is_some_and(|(w, _)| w == label) {
             inner.untargeted_hold = None;
@@ -1573,6 +1574,8 @@ pub(crate) mod tests {
         r.core.hold(begin_hold("task-9", t0), t0 + ms(150));
         r.core.hold(HoldAction::Cancel, t0 + ms(200));
         r.core.set_target("task-9", Some("draft:task-9".into()));
+        // What the runtime does when the window is destroyed.
+        r.core.set_target("task-9", None);
         r.core.window_closed("task-9");
         r.core.hold(begin_hold("task-9", t0 + ms(1000)), t0 + ms(1150));
         assert_eq!(r.cap.starts(), 0);
