@@ -96,8 +96,8 @@ static WHISPER: ModelSpec = ModelSpec {
     id: ModelId::WhisperTurbo,
     display_name: "Whisper large-v3-turbo",
     files: &[ModelFile {
-        url:
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        // Pinned to a commit so the file behind the URL cannot change under the checksum.
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin",
         rel_path: "ggml-large-v3-turbo-q5_0.bin",
         sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
         bytes: 574_041_195,
@@ -147,6 +147,15 @@ mod tests {
                 assert_eq!(f.sha256.len(), 64);
                 assert!(f.sha256.chars().all(|c| c.is_ascii_hexdigit()));
                 assert!(f.bytes > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn every_catalog_url_is_pinned_to_a_commit() {
+        for id in [ModelId::WhisperTurbo] {
+            for f in spec(id).files {
+                assert!(!f.url.contains("/resolve/main/"), "unpinned: {}", f.url);
             }
         }
     }
