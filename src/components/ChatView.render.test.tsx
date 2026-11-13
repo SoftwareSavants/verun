@@ -19,8 +19,8 @@ const user = (t: string) => ({ kind: 'userMessage', text: t, timestamp: 1 }) as 
 
 function setup(initial: OutputItem[]) {
   const [store, setStore] = createStore<{ items: OutputItem[] }>({ items: initial })
-  const { container } = render(() => <ChatView output={store.items} sessionId="s-render" />)
-  return { container, setStore }
+  const { container, getByRole } = render(() => <ChatView output={store.items} sessionId="s-render" />)
+  return { container, getByRole, setStore }
 }
 
 describe('ChatView transcript rendering', () => {
@@ -82,16 +82,17 @@ describe('subagents', () => {
     sub({ kind: 'toolStart', tool: 'Bash', input: '{"command":"rm -rf build"}', id: 'toolu_B' }),
   ]
 
-  test("a subagent's actions render inside its collapsed agent block", () => {
-    const { container } = setup(transcript())
-    const header = container.querySelector('button[aria-expanded]')!
+  test("a running subagent's latest steps show inside its block, and its whole log opens there", () => {
+    const { container, getByRole } = setup(transcript())
+    const block = container.querySelector('[data-agent-id="toolu_A"]')!
+    const header = block.querySelector('button[aria-expanded]')!
     expect(header.textContent).toContain('code-reviewer')
     expect(header.textContent).toContain('Review diff')
-    // Not flattened into the main list.
-    expect(container.textContent).not.toContain('Bash')
+    // Not flattened into the main list: its step shows inside the block.
+    expect(block.textContent).toContain('rm -rf build')
+    expect(container.querySelectorAll('[data-agent-id] ~ *').length).toBe(0)
     fireEvent.click(header)
-    expect(container.textContent).toContain('Bash')
-    expect(container.textContent).toContain('rm -rf build')
+    expect(getByRole('log').textContent).toContain('rm -rf build')
   })
 
   test('an approval pending on a subagent tool marks its block as needing input', () => {
@@ -99,6 +100,35 @@ describe('subagents', () => {
     const { container } = setup(transcript())
     expect(container.querySelector('button[aria-expanded]')!.textContent).toContain('Needs input')
     setPendingApprovals('s-render', [])
+  })
+})
+
+describe('work log', () => {
+  const step = (id: string, tool: string, input: object, result = 'ok'): OutputItem[] => [
+    { kind: 'toolStart', tool, input: JSON.stringify(input), id } as OutputItem,
+    { kind: 'toolResult', text: result, isError: false, toolUseId: id } as OutputItem,
+  ]
+  const finished: OutputItem[] = [
+    { kind: 'userMessage', text: 'fix it', timestamp: 1_000 } as OutputItem,
+    text('Looking at the parser.'),
+    ...step('t1', 'Read', { file_path: '/r/.verun/worktrees/w/src/parse.ts' }),
+    ...step('t2', 'Bash', { command: 'pnpm test', description: 'Run the tests' }),
+    text('Fixed the parser; all tests pass.'),
+    { kind: 'turnEnd', status: 'completed', timestamp: 126_000 } as OutputItem,
+  ]
+
+  test('a finished turn folds its work into one row above the final reply', () => {
+    const { container, getByRole } = setup(finished)
+    const row = getByRole('button', { name: /Worked for 2m 5s/ })
+    expect(row.getAttribute('aria-expanded')).toBe('false')
+    expect(row.textContent).toContain('2 steps')
+    const t = container.textContent ?? ''
+    expect(t).toContain('Fixed the parser; all tests pass.')
+    expect(t).not.toContain('Looking at the parser.')
+    expect(t).not.toContain('Run the tests')
+    fireEvent.click(row)
+    expect(container.textContent).toContain('Looking at the parser.')
+    expect(container.textContent).toContain('Run the tests')
   })
 })
 

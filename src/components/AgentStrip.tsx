@@ -2,7 +2,7 @@ import { For, Show, createMemo, type Component } from 'solid-js'
 import { LoaderCircle, SquareTerminal } from 'lucide-solid'
 import type { AgentProgress, OutputItem, SessionStatus } from '../types'
 import { agentAction, agentTypeLabel, formatElapsed, runningBackgroundTasks, taskElapsed, useNow } from '../lib/subagents'
-import { revealAgent } from './AgentBlockView'
+import { agentsOnScreen, revealAgent } from './AgentBlockView'
 
 const isShell = (t: AgentProgress) => t.taskType === 'local_bash'
 
@@ -18,11 +18,15 @@ export const AgentStrip: Component<{ status: SessionStatus | undefined; items: r
 )
 
 const AgentStripRows: Component<{ items: readonly OutputItem[] }> = (props) => {
-  const tasks = createMemo(() => new Map(runningBackgroundTasks(props.items).map(t => [t.taskId, t])))
+  const running = createMemo(() => runningBackgroundTasks(props.items))
+  // An agent whose block is on screen isn't repeated here; shells always are.
+  const listed = createMemo(() => running().filter(t => isShell(t) || !t.toolUseId || !agentsOnScreen().has(t.toolUseId)))
+  const tasks = createMemo(() => new Map(listed().map(t => [t.taskId, t])))
   // Rows keyed by task id, so a progress update re-renders a row in place.
   const ids = createMemo(() => [...tasks().keys()], undefined, { equals: (a, b) => a.length === b.length && a.every((x, i) => x === b[i]) })
   const now = useNow()
   return (
+    <Show when={running().length === 0 || listed().length > 0}>
     <div
       role="status"
       aria-label="Running in background"
@@ -55,10 +59,11 @@ const AgentStripRows: Component<{ items: readonly OutputItem[] }> = (props) => {
                   <Show when={isShell(t())} fallback={<LoaderCircle size={11} class="shrink-0 animate-spin text-status-running" aria-hidden="true" />}>
                     <SquareTerminal size={11} class="shrink-0 text-text-dim" aria-hidden="true" />
                   </Show>
-                  <span class="shrink-0 font-mono text-[11px] text-text-secondary">{type()}</span>
-                  <span class="truncate min-w-24 text-text-primary">{t().description}</span>
+                  {/* As in its block: the task leads, the agent type follows. */}
+                  <span class="truncate text-text-primary">{t().description}</span>
+                  <span class="shrink-0 text-[11px] text-text-muted">{type()}</span>
                   <Show when={activity()}>
-                    <span class="hidden lg:inline truncate text-text-muted">{activity()}</span>
+                    <span class="hidden lg:inline min-w-0 truncate text-text-muted shrink-[4]">{activity()}</span>
                   </Show>
                   <Show when={elapsed()}>
                     <span class="ml-auto shrink-0 tabular-nums text-[11px] text-text-dim">{elapsed()}</span>
@@ -85,5 +90,6 @@ const AgentStripRows: Component<{ items: readonly OutputItem[] }> = (props) => {
         </ul>
       </Show>
     </div>
+    </Show>
   )
 }

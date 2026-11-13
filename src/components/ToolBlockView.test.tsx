@@ -49,6 +49,37 @@ test("Cmd/Ctrl-click on a Read row opens its file instead of expanding it", () =
   expect(getByRole('button', { expanded: false })).toBeTruthy()
 })
 
+test("a command reads as Claude's description of it, not as a tool name; opened, it shows the command", () => {
+  const { container, getByRole } = render(() => (
+    <ToolBlockView id={id()} tool="Bash" input='{"command":"pnpm vitest run","description":"Run the unit tests"}' result={{ text: 'ok', isError: false }} />
+  ))
+  const text = container.textContent ?? ''
+  expect(text).toContain('Run the unit tests')
+  expect(text).not.toContain('pnpm vitest run')
+  expect(text).not.toContain('Bash')
+  fireEvent.click(getByRole('button', { expanded: false }))
+  expect(container.textContent).toContain('$ pnpm vitest run')
+})
+
+test('an edit says which file and how many lines it added and removed', () => {
+  const { container } = render(() => (
+    <ToolBlockView id={id()} tool="Edit" input={JSON.stringify({ file_path: '/r/.verun/worktrees/w/src/a.ts', old_string: 'x', new_string: 'y\nz' })} result={{ text: 'ok', isError: false }} />
+  ))
+  const text = container.textContent ?? ''
+  expect(text).toContain('Edited')
+  expect(text).toContain('src/a.ts')
+  expect(text).toContain('+2')
+  expect(text).toContain('−1')
+})
+
+test('while you search, a described command also shows the command, so search finds it', () => {
+  const { container } = render(() => (
+    <ToolBlockView id={id()} tool="Bash" input='{"command":"pnpm lint","description":"Run the linter"}' result={{ text: 'ok', isError: false }} searching />
+  ))
+  expect(container.textContent).toContain('Run the linter')
+  expect(container.textContent).toContain('pnpm lint')
+})
+
 test('an expanded row with output offers to copy it', () => {
   const { getByRole } = render(() => (
     <ToolBlockView id={id()} tool="Bash" input='{"command":"pnpm test"}' result={{ text: 'all good', isError: false }} />
