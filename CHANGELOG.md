@@ -3,6 +3,7 @@
 ## Unreleased
 
 - In the Recent sidebar view, ⌘⌥↑/↓ and ⌘1-9 follow the order on screen (Needs you, then most recent) instead of the project order
+- Claude Fable 5.2 (`claude-fable-5-2`) in the Claude model picker, right after the Opus 5.5 default; Fable 5.1 stays selectable as previous-generation
 
 ## 0.16.6 - 2026-11-12
 
