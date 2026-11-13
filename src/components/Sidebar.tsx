@@ -19,10 +19,8 @@ import {
   type JSX,
 } from "solid-js";
 import type { Task } from "../types";
-import { useNow } from "../lib/subagents";
 import { formatAgo } from "../lib/format";
-import { recentTasks } from "../lib/recentTasks";
-import { lastActiveAt } from "../store/lastActive";
+import { sidebarMinute, sidebarNeedsYou, sidebarRecent, numberedTasks } from "../store/sidebarOrder";
 import { sidebarView } from "../store/sidebarView";
 import { RecentTaskList } from "./RecentTaskList";
 import { refreshTaskGit } from "../store/git";
@@ -149,30 +147,20 @@ export const Sidebar: Component = () => {
   })
 
   // Everything blocked on the manager in the current scope, in sidebar order.
-  const needsYouTasks = createMemo(() => visibleProjects(projects).flatMap(p => (activeTasksByProject()[p.id] || []).filter(t => needsYou(t.id))));
+  const needsYouTasks = sidebarNeedsYou;
   // Tasks we can't read (hooks unavailable, before Claude reports in) could be
   // waiting too - surface them instead of letting them look quiet.
   const unknownCount = createMemo(() => visibleProjects(projects).flatMap(p => activeTasksByProject()[p.id] || []).filter(t => taskStatus(t.id).kind === 'unknown').length);
   const floor = createMemo(() => ({ running: tasks.filter(t => !t.archived && taskStatus(t.id).kind === 'running').length }));
 
-  // Recent view: every task in scope in one list, newest first. The clock
-  // only moves ages and folding once a minute.
-  const now = useNow();
-  const minute = createMemo(() => Math.floor(now() / 60_000) * 60_000);
-  const recentView = createMemo(() => recentTasks(
-    visibleProjects(projects).flatMap(p => (activeTasksByProject()[p.id] || []).map(task => ({
-      id: task.id, task, column: taskStatus(task.id).column, lastActive: lastActiveAt(task),
-    }))),
-    minute(),
-  ));
-  // Tasks in the order the sidebar shows them; folded quiet tasks get no shortcut.
-  const orderedTasks = createMemo(() => sidebarView() === 'recent'
-    ? recentView().recent.map(r => r.task)
-    : visibleProjects(projects).flatMap(p => activeTasksByProject()[p.id] || []));
+  // Recent view: every task in scope in one list, newest first. Shared with the
+  // keyboard shortcuts (store/sidebarOrder) so labels and keys agree.
+  const minute = sidebarMinute;
+  const recentView = sidebarRecent;
 
   const taskBindingById = createMemo(() => {
     const map: Record<string, number | null> = {}
-    orderedTasks().forEach((t, idx) => { map[t.id] = idx < 9 ? idx : null })
+    numberedTasks().forEach((t, idx) => { map[t.id] = idx < 9 ? idx : null })
     return map
   })
 

@@ -3,6 +3,8 @@
 ## Unreleased
 
 - New task (⌘N) at the top of the sidebar starts a task from either view, including recent activity; the draft's header switches its project (most recently active first) and keeps what you typed
+- In the Recent sidebar view, ⌘⌥↑/↓ and ⌘1-9 follow the order on screen (Needs you, then most recent) instead of the project order
+- Claude Fable 5.2 (`claude-fable-5-2`) in the Claude model picker, right after the Opus 5.5 default; Fable 5.1 stays selectable as previous-generation
 
 ## 0.16.6 - 2026-11-12
 

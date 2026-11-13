@@ -18,7 +18,7 @@ Pluggable agent backend with first-class support for Claude Code, Codex, and Gro
 
 Hand a session off to another agent mid-task: Verun starts a linked session on the other harness in the same worktree and seeds it with the conversation so far and the branch's git state, so switching from Claude to Codex (or any other pair) needs no copy-paste.
 
-Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Astra.
+Choose models per session, including Claude Opus 5.5, Claude Fable 5.2, GPT-6.1 Sol, and GPT-6 Astra.
 
 - **Multiple accounts per harness** - add several Claude, Codex, Gemini, Grok, or OpenCode logins (Cursor via API key) in Settings and bind each project to the account it should use; Default keeps behaving as before.
 
