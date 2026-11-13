@@ -546,3 +546,21 @@ describe('turn times on turn-start blocks', () => {
     expect((blocks.find(b => b.type === 'user' && b.text === 'two') as { failed?: boolean }).failed).toBeFalsy()
   })
 })
+
+describe('rebuildBlocks per-turn cards', () => {
+  test("each turn's plan and diff get their own card, in that turn", () => {
+    const plan = (step: string) => ({ kind: 'planUpdate', items: [{ status: 'in_progress', step }] }) as unknown as OutputItem
+    const diff = (d: string) => ({ kind: 'diffUpdate', diff: d }) as unknown as OutputItem
+    const blocks = rebuildBlocks([
+      { kind: 'userMessage', text: 'one', timestamp: 1 } as OutputItem, plan('a'), diff('d1'), { kind: 'turnEnd', status: 'completed' } as OutputItem,
+      { kind: 'userMessage', text: 'two', timestamp: 2 } as OutputItem, plan('b'), diff('d2'), { kind: 'turnEnd', status: 'completed' } as OutputItem,
+    ])
+    const where = (type: string) => blocks.flatMap((b, i) => b.type === type ? [i] : [])
+    const users = where('user')
+    expect(where('plan').length).toBe(2)
+    expect(where('diff').length).toBe(2)
+    // The second turn's cards sit after its own prompt, not back in the first turn.
+    expect(where('plan')[1]).toBeGreaterThan(users[1])
+    expect(where('diff')[1]).toBeGreaterThan(users[1])
+  })
+})

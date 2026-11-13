@@ -234,6 +234,9 @@ pub async fn open_claude_terminal(
         bridge.attach(&spawn.terminal_id);
     }
     if let Some(handle) = pty_map.get(&spawn.terminal_id) {
+        // Claude repaints on resize, so output it printed unseen is redrawn,
+        // never noted in the middle of its screen.
+        handle.output.set_redraws_itself();
         if let Some(code) = handle.output.exit_status() {
             crate::activity::terminal_exit(&app, &spawn.terminal_id, code);
         }

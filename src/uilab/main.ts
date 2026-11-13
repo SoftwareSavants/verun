@@ -40,6 +40,7 @@ if (params.get('fixture') === 'chat') await (await import('./chat')).seedChat()
 if (params.get('fixture') === 'catchup') await (await import('./catchup')).seedCatchUp()
 if (params.get('fixture') === 'agents-resumed') await (await import('./agents')).seedResumedAgent()
 if (params.get('fixture') === 'agents') await (await import('./agents')).seedAgents(params.get('flat') === '1')
+if (params.get('fixture') === 'working') await (await import('./working')).seedWorking()
 
 await import('../index')
 

@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { recentTasks } from './recentTasks'
+import { projectsByRecency, recentTasks } from './recentTasks'
 
 const H = 3600_000
 const now = 100 * 24 * H
@@ -22,4 +22,10 @@ test('tasks quiet for days fold away; running ones never do', () => {
 
 test('archived tasks are not listed', () => {
   expect(recentTasks([row('a', 'archived', 1)], now)).toEqual({ recent: [], quiet: [] })
+})
+
+test('projects come by their latest task activity; projects without tasks keep their order after them', () => {
+  const projects = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]
+  const tasks = [{ projectId: 'c', lastActive: 5 }, { projectId: 'b', lastActive: 9 }, { projectId: 'c', lastActive: 12 }]
+  expect(projectsByRecency(projects, tasks).map(p => p.id)).toEqual(['c', 'b', 'a', 'd'])
 })

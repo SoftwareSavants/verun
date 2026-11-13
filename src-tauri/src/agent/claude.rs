@@ -59,9 +59,14 @@ impl Agent for Claude {
                 "Recommended for most workloads",
             ),
             ModelOption::new(
+                "claude-fable-5-2",
+                "Claude Fable 5.2",
+                "Most capable for demanding reasoning and long-horizon work",
+            ),
+            ModelOption::new(
                 "claude-fable-5-1",
                 "Claude Fable 5.1",
-                "Most capable for demanding reasoning and long-horizon work",
+                "Previous-generation Fable",
             ),
             ModelOption::new("claude-opus-5", "Claude Opus 5", "Previous-generation Opus"),
             ModelOption::new(

@@ -6,6 +6,19 @@
 - Verun's worktree guard holds in auto mode: per-session ask rules bring `git worktree remove`/`prune`, deletes and moves under `.verun` (with `sudo`, `bash -c` or `git -C` too), and the usual ways into another task's worktree (`rm` or `mv` with `../`, `find ... -delete` with `..` or `.verun`, `xargs rm`) to the approval card. An auto mode rule covers other phrasings, and leaves the session's own files to it. Nothing is written to your Claude settings
 - When Claude's auto mode isn't available for a session's model or account, Verun says so once and asks instead
 - The terminal view starts Claude in the mode closest to its tier, always with the same guard: auto mode for Auto, bypass permissions for Full auto (the guard still asks, and the bypass warning is skipped for that terminal only), and the default mode for Ask so it asks (Claude would otherwise start new terminals in auto mode)
+- Finished turns fold their work (thinking, in-between messages, tool calls) into one "Worked for 3m 12s · 14 steps · 2 edits" row above the final reply; open it to see every step. Subagents, plan cards, turn-status lines, failures nothing later fixed and work still running stay in view, a failure a later attempt at the same step fixed reads "pnpm lint failed, then passed", and search unfolds everything and shows each step's command
+- A running turn has the same row, counting up ("Working for 2m 4s"); its narration is set quieter than replies, its latest three steps stay live with the running one tinted, and older steps group into one line ("Read 3 files, searched 2 times, ran 1 command")
+- Steps read as sentences with an icon per kind: "Read src/lib/markdown.ts", Claude's description of a command (the command shows when opened), "+3 −1" on edits, paths relative to the worktree or the project, Codex shell commands without their shell wrapper; a reply's copy and fork buttons appear when you point at it
+- Codex: each turn's plan and diff appear in that turn, instead of a later turn updating the first turn's cards
+- A running subagent shows its last three steps, as the same rows as its log; opened, its log scrolls in a pane of its own that starts at the newest step and grows upward, with its report below. The background strip above the composer no longer repeats a subagent whose block is on screen
+- macOS inline predictive text is off in Verun's windows: its suggestion panel held clicks and keys (Send, Enter) on the main thread until it closed, which read as a freeze of a second or two
+- Pasting (in a terminal or the chat box) reads the clipboard in-process instead of starting `osascript` each time, which cost 100-300 ms per paste and more under load
+- A terminal you switch back to catches up on its missed output without pausing 30 ms between batches
+- A Claude terminal that printed a lot while it was not shown no longer gets an "earlier output omitted" line through its screen on return; Claude is asked to redraw instead (shell terminals keep the note)
+- Coming back to a running Claude terminal no longer sits on "Starting Claude Code..." until a key is pressed: the overlay clears as soon as the terminal shows output, including output already on screen
+- New task (⌘N) at the top of the sidebar starts a task from either view, including recent activity; the draft's header switches its project (most recently active first) and keeps what you typed
+- In the Recent sidebar view, ⌘⌥↑/↓ and ⌘1-9 follow the order on screen (Needs you, then most recent) instead of the project order
+- Claude Fable 5.2 (`claude-fable-5-2`) in the Claude model picker, right after the Opus 5.5 default; Fable 5.1 stays selectable as previous-generation
 
 ## 0.16.6 - 2026-11-12
 
