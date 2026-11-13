@@ -8,6 +8,8 @@ import type { DictationTarget } from '../store/voice'
 const mocks = vi.hoisted(() => ({
   targets: [] as DictationTarget[],
   register: vi.fn(),
+  /** The session belongs to a task in a project, so the command palette can show. */
+  withTask: false,
 }))
 
 vi.mock('../store/voice', () => ({
@@ -34,14 +36,14 @@ vi.mock('../store/sessions', () => ({
   sessionById: (id: string) => ({ id, taskId: 't1', agentType: 'claude', accountId: null, model: null }),
   updateSessionModel: vi.fn(),
 }))
-vi.mock('../store/tasks', () => ({ taskById: () => undefined }))
-vi.mock('../store/projects', () => ({ projectById: () => undefined }))
+vi.mock('../store/tasks', () => ({ taskById: (id: string) => (mocks.withTask ? { id, projectId: 'p1', worktreePath: '/wt' } : undefined) }))
+vi.mock('../store/projects', () => ({ projectById: () => (mocks.withTask ? { id: 'p1', repoPath: '/repo' } : undefined) }))
 vi.mock('../store/agents', () => ({ agents: [] }))
 vi.mock('../store/commands', () => ({ primeSkills: vi.fn() }))
 vi.mock('../store/editorView', () => ({ openFile: vi.fn(), setMainView: vi.fn() }))
 vi.mock('../store/sideQuestion', () => ({ openSideQuestion: vi.fn() }))
 vi.mock('./ModelSelector', () => ({ ModelSelector: () => null }))
-vi.mock('./CommandPalette', () => ({ CommandPalette: () => null }))
+vi.mock('./CommandPalette', () => ({ CommandPalette: (p: { query: string }) => <div data-testid="command-palette">{p.query}</div> }))
 vi.mock('./FileMention', () => ({ FileMention: (p: { query: string }) => <div data-testid="file-mention">{p.query}</div> }))
 vi.mock('./ImageViewer', () => ({ ImageViewer: () => null }))
 vi.mock('./BlobImage', () => ({ BlobImage: () => null }))
@@ -66,7 +68,26 @@ function caret(node: Node, offset: number) {
   sel.addRange(range)
 }
 
+/** jsdom has no execCommand: `insertText` as WebKit does it (replaces the selection, caret after, input event). */
+const execCommand = vi.fn((command: string, _ui?: boolean, text?: string): boolean => {
+  const sel = window.getSelection()
+  if (command !== 'insertText' || text === undefined || !sel || sel.rangeCount === 0) return false
+  const range = sel.getRangeAt(0)
+  range.deleteContents()
+  const node = document.createTextNode(text)
+  range.insertNode(node)
+  range.setStartAfter(node)
+  range.collapse(true)
+  sel.removeAllRanges()
+  sel.addRange(range)
+  node.parentElement?.closest('[contenteditable="true"]')?.dispatchEvent(new Event('input', { bubbles: true }))
+  return true
+})
+Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true, writable: true })
+
 beforeEach(() => {
+  execCommand.mockClear()
+  mocks.withTask = false
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   localStorage.clear()
   mocks.targets = []
@@ -445,5 +466,94 @@ describe('unfocused insert lands at the end of what is shown', () => {
     target().insert('there')
     expect(saved()).toBe('hi there')
     expect(el.textContent!.split(ZWS).join('')).toBe('hi there')
+  })
+})
+
+describe('a focused take is one undo step, like a paste', () => {
+  test('it goes in through insertText, the path the browser records for Cmd+Z', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeIn(el, 'fix')
+    target().insert('it')
+    expect(execCommand).toHaveBeenCalledWith('insertText', false, ' it')
+    expect(el.textContent).toBe('fix it')
+    expect(saved()).toBe('fix it')
+  })
+
+  test('an empty composer: the take replaces the placeholder <br> and goes in through insertText', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeHtml(el, '<br>', e => e, 0)
+    target().insert('hello')
+    expect(execCommand).toHaveBeenCalledWith('insertText', false, 'hello')
+    expect([...el.childNodes].map(n => n.nodeName)).toEqual(['#text'])
+    expect(saved()).toBe('hello')
+  })
+
+  test('unfocused it is not typed: that would need focus, which a take must not steal', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    typeIn(el, 'fix')
+    el.blur()
+    target().insert('it')
+    expect(execCommand).not.toHaveBeenCalled()
+    expect(saved()).toBe('fix it')
+  })
+})
+
+describe('a take never opens the mention or command popover', () => {
+  beforeEach(() => { mocks.withTask = true })
+
+  test('typing / does open the command palette these tests watch', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeIn(el, '/pl')
+    expect(screen.getByTestId('command-palette')).toBeTruthy()
+  })
+
+  test('a focused take that starts with / opens no command palette', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    caret(el, 0)
+    target().insert('/review')
+    expect(screen.queryByTestId('command-palette')).toBeNull()
+    expect(saved()).toBe('/review')
+  })
+
+  test('a focused take ending in an @word opens no mention popover', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    caret(el, 0)
+    target().insert('ask @john')
+    expect(screen.queryByTestId('file-mention')).toBeNull()
+    expect(saved()).toBe('ask @john')
+  })
+
+  test('a take closes a mention popover the user had open', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeIn(el, 'fix @sr')
+    expect(screen.getByTestId('file-mention')).toBeTruthy()
+    target().insert('@john')
+    expect(screen.queryByTestId('file-mention')).toBeNull()
+    expect(saved()).toBe('fix @sr @john')
+  })
+
+  test('a take that makes the input /plan + space is text, not the plan-mode shortcut', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeIn(el, ' ')
+    caret(el.firstChild!, 0)
+    target().insert('/plan')
+    // Typed, /plan + space toggles plan mode and empties the input.
+    expect(el.textContent).toBe('/plan ')
+    expect(saved()).toBe('/plan ')
   })
 })

@@ -385,8 +385,10 @@ export const MessageInput: Component<Props> = (props) => {
     onCleanup(registerDictationTarget({ id: `session:${sid}`, draftId: sid, insert: insertDictated }))
   })
   /**
-   * Dictated text goes in as one plain text node (never a badge): at the caret when focused, else at the end of
-   * the last line shown, without touching focus or the selection.
+   * Dictated text goes in as plain text (never a badge) and never opens or leaves
+   * open the mention or command popover. Focused: at the caret, typed in like a
+   * paste so Cmd+Z undoes it. Unfocused: at the end of the last line shown,
+   * without touching focus or the selection (typing it would need focus).
    */
   function insertDictated(take: string) {
     if (!inputRef) return
@@ -403,16 +405,19 @@ export const MessageInput: Component<Props> = (props) => {
       inputRef.textContent = ''
       range = composerEndRange(inputRef)
     }
-    const node = document.createTextNode(text)
-    range.deleteContents()
-    range.insertNode(node)
     if (focused && docSel) {
-      range.setStartAfter(node)
-      range.collapse(true)
       docSel.removeAllRanges()
       docSel.addRange(range)
-      handleInput()
+      dictating = true
+      try {
+        insertTextAtSelection(text)
+      } finally {
+        dictating = false
+      }
     } else {
+      const node = document.createTextNode(text)
+      range.deleteContents()
+      range.insertNode(node)
       // Overlays follow the caret, which is elsewhere; the input's blur already closed them.
       setMessageRaw(serializeInput())
       autoResizeInput()
@@ -1514,6 +1519,9 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
 
+  /** Set while a dictated take is typed in: its input is text, not a shortcut or a popover trigger. */
+  let dictating = false
+
   const handleInput = () => {
     const val = serializeInput()
     setMessageRaw(val)
@@ -1521,6 +1529,12 @@ export const MessageInput: Component<Props> = (props) => {
     // Clean up stale browser artifacts when empty
     if (val.length === 0 && inputRef && inputRef.childNodes.length > 0) {
       inputRef.textContent = ''
+    }
+
+    if (dictating) {
+      setShowPalette(false)
+      setShowFileMention(false)
+      return
     }
 
     // /plan + space → toggle plan mode and clear
@@ -1601,25 +1615,34 @@ export const MessageInput: Component<Props> = (props) => {
     const text = e.clipboardData?.getData('text/plain')
     if (text) {
       e.preventDefault()
-      if (text.length > 10_000) {
-        // Large paste — bypass undo manager via Range API for speed
-        const sel = window.getSelection()
-        if (sel && sel.rangeCount > 0) {
-          const range = sel.getRangeAt(0)
-          range.deleteContents()
-          const textNode = document.createTextNode(text)
-          range.insertNode(textNode)
-          range.setStartAfter(textNode)
-          range.collapse(true)
-          sel.removeAllRanges()
-          sel.addRange(range)
-        }
-        handleInput()
-      } else {
-        document.execCommand('insertText', false, text)
-      }
+      insertTextAtSelection(text)
       if (inputRef) inputRef.scrollTop = inputRef.scrollHeight
     }
+  }
+
+  /**
+   * Puts plain text at the focused input's selection as typing would: through
+   * `insertText`, so it is one Cmd+Z step and fires `input` (which runs
+   * `handleInput`). Past 10k characters it goes in by Range instead, for speed,
+   * outside the undo history. Shared by paste and dictation.
+   */
+  function insertTextAtSelection(text: string) {
+    if (text.length <= 10_000) {
+      document.execCommand('insertText', false, text)
+      return
+    }
+    const sel = window.getSelection()
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0)
+      range.deleteContents()
+      const textNode = document.createTextNode(text)
+      range.insertNode(textNode)
+      range.setStartAfter(textNode)
+      range.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(range)
+    }
+    handleInput()
   }
 
   // File drops arrive as native Tauri events (with paths) — the webview never
