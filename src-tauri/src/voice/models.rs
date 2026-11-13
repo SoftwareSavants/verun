@@ -201,6 +201,7 @@ struct Hooks<'a> {
 }
 
 /// Free bytes for an unprivileged user on the volume holding `dir`.
+#[cfg(unix)]
 fn free_space(dir: &Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
@@ -212,6 +213,12 @@ fn free_space(dir: &Path) -> Option<u64> {
     // Field widths differ between platforms.
     #[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
     Some(u64::from(st.f_bavail).saturating_mul(st.f_frsize as u64))
+}
+
+/// Not measured off unix: unknown, which does not block the download.
+#[cfg(not(unix))]
+fn free_space(_dir: &Path) -> Option<u64> {
+    None
 }
 
 /// Fails when the volume cannot hold the files still missing plus `SPACE_MARGIN`.
@@ -839,6 +846,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn free_space_of_a_real_dir_is_known() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(free_space(tmp.path()).is_some_and(|b| b > 0));
