@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from 'vitest'
-import { serializeComposer, composerSelection, placeCaret } from './composerText'
+import { serializeComposer, composerSelection } from './composerText'
 
 const ZWS = '​'
 
@@ -69,21 +69,5 @@ describe('composerSelection', () => {
     const other = composer('elsewhere')
     select(other.firstChild!, 2)
     expect(composerSelection(root)).toBeNull()
-  })
-})
-
-describe('placeCaret', () => {
-  test('puts a collapsed caret at a serialized offset after a badge', () => {
-    const root = composer('a ', { mention: 'x.ts' }, ' said hi')
-    placeCaret(root, 'a @x.ts said'.length)
-    expect(composerSelection(root)).toEqual({ start: 'a @x.ts said'.length, end: 'a @x.ts said'.length })
-  })
-
-  test('an offset inside a badge lands after it; past the end lands at the end', () => {
-    const root = composer('a ', { mention: 'x.ts' }, ' b')
-    placeCaret(root, 'a @x'.length)
-    expect(composerSelection(root)).toEqual({ start: 'a @x.ts'.length, end: 'a @x.ts'.length })
-    placeCaret(root, 999)
-    expect(composerSelection(root)).toEqual({ start: 'a @x.ts b'.length, end: 'a @x.ts b'.length })
   })
 })

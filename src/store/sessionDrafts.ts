@@ -19,9 +19,19 @@ export function saveDraftMessage(sid: string, message: string) {
   else localStorage.removeItem(msgKey(sid))
 }
 
-/** Append a dictated take to a session's draft, for a composer that is not mounted. */
+type DraftAppended = (sid: string, take: string) => void
+const appendListeners = new Set<DraftAppended>()
+
+/** Called after `appendToDraft`, so a composer holding that draft in memory can take the text too. */
+export function onDraftAppended(cb: DraftAppended): () => void {
+  appendListeners.add(cb)
+  return () => { appendListeners.delete(cb) }
+}
+
+/** Append a dictated take to a session's draft, for a composer that is not showing it. */
 export function appendToDraft(sid: string, take: string) {
   saveDraftMessage(sid, insertDictation(loadDraftMessage(sid) ?? '', take, null).text)
+  for (const cb of [...appendListeners]) cb(sid, take)
 }
 
 export function loadDraftAttachments(sid: string): AttachmentRef[] {

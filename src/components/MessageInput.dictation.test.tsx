@@ -1,6 +1,6 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createSignal } from 'solid-js'
-import { render, cleanup } from '@solidjs/testing-library'
+import { render, cleanup, fireEvent, screen } from '@solidjs/testing-library'
 import type { DictationTarget } from '../store/voice'
 
 // The session composer is a dictation target while it is the one on screen,
@@ -42,12 +42,12 @@ vi.mock('../store/editorView', () => ({ openFile: vi.fn(), setMainView: vi.fn() 
 vi.mock('../store/sideQuestion', () => ({ openSideQuestion: vi.fn() }))
 vi.mock('./ModelSelector', () => ({ ModelSelector: () => null }))
 vi.mock('./CommandPalette', () => ({ CommandPalette: () => null }))
-vi.mock('./FileMention', () => ({ FileMention: () => null }))
+vi.mock('./FileMention', () => ({ FileMention: (p: { query: string }) => <div data-testid="file-mention">{p.query}</div> }))
 vi.mock('./ImageViewer', () => ({ ImageViewer: () => null }))
 vi.mock('./BlobImage', () => ({ BlobImage: () => null }))
 
 import { MessageInput } from './MessageInput'
-import { loadDraftMessage, saveDraftMessage } from '../store/sessionDrafts'
+import { appendToDraft, loadDraftMessage, saveDraftMessage } from '../store/sessionDrafts'
 import { setShowTaskBoard } from '../store/ui'
 
 const ZWS = '​'
@@ -149,5 +149,114 @@ describe('MessageInput as a dictation target', () => {
     pre.setEnd(sel.getRangeAt(0).startContainer, sel.getRangeAt(0).startOffset)
     expect(sel.isCollapsed).toBe(true)
     expect(pre.toString().split(ZWS).join('')).toBe('a.ts fix this now')
+  })
+})
+
+/** Types `text` as the whole content of the composer, caret at the end, as the browser would. */
+function typeIn(el: HTMLElement, text: string) {
+  el.textContent = text
+  if (el.firstChild) caret(el.firstChild, text.length)
+  else caret(el, 0)
+  fireEvent.input(el)
+}
+const saved = () => { vi.advanceTimersByTime(600); return loadDraftMessage('s1') }
+
+describe('dictated text is plain text, inserted in place', () => {
+  test('a typed email stays text: no badge appears and the take is appended', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    typeIn(el, 'ping me@x.com')
+    el.blur()
+    target().insert('later')
+    expect(badges(el)).toEqual([])
+    expect(el.textContent).toBe('ping me@x.com later')
+    expect(saved()).toBe('ping me@x.com later')
+  })
+
+  test('an @ inside the take never becomes a badge', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    target().insert('ask @john about it')
+    expect(badges(el)).toEqual([])
+    expect(el.textContent).toBe('ask @john about it')
+  })
+
+  test('with the mention popover open on a half-typed @sr, the take updates it the way typing would', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeIn(el, 'fix @sr')
+    expect(screen.getByTestId('file-mention').textContent).toBe('sr')
+    target().insert('please')
+    // Typing ' please' after '@sr' ends the mention query, so the popover closes.
+    expect(screen.queryByTestId('file-mention')).toBeNull()
+    expect(badges(el)).toEqual([])
+    expect(saved()).toBe('fix @sr please')
+  })
+
+  test('unfocused: appends, and leaves focus and the selection where they were', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    typeIn(el, 'hello')
+    const other = document.createElement('textarea')
+    document.body.appendChild(other)
+    other.focus()
+    const outside = document.createElement('p')
+    outside.textContent = 'elsewhere'
+    document.body.appendChild(outside)
+    caret(outside.firstChild!, 3)
+    target().insert('world')
+    expect(el.textContent).toBe('hello world')
+    expect(document.activeElement).toBe(other)
+    const sel = window.getSelection()!
+    expect([sel.anchorNode, sel.anchorOffset]).toEqual([outside.firstChild, 3])
+    other.remove(); outside.remove()
+  })
+
+  test('a non-collapsed selection is replaced by the take', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    typeIn(el, 'fix the bug')
+    const range = document.createRange()
+    range.setStart(el.firstChild!, 4)
+    range.setEnd(el.firstChild!, 7)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    target().insert('a')
+    expect(el.textContent).toBe('fix a bug')
+    expect(saved()).toBe('fix a bug')
+  })
+})
+
+describe('a take saved to the draft of a chat the composer is not showing', () => {
+  test('lands in the in-memory draft too, so switching back shows it and storage agrees', () => {
+    const [sid, setSid] = createSignal('s1')
+    const { container } = render(() => <MessageInput sessionId={sid()} isRunning={false} />)
+    typeIn(editor(container), 'a')
+    setSid('s2')
+    appendToDraft('s1', 'b')
+    setSid('s1')
+    expect(editor(container).textContent).toBe('a b')
+    expect(saved()).toBe('a b')
+  })
+
+  test('same when that draft was empty in memory', () => {
+    const [sid, setSid] = createSignal('s1')
+    const { container } = render(() => <MessageInput sessionId={sid()} isRunning={false} />)
+    typeIn(editor(container), 'a')
+    typeIn(editor(container), '')
+    setSid('s2')
+    appendToDraft('s1', 'b')
+    setSid('s1')
+    expect(editor(container).textContent).toBe('b')
+    expect(saved()).toBe('b')
+  })
+
+  test('a chat this composer never opened still gets the stored draft', () => {
+    render(() => <MessageInput sessionId="s2" isRunning={false} />)
+    saveDraftMessage('s9', 'x')
+    appendToDraft('s9', 'y')
+    expect(loadDraftMessage('s9')).toBe('x y')
   })
 })

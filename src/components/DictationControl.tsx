@@ -63,6 +63,7 @@ export function DictationControl() {
                             'w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 transition-colors',
                             selected() ? 'bg-accent/10 text-text-primary' : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
                           )}
+                          onMouseDown={e => e.preventDefault()}
                           onClick={() => choose(lang.code)}
                         >
                           <span class="flex-1 min-w-0 truncate">{LANGUAGE_NAMES[lang.code]}</span>
@@ -76,6 +77,7 @@ export function DictationControl() {
                     type="button"
                     role="menuitem"
                     class="w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors"
+                    onMouseDown={e => e.preventDefault()}
                     onClick={addLanguage}
                   >
                     <Plus size={13} class="flex-shrink-0" aria-hidden="true" />
@@ -116,7 +118,7 @@ export function DictationControl() {
             </Show>
           </button>
           {/* Always mounted so screen readers announce each change of state. */}
-          <span role="status" class="sr-only" aria-label={stateLabel()}>{stateLabel() ?? ''}</span>
+          <span role="status" class="sr-only">{stateLabel() ?? ''}</span>
         </div>
       )}
     </Show>

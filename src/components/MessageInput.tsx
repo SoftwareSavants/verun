@@ -26,7 +26,7 @@ import { BlobImage } from './BlobImage'
 import { FileChip } from './FileChip'
 import { openSideQuestion } from '../store/sideQuestion'
 import { serializeAttachments, deserializeAttachments, uploadAttachments } from '../lib/binary'
-import { clearDraft, loadDraftAttachments, loadDraftMessage, saveDraftAttachments, saveDraftMessage } from '../store/sessionDrafts'
+import { clearDraft, loadDraftAttachments, loadDraftMessage, onDraftAppended, saveDraftAttachments, saveDraftMessage } from '../store/sessionDrafts'
 import { formatCost as fmtCost, formatTokens as fmtTokens, formatDurationShort } from '../lib/format'
 import { decidePlanAction } from '../lib/planAction'
 import { isImagePath, mentionPathForFile } from '../lib/composerFiles'
@@ -39,8 +39,8 @@ import { McpStatusChip } from './McpStatusChip'
 import { accountKey, inheritedSelection } from '../lib/accounts'
 import { openNewSession } from '../lib/newSession'
 import { registerDictationTarget } from '../store/voice'
-import { insertDictation } from '../lib/dictationInsert'
-import { serializeComposer, composerSelection, placeCaret } from '../lib/composerText'
+import { insertDictation, dictationInsertText } from '../lib/dictationInsert'
+import { serializeComposer, composerSelection } from '../lib/composerText'
 import { DictationControl } from './DictationControl'
 
 interface Props {
@@ -403,24 +403,51 @@ export const MessageInput: Component<Props> = (props) => {
     }
   }
   // Dictation target while a session is open and on screen (the task board hides
-  // the task panel without unmounting it). Text goes in at the caret when the
-  // input has focus, else at the end; the same text -> DOM path keeps badges.
+  // the task panel without unmounting it).
   createEffect(() => {
     const sid = props.sessionId
     if (!sid || showTaskBoard()) return
     onCleanup(registerDictationTarget({ id: `session:${sid}`, sessionId: sid, insert: insertDictated }))
   })
+  /** Dictated text goes in as one plain text node (never a badge): at the caret when focused, else at the end without touching focus or the selection. */
   function insertDictated(take: string) {
     if (!inputRef) return
-    const sel = document.activeElement === inputRef ? composerSelection(inputRef) : null
     const current = serializeInput()
-    const { text, cursor } = insertDictation(current, take, sel)
-    if (text === current) return
-    setMessageRaw(text)
-    // Not setMessage: its caret-to-end would pull focus into an unfocused input.
-    setInputContent(text)
-    if (sel) placeCaret(inputRef, cursor)
+    const focused = document.activeElement === inputRef
+    const sel = focused ? composerSelection(inputRef) : null
+    const text = dictationInsertText(current, take, sel)
+    if (!text) return
+    // An empty input may hold a stray <br>; text after it would start a new line.
+    if (current === '') inputRef.textContent = ''
+    const node = document.createTextNode(text)
+    const docSel = window.getSelection()
+    const range = sel && docSel ? docSel.getRangeAt(0) : document.createRange()
+    if (!sel) { range.selectNodeContents(inputRef); range.collapse(false) }
+    range.deleteContents()
+    range.insertNode(node)
+    if (sel && docSel) {
+      range.setStartAfter(node)
+      range.collapse(true)
+      docSel.removeAllRanges()
+      docSel.addRange(range)
+      handleInput()
+    } else {
+      // Overlays follow the caret, which is elsewhere; the input's blur already closed them.
+      setMessageRaw(serializeInput())
+      autoResizeInput()
+    }
   }
+  // A take saved to the stored draft of a session this composer holds in memory
+  // (the user switched away while it was transcribing): merge it here too, or the
+  // in-memory draft would win on switching back and overwrite storage.
+  onCleanup(onDraftAppended((sid, take) => {
+    if (sid === props.sessionId) return insertDictated(take)
+    const mem = sessionMessages()[sid]
+    if (mem === undefined) return
+    const next = insertDictation(mem, take, null).text
+    setSessionMessages(prev => ({ ...prev, [sid]: next }))
+    saveDraftMessage(sid, next)
+  }))
   const attachments = () => sessionAttachments()[props.sessionId ?? ''] ?? []
   const setAttachments = (v: AttachmentRef[] | ((prev: AttachmentRef[]) => AttachmentRef[])) => {
     const sid = props.sessionId

@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from 'vitest'
-import { appendToDraft, clearDraft, loadDraftAttachments, loadDraftMessage, saveDraftAttachments, saveDraftMessage } from './sessionDrafts'
+import { appendToDraft, onDraftAppended, clearDraft, loadDraftAttachments, loadDraftMessage, saveDraftAttachments, saveDraftMessage } from './sessionDrafts'
 
 const ref = { hash: 'h1', mimeType: 'image/png', name: 'a.png', size: 1 }
 
@@ -51,4 +51,15 @@ test('appendToDraft appends a take to the existing draft with spacing', () => {
 test('appendToDraft on no draft saves the take', () => {
   appendToDraft('s2', 'hi')
   expect(loadDraftMessage('s2')).toBe('hi')
+})
+
+test('appendToDraft tells subscribers which draft got which take, until they unsubscribe', () => {
+  const seen: Array<[string, string]> = []
+  const off = onDraftAppended((sid, take) => seen.push([sid, take]))
+  appendToDraft('s1', 'hello')
+  expect(seen).toEqual([['s1', 'hello']])
+  expect(loadDraftMessage('s1')).toBe('hello')
+  off()
+  appendToDraft('s1', 'again')
+  expect(seen).toEqual([['s1', 'hello']])
 })

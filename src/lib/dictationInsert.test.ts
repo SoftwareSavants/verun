@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { insertDictation } from './dictationInsert'
+import { insertDictation, dictationInsertText } from './dictationInsert'
 
 test('append to empty gives the take', () => {
   expect(insertDictation('', 'hello', null)).toEqual({ text: 'hello', cursor: 5 })
@@ -45,4 +45,13 @@ test('non-collapsed selection is replaced', () => {
 test('cursor sits after the take, before any trailing pad', () => {
   const r = insertDictation('ab', 'X', { start: 1, end: 1 })
   expect(r.text.slice(0, r.cursor)).toBe('a X')
+})
+
+test('dictationInsertText is exactly the string insertDictation puts in, spaces included', () => {
+  expect(dictationInsertText('ab', ' X ', { start: 1, end: 1 })).toBe(' X ')
+  expect(dictationInsertText('a b', 'X', { start: 2, end: 2 })).toBe('X ')
+  expect(dictationInsertText('hello', 'world', null)).toBe(' world')
+  expect(dictationInsertText('', 'hi', null)).toBe('hi')
+  expect(dictationInsertText('fix the bug', 'a', { start: 4, end: 7 })).toBe('a')
+  expect(dictationInsertText('abc', '  ', null)).toBe('')
 })

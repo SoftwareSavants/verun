@@ -97,8 +97,9 @@ describe('DictationControl', () => {
     voice.setState('recording')
     voice.setLevel(0.5)
     expect(mic().getAttribute('aria-pressed')).toBe('true')
-    const meter = screen.getByLabelText('Recording')
-    expect(meter).toBeTruthy()
+    // The announced state is the status region's own text, not a label on top of it.
+    expect(screen.getByRole('status').textContent).toBe('Recording')
+    expect(screen.getByRole('status').hasAttribute('aria-label')).toBe(false)
     const bars = mic().querySelectorAll<HTMLElement>('[data-level-bar]')
     expect(bars.length).toBeGreaterThan(0)
     const before = bars[0].style.transform
@@ -112,15 +113,13 @@ describe('DictationControl', () => {
   test('while transcribing: a working state in the same place', () => {
     render(() => <DictationControl />)
     voice.setState('transcribing')
-    expect(screen.getByLabelText('Transcribing')).toBeTruthy()
-    expect(screen.queryByLabelText('Recording')).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('Transcribing')
     expect(mic().getAttribute('aria-pressed')).toBe('false')
   })
 
   test('idle has no recording or working state', () => {
     render(() => <DictationControl />)
-    expect(screen.queryByLabelText('Recording')).toBeNull()
-    expect(screen.queryByLabelText('Transcribing')).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('')
   })
 
   test('the switcher shows the language and lists only installed ones, by name, with the current one checked', () => {
@@ -136,6 +135,9 @@ describe('DictationControl', () => {
   test('choosing a language sets it and closes the menu', () => {
     render(() => <DictationControl />)
     fireEvent.click(screen.getByRole('button', { name: 'Dictation language: English' }))
+    // Picking from the menu must not take focus (and the caret) from the composer.
+    expect(fireEvent.mouseDown(screen.getByRole('menuitemradio', { name: 'French' }))).toBe(false)
+    expect(fireEvent.mouseDown(screen.getByRole('menuitem', { name: 'Add language...' }))).toBe(false)
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'French' }))
     expect(mocks.voiceSetLanguage).toHaveBeenCalledWith('fr')
     expect(screen.queryByRole('menuitemradio')).toBeNull()
