@@ -92,6 +92,44 @@ mod mic {
         failed: Arc<AtomicBool>,
         last_callback: Arc<AtomicU64>,
         origin: Instant,
+        /// The capture's current take; bumped by every start and by an open timeout.
+        generation: Arc<AtomicU64>,
+        /// The take this stream was opened for.
+        mine: u64,
+    }
+
+    impl Shared {
+        /// Whether this stream still belongs to the current take. A stream
+        /// that opened after its start timed out never does again.
+        fn current(&self) -> bool {
+            self.generation.load(Ordering::SeqCst) == self.mine
+        }
+
+        /// Records one callback's samples, unless the buffer already holds
+        /// `max` samples. `false` (nothing touched) for a stale stream. The
+        /// check runs under the buffer lock, which `start` takes to reset
+        /// after bumping the generation, so a stale write cannot slip in.
+        fn record(&self, samples: impl Iterator<Item = f32>, max: usize) -> bool {
+            let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            if !self.current() {
+                return false;
+            }
+            let elapsed = self.origin.elapsed();
+            self.last_callback
+                .store(elapsed.as_millis() as u64 + 1, Ordering::Relaxed);
+            if buffer.len() <= max {
+                buffer.extend(samples);
+            }
+            true
+        }
+
+        /// The stream reported an error.
+        fn fail(&self) {
+            let _buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            if self.current() {
+                self.failed.store(true, Ordering::SeqCst);
+            }
+        }
     }
 
     struct Running {
@@ -109,6 +147,7 @@ mod mic {
         buffer: Arc<Mutex<Vec<f32>>>,
         failed: Arc<AtomicBool>,
         last_callback: Arc<AtomicU64>,
+        generation: Arc<AtomicU64>,
         running: Option<Running>,
     }
 
@@ -120,8 +159,27 @@ mod mic {
                 buffer: Arc::new(Mutex::new(Vec::new())),
                 failed: Arc::new(AtomicBool::new(false)),
                 last_callback: Arc::new(AtomicU64::new(NEVER)),
+                generation: Arc::new(AtomicU64::new(0)),
                 running: None,
             }
+        }
+
+        /// Starts a new take: streams opened for earlier takes go inert.
+        fn next_shared(&mut self, origin: Instant) -> Shared {
+            let mine = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            Shared {
+                buffer: self.buffer.clone(),
+                failed: self.failed.clone(),
+                last_callback: self.last_callback.clone(),
+                origin,
+                generation: self.generation.clone(),
+                mine,
+            }
+        }
+
+        /// The stream being opened is abandoned: it goes inert if it opens later.
+        fn retire(&mut self) {
+            self.generation.fetch_add(1, Ordering::SeqCst);
         }
 
         /// Stops the capture thread (dropping the stream) and returns the
@@ -153,19 +211,12 @@ mod mic {
         let mut last_emit = Instant::now();
         let mut sum_squares = 0.0f32;
         let mut count = 0usize;
-        let failed = shared.failed.clone();
+        let on_error = shared.clone();
         device.build_input_stream(
             config,
             move |data: &[T], _| {
-                let elapsed = shared.origin.elapsed();
-                shared
-                    .last_callback
-                    .store(elapsed.as_millis() as u64 + 1, Ordering::Relaxed);
-                {
-                    let mut buffer = shared.buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    if buffer.len() <= max_samples {
-                        buffer.extend(data.iter().map(|s| f32::from_sample(*s)));
-                    }
+                if !shared.record(data.iter().map(|s| f32::from_sample(*s)), max_samples) {
+                    return;
                 }
                 // Level is the RMS over all interleaved samples (cheap, no mixdown).
                 for s in data {
@@ -181,7 +232,7 @@ mod mic {
                     count = 0;
                 }
             },
-            move |_| failed.store(true, Ordering::SeqCst),
+            move |_| on_error.fail(),
             None,
         )
     }
@@ -211,17 +262,15 @@ mod mic {
     impl Capture for MicCapture {
         fn start(&mut self) -> Result<(), VoiceError> {
             self.halt();
-            self.clear();
-            self.failed.store(false, Ordering::SeqCst);
-            self.last_callback.store(NEVER, Ordering::SeqCst);
-
+            // Retire any stream still opening for an earlier take before the reset.
             let origin = Instant::now();
-            let shared = Shared {
-                buffer: self.buffer.clone(),
-                failed: self.failed.clone(),
-                last_callback: self.last_callback.clone(),
-                origin,
-            };
+            let shared = self.next_shared(origin);
+            {
+                let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+                buffer.clear();
+                self.failed.store(false, Ordering::SeqCst);
+                self.last_callback.store(NEVER, Ordering::SeqCst);
+            }
             let (stop_tx, stop_rx) = mpsc::channel::<()>();
             let (ready_tx, ready_rx) = mpsc::channel::<Result<(u16, u32), VoiceError>>();
             let on_level = self.on_level.clone();
@@ -263,6 +312,8 @@ mod mic {
                 Err(_) => {
                     // Signal the thread so it exits once the device opens; do not
                     // join, since a hung device open would block here forever.
+                    // Its stream may still run briefly then: it must not record.
+                    self.retire();
                     let _ = running.stop.send(());
                     Err(VoiceError::MicUnavailable)
                 }
@@ -300,6 +351,41 @@ mod mic {
     impl Drop for MicCapture {
         fn drop(&mut self) {
             self.halt();
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn buffered(cap: &MicCapture) -> Vec<f32> {
+            cap.buffer.lock().unwrap().clone()
+        }
+
+        #[test]
+        fn a_stream_from_an_earlier_take_never_writes_into_a_later_one() {
+            let mut cap = MicCapture::new(|_| {});
+            // The first take's stream opened too late; a second take started.
+            let stale = cap.next_shared(Instant::now());
+            let current = cap.next_shared(Instant::now());
+            assert!(!stale.record([9.0, 9.0].into_iter(), 100));
+            stale.fail();
+            assert!(buffered(&cap).is_empty());
+            assert_eq!(cap.last_callback.load(Ordering::SeqCst), NEVER);
+            assert!(!cap.failed.load(Ordering::SeqCst));
+
+            assert!(current.record([1.0, 2.0].into_iter(), 100));
+            assert_eq!(buffered(&cap), vec![1.0, 2.0]);
+            assert_ne!(cap.last_callback.load(Ordering::SeqCst), NEVER);
+        }
+
+        #[test]
+        fn a_stream_that_missed_the_open_timeout_is_inert_at_once() {
+            let mut cap = MicCapture::new(|_| {});
+            let late = cap.next_shared(Instant::now());
+            cap.retire();
+            assert!(!late.record([1.0].into_iter(), 100));
+            assert!(buffered(&cap).is_empty());
         }
     }
 }
