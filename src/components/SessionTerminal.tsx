@@ -6,7 +6,8 @@ import { ShellTerminal } from './ShellTerminal'
 import * as ipc from '../lib/ipc'
 import { notifyAccountError } from '../lib/accountErrors'
 import { formatDroppedPathsForTerminal, takePendingTerminalPrompt } from '../lib/terminalMode'
-import type { PtyExitedEvent, PtyOutputEvent } from '../types'
+import type { PtyExitedEvent } from '../types'
+import { terminalShowsOutput } from '../store/terminals'
 import { outputItems } from '../store/sessions'
 import { pendingUsageLimit } from '../lib/usageLimit'
 import { ContinueOnAccount, continueChoices } from './ContinueOnAccount'
@@ -32,16 +33,11 @@ export const SessionTerminal: Component<Props> = (props) => {
   const [terminalId, setTerminalId] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
   const [exited, setExited] = createSignal(false)
-  // True once we've seen any non-empty pty-output for the current terminal.
-  // Drives a centered spinner overlay so the user gets feedback during the
-  // gap between PTY spawn and Claude printing its first frame.
-  const [ready, setReady] = createSignal(false)
 
   async function openTerminal() {
     setError(null)
     setExited(false)
     setTerminalId(null)
-    setReady(false)
     try {
       const res = await ipc.claudeTerminalOpen(props.sessionId, 24, 80, takePendingTerminalPrompt(props.sessionId))
       setTerminalId(res.terminalId)
@@ -71,17 +67,6 @@ export const SessionTerminal: Component<Props> = (props) => {
     else unlisten = fn
   })
 
-  let unlistenOutput: UnlistenFn | undefined
-  void listen<PtyOutputEvent>('pty-output', (event) => {
-    if (ready()) return
-    if (event.payload.terminalId !== terminalId()) return
-    if (!event.payload.data) return
-    setReady(true)
-  }).then((fn) => {
-    if (disposed) fn()
-    else unlistenOutput = fn
-  })
-
   // Native drop events are scoped to their originating webview. Hidden
   // terminals must not consume them; convert physical coordinates to CSS
   // pixels at drop time so display scale and layout changes remain correct.
@@ -108,7 +93,6 @@ export const SessionTerminal: Component<Props> = (props) => {
     disposed = true
     unlisten?.()
     unlistenDrop?.()
-    unlistenOutput?.()
     // Don't close the Claude PTY on unmount. The backend's `claude_terminal_open`
     // is idempotent per session (returns the existing handle when called again),
     // and ShellTerminal rejoins the existing xterm via the terminals registry —
@@ -163,7 +147,9 @@ export const SessionTerminal: Component<Props> = (props) => {
                     </div>
                   )}
                 </Show>
-                <Show when={!ready()}>
+                {/* Covers the gap between spawning the PTY and Claude's first
+                    frame; a rejoined xterm already shows its output. */}
+                <Show when={!terminalShowsOutput(id())}>
                   <div
                     data-testid="claude-terminal-loading"
                     class="absolute inset-0 grid place-items-center bg-surface-0 pointer-events-none transition-opacity duration-200"
