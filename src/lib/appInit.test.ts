@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
     initAccountListeners: ok(),
     loadAccounts: ok(),
     openSettings: vi.fn(),
+    initVoice: vi.fn(() => Promise.resolve()),
     unminimize: windowCall('unminimize'),
     show: windowCall('show'),
     setFocus: windowCall('setFocus'),
@@ -69,6 +70,7 @@ vi.mock('../store/resource-monitor', () => ({ initResourceMonitor: vi.fn(() => P
 vi.mock('../store/keepAwake', () => ({ initKeepAwake: vi.fn(() => Promise.resolve()) }))
 vi.mock('../store/sessionNotifications', () => ({ initSessionNotifications: vi.fn() }))
 vi.mock('../store/problems', () => ({ initProblemsListener: vi.fn() }))
+vi.mock('../store/voice', () => ({ initVoice: mocks.initVoice }))
 vi.mock('../store/tasks', () => ({ loadTasks: vi.fn(() => Promise.resolve()), taskById: vi.fn() }))
 
 import { initListeners, loadInitialData } from './appInit'
@@ -77,6 +79,8 @@ beforeEach(() => {
   mocks.initAccountListeners.mockClear()
   mocks.loadAccounts.mockClear()
   mocks.openSettings.mockClear()
+  mocks.initVoice.mockReset()
+  mocks.initVoice.mockImplementation(() => Promise.resolve())
   mocks.unminimize.mockClear()
   mocks.show.mockClear()
   mocks.setFocus.mockClear()
@@ -99,6 +103,25 @@ describe('accounts in every window', () => {
   test('loadInitialData loads the accounts', async () => {
     await loadInitialData()
     expect(mocks.loadAccounts).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Both window shells call initListeners, so this is where every window starts
+// listening for dictation.
+describe('voice dictation in every window', () => {
+  test('initListeners starts the voice store', async () => {
+    await initListeners()
+    expect(mocks.initVoice).toHaveBeenCalledTimes(1)
+  })
+
+  test('a voice store that fails to start is logged and the window still comes up', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mocks.initVoice.mockImplementationOnce(() => Promise.reject(new Error('no voice')))
+    await expect(initListeners()).resolves.toBeUndefined()
+    await new Promise(r => setTimeout(r, 0))
+    expect(error).toHaveBeenCalledOnce()
+    expect(String(error.mock.calls[0])).toContain('voice')
+    error.mockRestore()
   })
 })
 

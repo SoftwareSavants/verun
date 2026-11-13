@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-const mocks = vi.hoisted(() => ({ start: vi.fn(), open: vi.fn(), inspect: vi.fn(), project: { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' } as Record<string, string> }))
+const mocks = vi.hoisted(() => ({ targets: [] as Array<{ id: string; sessionId: string | null; insert(take: string): void }>, start: vi.fn(), open: vi.fn(), inspect: vi.fn(), project: { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' } as Record<string, string> }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open }))
 vi.mock('../lib/ipc', () => ({
   getRepoInfo: vi.fn().mockResolvedValue({ branches: ['main', 'develop'], currentBranch: 'develop' }),
@@ -14,12 +14,19 @@ vi.mock('../store/agents', () => ({ agents: [{ id: 'claude', name: 'Claude Code'
 vi.mock('../store/draftTask', () => ({ startDraftTask: mocks.start }))
 vi.mock('./AgentPicker', () => ({ AgentPicker: () => <span>Claude</span> }))
 vi.mock('./CloudSessionPicker', () => ({ CloudSessionPicker: () => null }))
+vi.mock('./DictationControl', () => ({ DictationControl: () => null }))
+vi.mock('../store/voice', () => ({
+  registerDictationTarget: (t: (typeof mocks.targets)[number]) => {
+    mocks.targets.push(t)
+    return () => { mocks.targets = mocks.targets.filter(x => x !== t) }
+  },
+}))
 import { NewTaskView } from './NewTaskView'
-import { toasts, setToasts } from '../store/ui'
+import { toasts, setToasts, setSelectedTaskId, setShowTaskBoard } from '../store/ui'
 import { applySnapshot } from '../store/accounts'
 import { makeAccount, makeSnapshot } from '../test/accountFixtures'
 afterEach(cleanup)
-beforeEach(() => { vi.clearAllMocks(); mocks.project = { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' }; localStorage.clear(); setToasts([]); applySnapshot(makeSnapshot()); mocks.start.mockResolvedValue(undefined) })
+beforeEach(() => { vi.clearAllMocks(); mocks.targets = []; setSelectedTaskId(null); setShowTaskBoard(false); mocks.project = { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' }; localStorage.clear(); setToasts([]); applySnapshot(makeSnapshot()); mocks.start.mockResolvedValue(undefined) })
 function select(label: string, option: string) {
   fireEvent.click(screen.getByRole('combobox', { name: label }))
   fireEvent.click(screen.getByRole('option', { name: option }))
@@ -186,4 +193,41 @@ test('the chat or terminal choice for a Claude task is shown and sent', async ()
   fireEvent.input(screen.getByRole('textbox', { name: 'Task prompt' }), { target: { value: 'Fix the bug' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ viewMode: 'terminal' })))
+})
+
+// Dictation: the new-task box is a target while it is the box on screen.
+const prompt = () => screen.getByRole('textbox', { name: 'Task prompt' }) as HTMLTextAreaElement
+const dictationTarget = () => mocks.targets[mocks.targets.length - 1]
+test('registers as the new-task dictation target and unregisters on unmount', () => {
+  const { unmount } = render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  expect(mocks.targets.map(t => ({ id: t.id, sessionId: t.sessionId }))).toEqual([{ id: 'new-task', sessionId: null }])
+  unmount()
+  expect(mocks.targets).toEqual([])
+})
+test('dictation appends to the prompt without focusing it', () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  fireEvent.input(prompt(), { target: { value: 'Fix the' } })
+  ;(document.activeElement as HTMLElement | null)?.blur()
+  dictationTarget().insert('login bug')
+  expect(prompt().value).toBe('Fix the login bug')
+  expect(document.activeElement).not.toBe(prompt())
+})
+test('dictation goes in at the caret when the prompt is focused, and the caret follows it', () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  fireEvent.input(prompt(), { target: { value: 'Fix bug' } })
+  prompt().focus()
+  prompt().setSelectionRange(4, 4)
+  dictationTarget().insert('the login')
+  expect(prompt().value).toBe('Fix the login bug')
+  expect([prompt().selectionStart, prompt().selectionEnd]).toEqual([13, 13])
+})
+test('hidden behind a selected task or the task board, the new-task box is not a target', () => {
+  render(() => <NewTaskView projectId="p" onClose={() => {}} />)
+  setSelectedTaskId('t1')
+  expect(mocks.targets).toEqual([])
+  setSelectedTaskId(null)
+  setShowTaskBoard(true)
+  expect(mocks.targets).toEqual([])
+  setShowTaskBoard(false)
+  expect(mocks.targets.map(t => t.id)).toEqual(['new-task'])
 })

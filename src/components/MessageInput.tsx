@@ -1,7 +1,7 @@
 import { Component, createSignal, createEffect, on, Show, For, onMount, onCleanup } from 'solid-js'
 import { sendMessage, abortMessage, steerSession, clearOutputItems, pendingApprovals, approveToolUse, denyToolUse, answerQuestion, respondToElicitation, sessionCosts, sessionTokens, outputItems, tryDrainSteps, sessionById, updateSessionModel, rateLimitFor, sendStep } from '../store/sessions'
 import { planModeForSession, setPlanModeForSession, thinkingModeForSession, setThinkingModeForSession, fastModeForSession, setFastModeForSession, planFilePathForSession, setPlanFilePathForSession, codexLivePlanForSession } from '../store/sessionContext'
-import { selectedTaskId, chatPrefillRequest, setChatPrefillRequest } from '../store/ui'
+import { selectedTaskId, chatPrefillRequest, setChatPrefillRequest, showTaskBoard } from '../store/ui'
 import { isSetupRunning, setupFailed, queueMessage, queuedMessages, clearQueuedMessage } from '../store/setup'
 import { taskById } from '../store/tasks'
 import { addStep, getSteps, updateStep, extractStep } from '../store/steps'
@@ -38,6 +38,10 @@ import { McpElicitationCard } from './McpElicitationCard'
 import { McpStatusChip } from './McpStatusChip'
 import { accountKey, inheritedSelection } from '../lib/accounts'
 import { openNewSession } from '../lib/newSession'
+import { registerDictationTarget } from '../store/voice'
+import { insertDictation } from '../lib/dictationInsert'
+import { serializeComposer, composerSelection, placeCaret } from '../lib/composerText'
+import { DictationControl } from './DictationControl'
 
 interface Props {
   sessionId: string | null
@@ -262,31 +266,7 @@ export const MessageInput: Component<Props> = (props) => {
   // `data-mention` spans are non-editable inline badges.
   // serializeInput() reads the DOM and returns plain text with @path tokens.
 
-  const serializeInput = (): string => {
-    if (!inputRef) return ''
-    let text = ''
-    const BLOCK_TAGS = new Set(['DIV', 'P', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
-    const walk = (node: Node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        text += (node.textContent ?? '').replace(/\u200B/g, '')
-      } else if (node instanceof HTMLElement) {
-        if (node.dataset.mention) {
-          text += formatMention(node.dataset.mention)
-        } else if (node.tagName === 'BR') {
-          text += '\n'
-        } else {
-          // Block elements (div, p) represent line breaks in contenteditable
-          if (BLOCK_TAGS.has(node.tagName) && text.length > 0 && !text.endsWith('\n')) {
-            text += '\n'
-          }
-          for (const child of node.childNodes) walk(child)
-        }
-      }
-    }
-    for (const child of inputRef.childNodes) walk(child)
-    // Browser may leave a trailing <br> → lone '\n'; treat as empty
-    return text === '\n' ? '' : text
-  }
+  const serializeInput = (): string => (inputRef ? serializeComposer(inputRef) : '')
 
   const setInputContent = (text: string) => {
     if (!inputRef) return
@@ -421,6 +401,25 @@ export const MessageInput: Component<Props> = (props) => {
       }
       autoResizeInput()
     }
+  }
+  // Dictation target while a session is open and on screen (the task board hides
+  // the task panel without unmounting it). Text goes in at the caret when the
+  // input has focus, else at the end; the same text -> DOM path keeps badges.
+  createEffect(() => {
+    const sid = props.sessionId
+    if (!sid || showTaskBoard()) return
+    onCleanup(registerDictationTarget({ id: `session:${sid}`, sessionId: sid, insert: insertDictated }))
+  })
+  function insertDictated(take: string) {
+    if (!inputRef) return
+    const sel = document.activeElement === inputRef ? composerSelection(inputRef) : null
+    const current = serializeInput()
+    const { text, cursor } = insertDictation(current, take, sel)
+    if (text === current) return
+    setMessageRaw(text)
+    // Not setMessage: its caret-to-end would pull focus into an unfocused input.
+    setInputContent(text)
+    if (sel) placeCaret(inputRef, cursor)
   }
   const attachments = () => sessionAttachments()[props.sessionId ?? ''] ?? []
   const setAttachments = (v: AttachmentRef[] | ((prev: AttachmentRef[]) => AttachmentRef[])) => {
@@ -2534,6 +2533,7 @@ export const MessageInput: Component<Props> = (props) => {
           </div>
 
           <div class="flex items-center gap-1">
+            <DictationControl />
             {/* Attach button */}
             <button
               class="w-7 h-7 flex items-center justify-center rounded-lg text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors shrink-0 disabled:opacity-30"

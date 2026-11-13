@@ -6,6 +6,9 @@ import { isQuickProject } from '../store/quickTasks'
 import { claudeDefaultViewMode, type SessionViewMode } from '../store/sessionViewMode'
 import { agents } from '../store/agents'
 import { startDraftTask } from '../store/draftTask'
+import { selectedTaskId, showTaskBoard } from '../store/ui'
+import { registerDictationTarget } from '../store/voice'
+import { insertDictation } from '../lib/dictationInsert'
 import * as ipc from '../lib/ipc'
 import { failureText } from '../lib/accountErrors'
 import { PROJECT_DEFAULT } from '../lib/accounts'
@@ -13,6 +16,7 @@ import type { AccountSelection, AgentType } from '../types'
 import { HarnessModelPicker } from './HarnessModelPicker'
 import { Select } from './Select'
 import { CloudSessionPicker } from './CloudSessionPicker'
+import { DictationControl } from './DictationControl'
 
 export function NewTaskView(props: { projectId: string; onClose: () => void }) {
   const project = () => projectById(props.projectId)
@@ -63,6 +67,19 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
     ipc.claudeCloudAvailability(props.projectId).then(result => { if (!cancelled) setCloud(result.available) }).catch(() => {})
     queueMicrotask(() => textarea?.focus())
   }))
+
+  // Dictation target while this box is on screen: Layout keeps the draft mounted
+  // but hidden behind a selected task, and the task board hides both.
+  createEffect(() => {
+    if (source() !== 'local' || sending() || selectedTaskId() || showTaskBoard()) return
+    onCleanup(registerDictationTarget({ id: 'new-task', sessionId: null, insert: insertDictated }))
+  })
+  function insertDictated(take: string) {
+    const focused = !!textarea && document.activeElement === textarea
+    const { text, cursor } = insertDictation(message(), take, focused ? { start: textarea.selectionStart, end: textarea.selectionEnd } : null)
+    setMessage(text)
+    if (focused) textarea.setSelectionRange(cursor, cursor)
+  }
 
   const chooseWorkspace = async (value: string) => {
     if (value !== 'choose') { setWorkspace(value); return }
@@ -150,6 +167,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
                 </div>
               </Show>
               </div>
+              <DictationControl />
               <button aria-label="Send" title={sendBlocker() || 'Start the task (Enter) · Shift+Enter for a new line'} disabled={!!sendBlocker() || sending()} onClick={send}
                 class="w-8 h-8 rounded-lg flex items-center justify-center bg-accent text-surface-0 disabled:bg-transparent disabled:ring-1 disabled:ring-outline/15 disabled:text-text-dim transition-colors">
                 <Show when={sending()} fallback={<ArrowUp size={16} />}><Loader2 size={16} class="animate-spin" /></Show>
