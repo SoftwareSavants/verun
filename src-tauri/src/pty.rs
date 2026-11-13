@@ -340,7 +340,9 @@ pub fn spawn_pty(
     tauri::async_runtime::spawn(async move {
         loop {
             pump_output.changed.notified().await;
-            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            if let Some(pause) = pump_output.coalesce_pause() {
+                tokio::time::sleep(pause).await;
+            }
             if let Some(batch) = pump_output.next_batch() {
                 let window = batch.window;
                 if pump_app

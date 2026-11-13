@@ -4,6 +4,8 @@ use std::sync::{Condvar, Mutex};
 use tokio::sync::Notify;
 
 pub const BATCH_BYTES: usize = 32 * 1024;
+/// How long a trickle of output waits to coalesce before it goes out.
+pub const COALESCE: std::time::Duration = std::time::Duration::from_millis(30);
 // The replay ring evicts whole chunks. Leave one chunk of headroom so
 // eviction cannot discard the unread suffix of a partially consumed chunk.
 pub const BUFFER_BYTES: usize = REPLAY_BUFFER_CAP - BATCH_BYTES;
@@ -120,6 +122,15 @@ impl OutputBuffer {
         true
     }
 
+    /// The pause before the next batch: none while a full batch is already
+    /// waiting (catching up after the terminal was hidden), else `COALESCE`
+    /// so a burst of small writes goes out as one event.
+    pub fn coalesce_pause(&self) -> Option<std::time::Duration> {
+        let state = self.state.lock().unwrap();
+        let behind = state.buffer.total_written().saturating_sub(state.cursor);
+        (state.owner.is_none() || behind < BATCH_BYTES as u64).then_some(COALESCE)
+    }
+
     pub fn snapshot(&self) -> (String, u64) {
         self.state.lock().unwrap().buffer.snapshot()
     }
@@ -144,7 +155,9 @@ impl OutputBuffer {
         } else {
             String::new()
         };
-        let (chunk, seq) = state.buffer.read_from(state.cursor, BATCH_BYTES - data.len());
+        let (chunk, seq) = state
+            .buffer
+            .read_from(state.cursor, BATCH_BYTES - data.len());
         data.push_str(&chunk);
         state.sequence += 1;
         let sequence = state.sequence;
@@ -222,6 +235,27 @@ mod tests {
     use super::*;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
+
+    #[test]
+    fn a_full_batch_waiting_goes_out_without_the_coalescing_pause() {
+        // Catching up a terminal that was hidden (or redrawing after its xterm
+        // was evicted) streams up to 256 KB. Pausing 30 ms before each 32 KB
+        // batch made that take a quarter second on top of parsing.
+        let output = OutputBuffer::default();
+        assert_eq!(output.coalesce_pause(), Some(COALESCE));
+        output.attach("main", 0);
+        output.push("ls\r\n");
+        assert_eq!(
+            output.coalesce_pause(),
+            Some(COALESCE),
+            "a trickle still coalesces"
+        );
+        output.push(&"a".repeat(BATCH_BYTES * 3));
+        assert_eq!(output.coalesce_pause(), None);
+        let first = output.next_batch().unwrap();
+        output.acknowledge("main", first.sequence);
+        assert_eq!(output.coalesce_pause(), None, "still a full batch behind");
+    }
 
     #[test]
     fn process_exit_is_available_before_renderer_acknowledgement() {
@@ -401,7 +435,10 @@ mod tests {
         let blocked = rx.recv_timeout(Duration::from_millis(30)).is_err();
         output.close();
         reader.join().unwrap();
-        assert!(blocked, "producer evicted a partially acknowledged replay chunk");
+        assert!(
+            blocked,
+            "producer evicted a partially acknowledged replay chunk"
+        );
     }
 
     #[test]

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- macOS inline predictive text is off in Verun's windows: its suggestion panel held clicks and keys (Send, Enter) on the main thread until it closed, which read as a freeze of a second or two
+- Pasting (in a terminal or the chat box) reads the clipboard in-process instead of starting `osascript` each time, which cost 100-300 ms per paste and more under load
+- A terminal you switch back to catches up on its missed output without pausing 30 ms between batches
 - A Claude terminal that printed a lot while it was not shown no longer gets an "earlier output omitted" line through its screen on return; Claude is asked to redraw instead (shell terminals keep the note)
 - Coming back to a running Claude terminal no longer sits on "Starting Claude Code..." until a key is pressed: the overlay clears as soon as the terminal shows output, including output already on screen
 - New task (⌘N) at the top of the sidebar starts a task from either view, including recent activity; the draft's header switches its project (most recently active first) and keeps what you typed
