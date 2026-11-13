@@ -504,7 +504,15 @@ describe('a focused take is one undo step, like a paste', () => {
 })
 
 describe('a take never opens the mention or command popover', () => {
-  beforeEach(() => { mocks.withTask = true })
+  beforeEach(() => {
+    mocks.withTask = true
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] })
+  })
+  /** What the webview does after an insertion moved the caret: a selectionchange, handled on the next frame. */
+  const selectionSettles = () => {
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersToNextFrame()
+  }
 
   test('typing / does open the command palette these tests watch', () => {
     const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
@@ -520,6 +528,7 @@ describe('a take never opens the mention or command popover', () => {
     el.focus()
     caret(el, 0)
     target().insert('/review')
+    selectionSettles()
     expect(screen.queryByTestId('command-palette')).toBeNull()
     expect(saved()).toBe('/review')
   })
@@ -530,8 +539,32 @@ describe('a take never opens the mention or command popover', () => {
     el.focus()
     caret(el, 0)
     target().insert('ask @john')
+    selectionSettles()
     expect(screen.queryByTestId('file-mention')).toBeNull()
     expect(saved()).toBe('ask @john')
+  })
+
+  test('once the user moves the caret after a take, the popovers follow it again', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    caret(el, 0)
+    target().insert('ask @john')
+    selectionSettles()
+    caret(el.firstChild!, 8)
+    selectionSettles()
+    expect(screen.getByTestId('file-mention').textContent).toBe('joh')
+  })
+
+  test('once the user types after a take, the popovers follow it again', () => {
+    const { container } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    const el = editor(container)
+    el.focus()
+    caret(el, 0)
+    target().insert('/review')
+    selectionSettles()
+    typeIn(el, '/reviewx')
+    expect(screen.getByTestId('command-palette').textContent).toBe('/reviewx')
   })
 
   test('a take closes a mention popover the user had open', () => {
@@ -541,6 +574,7 @@ describe('a take never opens the mention or command popover', () => {
     typeIn(el, 'fix @sr')
     expect(screen.getByTestId('file-mention')).toBeTruthy()
     target().insert('@john')
+    selectionSettles()
     expect(screen.queryByTestId('file-mention')).toBeNull()
     expect(saved()).toBe('fix @sr @john')
   })

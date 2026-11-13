@@ -415,6 +415,9 @@ export const MessageInput: Component<Props> = (props) => {
       } finally {
         dictating = false
       }
+      // The caret move queues a selectionchange, handled a frame later: hold the
+      // popovers closed for exactly what the take left, until the user changes it.
+      overlaysHeldFor = { value: message(), caret: getCursorOffset() }
     } else {
       const node = document.createTextNode(text)
       range.deleteContents()
@@ -1522,6 +1525,12 @@ export const MessageInput: Component<Props> = (props) => {
 
   /** Set while a dictated take is typed in: its input is text, not a shortcut or a popover trigger. */
   let dictating = false
+  /**
+   * The text and caret a focused take left. The popovers stay closed while both
+   * are unchanged (the selectionchange and focus after a take re-check them), and
+   * follow the caret again once the user types or moves it.
+   */
+  let overlaysHeldFor: { value: string; caret: number } | null = null
 
   const handleInput = () => {
     const val = serializeInput()
@@ -1553,6 +1562,15 @@ export const MessageInput: Component<Props> = (props) => {
   /** Check cursor position and show/hide command palette + file mention overlay */
   const updateOverlays = (val?: string) => {
     if (val === undefined) val = message()
+
+    if (overlaysHeldFor) {
+      if (overlaysHeldFor.value === val && overlaysHeldFor.caret === getCursorOffset()) {
+        setShowPalette(false)
+        setShowFileMention(false)
+        return
+      }
+      overlaysHeldFor = null
+    }
 
     // Show/hide command palette
     if (val.startsWith('/') && val.indexOf(' ') === -1) {
