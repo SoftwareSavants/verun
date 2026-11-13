@@ -38,10 +38,13 @@ pub fn to_mono_16k(input: &[f32], channels: u16, sample_rate: u32) -> Vec<f32> {
 
 pub const STALL_AFTER_MS: u64 = 500;
 
-/// True when no audio callback arrived, or the last one is `STALL_AFTER_MS` or more before `stop_ms`.
-pub fn capture_stalled(last_callback_ms: Option<u64>, stop_ms: u64) -> bool {
+/// True when the last audio callback is `STALL_AFTER_MS` or more before
+/// `stop_ms`, or when none arrived though the stream has been open (since
+/// `opened_ms`) for that long. A device that opens slowly (Bluetooth) may not
+/// have called back yet when a short hold ends: that take is empty, not failed.
+pub fn capture_stalled(last_callback_ms: Option<u64>, stop_ms: u64, opened_ms: u64) -> bool {
     match last_callback_ms {
-        None => true,
+        None => stop_ms.saturating_sub(opened_ms) >= STALL_AFTER_MS,
         Some(last) => stop_ms.saturating_sub(last) >= STALL_AFTER_MS,
     }
 }
@@ -138,6 +141,8 @@ mod mic {
         channels: u16,
         sample_rate: u32,
         origin: Instant,
+        /// When the stream was playing, in ms since `origin`.
+        opened_ms: u64,
     }
 
     /// Records the default input device into memory. The `cpal::Stream` is not
@@ -295,12 +300,14 @@ mod mic {
                 channels: 0,
                 sample_rate: 0,
                 origin,
+                opened_ms: 0,
             };
             match ready_rx.recv_timeout(READY_TIMEOUT) {
                 Ok(Ok((channels, sample_rate))) => {
                     self.running = Some(Running {
                         channels,
                         sample_rate,
+                        opened_ms: origin.elapsed().as_millis() as u64,
                         ..running
                     });
                     Ok(())
@@ -323,20 +330,20 @@ mod mic {
         /// Calling `stop` without a prior `start` returns `Err(MicUnavailable)`,
         /// which the `Capture` contract allows.
         fn stop(&mut self) -> Result<Vec<f32>, VoiceError> {
-            let stop_ms = self
+            let times = self
                 .running
                 .as_ref()
-                .map(|r| r.origin.elapsed().as_millis() as u64);
+                .map(|r| (r.origin.elapsed().as_millis() as u64, r.opened_ms));
             let running = self.halt();
             let raw = std::mem::take(&mut *self.buffer.lock().unwrap_or_else(|e| e.into_inner()));
-            let (Some((channels, rate)), Some(stop_ms)) = (running, stop_ms) else {
+            let (Some((channels, rate)), Some((stop_ms, opened_ms))) = (running, times) else {
                 return Err(VoiceError::MicUnavailable);
             };
             let last = match self.last_callback.load(Ordering::Relaxed) {
                 NEVER => None,
                 v => Some(v - 1),
             };
-            if self.failed.load(Ordering::SeqCst) || capture_stalled(last, stop_ms) {
+            if self.failed.load(Ordering::SeqCst) || capture_stalled(last, stop_ms, opened_ms) {
                 return Err(VoiceError::MicUnavailable);
             }
             Ok(super::to_mono_16k(&raw, channels, rate))
@@ -464,9 +471,19 @@ mod tests {
 
     #[test]
     fn stall_detection() {
-        assert!(capture_stalled(None, 1_000));
-        assert!(!capture_stalled(Some(501), 1_000));
-        assert!(capture_stalled(Some(500), 1_000));
-        assert!(!capture_stalled(Some(1_000), 1_000));
+        assert!(capture_stalled(None, 1_000, 0));
+        assert!(!capture_stalled(Some(501), 1_000, 0));
+        assert!(capture_stalled(Some(500), 1_000, 0));
+        assert!(!capture_stalled(Some(1_000), 1_000, 0));
+    }
+
+    #[test]
+    fn a_stream_open_for_less_than_the_stall_threshold_without_a_callback_is_not_stalled() {
+        // A slow device (Bluetooth) took 1 s to open; the release came 1 ms later.
+        assert!(!capture_stalled(None, 1_001, 1_000));
+        assert!(!capture_stalled(None, 1_499, 1_000));
+        assert!(capture_stalled(None, 1_500, 1_000));
+        // A callback that then stopped is still judged from the last callback.
+        assert!(capture_stalled(Some(900), 1_400, 1_000));
     }
 }
