@@ -14,3 +14,10 @@ export function recentTasks<T extends RecentRow>(rows: readonly T[], now: number
   const isQuiet = (r: T) => r.column !== 'running' && now - r.lastActive > quietAfter
   return { recent: listed.filter(r => !isQuiet(r)), quiet: listed.filter(isQuiet) }
 }
+
+/** Projects by their latest task activity; projects without tasks keep their order after them. */
+export function projectsByRecency<P extends { id: string }>(projects: readonly P[], tasks: readonly { projectId: string; lastActive: number }[]) {
+  const latest: Record<string, number> = {}
+  for (const t of tasks) latest[t.projectId] = Math.max(latest[t.projectId] ?? 0, t.lastActive)
+  return [...projects].sort((a, b) => (latest[b.id] ?? 0) - (latest[a.id] ?? 0))
+}

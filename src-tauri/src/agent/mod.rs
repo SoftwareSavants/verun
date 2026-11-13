@@ -998,7 +998,10 @@ mod tests {
         let models = Claude.available_models();
         assert_eq!(models[0].id, "claude-opus-5-5");
         assert_eq!(models[0].label, "Claude Opus 5.5");
-        assert_eq!(models[1].id, "claude-fable-5-1");
+        assert_eq!(models[1].id, "claude-fable-5-2");
+        assert_eq!(models[1].label, "Claude Fable 5.2");
+        // Sessions pinned to the previous Fable keep a named model.
+        assert!(models.iter().any(|m| m.id == "claude-fable-5-1"));
     }
 
     #[test]

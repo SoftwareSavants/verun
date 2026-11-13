@@ -2662,7 +2662,11 @@ pub fn pty_listen(
     let handle = pty_map
         .get(&terminal_id)
         .ok_or_else(|| format!("Terminal {terminal_id} not found"))?;
-    handle.output.attach(window.label(), after_seq);
+    let redraw = handle.output.attach(window.label(), after_seq);
+    drop(handle);
+    if redraw {
+        crate::pty::request_redraw(&pty_map, &terminal_id);
+    }
     Ok(())
 }
 
