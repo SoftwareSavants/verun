@@ -85,15 +85,34 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Downloads one file to `<file>.part`, verifies size and SHA-256, renames into place.
-/// `base` is the number of bytes already received for earlier files.
-/// Opens a file to write a download into.
-type OpenPart<'a> = &'a dyn Fn(&Path) -> std::io::Result<Box<dyn Write>>;
+/// A `.part` file being downloaded into.
+trait PartFile: Write {
+    /// Flushes the contents to disk.
+    fn sync(&mut self) -> std::io::Result<()>;
+}
 
-fn create_part(path: &Path) -> std::io::Result<Box<dyn Write>> {
+impl PartFile for std::fs::File {
+    fn sync(&mut self) -> std::io::Result<()> {
+        self.sync_all()
+    }
+}
+
+/// Opens a file to write a download into.
+type OpenPart<'a> = &'a dyn Fn(&Path) -> std::io::Result<Box<dyn PartFile>>;
+
+fn create_part(path: &Path) -> std::io::Result<Box<dyn PartFile>> {
     Ok(Box::new(std::fs::File::create(path)?))
 }
 
+/// Persists a rename in `path`'s directory. Best effort: the file itself is already synced.
+fn sync_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
+    }
+}
+
+/// Downloads one file to `<file>.part`, verifies size and SHA-256, renames into place.
+/// `base` is the number of bytes already received for earlier files.
 fn download_file(
     dir: &Path,
     file: &ModelFile,
@@ -133,7 +152,6 @@ fn download_file(
         on_progress(base + received, total);
         Ok(())
     });
-    drop(out);
 
     let result = match (fetched, abort) {
         (_, Some(e)) => Err(e),
@@ -144,10 +162,17 @@ fn download_file(
                     file: file.rel_path.to_string(),
                 })
             } else {
-                std::fs::rename(&part_path, &final_path).map_err(io)
+                // The contents reach the disk before the name does, so a crash
+                // cannot leave a full-size file of garbage that passes the size check.
+                out.sync().map_err(io).and_then(|()| {
+                    std::fs::rename(&part_path, &final_path).map_err(io)?;
+                    sync_parent_dir(&final_path);
+                    Ok(())
+                })
             }
         }
     };
+    drop(out);
     if result.is_err() {
         let _ = remove_if_exists(&part_path);
     }
@@ -576,18 +601,90 @@ mod tests {
         }
     }
 
+    impl PartFile for FailingPart {
+        fn sync(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn sink_write_failure_is_io_and_leaves_no_part() {
         let tmp = tempfile::tempdir().unwrap();
         let fetch = ok_fetch();
         let opened = std::cell::Cell::new(false);
-        let open = |p: &Path| -> std::io::Result<Box<dyn Write>> {
+        let open = |p: &Path| -> std::io::Result<Box<dyn PartFile>> {
             opened.set(true);
             Ok(Box::new(FailingPart { _file: std::fs::File::create(p)?, ok_writes: 1 }))
         };
         let r = download_spec_with(tmp.path(), test_spec(), &fetch, &|_, _| {}, &open);
         assert!(opened.get());
         assert_eq!(r, Err(DownloadError::Io("disk full".into())));
+        assert!(files_in(tmp.path()).is_empty(), "{:?}", files_in(tmp.path()));
+    }
+
+    /// A real `.part` file that records whether it was synced, and whether the
+    /// final file already existed at that moment (it must not).
+    struct SyncProbe {
+        file: std::fs::File,
+        final_path: PathBuf,
+        log: std::rc::Rc<RefCell<Vec<bool>>>,
+    }
+
+    impl Write for SyncProbe {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.file.write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.file.flush()
+        }
+    }
+
+    impl PartFile for SyncProbe {
+        fn sync(&mut self) -> std::io::Result<()> {
+            self.log.borrow_mut().push(self.final_path.exists());
+            self.file.sync_all()
+        }
+    }
+
+    #[test]
+    fn part_file_is_synced_before_it_is_renamed_into_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let final_path = tmp.path().join("m.bin");
+        let open = |p: &Path| -> std::io::Result<Box<dyn PartFile>> {
+            Ok(Box::new(SyncProbe {
+                file: std::fs::File::create(p)?,
+                final_path: final_path.clone(),
+                log: log.clone(),
+            }))
+        };
+        download_spec_with(tmp.path(), test_spec(), &ok_fetch(), &|_, _| {}, &open).unwrap();
+        assert_eq!(*log.borrow(), vec![false], "synced once, before the rename");
+        assert!(is_installed_spec(tmp.path(), test_spec()));
+    }
+
+    #[test]
+    fn a_failed_sync_is_io_and_leaves_nothing_installed() {
+        struct NoSync(std::fs::File);
+        impl Write for NoSync {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl PartFile for NoSync {
+            fn sync(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("fsync failed"))
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let open = |p: &Path| -> std::io::Result<Box<dyn PartFile>> {
+            Ok(Box::new(NoSync(std::fs::File::create(p)?)))
+        };
+        let r = download_spec_with(tmp.path(), test_spec(), &ok_fetch(), &|_, _| {}, &open);
+        assert_eq!(r, Err(DownloadError::Io("fsync failed".into())));
         assert!(files_in(tmp.path()).is_empty(), "{:?}", files_in(tmp.path()));
     }
 
