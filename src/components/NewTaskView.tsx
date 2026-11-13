@@ -84,7 +84,7 @@ export function NewTaskView(props: { projectId: string; onClose: () => void }) {
   createEffect(() => {
     if (!dictationTarget()) return
     const id = draftId()
-    onCleanup(registerDictationTarget({ id, draftId: id, insert: insertDictated }))
+    onCleanup(registerDictationTarget({ draftId: id, insert: insertDictated }))
   })
   /** Focused: typed in at the caret, so Cmd+Z undoes it. Else appended without taking focus. */
   function insertDictated(take: string) {

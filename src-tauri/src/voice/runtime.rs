@@ -448,11 +448,12 @@ impl Running {
         let replaced = match plan_listener(settings.enabled, granted, slot.as_ref().map(|l| l.is_alive())) {
             ListenerPlan::Keep => return false,
             ListenerPlan::Start => false,
-            ListenerPlan::Replace { restart } => {
+            ListenerPlan::Replace { restart: false } => {
                 self.stop_listener(slot);
-                if !restart {
-                    return true;
-                }
+                return true;
+            }
+            ListenerPlan::Replace { restart: true } => {
+                self.stop_listener(slot);
                 true
             }
         };

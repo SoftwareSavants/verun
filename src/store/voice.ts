@@ -13,8 +13,6 @@ import { appendToDraft, newTaskDraftProject } from './sessionDrafts'
 import { addToast } from './ui'
 
 export interface DictationTarget {
-  /** Stable id: `session:<sid>` or `new-task:<projectId>`. */
-  id: string
   /**
    * The draft a take begun here is pinned to (the backend carries it in the
    * take's events). The take goes to the live target with this draft, or to the
@@ -334,7 +332,8 @@ function onState({ state, window, take }: VoiceStateEvent) {
     setLevel(0)
     setRecordingTake(take)
   } else {
-    // The composer went away as the take began: the backend pinned it to nothing.
+    // The composer went away between this window's last target report and the
+    // recording event (a race): the take would land in a draft no one sees.
     ipc.voiceCancel().catch(e => console.error('voice cancel:', e))
     addToast('Dictation works in the chat box and the new task box.', 'info')
   }

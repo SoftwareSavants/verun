@@ -101,9 +101,9 @@ afterEach(() => {
 })
 
 describe('MessageInput as a dictation target', () => {
-  test('mounting with a session registers session:<sid>; unmounting unregisters', () => {
+  test('mounting with a session registers its draft; unmounting unregisters', () => {
     const { unmount } = render(() => <MessageInput sessionId="s1" isRunning={false} />)
-    expect(mocks.targets.map(t => ({ id: t.id, draftId: t.draftId }))).toEqual([{ id: 'session:s1', draftId: 's1' }])
+    expect(mocks.targets.map(t => t.draftId)).toEqual(['s1'])
     unmount()
     expect(mocks.targets).toEqual([])
   })
@@ -112,7 +112,7 @@ describe('MessageInput as a dictation target', () => {
     const [sid, setSid] = createSignal<string | null>('s1')
     render(() => <MessageInput sessionId={sid()} isRunning={false} />)
     setSid('s2')
-    expect(mocks.targets.map(t => t.id)).toEqual(['session:s2'])
+    expect(mocks.targets.map(t => t.draftId)).toEqual(['s2'])
   })
 
   test('a composer with no session cannot be typed in, so it is not a target and its mic is unavailable', () => {
@@ -131,7 +131,7 @@ describe('MessageInput as a dictation target', () => {
     setShowTaskBoard(true)
     expect(mocks.targets).toEqual([])
     setShowTaskBoard(false)
-    expect(mocks.targets.map(t => t.id)).toEqual(['session:s1'])
+    expect(mocks.targets.map(t => t.draftId)).toEqual(['s1'])
   })
 
   test('insert appends to the draft with a space, does not focus the input, and saves the draft', () => {

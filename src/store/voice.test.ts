@@ -52,7 +52,7 @@ const dropped = (take: number, window = 'main', draft: string | null = null) =>
 
 type TestTarget = DictationTarget & { insert: ReturnType<typeof vi.fn> }
 const makeTarget = (sid: string | null = 's1'): TestTarget => ({
-  id: sid ? `session:${sid}` : 'new-task:p', draftId: sid ?? 'new-task:p', insert: vi.fn() as never,
+  draftId: sid ?? 'new-task:p', insert: vi.fn() as never,
 })
 
 const registerDictationTarget = register
@@ -178,7 +178,7 @@ describe('delivery', () => {
     const offA = registerDictationTarget(a)
     rec(1)
     offA()
-    const b: TestTarget = { id: 'new-task:q', draftId: 'new-task:q', insert: vi.fn() as never }
+    const b: TestTarget = { draftId: 'new-task:q', insert: vi.fn() as never }
     registerDictationTarget(b)
     vi.mocked(projectById).mockReturnValue({ id: 'p' } as never)
     transcript('for p', 1, 'main', 'new-task:p')

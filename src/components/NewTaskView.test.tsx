@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-const mocks = vi.hoisted(() => ({ targets: [] as Array<{ id: string; draftId: string; insert(take: string): void }>, start: vi.fn(), open: vi.fn(), inspect: vi.fn(), project: { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' } as Record<string, string> }))
+const mocks = vi.hoisted(() => ({ targets: [] as Array<{ draftId: string; insert(take: string): void }>, start: vi.fn(), open: vi.fn(), inspect: vi.fn(), project: { id: 'p', name: 'Project', repoPath: '/repo', baseBranch: 'main', defaultAgentType: 'claude' } as Record<string, string> }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open }))
 vi.mock('../lib/ipc', () => ({
   getRepoInfo: vi.fn().mockResolvedValue({ branches: ['main', 'develop'], currentBranch: 'develop' }),
@@ -210,7 +210,7 @@ const prompt = () => screen.getByRole('textbox', { name: 'Task prompt' }) as HTM
 const dictationTarget = () => mocks.targets[mocks.targets.length - 1]
 test('registers as the dictation target of its project\'s new-task box and unregisters on unmount', () => {
   const { unmount } = render(() => <NewTaskView projectId="p" onClose={() => {}} />)
-  expect(mocks.targets.map(t => ({ id: t.id, draftId: t.draftId }))).toEqual([{ id: 'new-task:p', draftId: 'new-task:p' }])
+  expect(mocks.targets.map(t => t.draftId)).toEqual(['new-task:p'])
   unmount()
   expect(mocks.targets).toEqual([])
 })
@@ -256,7 +256,7 @@ test('hidden behind a selected task or the task board, the new-task box is not a
   setShowTaskBoard(true)
   expect(mocks.targets).toEqual([])
   setShowTaskBoard(false)
-  expect(mocks.targets.map(t => t.id)).toEqual(['new-task:p'])
+  expect(mocks.targets.map(t => t.draftId)).toEqual(['new-task:p'])
 })
 test('the mic is available while the box is a dictation target, not while it sends', async () => {
   let finish!: () => void
