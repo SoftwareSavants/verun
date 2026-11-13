@@ -150,6 +150,8 @@ pub async fn open_claude_terminal(
 
     let repo_path = db::get_repo_path_for_task(pool, &task.id).await?;
     let env_vars = crate::worktree::verun_env_vars(task.port_offset, &repo_path);
+    let trust_level =
+        crate::policy::TrustLevel::from_str(&db::get_trust_level(pool, &task.id).await?);
 
     let cwd_path = std::path::PathBuf::from(&task.worktree_path);
 
@@ -190,12 +192,8 @@ pub async fn open_claude_terminal(
                 crate::activity::ActivityBridge::unavailable(app.clone(), &session_id)
             }),
     );
-    let command = match &activity {
-        Some(bridge) if !bridge.settings.is_empty() => {
-            format!("{command} --settings {}", shell_quote(&bridge.settings))
-        }
-        _ => command,
-    };
+    let hook_settings = activity.as_ref().map_or("", |bridge| bridge.settings.as_str());
+    let command = with_permission_flags(&command, trust_level, hook_settings);
     // A new task in terminal view starts its conversation here, not in a chat process.
     let command = with_initial_prompt(&command, initial_prompt.as_deref());
     // Last, so the whole command - `--settings` included - runs inside the
@@ -678,14 +676,6 @@ pub(crate) enum ClaudeSpawnMode {
     Fresh,
 }
 
-/// Build the shell command passed to `sh -lic "<cmd>"` that spawns Claude.
-/// `exec` ensures the PTY dies with Claude instead of dropping to a login
-/// shell prompt when the user exits with Ctrl+D.
-///
-/// `model` is the value of `sessions.model` (alias like "sonnet"/"opus" or
-/// a full id like "claude-sonnet-4-6"); when set, threads it through as
-/// `--model <name>` so the TUI honors the per-session model the same way
-/// our SDK-backed UI mode does.
 /// Append the task's first prompt so `claude` starts the conversation itself.
 /// Must come last (after `--settings`), behind `--` so a leading `-` isn't a flag.
 pub(crate) fn with_initial_prompt(command: &str, prompt: Option<&str>) -> String {
@@ -695,6 +685,61 @@ pub(crate) fn with_initial_prompt(command: &str, prompt: Option<&str>) -> String
     }
 }
 
+/// Append the permission flags of the task's tier and the `--settings`
+/// (`hook_settings`: the activity hooks, `""` when there are none).
+///
+/// In a terminal the TUI asks the user itself and Verun is never asked, so
+/// each tier picks the Claude mode closest to its chat behaviour:
+/// - Ask: the default mode. Interactive Claude would otherwise start new
+///   sessions in auto mode and resume in whatever mode a session ended in.
+/// - Auto: Claude's auto mode, as a chat session of that tier runs.
+/// - Full auto: bypass permissions, Claude's "no prompts". It still prompts for
+///   the guard's ask rules, and the inline `skipDangerousModePermissionPrompt`
+///   skips the warning a bypass session opens with, without writing the
+///   user's settings. Where an admin turned bypass off, Claude starts in the
+///   default mode instead.
+///
+/// Every tier carries Verun's worktree guard: Shift+Tab can move the TUI into
+/// auto mode, and in the default mode its ask rules just prompt. The CLI
+/// takes one `--settings`, so the guard joins the hooks in it.
+pub(crate) fn with_permission_flags(
+    command: &str,
+    trust: crate::policy::TrustLevel,
+    hook_settings: &str,
+) -> String {
+    use crate::policy::TrustLevel;
+    let mode = match trust {
+        TrustLevel::Supervised => "default",
+        TrustLevel::Normal => "auto",
+        TrustLevel::FullAuto => "bypassPermissions",
+    };
+    let mut settings = serde_json::from_str::<Value>(hook_settings)
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    if let (Some(settings), Value::Object(guard)) = (
+        settings.as_object_mut(),
+        crate::agent::claude::worktree_guard_settings(),
+    ) {
+        settings.extend(guard);
+        if trust == TrustLevel::FullAuto {
+            settings.insert("skipDangerousModePermissionPrompt".into(), Value::Bool(true));
+        }
+    }
+    format!(
+        "{command} --permission-mode '{mode}' --settings {}",
+        shell_quote(&settings.to_string())
+    )
+}
+
+/// Build the shell command passed to `sh -lic "<cmd>"` that spawns Claude.
+/// `exec` ensures the PTY dies with Claude instead of dropping to a login
+/// shell prompt when the user exits with Ctrl+D.
+///
+/// `model` is the value of `sessions.model` (alias like "sonnet"/"opus" or
+/// a full id like "claude-sonnet-4-6"); when set, threads it through as
+/// `--model <name>` so the TUI honors the per-session model the same way
+/// our SDK-backed UI mode does.
 pub(crate) fn build_claude_shell_command(
     mode: ClaudeSpawnMode,
     id: &str,
@@ -1447,6 +1492,94 @@ mod tests {
             with_initial_prompt("exec claude --settings '{}'", Some("-fix it's $(x)")),
             "exec claude --settings '{}' -- '-fix it'\\''s $(x)'"
         );
+    }
+
+    /// The JSON a command passes to `--settings`, unquoted.
+    fn settings_of(command: &str) -> serde_json::Value {
+        let quoted = command
+            .split_once(" --settings '")
+            .unwrap_or_else(|| panic!("no --settings in {command}"))
+            .1;
+        let json = quoted
+            .strip_suffix('\'')
+            .unwrap_or_else(|| panic!("--settings is not last in {command}"))
+            .replace("'\\''", "'");
+        serde_json::from_str(&json).unwrap()
+    }
+
+    const HOOKS: &str = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"relay","timeout":1}]}]}}"#;
+
+    #[test]
+    fn an_auto_tier_terminal_runs_in_auto_mode_with_the_guard_beside_the_hooks() {
+        use crate::policy::TrustLevel;
+        let command = with_permission_flags("exec claude --resume 'r1'", TrustLevel::Normal, HOOKS);
+        assert!(
+            command.starts_with("exec claude --resume 'r1' --permission-mode 'auto' --settings '"),
+            "{command}"
+        );
+        let settings = settings_of(&command);
+        let guard = crate::agent::claude::worktree_guard_settings();
+        let hooks: serde_json::Value = serde_json::from_str(HOOKS).unwrap();
+        assert_eq!(settings["hooks"], hooks["hooks"]);
+        assert_eq!(settings["permissions"], guard["permissions"]);
+        assert_eq!(settings["autoMode"], guard["autoMode"]);
+        // Only the bypass tier skips bypass mode's warning.
+        assert!(settings.get(SKIP_BYPASS_WARNING).is_none(), "{settings}");
+    }
+
+    #[test]
+    fn an_auto_tier_terminal_without_hooks_still_gets_the_guard() {
+        let command = with_permission_flags("exec claude", crate::policy::TrustLevel::Normal, "");
+        assert!(command.starts_with("exec claude --permission-mode 'auto' --settings '"), "{command}");
+        assert_eq!(settings_of(&command), crate::agent::claude::worktree_guard_settings());
+    }
+
+    #[test]
+    fn an_ask_tier_terminal_asks_and_keeps_the_guard() {
+        use crate::policy::TrustLevel;
+        // Interactive Claude starts new sessions in auto mode by default and
+        // resumes in the mode a session ended in, so Ask has to say so. The
+        // guard still comes along: Shift+Tab can take the TUI into auto mode,
+        // and in the default mode its ask rules just prompt.
+        let command = with_permission_flags("exec claude", TrustLevel::Supervised, HOOKS);
+        assert!(command.starts_with("exec claude --permission-mode 'default' --settings '"), "{command}");
+        let settings = settings_of(&command);
+        let guard = crate::agent::claude::worktree_guard_settings();
+        let hooks: serde_json::Value = serde_json::from_str(HOOKS).unwrap();
+        assert_eq!(settings["hooks"], hooks["hooks"]);
+        assert_eq!(settings["permissions"], guard["permissions"]);
+        assert_eq!(settings["autoMode"], guard["autoMode"]);
+        assert!(settings.get(SKIP_BYPASS_WARNING).is_none(), "{settings}");
+
+        let without_hooks = with_permission_flags("exec claude", TrustLevel::Supervised, "");
+        assert_eq!(settings_of(&without_hooks), guard);
+    }
+
+    const SKIP_BYPASS_WARNING: &str = "skipDangerousModePermissionPrompt";
+
+    #[test]
+    fn a_full_auto_terminal_bypasses_permissions_but_keeps_the_guard() {
+        // "No prompts. Anything goes." Claude still asks for the guard's ask
+        // rules in bypass mode, and the inline setting skips the warning a
+        // bypass session opens with, without writing the user's settings.
+        use crate::policy::TrustLevel;
+        let command = with_permission_flags("exec claude", TrustLevel::FullAuto, HOOKS);
+        assert!(
+            command.starts_with("exec claude --permission-mode 'bypassPermissions' --settings '"),
+            "{command}"
+        );
+        let settings = settings_of(&command);
+        let guard = crate::agent::claude::worktree_guard_settings();
+        let hooks: serde_json::Value = serde_json::from_str(HOOKS).unwrap();
+        assert_eq!(settings["hooks"], hooks["hooks"]);
+        assert_eq!(settings["permissions"], guard["permissions"]);
+        assert_eq!(settings["autoMode"], guard["autoMode"]);
+        assert_eq!(settings[SKIP_BYPASS_WARNING], true);
+
+        let without_hooks = with_permission_flags("exec claude", TrustLevel::FullAuto, "");
+        let mut expected = guard;
+        expected[SKIP_BYPASS_WARNING] = serde_json::json!(true);
+        assert_eq!(settings_of(&without_hooks), expected);
     }
 
     #[test]

@@ -492,3 +492,26 @@ describe('MessageInput /new-session', () => {
     expect(editor(container).textContent).toBe('')
   })
 })
+
+describe('MessageInput tool policy', () => {
+  test("the middle tier is Auto, which leaves the calls to Claude's auto mode", async () => {
+    render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    await flush()
+
+    const chip = screen.getByTitle('Tool policy: Auto')
+    expect(chip.textContent).toBe('Auto')
+    fireEvent.click(chip)
+    expect(screen.getByText("Claude's auto mode decides")).toBeTruthy()
+    expect(screen.queryByText('Auto-safe')).toBeNull()
+    expect(screen.queryByText('Auto-approve safe')).toBeNull()
+  })
+
+  test("another agent's Auto tier is not described as Claude's", async () => {
+    mocks.session = { id: 's1', taskId: 't1', agentType: 'codex', accountId: null, model: null }
+    render(() => <MessageInput sessionId="s1" isRunning={false} />)
+    await flush()
+
+    fireEvent.click(screen.getByTitle('Tool policy: Auto'))
+    expect(screen.queryByText("Claude's auto mode decides")).toBeNull()
+  })
+})

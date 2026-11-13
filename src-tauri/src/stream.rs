@@ -458,6 +458,33 @@ impl RateLimitInfoEvent {
     }
 }
 
+/// Emitted when a Claude session on the Auto tier runs without Claude's auto
+/// mode (its model or account can't use it): it runs in the default mode, and
+/// Verun asks for what auto mode would have decided. The UI says so once.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoModeUnavailableEvent {
+    pub session_id: String,
+    /// What gave it away (the CLI's refusal, or the mode a turn started in).
+    pub reason: Option<String>,
+}
+
+pub const AUTO_MODE_UNAVAILABLE_EVENT: &str = "claude-auto-mode-unavailable";
+
+pub fn emit_auto_mode_unavailable(app: &AppHandle, session_id: &str, reason: Option<String>) {
+    eprintln!(
+        "[verun][{session_id}] Claude's auto mode is unavailable: {}",
+        reason.as_deref().unwrap_or("no reason given")
+    );
+    let _ = app.emit(
+        AUTO_MODE_UNAVAILABLE_EVENT,
+        AutoModeUnavailableEvent {
+            session_id: session_id.to_string(),
+            reason,
+        },
+    );
+}
+
 /// Emitted to frontend when a tool call was auto-approved by the policy engine
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1817,8 +1844,7 @@ fn process_github_remote_invalidation(
 /// frontend and block until the user responds via `respond_to_approval`.
 ///
 /// `claude_home` is where Claude keeps its files for this session: the home of
-/// the session's account. It holds the transcript, and tool reads under it are
-/// auto-approved. Only Claude sessions read it.
+/// the session's account. It holds the transcript. Only Claude sessions read it.
 ///
 /// `account_key` is the session's `accounts::account_key`. The rate limits the
 /// stream reports are tagged with it.
@@ -1835,7 +1861,6 @@ pub async fn stream_and_capture(
     pending_control_responses: PendingControlResponses,
     db_tx: DbWriteTx,
     worktree_path: String,
-    repo_path: String,
     trust_level: Arc<AtomicU8>,
     agent: Box<dyn crate::agent::Agent>,
     claude_home: ClaudeHome,
@@ -1844,6 +1869,8 @@ pub async fn stream_and_capture(
     let claims = (agent.kind() == crate::agent::AgentKind::Claude)
         .then(|| crate::transcript_source::for_session(&app, &session_id)).flatten();
     let mut claude_message = None;
+    // Whether a session asked to run in auto mode started a turn without it.
+    let mut auto_mode_watch = crate::claude_control::AutoModeWatch::default();
     let mut reader = BufReader::new(stdout).lines();
     let mut buffer: Vec<OutputItem> = Vec::new();
     let mut last_flush = Instant::now();
@@ -1959,7 +1986,7 @@ pub async fn stream_and_capture(
                         if let Some(cr) = handle_control_request(
                             &app, &session_id, &task_id, &v, &stdin,
                             &pending_approvals, &pending_approval_meta,
-                            &worktree_path, &repo_path, claude_home.root(),
+                            &pending_control_responses, &*agent,
                             &trust_level, &db_tx,
                         ).await {
                             if cr.handled {
@@ -1977,6 +2004,15 @@ pub async fn stream_and_capture(
                                 let _ = app.emit(
                                     "mcp-servers",
                                     McpServersEvent { session_id: session_id.clone(), servers },
+                                );
+                            }
+                            let base_mode =
+                                agent.base_permission_mode(TrustLevel::from_atomic(&trust_level));
+                            if let Some(mode) = auto_mode_watch.observe(&v, base_mode) {
+                                emit_auto_mode_unavailable(
+                                    &app,
+                                    &session_id,
+                                    Some(format!("the turn started in the {mode} permission mode")),
                                 );
                             }
                         }
@@ -2422,9 +2458,8 @@ async fn handle_control_request(
     stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
     pending_approvals: &PendingApprovals,
     pending_meta: &PendingApprovalMeta,
-    worktree_path: &str,
-    repo_path: &str,
-    claude_home: &Path,
+    pending_control_responses: &PendingControlResponses,
+    agent: &dyn crate::agent::Agent,
     trust_level: &Arc<AtomicU8>,
     db_tx: &DbWriteTx,
 ) -> Option<ControlRequestResult> {
@@ -2492,14 +2527,7 @@ async fn handle_control_request(
         }
     } else {
         crate::claude_control::apply_prompt_policy(
-            policy::evaluate(
-                &tool_name,
-                &tool_input,
-                worktree_path,
-                repo_path,
-                TrustLevel::from_atomic(trust_level),
-                claude_home,
-            ),
+            policy::evaluate(&tool_name, &tool_input, TrustLevel::from_atomic(trust_level)),
             prompt.as_ref(),
         )
     };
@@ -2519,28 +2547,21 @@ async fn handle_control_request(
         .await;
 
     match result.decision {
-        PolicyDecision::AutoAllow | PolicyDecision::AutoAllowLogged => {
+        PolicyDecision::AutoAllow => {
             // Auto-approve: write allow response directly to stdin
-            let response = serde_json::json!({
-                "type": "control_response",
-                "response": {
-                    "subtype": "success",
-                    "request_id": cli_request_id,
-                    "response": {
-                        "behavior": "allow",
-                        "updatedInput": tool_input,
-                    },
-                }
+            let allow = serde_json::json!({
+                "behavior": "allow",
+                "updatedInput": tool_input,
             });
-
-            let mut payload = serde_json::to_string(&response).unwrap_or_default();
-            payload.push('\n');
-
-            let mut stdin_guard = stdin.lock().await;
-            if let Some(ref mut writer) = *stdin_guard {
-                let _ = writer.write_all(payload.as_bytes()).await;
-                let _ = writer.flush().await;
-            }
+            write_tool_answer(
+                stdin,
+                pending_control_responses,
+                agent,
+                &cli_request_id,
+                allow,
+                None,
+            )
+            .await;
 
             // Notify frontend (lightweight event for UI indicator)
             let _ = app.emit(
@@ -2582,7 +2603,7 @@ async fn handle_control_request(
                 PendingApprovalEntry {
                     request_id: request_id.clone(),
                     session_id: session_id.to_string(),
-                    tool_name,
+                    tool_name: tool_name.clone(),
                     tool_input: tool_input.clone(),
                     prompt,
                     tool_use_id,
@@ -2620,22 +2641,35 @@ async fn handle_control_request(
                 })
             };
 
-            let control_response = serde_json::json!({
-                "type": "control_response",
-                "response": {
-                    "subtype": "success",
-                    "request_id": cli_request_id,
-                    "response": response_inner,
-                }
-            });
-
-            let mut payload = serde_json::to_string(&control_response).unwrap_or_default();
-            payload.push('\n');
-
-            let mut stdin_guard = stdin.lock().await;
-            if let Some(ref mut writer) = *stdin_guard {
-                let _ = writer.write_all(payload.as_bytes()).await;
-                let _ = writer.flush().await;
+            // An approved plan leaves Plan for the tier's base mode, read now:
+            // the tier may have changed while the plan was on screen.
+            let leave_plan_for = if elicitation {
+                None
+            } else {
+                crate::claude_control::plan_exit_mode(
+                    &tool_name,
+                    &behavior,
+                    agent.base_permission_mode(TrustLevel::from_atomic(trust_level)),
+                )
+            };
+            let switch = write_tool_answer(
+                stdin,
+                pending_control_responses,
+                agent,
+                &cli_request_id,
+                response_inner,
+                leave_plan_for,
+            )
+            .await;
+            if let (Some(mode), Some((switch_id, answer))) = (leave_plan_for, switch) {
+                watch_plan_exit_switch(
+                    app,
+                    session_id,
+                    pending_control_responses,
+                    mode,
+                    switch_id,
+                    answer,
+                );
             }
 
             Some(ControlRequestResult {
@@ -2644,6 +2678,74 @@ async fn handle_control_request(
             })
         }
     }
+}
+
+/// Write the answer to a `can_use_tool` request. With `leave_plan_for`, the
+/// answer approves a plan, and a switch to that mode is written first: the CLI
+/// applies its stdin in order, so ExitPlanMode leaves Plan for that mode. Its
+/// own answer comes back through this stream, which can't wait for it here;
+/// the switch's request id and pending answer are returned instead.
+async fn write_tool_answer(
+    stdin: &Arc<TokioMutex<Option<ChildStdin>>>,
+    pending: &PendingControlResponses,
+    agent: &dyn crate::agent::Agent,
+    cli_request_id: &str,
+    response: serde_json::Value,
+    leave_plan_for: Option<&str>,
+) -> Option<(String, crate::task::ModeAnswer)> {
+    let switch = match leave_plan_for {
+        Some(mode) => match crate::task::send_permission_mode(stdin, pending, agent, mode).await {
+            Ok(switch) => Some(switch),
+            Err(e) => {
+                eprintln!("[verun][stream] switching to {mode} before the plan's approval: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+    let control_response = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": cli_request_id,
+            "response": response,
+        }
+    });
+    let mut payload = serde_json::to_string(&control_response).unwrap_or_default();
+    payload.push('\n');
+    let mut stdin_guard = stdin.lock().await;
+    if let Some(ref mut writer) = *stdin_guard {
+        let _ = writer.write_all(payload.as_bytes()).await;
+        let _ = writer.flush().await;
+    }
+    switch
+}
+
+/// Record the mode an approved plan switched a process to, and say so when
+/// the CLI refused auto mode (the plan then runs in the default mode, and
+/// Verun asks for each call).
+fn watch_plan_exit_switch(
+    app: &AppHandle,
+    session_id: &str,
+    pending: &PendingControlResponses,
+    mode: &'static str,
+    switch_id: String,
+    answer: crate::task::ModeAnswer,
+) {
+    use tauri::Manager;
+    if let Some(active) = app.try_state::<crate::task::ActiveMap>() {
+        crate::task::note_permission_mode(active.inner(), session_id, mode);
+    }
+    let (app, session_id, pending) = (app.clone(), session_id.to_string(), pending.clone());
+    tokio::spawn(async move {
+        // This stream reads the answer as soon as the approval is written.
+        let limit = Duration::from_secs(10);
+        if let Some(reason) =
+            crate::task::auto_mode_refusal(mode, &switch_id, answer, &pending, limit).await
+        {
+            emit_auto_mode_unavailable(&app, &session_id, Some(reason));
+        }
+    });
 }
 
 /// Queue an item for the next flush, merging a streaming delta into the
@@ -4590,5 +4692,79 @@ mod tests {
         let s = String::from_utf8(bytes).unwrap();
         // Empty map, not array — matches `Record<questionId, {answers}>` schema
         assert!(s.contains("\"answers\":{}"), "{s}");
+    }
+
+    // -- Answering a tool call --
+
+    /// `cat` standing in for the CLI: every frame written to it comes back
+    /// on its stdout, in order.
+    fn echo_cli() -> (
+        tokio::process::Child,
+        Arc<TokioMutex<Option<ChildStdin>>>,
+        tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    ) {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin = Arc::new(TokioMutex::new(child.stdin.take()));
+        let lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        (child, stdin, lines)
+    }
+
+    async fn next_frame(
+        lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    ) -> serde_json::Value {
+        let line = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+            .await
+            .expect("a frame")
+            .unwrap()
+            .unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_approved_plan_switches_to_the_tiers_mode_before_it_is_approved() {
+        // The CLI applies its stdin in order, so the mode is in place when
+        // ExitPlanMode leaves Plan, and the stream reader, busy with this
+        // answer, doesn't wait for the switch's own answer.
+        let (_child, stdin, mut lines) = echo_cli();
+        let pending = crate::task::new_pending_control_responses();
+        let claude = crate::agent::AgentKind::Claude.implementation();
+        let allow = serde_json::json!({"behavior": "allow", "updatedInput": {}});
+
+        let switch =
+            write_tool_answer(&stdin, &pending, &*claude, "cli-1", allow.clone(), Some("auto")).await;
+
+        let first = next_frame(&mut lines).await;
+        assert_eq!(first["type"], "control_request");
+        assert_eq!(first["request"]["subtype"], "set_permission_mode");
+        assert_eq!(first["request"]["mode"], "auto");
+        let second = next_frame(&mut lines).await;
+        assert_eq!(second["type"], "control_response");
+        assert_eq!(second["response"]["request_id"], "cli-1");
+        assert_eq!(second["response"]["response"], allow);
+        // The switch's answer is still awaited, read by the stream later.
+        let (switch_id, _answer) = switch.expect("the switch's answer to come");
+        assert_eq!(first["request_id"], switch_id.as_str());
+        assert!(pending.contains_key(&switch_id));
+    }
+
+    #[tokio::test]
+    async fn other_answers_are_written_alone() {
+        let (_child, stdin, mut lines) = echo_cli();
+        let pending = crate::task::new_pending_control_responses();
+        let claude = crate::agent::AgentKind::Claude.implementation();
+        let deny = serde_json::json!({"behavior": "deny", "message": "no", "interrupt": false});
+
+        let switch = write_tool_answer(&stdin, &pending, &*claude, "cli-2", deny.clone(), None).await;
+
+        let only = next_frame(&mut lines).await;
+        assert_eq!(only["type"], "control_response");
+        assert_eq!(only["response"]["response"], deny);
+        assert!(switch.is_none());
+        assert!(pending.is_empty());
     }
 }

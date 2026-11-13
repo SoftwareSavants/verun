@@ -705,7 +705,7 @@ pub trait Agent: Send + Sync {
     }
 
     /// Serialize a `set_permission_mode` control request for persistent
-    /// sessions. `mode` is the target mode ("default", "plan",
+    /// sessions. `mode` is the target mode ("default", "plan", "auto",
     /// "acceptEdits", "bypassPermissions"). Only needed when
     /// `persists_across_turns()` is true, since respawning naturally picks
     /// up the new mode from CLI args.
@@ -715,6 +715,12 @@ pub trait Agent: Send + Sync {
         _mode: &str,
     ) -> Result<Vec<u8>, String> {
         Err("agent does not support set_permission_mode".into())
+    }
+
+    /// The CLI permission mode a session of this tier runs in when Plan is
+    /// off: what it starts in, and what leaving Plan goes back to.
+    fn base_permission_mode(&self, _trust: crate::policy::TrustLevel) -> &'static str {
+        "default"
     }
 
     /// Serialize a `set_model` control request. `model = None` resets to
@@ -959,6 +965,106 @@ mod tests {
     fn claude_build_args_omits_chrome_flag_by_default() {
         let args = Claude.build_session_args(&default_args());
         assert!(!args.iter().any(|a| a == "--chrome"));
+    }
+
+    /// Every value `flag` is given in `args`.
+    fn flag_values<'a>(args: &'a [String], flag: &str) -> Vec<&'a str> {
+        args.windows(2)
+            .filter(|pair| pair[0] == flag)
+            .map(|pair| pair[1].as_str())
+            .collect()
+    }
+
+    #[test]
+    fn claude_build_args_auto_tier_starts_in_claudes_auto_mode() {
+        let args = Claude.build_session_args(&SessionArgs {
+            trust_level: crate::policy::TrustLevel::Normal,
+            ..default_args()
+        });
+        assert_eq!(flag_values(&args, "--permission-mode"), vec!["auto"]);
+    }
+
+    #[test]
+    fn claude_build_args_plan_wins_over_the_auto_tier() {
+        let args = Claude.build_session_args(&SessionArgs {
+            plan_mode: true,
+            trust_level: crate::policy::TrustLevel::Normal,
+            ..default_args()
+        });
+        assert_eq!(flag_values(&args, "--permission-mode"), vec!["plan"]);
+    }
+
+    #[test]
+    fn claude_build_args_ask_and_full_auto_start_in_the_default_mode() {
+        // Named, not left out: without the flag Claude takes the user's
+        // `defaultMode` (which can be auto) or resumes a session in plan.
+        for trust in [
+            crate::policy::TrustLevel::Supervised,
+            crate::policy::TrustLevel::FullAuto,
+        ] {
+            let args = Claude.build_session_args(&SessionArgs {
+                trust_level: trust,
+                ..default_args()
+            });
+            assert_eq!(flag_values(&args, "--permission-mode"), vec!["default"], "{trust:?}");
+        }
+    }
+
+    #[test]
+    fn claude_build_args_start_in_the_mode_verun_records() {
+        // The spawn records `want_permission_mode` as the process's mode; the
+        // flag has to say the same, in every tier, with and without Plan.
+        use crate::policy::TrustLevel;
+        for trust in [TrustLevel::Normal, TrustLevel::Supervised, TrustLevel::FullAuto] {
+            for plan_mode in [false, true] {
+                let args = Claude.build_session_args(&SessionArgs {
+                    trust_level: trust,
+                    plan_mode,
+                    ..default_args()
+                });
+                assert_eq!(
+                    flag_values(&args, "--permission-mode"),
+                    vec![crate::task::want_permission_mode(&Claude, trust, plan_mode)],
+                    "{trust:?}, plan {plan_mode}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn claude_build_args_carry_the_worktree_guard_in_every_tier() {
+        // `--settings` is read once, at spawn, and a running session can be
+        // switched into auto mode later: every tier carries the guard.
+        for trust in [
+            crate::policy::TrustLevel::Normal,
+            crate::policy::TrustLevel::Supervised,
+            crate::policy::TrustLevel::FullAuto,
+        ] {
+            let args = Claude.build_session_args(&SessionArgs {
+                trust_level: trust,
+                ..default_args()
+            });
+            let settings = flag_values(&args, "--settings");
+            assert_eq!(settings.len(), 1, "{trust:?}: {args:?}");
+            let settings: serde_json::Value = serde_json::from_str(settings[0]).unwrap();
+            assert_eq!(settings, claude::worktree_guard_settings(), "{trust:?}");
+        }
+    }
+
+    #[test]
+    fn claude_base_permission_mode_follows_the_tier() {
+        use crate::policy::TrustLevel;
+        assert_eq!(Claude.base_permission_mode(TrustLevel::Normal), "auto");
+        assert_eq!(Claude.base_permission_mode(TrustLevel::Supervised), "default");
+        assert_eq!(Claude.base_permission_mode(TrustLevel::FullAuto), "default");
+    }
+
+    #[test]
+    fn other_agents_base_permission_mode_is_default() {
+        use crate::policy::TrustLevel;
+        for agent in [Box::new(Codex) as Box<dyn Agent>, Box::new(Gemini), Box::new(Grok)] {
+            assert_eq!(agent.base_permission_mode(TrustLevel::Normal), "default");
+        }
     }
 
     #[test]

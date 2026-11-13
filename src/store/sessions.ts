@@ -1,8 +1,9 @@
 import { clearsPendingApprovals } from '../lib/sessionActivity'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { listen } from '@tauri-apps/api/event'
-import type { OutsideSession, Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection, AgentType } from '../types'
+import type { OutsideSession, Session, SessionOutputEvent, SessionStatusEvent, OutputItem, AttachmentRef, ToolApprovalRequest, PolicyAutoApprovedEvent, AutoModeUnavailableEvent, RateLimitInfo, McpServerStatus, Step, AccountSelection, AgentType } from '../types'
 import { setSessionMcpServers } from './mcpServers'
+import { addToast } from './ui'
 import { setTasks } from './tasks'
 import { addStep, dequeueArmedStep, disarmAllSteps, clearSteps, restoreStep } from './steps'
 import * as ipc from '../lib/ipc'
@@ -462,6 +463,18 @@ export const sessionsForTask = (taskId: string) =>
 export const sessionById = (id: string) =>
   sessions.find(s => s.id === id)
 
+/** Sessions already told that Claude's auto mode isn't available to them. */
+const toldAutoModeUnavailable = new Set<string>()
+
+/** A session on the Auto tier runs without Claude's auto mode (its model or
+ *  account can't use it), so Verun asks instead. Every turn reports it again;
+ *  the user is told once per session. */
+function tellAutoModeUnavailable(sessionId: string) {
+  if (toldAutoModeUnavailable.has(sessionId)) return
+  toldAutoModeUnavailable.add(sessionId)
+  addToast("Claude's auto mode isn't available for this model or account, so Verun will ask instead.", 'info', { duration: 8000 })
+}
+
 // Event listeners — call once at app mount
 
 let listenersInitialized = false
@@ -618,6 +631,10 @@ export async function initSessionListeners() {
     setAutoApprovedCounts(produce(store => {
       store[sessionId] = (store[sessionId] || 0) + 1
     }))
+  })
+
+  await listen<AutoModeUnavailableEvent>('claude-auto-mode-unavailable', (event) => {
+    tellAutoModeUnavailable(event.payload.sessionId)
   })
 
   await listen<RateLimitInfo>('rate-limit-info', (event) => {

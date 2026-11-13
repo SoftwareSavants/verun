@@ -62,6 +62,57 @@ pub fn apply_prompt_policy(result: PolicyResult, prompt: Option<&ApprovalPrompt>
     result
 }
 
+/// The mode to switch a process to before answering a `can_use_tool` with
+/// `behavior`: the tier's `base_mode` when a plan is approved, else none.
+///
+/// Approving ExitPlanMode alone leaves Plan for the mode the session was in
+/// before it, or the default mode for a session started in Plan. A
+/// `set_permission_mode` sent first decides it instead, and unlike a
+/// `setMode` in the answer it is refused when auto mode isn't available.
+pub fn plan_exit_mode<'a>(tool_name: &str, behavior: &str, base_mode: &'a str) -> Option<&'a str> {
+    (tool_name == "ExitPlanMode" && behavior == "allow").then_some(base_mode)
+}
+
+/// The permission mode a `system/init` message reports the turn starts in.
+/// Each turn starts with one. (`system/status` reports changes too, but can
+/// arrive after a later change, so it isn't read.)
+pub fn init_permission_mode(v: &Value) -> Option<&str> {
+    if v.get("type").and_then(Value::as_str) != Some("system")
+        || v.get("subtype").and_then(Value::as_str) != Some("init")
+    {
+        return None;
+    }
+    v.get("permissionMode").and_then(Value::as_str)
+}
+
+/// Whether a session whose tier runs in `base_mode` reports another mode
+/// because auto mode isn't available: Claude then starts in the default mode
+/// without saying why. Plan is asked for on its own, so it doesn't count.
+pub fn auto_mode_fell_back(base_mode: &str, reported_mode: &str) -> bool {
+    base_mode == "auto" && reported_mode != "auto" && reported_mode != "plan"
+}
+
+/// Watches one Claude process's stream for auto mode it didn't get.
+#[derive(Debug, Default)]
+pub struct AutoModeWatch {
+    reported: bool,
+}
+
+impl AutoModeWatch {
+    /// The mode `v` reports instead of auto, the first time it does.
+    pub fn observe(&mut self, v: &Value, base_mode: &str) -> Option<String> {
+        if self.reported {
+            return None;
+        }
+        let mode = init_permission_mode(v)?;
+        if !auto_mode_fell_back(base_mode, mode) {
+            return None;
+        }
+        self.reported = true;
+        Some(mode.to_string())
+    }
+}
+
 pub fn is_elicitation(request: &Value) -> bool {
     request.get("subtype").and_then(Value::as_str) == Some("elicitation")
 }
@@ -189,6 +240,57 @@ mod tests {
             apply_prompt_policy(allow(), None).decision,
             PolicyDecision::AutoAllow
         );
+    }
+
+    #[test]
+    fn approving_a_plan_leaves_plan_for_the_tiers_base_mode() {
+        // Left alone, a session started in Plan lands in the default mode and
+        // asks for every edit of the plan it was just told to carry out.
+        assert_eq!(plan_exit_mode("ExitPlanMode", "allow", "auto"), Some("auto"));
+        assert_eq!(plan_exit_mode("ExitPlanMode", "allow", "default"), Some("default"));
+        // Asking for changes keeps planning.
+        assert_eq!(plan_exit_mode("ExitPlanMode", "deny", "auto"), None);
+        assert_eq!(plan_exit_mode("Bash", "allow", "auto"), None);
+    }
+
+    #[test]
+    fn reads_the_permission_mode_from_init() {
+        let init = json!({"type":"system","subtype":"init","session_id":"s","permissionMode":"default"});
+        assert_eq!(init_permission_mode(&init), Some("default"));
+        // A status message reports mode changes late; only init is read.
+        let status = json!({"type":"system","subtype":"status","permissionMode":"default"});
+        assert_eq!(init_permission_mode(&status), None);
+        assert_eq!(
+            init_permission_mode(&json!({"type":"system","subtype":"init"})),
+            None
+        );
+    }
+
+    #[test]
+    fn auto_mode_fell_back_only_when_auto_was_asked_for() {
+        // Auto unavailable (older model, admin turned it off): manual instead.
+        assert!(auto_mode_fell_back("auto", "default"));
+        // Plan is asked for on its own, and auto is what was wanted.
+        assert!(!auto_mode_fell_back("auto", "plan"));
+        assert!(!auto_mode_fell_back("auto", "auto"));
+        // Ask and Full auto never asked for auto.
+        assert!(!auto_mode_fell_back("default", "default"));
+        assert!(!auto_mode_fell_back("default", "plan"));
+    }
+
+    #[test]
+    fn auto_mode_watch_reports_a_fall_back_once_per_process() {
+        // Every turn starts with an init that reports the mode again.
+        let init = |mode: &str| json!({"type":"system","subtype":"init","permissionMode":mode});
+        let mut watch = AutoModeWatch::default();
+        assert_eq!(watch.observe(&init("auto"), "auto"), None);
+        assert_eq!(watch.observe(&init("plan"), "auto"), None);
+        assert_eq!(watch.observe(&init("default"), "auto"), Some("default".into()));
+        assert_eq!(watch.observe(&init("default"), "auto"), None);
+
+        // The Ask tier asked for the default mode and got it.
+        let mut ask = AutoModeWatch::default();
+        assert_eq!(ask.observe(&init("default"), "default"), None);
     }
 
     #[test]
