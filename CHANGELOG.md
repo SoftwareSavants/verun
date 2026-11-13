@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A Claude terminal that printed a lot while it was not shown no longer gets an "earlier output omitted" line through its screen on return; Claude is asked to redraw instead (shell terminals keep the note)
 - Coming back to a running Claude terminal no longer sits on "Starting Claude Code..." until a key is pressed: the overlay clears as soon as the terminal shows output, including output already on screen
 - New task (⌘N) at the top of the sidebar starts a task from either view, including recent activity; the draft's header switches its project (most recently active first) and keeps what you typed
 - In the Recent sidebar view, ⌘⌥↑/↓ and ⌘1-9 follow the order on screen (Needs you, then most recent) instead of the project order
