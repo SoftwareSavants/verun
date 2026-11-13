@@ -1,4 +1,5 @@
 import type { AttachmentRef } from '../types'
+import { insertDictation } from '../lib/dictationInsert'
 import { deserializeAttachments, serializeAttachments } from '../lib/binary'
 
 // Per-session composer drafts, persisted so they survive reloads and are
@@ -16,6 +17,11 @@ export function loadDraftMessage(sid: string): string | null {
 export function saveDraftMessage(sid: string, message: string) {
   if (message) localStorage.setItem(msgKey(sid), message)
   else localStorage.removeItem(msgKey(sid))
+}
+
+/** Append a dictated take to a session's draft, for a composer that is not mounted. */
+export function appendToDraft(sid: string, take: string) {
+  saveDraftMessage(sid, insertDictation(loadDraftMessage(sid) ?? '', take, null).text)
 }
 
 export function loadDraftAttachments(sid: string): AttachmentRef[] {

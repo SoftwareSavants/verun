@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from 'vitest'
-import { clearDraft, loadDraftAttachments, loadDraftMessage, saveDraftAttachments, saveDraftMessage } from './sessionDrafts'
+import { appendToDraft, clearDraft, loadDraftAttachments, loadDraftMessage, saveDraftAttachments, saveDraftMessage } from './sessionDrafts'
 
 const ref = { hash: 'h1', mimeType: 'image/png', name: 'a.png', size: 1 }
 
@@ -40,4 +40,15 @@ test('clearDraft removes message and attachments for that session only', () => {
   expect(loadDraftMessage('s1')).toBeNull()
   expect(loadDraftAttachments('s1')).toEqual([])
   expect(loadDraftMessage('s2')).toBe('b')
+})
+
+test('appendToDraft appends a take to the existing draft with spacing', () => {
+  saveDraftMessage('s1', 'hello')
+  appendToDraft('s1', ' world ')
+  expect(loadDraftMessage('s1')).toBe('hello world')
+})
+
+test('appendToDraft on no draft saves the take', () => {
+  appendToDraft('s2', 'hi')
+  expect(loadDraftMessage('s2')).toBe('hi')
 })
