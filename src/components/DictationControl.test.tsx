@@ -148,6 +148,7 @@ describe('DictationControl', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Dictation language: English' }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add language...' }))
     expect(mocks.openDictationSetup).toHaveBeenCalledOnce()
+    expect(mocks.openDictationSetup).toHaveBeenCalledWith({ reason: 'add-language' })
     expect(screen.queryByRole('menuitem')).toBeNull()
   })
 })

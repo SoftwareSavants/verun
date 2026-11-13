@@ -37,7 +37,8 @@ export function formatBytes(n: number): string {
 
 /** A download size the way macOS shows one: decimal units, "574 MB", "1.6 GB". */
 export function formatDownloadSize(bytes: number): string {
-  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`
+  // From what would round to 1000 MB up, gigabytes: never "1000 MB".
+  if (bytes >= 999.5e6) return `${(bytes / 1e9).toFixed(1)} GB`
   return `${Math.round(bytes / 1e6)} MB`
 }
 

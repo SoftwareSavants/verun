@@ -12,7 +12,8 @@ export const Toggle: Component<Props> = (props) => {
     <button
       type="button"
       aria-label={props.label}
-      aria-pressed={props.checked}
+      role="switch"
+      aria-checked={props.checked}
       class="w-9 h-5 rounded-full transition-colors relative"
       classList={{ 'bg-accent': props.checked, 'bg-surface-3': !props.checked }}
       onClick={() => props.onChange(!props.checked)}

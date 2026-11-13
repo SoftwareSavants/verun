@@ -13,6 +13,7 @@ vi.mock('../lib/ipc', () => ({
   voiceEnd: vi.fn(),
   voiceCancel: vi.fn(),
   voiceSetEnabled: vi.fn(),
+  voiceSetLanguage: vi.fn(),
   voiceDownloadModel: vi.fn(),
   voiceDeleteModel: vi.fn(),
   voiceRequestMicrophone: vi.fn(),
@@ -28,7 +29,8 @@ import {
   initVoice, registerDictationTarget as register, toggleDictation, voiceState, voiceLevel, voiceStatus,
   dictationSetupRequest, __resetVoiceForTests, type DictationTarget,
   modelDownloads, downloadDictationModel, deleteDictationModel, refreshVoiceStatus, setDictationEnabled,
-  requestMicrophone, dictationAvailable,
+  requestMicrophone, dictationAvailable, watchVoiceStatusOnFocus, chooseDictationLanguage, pendingDictationLanguage,
+  setDictationLanguage,
 } from './voice'
 import type { VoiceStatus } from '../types/voice'
 
@@ -315,9 +317,19 @@ describe('state', () => {
 })
 
 describe('errors', () => {
-  test.each(['model-missing', 'disabled'] as const)('%s opens the setup request', error => {
-    failed(null, error)
-    expect(dictationSetupRequest()).toEqual({})
+  test('disabled opens setup to turn it on', () => {
+    failed(null, 'disabled')
+    expect(dictationSetupRequest()).toEqual({ reason: 'enable' })
+    expect(addToast).not.toHaveBeenCalled()
+  })
+
+  test('model-missing re-reads the status first, then opens setup for the missing model', async () => {
+    const before = vi.mocked(ipc.voiceStatus).mock.calls.length
+    vi.mocked(ipc.voiceStatus).mockResolvedValue(status({ models: [{ id: 'whisper-turbo', displayName: 'W', installed: false, bytes: 1 }] }))
+    failed(null, 'model-missing')
+    expect(ipc.voiceStatus).toHaveBeenCalledTimes(before + 1)
+    await vi.waitFor(() => expect(dictationSetupRequest()).toEqual({ reason: 'model-missing' }))
+    expect(voiceStatus()?.models[0].installed).toBe(false)
     expect(addToast).not.toHaveBeenCalled()
   })
 
@@ -335,7 +347,7 @@ describe('toggleDictation', () => {
   test('opens setup when status is disabled', () => {
     fire('voice-status-changed', status({ enabled: false }))
     toggleDictation()
-    expect(dictationSetupRequest()).toEqual({})
+    expect(dictationSetupRequest()).toEqual({ reason: 'enable' })
     expect(ipc.voiceBegin).not.toHaveBeenCalled()
   })
 
@@ -364,7 +376,7 @@ describe('toggleDictation', () => {
   test('a rejected begin with disabled opens setup, no toast', async () => {
     vi.mocked(ipc.voiceBegin).mockRejectedValue('disabled')
     toggleDictation()
-    await vi.waitFor(() => expect(dictationSetupRequest()).toEqual({}))
+    await vi.waitFor(() => expect(dictationSetupRequest()).toEqual({ reason: 'enable' }))
     expect(addToast).not.toHaveBeenCalled()
   })
 })
@@ -405,11 +417,13 @@ describe('model downloads', () => {
     expect(modelDownloads()['whisper-turbo']?.done).toBe(false)
   })
 
-  test('a running download keeps its progress when asked again', () => {
-    vi.mocked(ipc.voiceDownloadModel).mockResolvedValue(undefined)
+  test('a running download is not asked for again, so it cannot be marked failed', async () => {
+    vi.mocked(ipc.voiceDownloadModel).mockRejectedValue('already running')
     progress({ received: 60 })
     downloadDictationModel('whisper-turbo')
-    expect(modelDownloads()['whisper-turbo']?.received).toBe(60)
+    await Promise.resolve()
+    expect(ipc.voiceDownloadModel).not.toHaveBeenCalled()
+    expect(modelDownloads()['whisper-turbo']).toEqual({ received: 60, total: 100, done: false, error: null })
   })
 
   test('a rejected download reads as a failed one', async () => {
@@ -459,5 +473,62 @@ describe('status actions', () => {
     expect(dictationAvailable()).toBe(true)
     fire('voice-status-changed', status({ supported: false }))
     expect(dictationAvailable()).toBe(false)
+  })
+})
+
+describe('focus re-check', () => {
+  test('one status read per focus however many watch, none after the last stops', async () => {
+    const before = vi.mocked(ipc.voiceStatus).mock.calls.length
+    const stopA = watchVoiceStatusOnFocus()
+    const stopB = watchVoiceStatusOnFocus()
+    window.dispatchEvent(new Event('focus'))
+    expect(ipc.voiceStatus).toHaveBeenCalledTimes(before + 1)
+    stopA()
+    window.dispatchEvent(new Event('focus'))
+    expect(ipc.voiceStatus).toHaveBeenCalledTimes(before + 2)
+    stopB()
+    stopB()
+    window.dispatchEvent(new Event('focus'))
+    expect(ipc.voiceStatus).toHaveBeenCalledTimes(before + 2)
+  })
+})
+
+describe('choosing a language', () => {
+  const installed = (ok: boolean) => status({
+    language: 'en',
+    models: [{ id: 'whisper-turbo', displayName: 'W', installed: ok, bytes: 1 }],
+    languages: [
+      { code: 'en', model: 'whisper-turbo', installed: true },
+      { code: 'ja', model: 'whisper-turbo', installed: ok },
+    ],
+  })
+
+  beforeEach(() => {
+    vi.mocked(ipc.voiceSetLanguage).mockImplementation(async language => ({ ...installed(true), language }))
+  })
+
+  test('an installed one is set at once', async () => {
+    fire('voice-status-changed', installed(true))
+    await chooseDictationLanguage('ja')
+    expect(ipc.voiceSetLanguage).toHaveBeenCalledWith('ja')
+    expect(pendingDictationLanguage()).toBeNull()
+  })
+
+  test('one without its model waits until the model shows installed', async () => {
+    fire('voice-status-changed', installed(false))
+    await chooseDictationLanguage('ja')
+    expect(ipc.voiceSetLanguage).not.toHaveBeenCalled()
+    expect(pendingDictationLanguage()).toBe('ja')
+    fire('voice-status-changed', installed(true))
+    await vi.waitFor(() => expect(ipc.voiceSetLanguage).toHaveBeenCalledWith('ja'))
+    expect(ipc.voiceSetLanguage).toHaveBeenCalledOnce()
+    expect(pendingDictationLanguage()).toBeNull()
+  })
+
+  test('setting a language directly drops a pending one', async () => {
+    fire('voice-status-changed', installed(false))
+    await chooseDictationLanguage('ja')
+    await setDictationLanguage('en')
+    expect(pendingDictationLanguage()).toBeNull()
   })
 })

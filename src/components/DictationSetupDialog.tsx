@@ -1,9 +1,10 @@
-import { Component, For, Match, Show, Switch, createSignal, onCleanup, onMount, untrack, type JSX } from 'solid-js'
+import { Component, For, Match, Show, Switch, createSignal, onCleanup, onMount, type JSX } from 'solid-js'
 import { Dialog } from './Dialog'
-import { DownloadProgress, MIC_DENIED_HELP, ModelDownload, downloadPhase, focusOnMount } from './DictationParts'
+import { DownloadProgress, MIC_DENIED_HELP, ModelDownload, downloadPhase, focusOnMount, stableKeys } from './DictationParts'
 import {
   voiceStatus, dictationSetupRequest, clearDictationSetupRequest, refreshVoiceStatus, requestMicrophone,
-  setDictationLanguage, setDictationEnabled, openAccessibilitySettings,
+  chooseDictationLanguage, pendingDictationLanguage, setDictationEnabled, openAccessibilitySettings,
+  watchVoiceStatusOnFocus, type DictationSetupRequest,
 } from '../store/voice'
 import { LANGUAGE_NAMES } from '../lib/voiceLanguages'
 import { holdKeyName } from '../lib/holdKeyName'
@@ -23,7 +24,7 @@ export const DictationSetupDialog: Component = () => (
   <Show when={dictationSetupRequest()} keyed>
     {(request) => (
       <Show when={voiceStatus()?.supported ? voiceStatus() : null}>
-        {(status) => <Wizard status={status()} language={request.language} />}
+        {(status) => <Wizard status={status()} request={request} />}
       </Show>
     )}
   </Show>
@@ -31,35 +32,39 @@ export const DictationSetupDialog: Component = () => (
 
 const close = () => clearDictationSetupRequest()
 
-const Wizard: Component<{ status: VoiceStatus; language?: Language }> = (props) => {
+const Wizard: Component<{ status: VoiceStatus; request: DictationSetupRequest }> = (props) => {
+  // Fixed for the dialog's lifetime (it is keyed on the request).
+  const reason = props.request.reason
+  /** Only turning it on (or getting a missing model back) switches dictation on; a language change never does. */
+  const turnsOn = reason === 'enable' || reason === 'model-missing'
+  const languageKnown = reason === 'model-missing' || reason === 'language'
+
   // Only what the user has decided here; everything else is read from the live status.
   const [chosen, setChosen] = createSignal<Language | null>(null)
   const [languageConfirmed, setLanguageConfirmed] = createSignal(false)
   const [skippedAccessibility, setSkippedAccessibility] = createSignal(false)
   const [finishing, setFinishing] = createSignal(false)
 
-  const language = () => chosen() ?? props.language ?? props.status.language
-  const installed = (code: Language) => props.status.languages.find(l => l.code === code)?.installed ?? false
-  const model = () => {
-    const id = props.status.languages.find(l => l.code === language())?.model
-    return props.status.models.find(m => m.id === id) ?? null
+  const language = () => chosen() ?? props.request.language ?? pendingDictationLanguage() ?? props.status.language
+  const languageStatus = (code: Language) => props.status.languages.find(l => l.code === code)
+  const installed = (code: Language) => languageStatus(code)?.installed ?? false
+  const model = () => props.status.models.find(m => m.id === languageStatus(language())?.model) ?? null
+  const codes = stableKeys(() => props.status.languages.map(l => l.code))
+
+  // The language is known from why setup opened, or from a download already
+  // running or failed for it (setup reopened mid-download shows the download).
+  const languageDecided = () => {
+    if (languageConfirmed() || languageKnown) return true
+    const m = model()
+    return m !== null && downloadPhase(m) !== 'idle'
   }
-
-  // Why the dialog opened, fixed for its lifetime: dictation was on but the current
-  // language's model was missing (a model-missing error), so the language is known.
-  const openedForMissingModel = untrack(() =>
-    props.language === undefined && props.status.enabled && !installed(props.status.language))
-
-  // Skipped when the language is already decided: passed in (Settings), or the
-  // current one after a model-missing error.
-  const languageDecided = () => languageConfirmed() || props.language !== undefined || openedForMissingModel
 
   const step = (): Step => {
     const s = props.status
     if (s.microphone !== 'granted') return 'microphone'
     if (!languageDecided()) return 'language'
     if (!installed(language())) return 'download'
-    if (!s.accessibility && !skippedAccessibility()) return 'accessibility'
+    if (turnsOn && !s.accessibility && !skippedAccessibility()) return 'accessibility'
     return 'done'
   }
 
@@ -67,21 +72,20 @@ const Wizard: Component<{ status: VoiceStatus; language?: Language }> = (props) 
   useDismissable(() => true, close)
 
   // Permissions change in System Settings; look again when the user comes back.
-  onMount(() => {
-    const onFocus = () => { void refreshVoiceStatus() }
-    window.addEventListener('focus', onFocus)
-    onCleanup(() => window.removeEventListener('focus', onFocus))
-  })
+  onMount(() => onCleanup(watchVoiceStatusOnFocus()))
 
+  // The choice is set once its model is installed (now, or when the download completes).
   const confirmLanguage = async () => {
-    if (language() !== props.status.language) await setDictationLanguage(language())
+    await chooseDictationLanguage(language())
     setLanguageConfirmed(true)
   }
 
   const finish = async () => {
     setFinishing(true)
-    if (language() !== props.status.language) await setDictationLanguage(language())
-    if (!props.status.enabled) await setDictationEnabled(true)
+    if (language() !== props.status.language && pendingDictationLanguage() !== language()) {
+      await chooseDictationLanguage(language())
+    }
+    if (turnsOn && !props.status.enabled) await setDictationEnabled(true)
     close()
   }
 
@@ -116,18 +120,18 @@ const Wizard: Component<{ status: VoiceStatus; language?: Language }> = (props) 
         <Match when={step() === 'language'}>
           <p class="text-sm text-text-muted mb-3">Which language will you speak?</p>
           <div role="radiogroup" aria-label="Language" class="grid grid-cols-2 gap-1 mb-4">
-            <For each={props.status.languages}>
-              {(lang) => (
+            <For each={codes()}>
+              {(code) => (
                 <label class="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-text-secondary hover:bg-surface-3 cursor-pointer">
                   <input
                     type="radio"
                     name="dictation-language"
-                    value={lang.code}
-                    checked={language() === lang.code}
-                    onChange={() => setChosen(lang.code)}
+                    value={code}
+                    checked={language() === code}
+                    onChange={() => setChosen(code)}
                   />
-                  <span class="flex-1 min-w-0 truncate">{LANGUAGE_NAMES[lang.code]}</span>
-                  <Show when={lang.installed}><span class="text-[11px] text-text-dim">Ready</span></Show>
+                  <span class="flex-1 min-w-0 truncate">{LANGUAGE_NAMES[code]}</span>
+                  <Show when={installed(code)}><span class="text-[11px] text-text-dim">Ready</span></Show>
                 </label>
               )}
             </For>
@@ -146,7 +150,7 @@ const Wizard: Component<{ status: VoiceStatus; language?: Language }> = (props) 
               </p>
               <div class="flex items-center gap-3 mb-2">
                 <Show when={downloadPhase(m()) !== 'finishing'} fallback={<DownloadProgress model={m()} />}>
-                  <ModelDownload model={m()} focus />
+                  <ModelDownload model={m()} focus onStart={() => void chooseDictationLanguage(language())} />
                 </Show>
               </div>
               <Show when={downloading()}>
@@ -155,6 +159,11 @@ const Wizard: Component<{ status: VoiceStatus; language?: Language }> = (props) 
               <Footer />
             </>
           )}
+        </Match>
+
+        <Match when={step() === 'download' && !model()}>
+          <p class="text-sm text-text-muted mb-4">No speech model is available for {LANGUAGE_NAMES[language()]}.</p>
+          <Footer />
         </Match>
 
         <Match when={step() === 'accessibility'}>
@@ -170,15 +179,29 @@ const Wizard: Component<{ status: VoiceStatus; language?: Language }> = (props) 
         </Match>
 
         <Match when={step() === 'done'}>
-          <p class="text-sm text-text-primary mb-1">Dictation is ready.</p>
-          <p class="text-sm text-text-muted mb-4">
-            <Show
-              when={props.status.accessibility}
-              fallback={'The mic button works now. The hold key will start working once Verun has Accessibility permission in System Settings.'}
-            >
-              Hold {holdKeyName(props.status.holdKey)} to talk, or click the mic button.
-            </Show>
-          </p>
+          <Show
+            when={turnsOn}
+            fallback={
+              <>
+                <p class="text-sm text-text-primary mb-1">{LANGUAGE_NAMES[language()]} is ready.</p>
+                <p class="text-sm text-text-muted mb-4">
+                  {props.status.enabled
+                    ? `Dictation will use ${LANGUAGE_NAMES[language()]}.`
+                    : `Dictation will use ${LANGUAGE_NAMES[language()]} once you turn it on in Settings.`}
+                </p>
+              </>
+            }
+          >
+            <p class="text-sm text-text-primary mb-1">Dictation is ready.</p>
+            <p class="text-sm text-text-muted mb-4">
+              <Show
+                when={props.status.accessibility}
+                fallback={'The mic button works now. The hold key will start working once Verun has Accessibility permission in System Settings.'}
+              >
+                Hold {holdKeyName(props.status.holdKey)} to talk, or click the mic button.
+              </Show>
+            </p>
+          </Show>
           <div class="flex justify-end">
             <button type="button" class="btn-primary" ref={focusOnMount} disabled={finishing()} onClick={() => void finish()}>Done</button>
           </div>

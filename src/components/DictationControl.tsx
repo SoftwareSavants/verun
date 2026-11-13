@@ -28,7 +28,7 @@ export function DictationControl() {
   }
   const addLanguage = () => {
     setMenuOpen(false)
-    openDictationSetup()
+    openDictationSetup({ reason: 'add-language' })
   }
 
   return (

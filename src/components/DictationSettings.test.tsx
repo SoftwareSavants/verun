@@ -71,6 +71,29 @@ test('says where the audio goes', async () => {
   expect(screen.getByText('Audio is transcribed on this Mac and never saved or sent anywhere.')).toBeTruthy()
 })
 
+test('the switch says whether dictation is on', async () => {
+  await setup(status({ enabled: true }))
+  expect(screen.getByRole('switch', { name: 'Dictation' }).getAttribute('aria-checked')).toBe('true')
+})
+
+describe('selects follow the status across status events', () => {
+  test('language and hold key keep their values', async () => {
+    await setup(status({ language: 'fr', holdKey: 'right-option' }))
+    fire('voice-status-changed', status({ language: 'fr', holdKey: 'right-option' }))
+    expect((screen.getByLabelText('Language') as HTMLSelectElement).value).toBe('fr')
+    expect((screen.getByLabelText('Hold key') as HTMLSelectElement).value).toBe('right-option')
+  })
+})
+
+test('a status event keeps the model rows, so a focused Delete stays focused', async () => {
+  await setup(status())
+  const del = screen.getByRole('button', { name: 'Delete Whisper Turbo' })
+  del.focus()
+  fire('voice-status-changed', status())
+  expect(del.isConnected).toBe(true)
+  expect(document.activeElement).toBe(del)
+})
+
 test('re-reads the status when shown and when the window regains focus', async () => {
   await setup(status())
   expect(ipc.voiceStatus).toHaveBeenCalledTimes(2) // initVoice, then the section
@@ -86,7 +109,7 @@ test('re-reads the status when shown and when the window regains focus', async (
 describe('enable switch', () => {
   test('with setup done, turning it on calls voiceSetEnabled(true)', async () => {
     await setup(status())
-    fireEvent.click(screen.getByRole('button', { name: 'Dictation' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Dictation' }))
     await flush()
     expect(ipc.voiceSetEnabled).toHaveBeenCalledWith(true)
     expect(dictationSetupRequest()).toBeNull()
@@ -97,15 +120,15 @@ describe('enable switch', () => {
     ['model missing', status({ installed: false })],
   ])('with %s, turning it on opens setup instead', async (_, s) => {
     await setup(s)
-    fireEvent.click(screen.getByRole('button', { name: 'Dictation' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Dictation' }))
     await flush()
     expect(ipc.voiceSetEnabled).not.toHaveBeenCalled()
-    expect(dictationSetupRequest()).toEqual({})
+    expect(dictationSetupRequest()).toEqual({ reason: 'enable' })
   })
 
   test('turning it off calls voiceSetEnabled(false)', async () => {
     await setup(status({ enabled: true }))
-    fireEvent.click(screen.getByRole('button', { name: 'Dictation' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Dictation' }))
     await flush()
     expect(ipc.voiceSetEnabled).toHaveBeenCalledWith(false)
   })
@@ -128,7 +151,7 @@ describe('language', () => {
     fireEvent.change(select, { target: { value: 'ja' } })
     await flush()
     expect(ipc.voiceSetLanguage).not.toHaveBeenCalled()
-    expect(dictationSetupRequest()).toEqual({ language: 'ja' })
+    expect(dictationSetupRequest()).toEqual({ reason: 'language', language: 'ja' })
     expect(select.value).toBe('en')
   })
 })

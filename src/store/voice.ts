@@ -60,9 +60,18 @@ function forgetInstalled() {
   setDownloads(next)
 }
 
+/** A language the user chose whose model was not installed yet; set once it is. */
+const [pendingLanguage, setPendingLanguage] = createSignal<Language | null>(null)
+export const pendingDictationLanguage: Accessor<Language | null> = pendingLanguage
+
 function applyStatus(s: VoiceStatus) {
   setStatus(s)
   forgetInstalled()
+  const pending = pendingLanguage()
+  if (pending && s.languages.find(l => l.code === pending)?.installed) {
+    setPendingLanguage(null)
+    if (s.language !== pending) void setDictationLanguage(pending)
+  }
 }
 
 /** A rejected voice command as text: errors come as a string or `{ engine }`. */
@@ -83,7 +92,24 @@ async function act(run: () => Promise<VoiceStatus>): Promise<void> {
 /** Re-reads the status (permissions may have changed in System Settings). */
 export const refreshVoiceStatus = () => act(ipc.voiceStatus)
 export const setDictationEnabled = (enabled: boolean) => act(() => ipc.voiceSetEnabled(enabled))
-export const setDictationLanguage = (language: Language) => act(() => ipc.voiceSetLanguage(language))
+export function setDictationLanguage(language: Language): Promise<void> {
+  setPendingLanguage(null)
+  return act(() => ipc.voiceSetLanguage(language))
+}
+
+/**
+ * The user picked `language`: set it now if its model is installed, else when
+ * the model shows installed, so dictation keeps working in the old one meanwhile.
+ */
+export async function chooseDictationLanguage(language: Language): Promise<void> {
+  const s = status()
+  if (s?.languages.find(l => l.code === language)?.installed) {
+    if (s.language !== language) await setDictationLanguage(language)
+    else setPendingLanguage(null)
+  } else {
+    setPendingLanguage(language)
+  }
+}
 export const setDictationHoldKey = (key: HoldKey) => act(() => ipc.voiceSetHoldKey(key))
 /** Refused by the backend (status unchanged) while that model is downloading. */
 export const deleteDictationModel = (model: ModelId) => act(() => ipc.voiceDeleteModel(model))
@@ -98,17 +124,34 @@ export async function requestMicrophone(): Promise<void> {
   await refreshVoiceStatus()
 }
 
+// One window `focus` listener however many views want the status re-read on focus.
+let focusWatchers = 0
+const onWindowFocus = () => { void refreshVoiceStatus() }
+
+/**
+ * Re-reads the status each time the window regains focus (permissions change in
+ * System Settings) while at least one caller watches. Returns the stop function.
+ */
+export function watchVoiceStatusOnFocus(): () => void {
+  if (focusWatchers++ === 0) window.addEventListener('focus', onWindowFocus)
+  let stopped = false
+  return () => {
+    if (stopped) return
+    stopped = true
+    if (--focusWatchers === 0) window.removeEventListener('focus', onWindowFocus)
+  }
+}
+
 export function openAccessibilitySettings(): void {
   ipc.voiceOpenAccessibilitySettings().catch(e => console.error('voice open accessibility settings:', e))
 }
 
-/** Starts a download (a running one is left alone); progress arrives as events. */
+/** Starts a download; progress arrives as events. A running one is left alone, without asking again. */
 export function downloadDictationModel(model: ModelId): void {
-  const running = downloads()[model]
-  if (!running || running.done) {
-    const bytes = status()?.models.find(m => m.id === model)?.bytes ?? 0
-    setDownload(model, { received: 0, total: bytes, done: false, error: null })
-  }
+  const current = downloads()[model]
+  if (current && !current.done) return
+  const bytes = status()?.models.find(m => m.id === model)?.bytes ?? 0
+  setDownload(model, { received: 0, total: bytes, done: false, error: null })
   ipc.voiceDownloadModel(model).catch(e => {
     const d = downloads()[model]
     setDownload(model, { received: d?.received ?? 0, total: d?.total ?? 0, done: true, error: errorText(e) })
@@ -120,12 +163,25 @@ export const voiceState: Accessor<VoiceState> = () =>
 
 export const voiceLevel: Accessor<number> = () => (voiceState() === 'recording' ? level() : 0)
 
-const [setupRequest, setSetupRequest] = createSignal<{ language?: Language } | null>(null)
-export const dictationSetupRequest: Accessor<{ language?: Language } | null> = setupRequest
+/**
+ * Why setup opened, which decides its steps and its finish:
+ * - `enable`: turn dictation on (mic button or Settings switch while off, a `disabled` error)
+ * - `model-missing`: dictation is on but the current language's model is gone
+ * - `add-language`: the composer switcher's "Add language..."
+ * - `language`: Settings picked `language`, whose model is not installed
+ */
+export type SetupReason = 'enable' | 'model-missing' | 'add-language' | 'language'
+export interface DictationSetupRequest {
+  reason: SetupReason
+  language?: Language
+}
+
+const [setupRequest, setSetupRequest] = createSignal<DictationSetupRequest | null>(null)
+export const dictationSetupRequest: Accessor<DictationSetupRequest | null> = setupRequest
 export function clearDictationSetupRequest(): void { setSetupRequest(null) }
-/** Opens the setup dialog (mounted in every window), for `language` when given. */
-export function openDictationSetup(language?: Language): void {
-  setSetupRequest(language ? { language } : {})
+/** Opens the setup dialog (mounted in every window). */
+export function openDictationSetup(request: DictationSetupRequest = { reason: 'enable' }): void {
+  setSetupRequest({ ...request })
 }
 
 // Registered targets, oldest first; the last one is the visible composer.
@@ -158,7 +214,12 @@ function release(take: number): DictationTarget | undefined {
 }
 
 function handleError(error: VoiceError) {
-  if (error === 'model-missing' || error === 'disabled') return openDictationSetup()
+  if (error === 'disabled') return openDictationSetup({ reason: 'enable' })
+  // The model may have been deleted outside the app: read the status before showing it.
+  if (error === 'model-missing') {
+    void refreshVoiceStatus().then(() => openDictationSetup({ reason: 'model-missing' }))
+    return
+  }
   if (error === 'mic-denied') addToast('Microphone access is off for Verun. Turn it on in System Settings.', 'error')
   else if (error === 'mic-unavailable') addToast('No microphone found, or it stopped responding.', 'error')
   else addToast('Dictation failed. Try again.', 'error')
@@ -234,7 +295,7 @@ export async function initVoice(): Promise<void> {
 
 export function toggleDictation(): void {
   const s = status()
-  if (!s || !s.enabled) return openDictationSetup()
+  if (!s || !s.enabled) return openDictationSetup({ reason: 'enable' })
   if (recordingTake() !== null) {
     ipc.voiceEnd().catch(e => console.error('voice end:', e))
     return
@@ -255,4 +316,5 @@ export function __resetVoiceForTests(): void {
   setPins(new Map())
   setSetupRequest(null)
   setDownloads({})
+  setPendingLanguage(null)
 }

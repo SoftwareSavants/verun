@@ -4,6 +4,7 @@ import { render, cleanup, fireEvent, screen } from '@solidjs/testing-library'
 // The first-run setup for dictation: microphone, language, model download,
 // Accessibility for the hold key, then on. Each step is skipped once it is
 // satisfied, and nothing (prompt, download, enable) happens before the user asks.
+// Every request says why setup opened, and that decides the steps and the finish.
 
 const listeners = new Map<string, (e: { payload: unknown }) => void>()
 vi.mock('@tauri-apps/api/event', () => ({
@@ -30,19 +31,22 @@ vi.mock('../store/sessions', () => ({ sessionById: vi.fn() }))
 import * as ipc from '../lib/ipc'
 import {
   initVoice, openDictationSetup, toggleDictation, dictationSetupRequest, __resetVoiceForTests,
+  type DictationSetupRequest, type SetupReason,
 } from '../store/voice'
 import { DictationSetupDialog } from './DictationSetupDialog'
+import { DictationSettings } from './DictationSettings'
 import type { Language, VoiceStatus } from '../types/voice'
 
 const CODES: Language[] = ['en', 'fr', 'es', 'ar', 'zh', 'hi', 'pt', 'ru', 'bn', 'ur', 'ja', 'de']
 
-function status(over: Partial<VoiceStatus> & { installed?: boolean } = {}): VoiceStatus {
-  const { installed = true, ...rest } = over
+/** `installed` is the model; `missing` marks languages as not ready on their own (synthetic, for language tests). */
+function status(over: Partial<VoiceStatus> & { installed?: boolean; missing?: Language[] } = {}): VoiceStatus {
+  const { installed = true, missing = [], ...rest } = over
   return {
     supported: true, enabled: false, language: 'en', holdKey: 'fn', accessibility: true,
     microphone: 'granted', state: 'idle',
     models: [{ id: 'whisper-turbo', displayName: 'Whisper Turbo', installed, bytes: 574041195 }],
-    languages: CODES.map(code => ({ code, model: 'whisper-turbo', installed })),
+    languages: CODES.map(code => ({ code, model: 'whisper-turbo', installed: installed && !missing.includes(code) })),
     ...rest,
   }
 }
@@ -52,13 +56,14 @@ const setStatus = (s: VoiceStatus) => fire('voice-status-changed', s)
 const progress = (over: Record<string, unknown>) =>
   fire('voice-model-progress', { model: 'whisper-turbo', received: 0, total: 574041195, done: false, error: null, ...over })
 const flush = () => new Promise(r => setTimeout(r, 0))
+const click = (name: string) => fireEvent.click(screen.getByRole('button', { name }))
 
-async function setup(s: VoiceStatus, language?: Language) {
+async function setup(s: VoiceStatus, request: DictationSetupRequest = { reason: 'enable' }) {
   vi.mocked(ipc.voiceStatus).mockResolvedValue(s)
   await initVoice()
   setStatus(s)
   render(() => <DictationSetupDialog />)
-  openDictationSetup(language)
+  openDictationSetup(request)
   await flush()
 }
 
@@ -86,6 +91,22 @@ describe('nothing happens before the user asks', () => {
     expect(ipc.voiceDownloadModel).not.toHaveBeenCalled()
     expect(ipc.voiceSetEnabled).not.toHaveBeenCalled()
   })
+
+  const reasons: DictationSetupRequest[] = [
+    { reason: 'enable' }, { reason: 'model-missing' }, { reason: 'add-language' }, { reason: 'language', language: 'ja' },
+  ]
+  test.each([
+    ...reasons.map(r => ['all satisfied and on', r, status({ enabled: true })] as const),
+    ...reasons.map(r => ['fresh and off', r, status({ microphone: 'undetermined', accessibility: false, installed: false })] as const),
+  ])('opening (%s, %j) only shows', async (_, request, s) => {
+    await setup(s, request)
+    expect(screen.getByText('Set up dictation')).toBeTruthy()
+    expect(ipc.voiceSetEnabled).not.toHaveBeenCalled()
+    expect(ipc.voiceDownloadModel).not.toHaveBeenCalled()
+    expect(ipc.voiceRequestMicrophone).not.toHaveBeenCalled()
+    expect(ipc.voiceOpenAccessibilitySettings).not.toHaveBeenCalled()
+    expect(ipc.voiceSetLanguage).not.toHaveBeenCalled()
+  })
 })
 
 describe('microphone step', () => {
@@ -110,7 +131,7 @@ describe('microphone step', () => {
     expect(screen.getByText(/Privacy & Security > Microphone/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Allow microphone' })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    click('Check again')
     await flush()
 
     expect(ipc.voiceStatus).toHaveBeenCalledTimes(2)
@@ -132,31 +153,58 @@ describe('language step', () => {
     expect(screen.getAllByText('Ready')).toHaveLength(12)
   })
 
-  test('Continue sets the chosen language when it changed', async () => {
-    await setup(status())
-    fireEvent.click(screen.getByLabelText(/German/))
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  test('Continue sets an installed language at once', async () => {
+    await setup(status({ enabled: true }), { reason: 'add-language' })
+    fireEvent.click(screen.getByLabelText(/French/))
+    click('Continue')
     await flush()
-    expect(ipc.voiceSetLanguage).toHaveBeenCalledWith('de')
+    expect(ipc.voiceSetLanguage).toHaveBeenCalledWith('fr')
+  })
+
+  test('a language that still needs its model is set only once the model shows installed', async () => {
+    // Synthetic: English works today, Japanese waits for the model.
+    const waiting = { ...status({ enabled: true, missing: ['ja'] }), models: status({ installed: false }).models }
+    await setup(waiting, { reason: 'add-language' })
+    fireEvent.click(screen.getByLabelText(/Japanese/))
+    click('Continue')
+    await flush()
+    expect(ipc.voiceSetLanguage).not.toHaveBeenCalled()
+
+    click('Download (574 MB)')
+    progress({ received: 574041195, done: true })
+    expect(ipc.voiceSetLanguage).not.toHaveBeenCalled()
+    setStatus(status({ enabled: true }))
+    await flush()
+    expect(ipc.voiceSetLanguage).toHaveBeenCalledWith('ja')
+    expect(ipc.voiceSetLanguage).toHaveBeenCalledOnce()
   })
 
   test('Continue leaves an unchanged language alone', async () => {
     await setup(status())
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    click('Continue')
     await flush()
     expect(ipc.voiceSetLanguage).not.toHaveBeenCalled()
     expect(screen.getByText('Dictation is ready.')).toBeTruthy()
   })
 
-  test('opened with everything done and dictation on (Add language...), it shows the languages', async () => {
-    await setup(status({ enabled: true }))
+  test('Add language... shows the languages even with everything done', async () => {
+    await setup(status({ enabled: true }), { reason: 'add-language' })
     expect(screen.getByRole('radiogroup', { name: 'Language' })).toBeTruthy()
+  })
+
+  test('a status event keeps the same rows, so the focused radio stays focused', async () => {
+    await setup(status())
+    const french = screen.getByLabelText(/French/) as HTMLInputElement
+    french.focus()
+    setStatus(status())
+    expect(french.isConnected).toBe(true)
+    expect(document.activeElement).toBe(french)
   })
 })
 
 describe('download step', () => {
-  test('a language passed in skips the language step; the download waits for a click that names the size', async () => {
-    await setup(status({ installed: false }), 'ja')
+  test('a language from Settings skips the language step; the download waits for a click that names the size', async () => {
+    await setup(status({ installed: false }), { reason: 'language', language: 'ja' })
     expect(screen.queryByRole('radiogroup')).toBeNull()
     expect(screen.getByText(/Whisper Turbo/)).toBeTruthy()
     expect(ipc.voiceDownloadModel).not.toHaveBeenCalled()
@@ -168,8 +216,8 @@ describe('download step', () => {
   })
 
   test('shows progress from the progress events', async () => {
-    await setup(status({ installed: false }), 'en')
-    fireEvent.click(screen.getByRole('button', { name: 'Download (574 MB)' }))
+    await setup(status({ enabled: true, installed: false }), { reason: 'model-missing' })
+    click('Download (574 MB)')
     progress({ received: 287020597 })
 
     const bar = screen.getByRole('progressbar')
@@ -181,37 +229,41 @@ describe('download step', () => {
   })
 
   test('an error shows its text and Try again downloads again', async () => {
-    await setup(status({ installed: false }), 'en')
-    fireEvent.click(screen.getByRole('button', { name: 'Download (574 MB)' }))
+    await setup(status({ enabled: true, installed: false }), { reason: 'model-missing' })
+    click('Download (574 MB)')
     progress({ received: 10, done: true, error: 'Connection reset' })
 
     expect(screen.getByText(/Connection reset/)).toBeTruthy()
     expect(screen.queryByRole('progressbar')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    click('Try again')
     expect(ipc.voiceDownloadModel).toHaveBeenCalledTimes(2)
     expect(screen.getByRole('progressbar')).toBeTruthy()
   })
 
   test('a finished download moves on by itself', async () => {
-    await setup(status({ installed: false, accessibility: false }), 'en')
-    fireEvent.click(screen.getByRole('button', { name: 'Download (574 MB)' }))
+    await setup(status({ enabled: true, installed: false, accessibility: false }), { reason: 'model-missing' })
+    click('Download (574 MB)')
     progress({ received: 574041195, done: true })
-    setStatus(status({ accessibility: false }))
+    setStatus(status({ enabled: true, accessibility: false }))
     expect(screen.getByRole('button', { name: 'Open System Settings' })).toBeTruthy()
   })
 
-  test('closing mid-download keeps it running and reopening shows the progress', async () => {
-    await setup(status({ installed: false }), 'en')
-    fireEvent.click(screen.getByRole('button', { name: 'Download (574 MB)' }))
+  test('closing mid-download keeps it running; the mic button reopens on the progress', async () => {
+    await setup(status({ installed: false }))
+    fireEvent.click(screen.getByLabelText(/French/))
+    click('Continue')
+    await flush()
+    click('Download (574 MB)')
     progress({ received: 100_000_000 })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    click('Close')
     expect(dictationSetupRequest()).toBeNull()
     expect(screen.queryByRole('progressbar')).toBeNull()
 
     progress({ received: 200_000_000 })
-    openDictationSetup('en')
+    toggleDictation()
     await flush()
+    expect(screen.queryByRole('radiogroup')).toBeNull()
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('200000000')
     expect(ipc.voiceDownloadModel).toHaveBeenCalledOnce()
   })
@@ -225,12 +277,19 @@ describe('download step', () => {
     expect(screen.queryByRole('radiogroup')).toBeNull()
     expect(screen.getByRole('button', { name: 'Download (574 MB)' })).toBeTruthy()
   })
+
+  test('a language with no known model says so and can be closed', async () => {
+    await setup({ ...status({ installed: false }), models: [] }, { reason: 'language', language: 'ja' })
+    expect(screen.getByText(/No speech model is available for Japanese/)).toBeTruthy()
+    click('Close')
+    expect(dictationSetupRequest()).toBeNull()
+  })
 })
 
 describe('after a model-missing error', () => {
   test('the finished download goes on to the end, not back to the languages', async () => {
-    await setup(status({ enabled: true, installed: false }))
-    fireEvent.click(screen.getByRole('button', { name: 'Download (574 MB)' }))
+    await setup(status({ enabled: true, installed: false }), { reason: 'model-missing' })
+    click('Download (574 MB)')
     progress({ received: 574041195, done: true })
     setStatus(status({ enabled: true }))
     expect(screen.queryByRole('radiogroup')).toBeNull()
@@ -240,14 +299,14 @@ describe('after a model-missing error', () => {
 
 describe('accessibility step', () => {
   test('opens System Settings, re-checks on window focus and on Check again', async () => {
-    await setup(status({ accessibility: false }), 'en')
+    await setup(status({ enabled: true, accessibility: false }), { reason: 'model-missing' })
     expect(screen.getByText(/holding Fn to talk/i)).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open System Settings' }))
+    click('Open System Settings')
     expect(ipc.voiceOpenAccessibilitySettings).toHaveBeenCalledOnce()
 
     const before = vi.mocked(ipc.voiceStatus).mock.calls.length
-    vi.mocked(ipc.voiceStatus).mockResolvedValue(status())
+    vi.mocked(ipc.voiceStatus).mockResolvedValue(status({ enabled: true }))
     window.dispatchEvent(new Event('focus'))
     await flush()
     expect(ipc.voiceStatus).toHaveBeenCalledTimes(before + 1)
@@ -255,15 +314,15 @@ describe('accessibility step', () => {
   })
 
   test('Check again re-reads the status', async () => {
-    await setup(status({ accessibility: false }), 'en')
+    await setup(status({ enabled: true, accessibility: false }), { reason: 'model-missing' })
     const before = vi.mocked(ipc.voiceStatus).mock.calls.length
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    click('Check again')
     await flush()
     expect(ipc.voiceStatus).toHaveBeenCalledTimes(before + 1)
   })
 
-  test('the focus listener goes away with the dialog', async () => {
-    await setup(status({ accessibility: false }), 'en')
+  test('the focus re-check goes away with the dialog', async () => {
+    await setup(status({ enabled: true, accessibility: false }), { reason: 'model-missing' })
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(dictationSetupRequest()).toBeNull()
     const before = vi.mocked(ipc.voiceStatus).mock.calls.length
@@ -272,12 +331,24 @@ describe('accessibility step', () => {
     expect(ipc.voiceStatus).toHaveBeenCalledTimes(before)
   })
 
+  test('one focus re-check with the dialog open over Settings -> Dictation', async () => {
+    await setup(status({ enabled: true, accessibility: false }), { reason: 'model-missing' })
+    render(() => <DictationSettings />)
+    await flush()
+    const before = vi.mocked(ipc.voiceStatus).mock.calls.length
+    window.dispatchEvent(new Event('focus'))
+    await flush()
+    expect(ipc.voiceStatus).toHaveBeenCalledTimes(before + 1)
+  })
+
   test('Skip, use the button only, then Done turns dictation on', async () => {
-    await setup(status({ accessibility: false }), 'en')
-    fireEvent.click(screen.getByRole('button', { name: 'Skip, use the button only' }))
+    await setup(status({ accessibility: false }))
+    click('Continue')
+    await flush()
+    click('Skip, use the button only')
     expect(screen.getByText(/The mic button works now/)).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    click('Done')
     await flush()
     expect(ipc.voiceSetEnabled).toHaveBeenCalledWith(true)
     expect(dictationSetupRequest()).toBeNull()
@@ -285,21 +356,43 @@ describe('accessibility step', () => {
 })
 
 describe('finish', () => {
-  test('steps already satisfied are skipped straight to the end; Done applies the language and turns it on', async () => {
-    await setup(status(), 'fr')
-    expect(screen.getByText('Dictation is ready.')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+  test('turning it on: Done enables dictation', async () => {
+    await setup(status())
+    click('Continue')
     await flush()
-    expect(ipc.voiceSetLanguage).toHaveBeenCalledWith('fr')
+    click('Done')
+    await flush()
     expect(ipc.voiceSetEnabled).toHaveBeenCalledWith(true)
     expect(dictationSetupRequest()).toBeNull()
   })
 
   test('Done does not re-enable dictation that is already on', async () => {
-    await setup(status({ enabled: true }), 'en')
-    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    await setup(status({ enabled: true }))
+    click('Continue')
+    await flush()
+    click('Done')
     await flush()
     expect(ipc.voiceSetEnabled).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['language', { reason: 'language', language: 'fr' }],
+    ['add-language', { reason: 'add-language' }],
+  ] as const)('%s: Done sets the language and leaves dictation off', async (_, request) => {
+    await setup(status(), request as DictationSetupRequest)
+    if ((request.reason as SetupReason) === 'add-language') {
+      fireEvent.click(screen.getByLabelText(/French/))
+      click('Continue')
+      await flush()
+    }
+    expect(screen.queryByText('Dictation is ready.')).toBeNull()
+    expect(screen.getByText('French is ready.')).toBeTruthy()
+    click('Done')
+    await flush()
+    expect(ipc.voiceSetLanguage).toHaveBeenCalledWith('fr')
+    expect(ipc.voiceSetLanguage).toHaveBeenCalledOnce()
+    expect(ipc.voiceSetEnabled).not.toHaveBeenCalled()
+    expect(dictationSetupRequest()).toBeNull()
   })
 })
 

@@ -1,16 +1,16 @@
 import { Component, For, Show, createSignal, onCleanup, onMount } from 'solid-js'
 import { Toggle } from './Toggle'
 import { ConfirmDialog } from './ConfirmDialog'
-import { MIC_DENIED_HELP, ModelDownload, SMALL_BUTTON } from './DictationParts'
+import { MIC_DENIED_HELP, ModelDownload, SMALL_BUTTON, stableKeys } from './DictationParts'
 import {
   voiceStatus, openDictationSetup, refreshVoiceStatus, setDictationEnabled, setDictationLanguage,
-  setDictationHoldKey, deleteDictationModel, requestMicrophone, openAccessibilitySettings,
+  setDictationHoldKey, deleteDictationModel, requestMicrophone, openAccessibilitySettings, watchVoiceStatusOnFocus,
 } from '../store/voice'
 import { LANGUAGE_NAMES } from '../lib/voiceLanguages'
 import { holdKeyName } from '../lib/holdKeyName'
 import { formatDownloadSize } from '../lib/format'
 import { useDismissable } from '../lib/dismissable'
-import type { HoldKey, Language, ModelStatus, VoiceStatus } from '../types/voice'
+import type { HoldKey, Language, ModelId, VoiceStatus } from '../types/voice'
 
 const HOLD_KEYS: HoldKey[] = ['fn', 'right-option', 'right-command']
 const SELECT = 'bg-surface-1 ring-1 ring-outline/8 rounded-lg px-2 py-1 text-xs text-text-secondary outline-none focus:ring-accent/40'
@@ -25,9 +25,7 @@ export const DictationSettings: Component = () => {
   // Permissions change in System Settings; look again on arrival and on return.
   onMount(() => {
     void refreshVoiceStatus()
-    const onFocus = () => { void refreshVoiceStatus() }
-    window.addEventListener('focus', onFocus)
-    onCleanup(() => window.removeEventListener('focus', onFocus))
+    onCleanup(watchVoiceStatusOnFocus())
   })
 
   return (
@@ -38,9 +36,17 @@ export const DictationSettings: Component = () => {
 }
 
 const Body: Component<{ status: VoiceStatus }> = (props) => {
-  const [deleting, setDeleting] = createSignal<ModelStatus | null>(null)
+  const [deletingId, setDeletingId] = createSignal<ModelId | null>(null)
+  const modelById = (id: ModelId) => props.status.models.find(m => m.id === id)
+  const deleting = () => {
+    const id = deletingId()
+    return id ? modelById(id) ?? null : null
+  }
+  // Rows keyed by model id, so a status event does not remount them (and drop focus).
+  const modelIds = stableKeys(() => props.status.models.map(m => m.id))
+  const languageCodes = stableKeys(() => props.status.languages.map(l => l.code))
   // Escape closes the question, not Settings behind it.
-  useDismissable(() => deleting() !== null, () => setDeleting(null))
+  useDismissable(() => deleting() !== null, () => setDeletingId(null))
 
   const installed = (code: Language) => props.status.languages.find(l => l.code === code)?.installed ?? false
   const setupDone = () => props.status.microphone === 'granted' && installed(props.status.language)
@@ -48,7 +54,7 @@ const Body: Component<{ status: VoiceStatus }> = (props) => {
   const toggle = (on: boolean) => {
     if (!on) return void setDictationEnabled(false)
     if (setupDone()) void setDictationEnabled(true)
-    else openDictationSetup()
+    else openDictationSetup({ reason: 'enable' })
   }
 
   const chooseLanguage = (select: HTMLSelectElement) => {
@@ -56,12 +62,12 @@ const Body: Component<{ status: VoiceStatus }> = (props) => {
     if (installed(code)) return void setDictationLanguage(code)
     // The language changes once its model is there; until then the select shows the current one.
     select.value = props.status.language
-    openDictationSetup(code)
+    openDictationSetup({ reason: 'language', language: code })
   }
 
   const remove = () => {
     const model = deleting()
-    setDeleting(null)
+    setDeletingId(null)
     if (model) void deleteDictationModel(model.id)
   }
 
@@ -83,8 +89,8 @@ const Body: Component<{ status: VoiceStatus }> = (props) => {
               <div class="text-xs text-text-dim mt-0.5">The language you speak. Each one needs its speech model.</div>
             </div>
             <select aria-label="Language" class={SELECT} value={props.status.language} onChange={(e) => chooseLanguage(e.currentTarget)}>
-              <For each={props.status.languages}>
-                {(lang) => <option value={lang.code}>{LANGUAGE_NAMES[lang.code]}</option>}
+              <For each={languageCodes()}>
+                {(code) => <option value={code}>{LANGUAGE_NAMES[code]}</option>}
               </For>
             </select>
           </div>
@@ -135,29 +141,33 @@ const Body: Component<{ status: VoiceStatus }> = (props) => {
       <section class="mb-8">
         <h2 id="dictation-models" class="section-title mb-3">Models</h2>
         <ul aria-labelledby="dictation-models" class="list-none m-0 p-0 space-y-2">
-          <For each={props.status.models}>
-            {(model) => (
-              <li class={ROW_CARD}>
-                <div class="min-w-0 shrink-0">
-                  <div class="text-sm text-text-primary">{model.displayName}</div>
-                  <div class="text-xs text-text-muted">
-                    <span>{formatDownloadSize(model.bytes)}</span> · <span>{model.installed ? 'Installed' : 'Not installed'}</span>
-                  </div>
-                </div>
-                <Show
-                  when={model.installed}
-                  fallback={<div class="flex-1 min-w-0 flex justify-end"><ModelDownload model={model} /></div>}
-                >
-                  <button
-                    type="button"
-                    class="px-2.5 py-1 rounded-md text-xs text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors"
-                    aria-label={`Delete ${model.displayName}`}
-                    onClick={() => setDeleting(model)}
-                  >
-                    Delete
-                  </button>
-                </Show>
-              </li>
+          <For each={modelIds()}>
+            {(id) => (
+              <Show when={modelById(id)}>
+                {(model) => (
+                  <li class={ROW_CARD}>
+                    <div class="min-w-0 shrink-0">
+                      <div class="text-sm text-text-primary">{model().displayName}</div>
+                      <div class="text-xs text-text-muted">
+                        <span>{formatDownloadSize(model().bytes)}</span> · <span>{model().installed ? 'Installed' : 'Not installed'}</span>
+                      </div>
+                    </div>
+                    <Show
+                      when={model().installed}
+                      fallback={<div class="flex-1 min-w-0 flex justify-end"><ModelDownload model={model()} /></div>}
+                    >
+                      <button
+                        type="button"
+                        class="px-2.5 py-1 rounded-md text-xs text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors"
+                        aria-label={`Delete ${model().displayName}`}
+                        onClick={() => setDeletingId(id)}
+                      >
+                        Delete
+                      </button>
+                    </Show>
+                  </li>
+                )}
+              </Show>
             )}
           </For>
         </ul>
@@ -170,7 +180,7 @@ const Body: Component<{ status: VoiceStatus }> = (props) => {
         message="Dictation needs it to work. You can download it again here."
         confirmLabel="Delete"
         onConfirm={remove}
-        onCancel={() => setDeleting(null)}
+        onCancel={() => setDeletingId(null)}
       />
     </>
   )

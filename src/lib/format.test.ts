@@ -132,7 +132,9 @@ describe('formatDownloadSize', () => {
     expect(formatDownloadSize(0)).toBe('0 MB')
   })
 
-  test('gigabytes from 1000 MB, one decimal', () => {
-    expect(formatDownloadSize(1_620_000_000)).toBe('1.6 GB')
+  test('gigabytes from what would round to 1000 MB, one decimal', () => {
+    expect(formatDownloadSize(999_400_000)).toBe('999 MB')
+    expect(formatDownloadSize(999_600_000)).toBe('1.0 GB')
+    expect(formatDownloadSize(1_624_555_275)).toBe('1.6 GB')
   })
 })

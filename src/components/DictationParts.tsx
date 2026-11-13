@@ -1,4 +1,4 @@
-import { Component, Show } from 'solid-js'
+import { Component, Show, createMemo, type Accessor } from 'solid-js'
 import { modelDownloads, downloadDictationModel } from '../store/voice'
 import { formatDownloadSize } from '../lib/format'
 import type { ModelStatus } from '../types/voice'
@@ -9,6 +9,15 @@ export const MIC_DENIED_HELP =
   'Microphone access is turned off for Verun. Turn it on in System Settings > Privacy & Security > Microphone.'
 
 export const SMALL_BUTTON = 'shrink-0 px-2.5 py-1 rounded-lg text-xs bg-surface-3 hover:bg-surface-4 text-text-secondary hover:text-text-primary transition-colors'
+
+/**
+ * The keys of a list from the status, as an array that keeps its identity until
+ * the set of keys changes: `<For>` over it keeps its rows (and their focus) when
+ * a status event brings new but equal objects. Look each item up by key.
+ */
+export function stableKeys<K>(keys: () => K[]): Accessor<K[]> {
+  return createMemo(keys, [], { equals: (a, b) => a.length === b.length && a.every((k, i) => k === b[i]) })
+}
 
 /** Focuses the element once it is in the document: the primary action of a dialog step. */
 export const focusOnMount = (el: HTMLElement) => queueMicrotask(() => el.focus())
@@ -52,9 +61,12 @@ export const DownloadProgress: Component<{ model: ModelStatus }> = (props) => {
  * A model's download: a button naming the size before it starts, progress while
  * it runs, the error and Try again when it failed. Nothing starts without a click.
  */
-export const ModelDownload: Component<{ model: ModelStatus; focus?: boolean }> = (props) => {
+export const ModelDownload: Component<{ model: ModelStatus; focus?: boolean; onStart?: () => void }> = (props) => {
   const phase = () => downloadPhase(props.model)
-  const start = () => downloadDictationModel(props.model.id)
+  const start = () => {
+    props.onStart?.()
+    downloadDictationModel(props.model.id)
+  }
   const focus = (el: HTMLElement) => { if (props.focus) focusOnMount(el) }
   return (
     <Show when={phase() !== 'idle'} fallback={
