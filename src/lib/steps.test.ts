@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { describeStep, shortPath, summarizeSteps } from './steps'
 
-const text = (tool: string, input: Record<string, unknown>) => describeStep(tool, input).parts.map(p => p.text).join(' ')
+const text = (tool: string, input: Record<string, unknown> | string, roots?: string[]) => describeStep(tool, input, roots).parts.map(p => p.text).join(' ')
 
 describe('describeStep', () => {
   test('file steps read as a verb and a worktree-relative path', () => {
@@ -50,6 +50,17 @@ describe('describeStep', () => {
     expect(text('Frobnicate', { path: '/repo/x' })).toBe('Frobnicate /repo/x')
     expect(describeStep('Bash', undefined).parts[0].text).toBe('Ran')
   })
+})
+
+test('a search pattern keeps its regex classes; only escaped punctuation loses its backslash', () => {
+  expect(text('Grep', { pattern: 'item\\(\\d+\\)' })).toBe('Searched for item(\\d+)')
+})
+
+test("Codex's shell commands read as commands, without the shell wrapper or the worktree's absolute path", () => {
+  const roots = ['/Users/dev/app/.verun/worktrees/fix-x', '/Users/dev/app']
+  expect(text('shell', "/bin/zsh -lc 'cat /Users/dev/app/.verun/worktrees/fix-x/src/a.ts'", roots)).toBe('Ran cat src/a.ts')
+  expect(text('Bash', { command: 'cd /Users/dev/app/.verun/worktrees/fix-x && pnpm test' }, roots)).toBe('Ran cd . && pnpm test')
+  expect(describeStep('shell', 'pnpm test').kind).toBe('run')
 })
 
 test('paths outside the worktree start from home', () => {

@@ -72,6 +72,14 @@ test('an edit says which file and how many lines it added and removed', () => {
   expect(text).toContain('−1')
 })
 
+test('while you search, a described command also shows the command, so search finds it', () => {
+  const { container } = render(() => (
+    <ToolBlockView id={id()} tool="Bash" input='{"command":"pnpm lint","description":"Run the linter"}' result={{ text: 'ok', isError: false }} searching />
+  ))
+  expect(container.textContent).toContain('Run the linter')
+  expect(container.textContent).toContain('pnpm lint')
+})
+
 test('an expanded row with output offers to copy it', () => {
   const { getByRole } = render(() => (
     <ToolBlockView id={id()} tool="Bash" input='{"command":"pnpm test"}' result={{ text: 'all good', isError: false }} />

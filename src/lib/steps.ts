@@ -20,6 +20,20 @@ export function shortPath(p: string, roots: readonly string[] = []): string {
   return WORKTREE.test(p) ? p.replace(WORKTREE, '') : p.replace(HOME, '~/')
 }
 
+/** A command with the worktree's (or project's) absolute paths made relative to it. */
+export function relativeCommand(command: string, roots: readonly string[] = []): string {
+  let out = command
+  for (const root of roots) {
+    const r = root.replace(/\/+$/, '')
+    if (!r) continue
+    out = out.split(`${r}/`).join('').replace(new RegExp(`${r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w./-])`, 'g'), '.')
+  }
+  return out
+}
+
+/** The command inside a shell wrapper: `/bin/zsh -lc 'pnpm test'` is `pnpm test`. */
+const unwrapShell = (command: string) => command.match(/^\s*(?:\S*\/)?(?:ba|z|da)?sh\s+-l?c\s+(['"])([\s\S]*)\1\s*$/)?.[2] ?? command
+
 const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
 const lines = (v: unknown) => (typeof v === 'string' && v ? v.replace(/\n$/, '').split('\n').length : 0)
 const part = (tone: StepTone) => (text: string): StepPart => ({ text, tone })
@@ -35,8 +49,17 @@ function webTarget(url: string): string {
   }
 }
 
-/** `roots`: folders paths are shown relative to, the task's worktree first. */
-export function describeStep(tool: string, input: Input, roots: readonly string[] = []): StepSummary {
+/**
+ * `input`: the tool's JSON input, or the raw text of one that isn't JSON (Codex
+ * sends its shell command that way). `roots`: folders paths are shown relative
+ * to, the task's worktree first.
+ */
+export function describeStep(tool: string, input: Input | string, roots: readonly string[] = []): StepSummary {
+  if (typeof input === 'string') {
+    const line = relativeCommand(unwrapShell(input), roots).split('\n')[0]
+    if (tool === 'shell') return { kind: 'run', parts: [verb('Ran'), ...opt(line, code)] }
+    return { kind: 'other', parts: [verb(tool), ...opt(line.slice(0, 100), code)] }
+  }
   const i = input ?? {}
   const path = (p: string) => part('path')(shortPath(p, roots))
   const file = str(i.file_path) ?? str(i.notebook_path)
@@ -58,10 +81,10 @@ export function describeStep(tool: string, input: Input, roots: readonly string[
       // Claude's description says what the command is for; the command shows when opened.
       const description = str(i.description)
       if (description) return { kind: 'run', parts: [verb(description)] }
-      return { kind: 'run', parts: [verb('Ran'), ...opt(str(i.command)?.split('\n')[0], code)] }
+      return { kind: 'run', parts: [verb('Ran'), ...opt(str(i.command) && relativeCommand(str(i.command)!, roots).split('\n')[0], code)] }
     }
     case 'Grep':
-      return { kind: 'search', parts: [verb('Searched for'), ...opt(str(i.pattern)?.replace(/\\(.)/g, '$1'), code), ...(str(i.path) ? [dim('in'), path(str(i.path)!)] : [])] }
+      return { kind: 'search', parts: [verb('Searched for'), ...opt(str(i.pattern)?.replace(/\\([^A-Za-z0-9\s])/g, '$1'), code), ...(str(i.path) ? [dim('in'), path(str(i.path)!)] : [])] }
     case 'Glob':
       return { kind: 'files', parts: [verb('Found files'), ...opt(str(i.pattern), code), ...(str(i.path) ? [dim('in'), path(str(i.path)!)] : [])] }
     case 'WebFetch':

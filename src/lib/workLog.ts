@@ -18,6 +18,8 @@ export interface FoldBlock {
   tool?: string
   input?: string
   result?: { isError: boolean }
+  /** The agent's id for a tool call: unlike an index, it holds when older pages load. */
+  toolUseId?: string
 }
 
 export type FoldRow =
@@ -58,7 +60,9 @@ export interface FoldPlanOptions {
   tail?: number
 }
 
-const WORK = new Set(['assistant', 'thinking', 'tool', 'agent', 'system', 'plan'])
+// What folds into a turn's row. A plan card and a turn-status line ("Turn ended:
+// max_turns") stay in view, like errors and the turn's diff.
+const WORK = new Set(['assistant', 'thinking', 'tool', 'agent'])
 const STEP = new Set(['tool', 'thinking'])
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
 const SHOWN: Directive = { hidden: false }
@@ -79,7 +83,10 @@ function subject(b: FoldBlock): string {
   if (!i) return b.input ?? ''
   const s = (k: string) => (typeof i[k] === 'string' ? (i[k] as string) : '')
   if (b.tool === 'Bash') return s('command').trim().replace(/\s+/g, ' ')
-  return s('file_path') || `${s('pattern')}|${s('path')}` || (b.input ?? '')
+  if (s('file_path')) return s('file_path')
+  if (s('pattern') || s('path')) return `${s('pattern')}|${s('path')}`
+  // Anything else is the same thing only if its whole input is.
+  return b.input ?? ''
 }
 
 /** A short name for a step, to say what failed: the command, or the tool and file. */
@@ -105,8 +112,15 @@ function retriedFailures(blocks: readonly FoldBlock[], work: readonly number[]):
 
 /** The turn's row and which of its work stays in view, for a turn running or done. */
 function planTurn(blocks: readonly FoldBlock[], start: number, end: number, running: boolean, plan: Directive[], o: FoldPlanOptions) {
+  // The reply is text with no steps after it. A turn stopped mid-work has none:
+  // its last narration folds with the rest.
   let reply = -1
-  if (!running) for (let i = end - 1; i > start; i--) if (blocks[i].type === 'assistant') { reply = i; break }
+  if (!running) {
+    for (let i = end - 1; i > start; i--) {
+      if (blocks[i].type === 'assistant') { reply = i; break }
+      if (STEP.has(blocks[i].type) || blocks[i].type === 'agent') break
+    }
+  }
   const work: number[] = []
   for (let i = start + 1; i < end; i++) if (i !== reply && WORK.has(blocks[i].type)) work.push(i)
   const at = (i: number) => blocks[i]
@@ -119,7 +133,9 @@ function planTurn(blocks: readonly FoldBlock[], start: number, end: number, runn
   if (folded.length === 0 && !running) return
   if (work.length === 0) return
   const head = blocks[start]
-  const key = `turn:${head.at ?? start}`
+  // Stable across rebuilds and older pages loading: when it was sent, else its first tool call.
+  const firstCall = work.map(i => at(i).toolUseId).find(Boolean)
+  const key = `turn:${head.at ?? firstCall ?? start}`
   const open = o.isOpen(key) ?? running
   const fromHead = head.at !== undefined && head.endedAt !== undefined ? head.endedAt - head.at : undefined
   const durationMs = (reply >= 0 ? at(reply).durationMs : undefined) ?? fromHead
@@ -156,7 +172,7 @@ function groupOlderSteps(blocks: readonly FoldBlock[], start: number, end: numbe
   const close = () => {
     if (run.length >= 2) {
       const first = blocks[run[0]]
-      const key = `group:${first.id ?? run[0]}`
+      const key = `group:${first.toolUseId ?? first.id ?? run[0]}`
       const open = o.isOpen(key) ?? false
       const label = summarizeSteps(run.map(i => ({ tool: blocks[i].type === 'thinking' ? 'thinking' : blocks[i].tool ?? 'Tool', input: parse(blocks[i].input) })))
       const failed = run.filter(i => blocks[i].result?.isError).length

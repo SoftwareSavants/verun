@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- Finished turns fold their work (thinking, in-between messages, tool calls) into one "Worked for 3m 12s · 14 steps · 2 edits" row above the final reply; open it to see every step. Subagents keep their own blocks, failures nothing later fixed and work still running stay in view, a failure a later attempt fixed reads "pnpm lint failed, then passed", and search unfolds everything
+- Finished turns fold their work (thinking, in-between messages, tool calls) into one "Worked for 3m 12s · 14 steps · 2 edits" row above the final reply; open it to see every step. Subagents, plan cards, turn-status lines, failures nothing later fixed and work still running stay in view, a failure a later attempt at the same step fixed reads "pnpm lint failed, then passed", and search unfolds everything and shows each step's command
 - A running turn has the same row, counting up ("Working for 2m 4s"); its narration is set quieter than replies, its latest three steps stay live with the running one tinted, and older steps group into one line ("Read 3 files, searched 2 times, ran 1 command")
-- Steps read as sentences with an icon per kind: "Read src/lib/markdown.ts", Claude's description of a command (the command shows when opened), "+3 −1" on edits, paths relative to the worktree or the project; a reply's copy and fork buttons appear when you point at it
+- Steps read as sentences with an icon per kind: "Read src/lib/markdown.ts", Claude's description of a command (the command shows when opened), "+3 −1" on edits, paths relative to the worktree or the project, Codex shell commands without their shell wrapper; a reply's copy and fork buttons appear when you point at it
+- Codex: each turn's plan and diff appear in that turn, instead of a later turn updating the first turn's cards
 - A running subagent shows its last three steps, as the same rows as its log; opened, its log scrolls in a pane of its own that starts at the newest step and grows upward, with its report below. The background strip above the composer no longer repeats a subagent whose block is on screen
 
 ## 0.16.6 - 2026-11-12

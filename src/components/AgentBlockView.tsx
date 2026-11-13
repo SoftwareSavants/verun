@@ -189,8 +189,12 @@ export const AgentBlockView: Component<{
     const scroller = root?.closest<HTMLElement>('[data-chat-scroll]')
     const before = root?.getBoundingClientRect().bottom
     setExp(open)
-    if (open) { followPane = true; toEnd() }
-    if (scroller && root && before !== undefined) scroller.scrollTop += root.getBoundingClientRect().bottom - before
+    if (open) followPane = true
+    // Measure once the new content is laid out, before it's painted.
+    queueMicrotask(() => {
+      if (open) toEnd()
+      if (scroller && root && before !== undefined) scroller.scrollTop += root.getBoundingClientRect().bottom - before
+    })
   }
   // A finished agent folds back to its result line. Toggling it afterwards sticks.
   let wasFinished = untrack(finished)

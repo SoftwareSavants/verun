@@ -76,6 +76,35 @@ describe('finished turns', () => {
     expect(hidden(plan)).toEqual([1])
   })
 
+  test('a plan card and a turn-status line (like max turns) never fold away', () => {
+    const plan = planFolds([user(1, 9), done('Read', 't0'), { type: 'plan' }, { type: 'system' }, say(true)], opts())
+    expect(hidden(plan)).toEqual([1])
+  })
+
+  test('the reply is text nothing came after; an interrupted turn folds its last narration with the rest', () => {
+    const plan = planFolds([user(1, 9), say(), done('Read', 't0'), say(), done('Bash', 't1')], opts())
+    expect(hidden(plan)).toEqual([1, 2, 3, 4])
+    expect(rows(plan)).toMatchObject([{ at: 1, steps: 2 }])
+    expect(plan.some(d => d.replyMetaInRow)).toBe(false)
+  })
+
+  test('a retry only counts for the same input: a different URL or tool call is new work', () => {
+    const fetch = (id: string, url: string, isError: boolean): FoldBlock => ({ type: 'tool', id, tool: 'WebFetch', input: JSON.stringify({ url }), result: { isError } })
+    const plan = planFolds([user(1, 9), fetch('t0', 'https://a.dev', true), fetch('t1', 'https://b.dev', false), say(true)], opts())
+    expect(rows(plan)).toMatchObject([{ failed: 1, retried: [] }])
+    expect(plan[1].hidden).toBe(false)
+  })
+
+  test("a turn's open or closed state follows the turn, also in transcripts without timestamps", () => {
+    const turn = (n: number): FoldBlock[] => [{ type: 'user' }, { type: 'tool', id: `tool-${n}`, toolUseId: `toolu_${n}`, tool: 'Read', result: { isError: false } }, say(true)]
+    const open = (k: string) => k === 'turn:toolu_2' || undefined
+    // An older page prepended moves every index; the turn that was open stays open.
+    const before = planFolds([...turn(1), ...turn(2)], opts({ isOpen: open }))
+    const after = planFolds([...turn(0), ...turn(1), ...turn(2)], opts({ isOpen: open }))
+    expect(rows(before).map(r => r.open)).toEqual([false, true])
+    expect(rows(after).map(r => r.open)).toEqual([false, false, true])
+  })
+
   test('search unfolds everything', () => {
     const plan = planFolds(blocks, opts({ unfoldAll: true }))
     expect(hidden(plan)).toEqual([])

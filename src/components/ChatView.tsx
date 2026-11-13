@@ -4,7 +4,7 @@ import { clsx } from 'clsx'
 import { renderMarkdown, handleMarkdownLinkClick, getWorktreePath } from '../lib/markdown'
 import type { OutputItem, SessionStatus, AttachmentRef, AgentProgress } from '../types'
 import { AGENT_TOOLS, agentState, isTaskFinished, mergeAgentProgress } from '../lib/subagents'
-import { describeStep } from '../lib/steps'
+import { describeStep, relativeCommand } from '../lib/steps'
 import { planFolds, type Directive, type FoldBlock, type FoldRow } from '../lib/workLog'
 import { StepDiffCount, StepGroupRow, StepIcon, StepLabel, TurnFoldRow } from './Steps'
 import { collapseInPlace } from '../lib/collapseInPlace'
@@ -269,6 +269,9 @@ export function createBlockBuilder(): BlockBuilder {
     turnHasError = false
     turnUserText = text
     turnProgress = false
+    // A turn's plan and diff are its own: a new turn starts new cards in its own place.
+    planIdx = -1
+    diffIdx = -1
   }
 
   const lastOpenTool = (): ToolBlock | AgentBlock | undefined => {
@@ -1003,6 +1006,8 @@ export const ToolBlockView: Component<{
   taskId?: string
   /** Folders paths are shown relative to: the worktree, then the project. */
   roots?: readonly string[]
+  /** The transcript is being searched: show the command a description stands for. */
+  searching?: boolean
 }> = (props) => {
   const [expanded, setExpanded] = createSignal(expandedTools.get(props.id) ?? false)
   const set = (next: boolean) => {
@@ -1039,9 +1044,12 @@ export const ToolBlockView: Component<{
 
   // What the step did, in words. Input that isn't JSON still names the tool.
   const summary = createMemo(() => {
-    const s = describeStep(props.tool, parsedInput() as Record<string, unknown> | undefined, props.roots)
-    if (parsedInput() || !props.input) return s
-    return { ...s, parts: [s.parts[0], { text: props.input.split('\n')[0].slice(0, 100), tone: 'code' as const }] }
+    const parsed = parsedInput()
+    const s = describeStep(props.tool, (parsed as Record<string, unknown> | undefined) ?? props.input, props.roots)
+    // Search finds what's on screen: a described command also shows the command.
+    const command = props.searching && props.tool === 'Bash' && s.parts.length === 1 && typeof parsed?.command === 'string' ? parsed.command : ''
+    if (!command) return s
+    return { ...s, parts: [...s.parts, { text: '·', tone: 'dim' as const }, { text: relativeCommand(command, props.roots).split('\n')[0], tone: 'code' as const }] }
   })
 
   const inputSummary = (): string => {
@@ -1480,6 +1488,9 @@ export const ChatView: Component<Props> = (props) => {
   const [matches, setMatches] = createSignal<HTMLElement[]>([])
   const [currentMatchIdx, setCurrentMatchIdx] = createSignal(-1)
 
+  // Search finds what's on screen, so while it's on everything unfolds.
+  const searching = () => showSearch() && !!searchQuery()
+
   // The work log: a finished turn folds to one row above its final reply, the
   // running turn groups older steps. What you open stays open for the session.
   const [openFolds, setOpenFolds] = createSignal<ReadonlyMap<string, boolean>>(openFoldsFor(props.sessionId))
@@ -1507,7 +1518,7 @@ export const ChatView: Component<Props> = (props) => {
     stateOf,
     isOpen: key => openFolds().get(key),
     // Search finds what's on screen, so it unfolds everything.
-    unfoldAll: showSearch() && !!searchQuery(),
+    unfoldAll: searching(),
   }))
   const foldAt = (i: number) => folds()[i] ?? SHOWN_BLOCK
   // A turn that finishes while you're reading further up stays open.
@@ -2008,7 +2019,7 @@ export const ChatView: Component<Props> = (props) => {
               <Match when={block.type === 'tool'}>
                 {(() => {
                   const b = block as ToolBlock
-                  return <div class="-my-[3px]"><ToolBlockView id={b.id} tool={b.tool} input={b.input} result={b.result} live={props.sessionStatus === 'running'} taskId={props.taskId} roots={pathRoots()} /></div>
+                  return <div class="-my-[3px]"><ToolBlockView id={b.id} tool={b.tool} input={b.input} result={b.result} live={props.sessionStatus === 'running'} taskId={props.taskId} roots={pathRoots()} searching={searching()} /></div>
                 })()}
               </Match>
               <Match when={block.type === 'agent'}>
@@ -2027,7 +2038,7 @@ export const ChatView: Component<Props> = (props) => {
                           <Match when={child.type === 'tool'}>
                             {(() => {
                               const c = child as ToolBlock
-                              return <ToolBlockView id={c.id} tool={c.tool} input={c.input} result={c.result} live={props.sessionStatus === 'running' || props.sessionStatus === 'background'} taskId={props.taskId} roots={pathRoots()} />
+                              return <ToolBlockView id={c.id} tool={c.tool} input={c.input} result={c.result} live={props.sessionStatus === 'running' || props.sessionStatus === 'background'} taskId={props.taskId} roots={pathRoots()} searching={searching()} />
                             })()}
                           </Match>
                           <Match when={child.type === 'thinking'}>
