@@ -52,6 +52,7 @@ pub fn level_from_rms(rms: f32) -> f32 {
 }
 
 /// Loudness of `samples` in 0.0..=1.0: RMS scaled so quiet speech is visible.
+#[cfg_attr(not(test), allow(dead_code))] // reference for the inline RMS in the audio callback; only tests call it
 pub fn level(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
@@ -61,7 +62,7 @@ pub fn level(samples: &[f32]) -> f32 {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unused_imports)] // wired in by a later task
+#[cfg_attr(not(target_arch = "aarch64"), allow(unused_imports))] // only the Apple Silicon service uses it
 pub use mic::MicCapture;
 
 #[cfg(target_os = "macos")]

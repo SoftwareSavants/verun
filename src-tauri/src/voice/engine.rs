@@ -95,8 +95,6 @@ pub fn clean_transcript(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-// Wired up by a later task.
-#[allow(unused_imports)]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use real::TranscribeRsLoader;
 

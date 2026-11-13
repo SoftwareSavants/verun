@@ -69,6 +69,7 @@ pub struct ModelFile {
 }
 
 pub struct ModelSpec {
+    #[cfg_attr(not(test), allow(dead_code))] // only the catalog consistency test reads it
     pub id: ModelId,
     pub display_name: &'static str,
     pub files: &'static [ModelFile],

@@ -230,6 +230,15 @@ pub fn run() {
                 windows_path.clone(),
                 window_session::load(&windows_path),
             ));
+            // Voice dictation: load its settings and start its threads; the
+            // hold-key listener attaches off the main thread when enabled.
+            let voice_pool = app.state::<sqlx::sqlite::SqlitePool>().inner().clone();
+            let voice = voice::runtime::VoiceService::start(app.handle(), voice_pool, &app_data_dir);
+            app.manage(voice);
+            let voice_handle = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                voice_handle.state::<voice::runtime::VoiceService>().attach_listener();
+            });
             app.manage(blob::AppDataDir(app_data_dir));
             // A new-task window becomes a task window once its task exists;
             // track it from then on so it is restored and closes cleanly.
@@ -393,6 +402,18 @@ pub fn run() {
             keep_awake::keep_awake_set_agents_working,
             keep_awake::keep_awake_set_manual,
             keep_awake::keep_awake_clear_manual,
+            // Voice dictation
+            ipc::voice_status,
+            ipc::voice_set_enabled,
+            ipc::voice_set_language,
+            ipc::voice_set_hold_key,
+            ipc::voice_begin,
+            ipc::voice_end,
+            ipc::voice_cancel,
+            ipc::voice_download_model,
+            ipc::voice_delete_model,
+            ipc::voice_request_microphone,
+            ipc::voice_open_accessibility_settings,
             // Projects
             ipc::add_project,
             ipc::gh_status,
