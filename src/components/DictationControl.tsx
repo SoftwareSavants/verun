@@ -97,7 +97,8 @@ export function DictationControl(props: { available: boolean }) {
             class={clsx(
               'w-7 h-7 flex items-center justify-center rounded-lg transition-colors shrink-0',
               voiceState() === 'recording' ? 'text-accent bg-accent/10 hover:bg-accent/20' : 'text-text-dim hover:text-text-muted hover:bg-surface-2',
-              'disabled:opacity-40 disabled:pointer-events-none',
+              // Not pointer-events-none: the title says why it is disabled.
+              'disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-text-dim',
             )}
             aria-label="Dictate"
             aria-pressed={voiceState() === 'recording'}

@@ -164,6 +164,8 @@ describe('DictationControl', () => {
     render(() => <DictationControl available={false} />)
     expect((mic() as HTMLButtonElement).disabled).toBe(true)
     expect(mic().title).toBe('Dictation is not available here')
+    // The pointer must still reach it, or the title tooltip never shows.
+    expect(mic().className).not.toMatch(/pointer-events-none/)
     fireEvent.click(mic())
     expect(mocks.toggleDictation).not.toHaveBeenCalled()
   })
