@@ -585,7 +585,8 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
     /// `done` event, then releasing the claim, then calling `then` (the runtime
     /// broadcasts the status there). A panic in the download ends it the same
     /// way, as an error. A cancelled download ends `Ok` with `cancelled` set and
-    /// no error. Blocks for the whole download: call from a blocking thread.
+    /// no error, its claim released before that event so it can be downloaded
+    /// again at once. Blocks for the whole download: call from a blocking thread.
     pub fn run_download<F: Fetch>(
         &self,
         claim: DownloadClaim,
@@ -623,6 +624,12 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
             .unwrap_or_else(|_| Err("download panicked".to_string()));
         let was_cancelled = outcome == Ok(true);
         let result = outcome.map(|_| ());
+        // A cancelled event brings the Download button back, so the claim must
+        // be free by then. Other endings release it after their event.
+        let mut claim = Some(claim);
+        if was_cancelled {
+            claim = None;
+        }
         self.events.model_progress(ModelProgress {
             model: id,
             received: received.get(),
@@ -1655,6 +1662,26 @@ pub(crate) mod tests {
         assert!(!models::is_installed(r.dir.path(), id));
         let left: Vec<_> = std::fs::read_dir(r.dir.path()).unwrap().collect();
         assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[test]
+    fn a_cancelled_download_is_released_before_its_final_event() {
+        let r = rig(Script::default(), Opts { installed: false, ..Opts::default() });
+        let id = ModelId::WhisperTurbo;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (weak, log) = (Arc::downgrade(&r.core), Arc::clone(&seen));
+        // The Download button the cancelled event brings back must work at once.
+        *r.rec.on_progress.lock().unwrap() = Some(Box::new(move |p: &ModelProgress| {
+            if let Some(core) = weak.upgrade() {
+                if p.done {
+                    log.lock().unwrap().push(core.claim_download(p.model).is_some());
+                }
+            }
+        }));
+        let fetch = CancelAfterFirst { core: Arc::clone(&r.core), sent: Default::default() };
+        let claim = r.core.claim_download(id).unwrap();
+        assert_eq!(r.core.run_download(claim, Ok(fetch), || {}), Ok(()));
+        assert_eq!(*seen.lock().unwrap(), vec![true]);
     }
 
     #[test]
