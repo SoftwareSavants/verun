@@ -252,15 +252,41 @@ export function openDictationSetup(request: DictationSetupRequest = { reason: 'e
 // Registered targets, oldest first; the last one is the visible composer.
 let targets: DictationTarget[] = []
 
+const label = () => windowContext.windowLabel
+
+/** Whether the backend was last told this window has a target; null before the first report. */
+let reportedTarget: boolean | null = null
+let reportQueued = false
+
+function sendTarget(available: boolean) {
+  reportedTarget = available
+  ipc.voiceSetTarget(label(), available).catch(e => console.error('voice set target:', e))
+}
+
+/**
+ * Tells the backend whether this window has a target once the current changes
+ * settle (a chat switch swaps targets in one go), and only when that changed:
+ * the backend opens no microphone for a hold in a window without one.
+ */
+function reportTarget() {
+  if (reportQueued) return
+  reportQueued = true
+  queueMicrotask(() => {
+    reportQueued = false
+    const available = targets.length > 0
+    if (available !== reportedTarget) sendTarget(available)
+  })
+}
+
 export function registerDictationTarget(t: DictationTarget): () => void {
   targets.push(t)
+  reportTarget()
   return () => {
     const i = targets.indexOf(t)
     if (i >= 0) targets.splice(i, 1)
+    reportTarget()
   }
 }
-
-const label = () => windowContext.windowLabel
 
 /**
  * Every window's pins, also kept in localStorage (one origin for all Verun
@@ -338,7 +364,8 @@ function handleError(error: VoiceError) {
     void refreshVoiceStatus().then(() => openDictationSetup({ reason: 'model-missing' }))
     return
   }
-  if (error === 'busy') addToast('Dictation is already recording in another window.', 'info')
+  if (error === 'no-target') addToast('Dictation works in the chat box and the new task box.', 'info')
+  else if (error === 'busy') addToast('Dictation is already recording in another window.', 'info')
   else if (error === 'mic-denied') addToast('Microphone access is off for Verun. Turn it on in System Settings.', 'error')
   else if (error === 'mic-unavailable') addToast('No microphone found, or it stopped responding.', 'error')
   else addToast('Dictation failed. Try again.', 'error')
@@ -431,6 +458,8 @@ export async function initVoice(): Promise<void> {
     unlisteners = results.flatMap(r => (r.status === 'fulfilled' ? [r.value] : []))
     const failure = results.find(r => r.status === 'rejected')
     if (failure) throw (failure as PromiseRejectedResult).reason
+    // The backend may know an older page of this window (a reload): report afresh.
+    sendTarget(targets.length > 0)
     const initial = await ipc.voiceStatus()
     if (!statusEventSeen) applyStatus(initial)
   } catch (e) {
@@ -465,6 +494,8 @@ export function __resetVoiceForTests(): void {
   initialized = false
   statusEventSeen = false
   targets = []
+  reportedTarget = null
+  reportQueued = false
   setStatus(null)
   setLevel(0)
   setRecordingTake(null)

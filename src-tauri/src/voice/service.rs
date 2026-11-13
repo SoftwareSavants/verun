@@ -9,7 +9,7 @@
 //! it is emitted before the `voice-state` that reflects T being finished.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -24,7 +24,7 @@ use super::engine::{Engine, ModelLoader};
 use super::hold::{FnSystemAction, HoldAction, HoldKey};
 use super::models::{self, DownloadError, Fetch, ModelStatus};
 use super::session::{
-    Capture, Dictation, EndOutcome, PendingTake, TakeRef, VoiceError, VoiceState,
+    Capture, Dictation, EndOutcome, PendingTake, TakeRef, VoiceError, VoiceState, MIN_HOLD,
 };
 use crate::db;
 
@@ -313,6 +313,9 @@ struct Inner<C: Capture> {
     /// The id of the last take the hold key began. Hold-key ends and cancels
     /// only touch the recording take when it is this one.
     hold_take: Option<u64>,
+    /// A hold armed in a window with no target: its window and key-down time.
+    /// It opened no microphone; a deliberate one gets a notice on release.
+    untargeted_hold: Option<(String, Instant)>,
 }
 
 /// Running downloads, each with the flag that cancels it.
@@ -331,8 +334,8 @@ impl Drop for DownloadClaim {
     }
 }
 
-/// Lock order: `inner` and `downloading` are never held together, and no
-/// lock is held while transcribing or downloading.
+/// Lock order: `inner`, `downloading` and `targets` are never held together,
+/// and no lock is held while transcribing or downloading.
 pub struct VoiceCore<C: Capture, E: VoiceEvents> {
     inner: Mutex<Inner<C>>,
     events: Arc<E>,
@@ -340,6 +343,10 @@ pub struct VoiceCore<C: Capture, E: VoiceEvents> {
     mic: MicCheck,
     window_exists: WindowCheck,
     downloading: Downloading,
+    /// Labels of windows that show a dictation target, as their frontend
+    /// reports. Its own lock, never held with another, so reporting never
+    /// waits for a microphone opening under `inner`.
+    targets: Mutex<HashSet<String>>,
 }
 
 fn idle() -> StatePayload {
@@ -373,12 +380,14 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
                 worker: None,
                 shown: idle(),
                 hold_take: None,
+                untargeted_hold: None,
             }),
             events,
             models_dir: models_dir.clone(),
             mic,
             window_exists,
             downloading: Arc::new(Mutex::new(HashMap::new())),
+            targets: Mutex::new(HashSet::new()),
         });
         let (tx, rx) = mpsc::channel();
         let weak = Arc::downgrade(&core);
@@ -409,6 +418,16 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         lock(&self.inner).settings.language = language;
     }
 
+    /// Whether the window `label` shows a dictation target (a composer).
+    pub fn set_target(&self, label: &str, available: bool) {
+        let mut targets = lock(&self.targets);
+        if available {
+            targets.insert(label.to_string());
+        } else {
+            targets.remove(label);
+        }
+    }
+
     pub fn set_hold_key(&self, key: HoldKey) {
         lock(&self.inner).settings.hold_key = key;
     }
@@ -427,13 +446,20 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
 
     /// Hold-key path. Ignored while disabled; begin errors become `voice-error`.
     /// `End` and `Cancel` only act on a take the hold key began, so they never
-    /// touch a take started with the mic button.
+    /// touch a take started with the mic button. A hold in a window with no
+    /// target opens no microphone; released after `MIN_HOLD` with no other key
+    /// pressed, it emits `NoTarget` for that window (no take, so no protocol).
     pub fn hold(&self, action: HoldAction, now: Instant) {
         if !self.settings().enabled {
             return;
         }
         match action {
             HoldAction::Begin { window, down_at } => {
+                let targeted = lock(&self.targets).contains(&window);
+                if !targeted {
+                    lock(&self.inner).untargeted_hold = Some((window, down_at));
+                    return;
+                }
                 if let Err(error) = self.begin_take(window.clone(), down_at, true) {
                     self.events.error(ErrorPayload {
                         window: Some(window),
@@ -444,13 +470,21 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
             }
             HoldAction::End => {
                 let mut inner = lock(&self.inner);
-                if Self::hold_take_recording(&inner) {
+                if let Some((window, down_at)) = inner.untargeted_hold.take() {
+                    if now.saturating_duration_since(down_at) >= MIN_HOLD {
+                        self.events.error(ErrorPayload {
+                            window: Some(window),
+                            take: None,
+                            error: VoiceError::NoTarget,
+                        });
+                    }
+                } else if Self::hold_take_recording(&inner) {
                     self.end_locked(&mut inner, now);
                 }
             }
             HoldAction::Cancel => {
                 let mut inner = lock(&self.inner);
-                if Self::hold_take_recording(&inner) {
+                if inner.untargeted_hold.take().is_none() && Self::hold_take_recording(&inner) {
                     self.cancel_locked(&mut inner);
                 }
             }
@@ -499,7 +533,11 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
     /// The window `label` is gone: cancels the take recording for it, if any.
     /// Takes it already finished still transcribe (see `finished`).
     pub fn window_closed(&self, label: &str) {
+        lock(&self.targets).remove(label);
         let mut inner = lock(&self.inner);
+        if inner.untargeted_hold.as_ref().is_some_and(|(w, _)| w == label) {
+            inner.untargeted_hold = None;
+        }
         if inner.dictation.recording().is_some_and(|t| t.window == label) {
             self.cancel_locked(&mut inner);
         }
@@ -1130,6 +1168,10 @@ pub(crate) mod tests {
             Box::new(move || mic),
             Box::new(move |w: &str| !gone.lock().unwrap().contains(w)),
         );
+        // The windows the hold-key tests hold in show a composer.
+        for w in ["main", "task-2", "task-7", "b"] {
+            core.set_target(w, true);
+        }
         Rig { core, rec, cap, script, dir, closed }
     }
 
@@ -1426,6 +1468,54 @@ pub(crate) mod tests {
         assert_eq!(r.cap.starts(), 1);
         assert_eq!(r.rec.states(), vec![rec_state("a", 1)]);
         assert_eq!(serde_json::to_value(VoiceError::Busy).unwrap(), "busy");
+    }
+
+    #[test]
+    fn a_hold_in_a_window_with_no_composer_opens_no_mic_and_notices_a_deliberate_hold() {
+        let r = rig(Script::default(), Opts::default());
+        let t0 = Instant::now();
+        r.core.set_target("editor", false);
+        // Held past the arming delay, released after MIN_HOLD with no other key.
+        r.core.hold(begin_hold("editor", t0), t0 + ms(150));
+        assert_eq!(r.cap.starts(), 0);
+        assert!(r.rec.all().is_empty());
+        r.core.hold(HoldAction::End, t0 + MIN_HOLD);
+        assert_eq!(r.cap.starts(), 0);
+        assert_eq!(r.rec.all(), vec![Ev::Error(Some("editor".into()), None, VoiceError::NoTarget)]);
+        assert_eq!(serde_json::to_value(VoiceError::NoTarget).unwrap(), "no-target");
+    }
+
+    #[test]
+    fn a_short_or_interrupted_hold_with_no_composer_shows_nothing() {
+        let r = rig(Script::default(), Opts::default());
+        let t0 = Instant::now();
+        // Never registered: no target either. Released before MIN_HOLD.
+        r.core.hold(begin_hold("diff", t0), t0 + ms(150));
+        r.core.hold(HoldAction::End, t0 + MIN_HOLD - ms(1));
+        // Fn then an arrow after the arming delay.
+        let t1 = t0 + ms(2000);
+        r.core.hold(begin_hold("diff", t1), t1 + ms(150));
+        r.core.hold(HoldAction::Cancel, t1 + ms(400));
+        r.core.hold(HoldAction::End, t1 + ms(900));
+        assert_eq!(r.cap.starts(), 0);
+        assert!(r.rec.all().is_empty(), "{:?}", r.rec.all());
+    }
+
+    #[test]
+    fn a_window_whose_composer_went_away_or_closed_has_no_target() {
+        let r = rig(Script::texts(&["hi"]), Opts::default());
+        let t0 = Instant::now();
+        r.core.set_target("task-9", true);
+        r.core.set_target("task-9", false);
+        r.core.hold(begin_hold("task-9", t0), t0 + ms(150));
+        r.core.hold(HoldAction::Cancel, t0 + ms(200));
+        r.core.set_target("task-9", true);
+        r.core.window_closed("task-9");
+        r.core.hold(begin_hold("task-9", t0 + ms(1000)), t0 + ms(1150));
+        assert_eq!(r.cap.starts(), 0);
+        // The mic button is not affected: it only exists where a composer is.
+        r.core.begin("task-9".into(), t0 + ms(2000)).unwrap();
+        assert_eq!(r.cap.starts(), 1);
     }
 
     #[test]

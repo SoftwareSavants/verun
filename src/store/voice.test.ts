@@ -10,6 +10,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: (e: string, cb: (e: { payload:
 vi.mock('../lib/ipc', () => ({
   voiceStatus: vi.fn(),
   voiceBegin: vi.fn(),
+  voiceSetTarget: vi.fn(),
   voiceEnd: vi.fn(),
   voiceCancel: vi.fn(),
   voiceSetEnabled: vi.fn(),
@@ -73,6 +74,7 @@ beforeEach(async () => {
   vi.mocked(ipc.voiceBegin).mockResolvedValue(undefined)
   vi.mocked(ipc.voiceCancel).mockResolvedValue(undefined)
   vi.mocked(ipc.voiceEnd).mockResolvedValue(undefined)
+  vi.mocked(ipc.voiceSetTarget).mockResolvedValue(undefined)
   await initVoice()
 })
 
@@ -309,6 +311,37 @@ describe('delivery', () => {
     rec(1); transcript('x', 1)
     expect(b.insert).toHaveBeenCalled()
     expect(a.insert).not.toHaveBeenCalled()
+  })
+})
+
+describe('target availability goes to the backend', () => {
+  const pushes = () => vi.mocked(ipc.voiceSetTarget).mock.calls
+  const settle = () => new Promise<void>(r => queueMicrotask(r))
+
+  test('init reports this window, with no target yet', () => {
+    expect(pushes()).toEqual([['main', false]])
+  })
+
+  test('a composer appearing and going away is reported once each, after the change settles', async () => {
+    vi.mocked(ipc.voiceSetTarget).mockClear()
+    const off = registerDictationTarget(makeTarget())
+    expect(pushes()).toEqual([])
+    await settle()
+    expect(pushes()).toEqual([['main', true]])
+    // Switching chats swaps targets in one go: nothing changes for the backend.
+    off()
+    const off2 = registerDictationTarget(makeTarget('s2'))
+    await settle()
+    expect(pushes()).toEqual([['main', true]])
+    off2()
+    await settle()
+    expect(pushes()).toEqual([['main', true], ['main', false]])
+  })
+
+  test('a deliberate hold with no composer gets the notice', () => {
+    failed(null, 'no-target')
+    expect(addToast).toHaveBeenCalledWith('Dictation works in the chat box and the new task box.', 'info')
+    expect(dictationSetupRequest()).toBeNull()
   })
 })
 

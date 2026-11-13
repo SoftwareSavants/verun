@@ -776,6 +776,9 @@ export const voiceSetHoldKey = (key: HoldKey) =>
 /** Starts recording for the composer in window `window` (mic button). */
 export const voiceBegin = (window: string) =>
   invoke<void>('voice_begin', { window })
+/** Whether `window` shows a dictation target; a hold in a window without one opens no microphone. */
+export const voiceSetTarget = (window: string, available: boolean) =>
+  invoke<void>('voice_set_target', { window, available })
 export const voiceEnd = () =>
   invoke<void>('voice_end')
 export const voiceCancel = () =>

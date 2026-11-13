@@ -13,6 +13,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }))
 vi.mock('../lib/ipc', () => ({
   voiceStatus: vi.fn(),
+  voiceSetTarget: vi.fn(),
   voiceSetEnabled: vi.fn(),
   voiceSetLanguage: vi.fn(),
   voiceSetHoldKey: vi.fn(),
@@ -61,6 +62,7 @@ beforeEach(() => {
   vi.mocked(ipc.voiceSetHoldKey).mockImplementation(async holdKey => status({ holdKey }))
   vi.mocked(ipc.voiceDeleteModel).mockImplementation(async () => status({ installed: false }))
   vi.mocked(ipc.voiceDownloadModel).mockResolvedValue(undefined)
+  vi.mocked(ipc.voiceSetTarget).mockResolvedValue(undefined)
   vi.mocked(ipc.voiceRequestMicrophone).mockResolvedValue('granted')
   vi.mocked(ipc.voiceOpenAccessibilitySettings).mockResolvedValue(undefined)
 })

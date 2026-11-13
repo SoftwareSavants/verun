@@ -336,6 +336,14 @@ impl VoiceService {
         }
     }
 
+    /// Whether the window `label` shows a dictation target. Never blocks
+    /// for long: the frontend calls it on every change, in order.
+    pub fn set_target(&self, label: &str, available: bool) {
+        if let Some(rt) = &self.0 {
+            rt.core.set_target(label, available);
+        }
+    }
+
     /// A window was destroyed: a take recording for it is cancelled, and a
     /// hold pending for it never starts. Never blocks (the control thread does it).
     pub fn window_closed(&self, label: &str) {

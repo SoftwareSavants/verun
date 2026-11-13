@@ -26,6 +26,8 @@ pub enum VoiceError {
     Disabled,
     /// A take is recording for another window.
     Busy,
+    /// A hold in a window with no composer to dictate into.
+    NoTarget,
     Engine(String),
 }
 

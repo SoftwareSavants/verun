@@ -420,6 +420,7 @@ pub fn run() {
             ipc::voice_set_language,
             ipc::voice_set_hold_key,
             ipc::voice_begin,
+            ipc::voice_set_target,
             ipc::voice_end,
             ipc::voice_cancel,
             ipc::voice_download_model,
