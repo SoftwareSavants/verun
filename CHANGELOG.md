@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Coming back to a running Claude terminal no longer sits on "Starting Claude Code..." until a key is pressed: the overlay clears as soon as the terminal shows output, including output already on screen
+
 ## 0.16.6 - 2026-11-12
 
 - Fork a Claude session onto another account: the fork menu picks which account the fork runs on, copying the transcript into that account's home

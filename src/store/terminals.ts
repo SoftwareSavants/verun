@@ -43,6 +43,28 @@ const xtermInstances = new Map<string, XtermEntry>()
 
 // Highest replay/live byte offset already queued into each xterm.
 const lastSeqWritten = new Map<string, number>()
+// Terminals whose xterm has output on screen, for views that wait on the first frame.
+const [showingOutput, setShowingOutput] = createSignal<ReadonlySet<string>>(new Set())
+
+/** The terminal's xterm has output written to it: a replay, or live output.
+ *  A view rejoining a live xterm has it at once, though no new output comes. */
+export function terminalShowsOutput(terminalId: string): boolean {
+  return showingOutput().has(terminalId)
+}
+
+function noteWritten(terminalId: string, seq: number) {
+  const prev = lastSeqWritten.get(terminalId) ?? 0
+  if (seq > prev) lastSeqWritten.set(terminalId, seq)
+  if (seq > 0 && !showingOutput().has(terminalId)) setShowingOutput(new Set(showingOutput()).add(terminalId))
+}
+
+function forgetWritten(terminalId: string) {
+  lastSeqWritten.delete(terminalId)
+  if (!showingOutput().has(terminalId)) return
+  const next = new Set(showingOutput())
+  next.delete(terminalId)
+  setShowingOutput(next)
+}
 
 export function resumeTerminalOutput(terminalId: string) {
   ipc.ptyListen(terminalId, lastSeqWritten.get(terminalId) ?? 0)
@@ -86,8 +108,7 @@ export function consumeInitialReplay(terminalId: string): { data: string; seq: n
 /** Record the highest seq already written to xterm for this terminal — live
  *  events with seq <= this are dropped as duplicates of the replay. */
 export function markSeqWritten(terminalId: string, seq: number) {
-  const prev = lastSeqWritten.get(terminalId) ?? 0
-  if (seq > prev) lastSeqWritten.set(terminalId, seq)
+  noteWritten(terminalId, seq)
 }
 
 export function registerXterm(
@@ -141,7 +162,7 @@ function evictXterms() {
     entry.term.dispose()
     xtermInstances.delete(id)
     // Next view builds a fresh xterm that replays from the start of the buffer.
-    lastSeqWritten.delete(id)
+    forgetWritten(id)
     forgetXterm(id)
     live--
   }
@@ -366,7 +387,7 @@ export async function closeTerminal(terminalId: string) {
 }
 
 function removeTerminal(terminalId: string, opts: { suppressAutoSpawn?: boolean; closeNative?: boolean } = {}) {
-  lastSeqWritten.delete(terminalId)
+  forgetWritten(terminalId)
   const term = terminals.find(t => t.id === terminalId)
   if (term && opts.closeNative !== false) {
     ipc.ptyClose(terminalId).catch(err => console.error('Failed to release terminal:', err))
@@ -397,7 +418,7 @@ export function closeTerminalsForTask(taskId: string) {
   deletingTasks.add(taskId)
   const ids = terminals.filter(t => t.taskId === taskId).map(t => t.id)
   for (const id of ids) {
-    lastSeqWritten.delete(id)
+    forgetWritten(id)
     xtermInstances.get(id)?.term.dispose()
     xtermInstances.delete(id)
     forgetXterm(id)
@@ -456,7 +477,7 @@ export async function initTerminalListeners() {
       void acknowledge()
       return
     }
-    lastSeqWritten.set(terminalId, seq)
+    noteWritten(terminalId, seq)
     // write() enqueues data; only its callback means the parser consumed it.
     entry.term.write(data, () => { void acknowledge() })
   })
