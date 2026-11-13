@@ -304,6 +304,7 @@ describe('ipc', () => {
         [() => ipc.voiceEnd(), 'voice_end', undefined],
         [() => ipc.voiceCancel(), 'voice_cancel', undefined],
         [() => ipc.voiceDownloadModel('whisper-turbo'), 'voice_download_model', { model: 'whisper-turbo' }],
+        [() => ipc.voiceCancelDownload('whisper-turbo'), 'voice_cancel_download', { model: 'whisper-turbo' }],
         [() => ipc.voiceDeleteModel('whisper-turbo'), 'voice_delete_model', { model: 'whisper-turbo' }],
         [() => ipc.voiceRequestMicrophone(), 'voice_request_microphone', undefined],
         [() => ipc.voiceOpenAccessibilitySettings(), 'voice_open_accessibility_settings', undefined],

@@ -414,6 +414,7 @@ pub fn run() {
             ipc::voice_end,
             ipc::voice_cancel,
             ipc::voice_download_model,
+            ipc::voice_cancel_download,
             ipc::voice_delete_model,
             ipc::voice_request_microphone,
             ipc::voice_open_accessibility_settings,

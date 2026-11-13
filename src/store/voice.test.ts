@@ -15,6 +15,7 @@ vi.mock('../lib/ipc', () => ({
   voiceSetEnabled: vi.fn(),
   voiceSetLanguage: vi.fn(),
   voiceDownloadModel: vi.fn(),
+  voiceCancelDownload: vi.fn(),
   voiceDeleteModel: vi.fn(),
   voiceRequestMicrophone: vi.fn(),
 }))
@@ -30,7 +31,7 @@ import {
   dictationSetupRequest, __resetVoiceForTests, type DictationTarget,
   modelDownloads, downloadDictationModel, deleteDictationModel, refreshVoiceStatus, setDictationEnabled,
   requestMicrophone, dictationAvailable, watchVoiceStatusOnFocus, chooseDictationLanguage, pendingDictationLanguage,
-  setDictationLanguage,
+  setDictationLanguage, cancelDictationDownload,
 } from './voice'
 import type { VoiceStatus } from '../types/voice'
 
@@ -464,6 +465,20 @@ describe('model downloads', () => {
     expect(modelDownloads()['whisper-turbo']?.done).toBe(true)
   })
 
+  test('cancelling asks the backend to stop that download', () => {
+    vi.mocked(ipc.voiceCancelDownload).mockResolvedValue(undefined)
+    progress({ received: 40 })
+    cancelDictationDownload('whisper-turbo')
+    expect(ipc.voiceCancelDownload).toHaveBeenCalledWith('whisper-turbo')
+  })
+
+  test('a cancelled download is forgotten quietly, so the download button comes back', () => {
+    progress({ received: 40 })
+    progress({ received: 40, done: true, cancelled: true })
+    expect(modelDownloads()['whisper-turbo']).toBeUndefined()
+    expect(addToast).not.toHaveBeenCalled()
+  })
+
   test('deleting a model applies the status it returns', async () => {
     vi.mocked(ipc.voiceDeleteModel).mockResolvedValue(status({ models: [model] }))
     await deleteDictationModel('whisper-turbo')
@@ -676,6 +691,14 @@ describe('choosing a language', () => {
     fire('voice-status-changed', installed(true))
     await vi.waitFor(() => expect(ipc.voiceSetLanguage).toHaveBeenCalledWith('ja'))
     expect(ipc.voiceSetLanguage).toHaveBeenCalledOnce()
+    expect(pendingDictationLanguage()).toBeNull()
+  })
+
+  test('a cancelled download drops the language waiting for it', async () => {
+    fire('voice-status-changed', installed(false))
+    await chooseDictationLanguage('ja')
+    fire('voice-model-progress', { model: 'whisper-turbo', received: 5, total: 100, done: false, error: null, cancelled: false })
+    fire('voice-model-progress', { model: 'whisper-turbo', received: 5, total: 100, done: true, error: null, cancelled: true })
     expect(pendingDictationLanguage()).toBeNull()
   })
 

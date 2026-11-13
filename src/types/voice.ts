@@ -89,13 +89,17 @@ export interface VoiceTakeDroppedPayload {
 }
 export type VoiceTakeDroppedEvent = VoiceTakeDroppedPayload
 
-/** `voice-model-progress`: the last one has `done: true`, with `error` set on failure. */
+/**
+ * `voice-model-progress`: the last one has `done: true`, with `error` set on
+ * failure or `cancelled` set when the user stopped it.
+ */
 export interface VoiceModelProgressEvent {
   model: ModelId
   received: number
   total: number
   done: boolean
   error: string | null
+  cancelled: boolean
 }
 
 /** `voice-status-changed` carries a full `VoiceStatus`. */

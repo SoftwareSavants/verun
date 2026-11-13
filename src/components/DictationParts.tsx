@@ -1,5 +1,5 @@
 import { Component, Show, createMemo, type Accessor } from 'solid-js'
-import { modelDownloads, downloadDictationModel } from '../store/voice'
+import { modelDownloads, downloadDictationModel, cancelDictationDownload } from '../store/voice'
 import { formatDownloadSize } from '../lib/format'
 import type { FnSystemAction, ModelStatus, VoiceStatus } from '../types/voice'
 
@@ -78,8 +78,9 @@ export const DownloadProgress: Component<{ model: ModelStatus }> = (props) => {
 }
 
 /**
- * A model's download: a button naming the size before it starts, progress while
- * it runs, the error and Try again when it failed. Nothing starts without a click.
+ * A model's download: a button naming the size before it starts, progress and
+ * Cancel while it runs, the error and Try again when it failed. Nothing starts
+ * without a click.
  */
 export const ModelDownload: Component<{ model: ModelStatus; focus?: boolean; onStart?: () => void }> = (props) => {
   const phase = () => downloadPhase(props.model)
@@ -94,7 +95,21 @@ export const ModelDownload: Component<{ model: ModelStatus; focus?: boolean; onS
         {downloadLabel(props.model)}
       </button>
     }>
-      <Show when={phase() === 'failed'} fallback={<DownloadProgress model={props.model} />}>
+      <Show when={phase() === 'failed'} fallback={
+        <div class="flex-1 min-w-0 flex items-start gap-3">
+          <DownloadProgress model={props.model} />
+          <Show when={phase() === 'running'}>
+            <button
+              type="button"
+              class={SMALL_BUTTON}
+              aria-label="Cancel download"
+              onClick={() => cancelDictationDownload(props.model.id)}
+            >
+              Cancel
+            </button>
+          </Show>
+        </div>
+      }>
         <div class="flex-1 min-w-0 flex items-center justify-between gap-3">
           <span class="text-xs text-status-error min-w-0">Download failed: {modelDownloads()[props.model.id]?.error}</span>
           <button type="button" ref={focus} class={props.focus ? 'btn-primary' : SMALL_BUTTON} onClick={start}>Try again</button>

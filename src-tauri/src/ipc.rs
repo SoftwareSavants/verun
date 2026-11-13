@@ -4279,6 +4279,11 @@ pub async fn voice_download_model(app: AppHandle, model: ModelId) -> Result<(), 
 }
 
 #[tauri::command]
+pub async fn voice_cancel_download(app: AppHandle, model: ModelId) -> Result<(), VoiceError> {
+    voice_blocking(app, move |v| v.cancel_download(model)).await
+}
+
+#[tauri::command]
 pub async fn voice_delete_model(app: AppHandle, model: ModelId) -> Result<VoiceStatus, VoiceError> {
     voice_blocking(app, move |v| v.delete_model(model)).await
 }

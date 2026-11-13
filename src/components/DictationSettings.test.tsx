@@ -17,6 +17,7 @@ vi.mock('../lib/ipc', () => ({
   voiceSetLanguage: vi.fn(),
   voiceSetHoldKey: vi.fn(),
   voiceDownloadModel: vi.fn(),
+  voiceCancelDownload: vi.fn(),
   voiceDeleteModel: vi.fn(),
   voiceRequestMicrophone: vi.fn(),
   voiceOpenAccessibilitySettings: vi.fn(),
@@ -239,5 +240,18 @@ describe('models', () => {
     expect(ipc.voiceDownloadModel).toHaveBeenCalledWith('whisper-turbo')
     fire('voice-model-progress', { model: 'whisper-turbo', received: 57404119, total: 574041195, done: false, error: null })
     expect(within(models).getByRole('progressbar').getAttribute('aria-valuenow')).toBe('57404119')
+  })
+
+  test('a running download can be cancelled from the models list', async () => {
+    vi.mocked(ipc.voiceCancelDownload).mockResolvedValue(undefined)
+    await setup(status({ installed: false }))
+    const models = screen.getByRole('list', { name: 'Models' })
+    fireEvent.click(within(models).getByRole('button', { name: 'Download (574 MB)' }))
+    fire('voice-model-progress', { model: 'whisper-turbo', received: 5, total: 574041195, done: false, error: null })
+    fireEvent.click(within(models).getByRole('button', { name: 'Cancel download' }))
+    expect(ipc.voiceCancelDownload).toHaveBeenCalledWith('whisper-turbo')
+    fire('voice-model-progress', { model: 'whisper-turbo', received: 5, total: 574041195, done: true, error: null, cancelled: true })
+    expect(within(models).queryByRole('progressbar')).toBeNull()
+    expect(within(models).getByRole('button', { name: 'Download (574 MB)' })).toBeTruthy()
   })
 })

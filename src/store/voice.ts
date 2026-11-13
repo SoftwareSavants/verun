@@ -48,6 +48,14 @@ function setDownload(model: ModelId, d: ModelDownload) {
   if (d.done && d.error && pendingModel() === model) setPendingLanguage(null)
 }
 
+/** A cancelled download is forgotten (the download button comes back), with any choice waiting for it. */
+function forgetDownload(model: ModelId) {
+  const next = { ...downloads() }
+  delete next[model]
+  setDownloads(next)
+  if (pendingModel() === model) setPendingLanguage(null)
+}
+
 /** A finished download is done with once the status shows its model installed. */
 function forgetInstalled() {
   const installed = new Set(status()?.models.filter(m => m.installed).map(m => m.id))
@@ -197,6 +205,11 @@ export function downloadDictationModel(model: ModelId): void {
     const d = downloads()[model]
     setDownload(model, { received: d?.received ?? 0, total: d?.total ?? 0, done: true, error: errorText(e) })
   })
+}
+
+/** Stops a running download at its next chunk; the backend removes the partial file. */
+export function cancelDictationDownload(model: ModelId): void {
+  ipc.voiceCancelDownload(model).catch(e => console.error('voice cancel download:', e))
 }
 
 export const voiceState: Accessor<VoiceState> = () =>
@@ -384,8 +397,9 @@ export async function initVoice(): Promise<void> {
       }),
       listen<VoiceStatus>('voice-status-changed', e => { statusEventSeen = true; applyStatus(e.payload) }),
       listen<VoiceModelProgressEvent>('voice-model-progress', e => {
-        const { model, received, total, done, error } = e.payload
-        setDownload(model, { received, total, done, error })
+        const { model, received, total, done, error, cancelled } = e.payload
+        if (done && cancelled) forgetDownload(model)
+        else setDownload(model, { received, total, done, error })
       }),
     ])
     unlisteners = results.flatMap(r => (r.status === 'fulfilled' ? [r.value] : []))

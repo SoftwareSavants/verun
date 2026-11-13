@@ -22,6 +22,7 @@ vi.mock('../lib/ipc', () => ({
   voiceSetLanguage: vi.fn(),
   voiceSetHoldKey: vi.fn(),
   voiceDownloadModel: vi.fn(),
+  voiceCancelDownload: vi.fn(),
   voiceDeleteModel: vi.fn(),
   voiceRequestMicrophone: vi.fn(),
   voiceOpenAccessibilitySettings: vi.fn(),
@@ -228,6 +229,19 @@ describe('download step', () => {
     expect(bar.getAttribute('aria-valuemax')).toBe('574041195')
     expect(screen.getByText('287 MB / 574 MB')).toBeTruthy()
     expect(screen.getByText('The download continues in the background.')).toBeTruthy()
+  })
+
+  test('Cancel stops the download; once it ends the download button is back', async () => {
+    vi.mocked(ipc.voiceCancelDownload).mockResolvedValue(undefined)
+    await setup(status({ enabled: true, installed: false }), { reason: 'model-missing' })
+    click('Download (574 MB)')
+    progress({ received: 10 })
+    click('Cancel download')
+    expect(ipc.voiceCancelDownload).toHaveBeenCalledWith('whisper-turbo')
+    progress({ received: 10, done: true, cancelled: true })
+    expect(screen.queryByRole('progressbar')).toBeNull()
+    expect(screen.queryByText(/failed/i)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Download (574 MB)' })).toBeTruthy()
   })
 
   test('an error shows its text and Try again downloads again', async () => {

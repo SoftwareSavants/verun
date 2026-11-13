@@ -783,6 +783,9 @@ export const voiceCancel = () =>
 /** Returns at once; progress arrives as `voice-model-progress` events. */
 export const voiceDownloadModel = (model: ModelId) =>
   invoke<void>('voice_download_model', { model })
+/** Stops a running download; its last progress event has `cancelled: true`. */
+export const voiceCancelDownload = (model: ModelId) =>
+  invoke<void>('voice_cancel_download', { model })
 export const voiceDeleteModel = (model: ModelId) =>
   invoke<VoiceStatus>('voice_delete_model', { model })
 export const voiceRequestMicrophone = () =>

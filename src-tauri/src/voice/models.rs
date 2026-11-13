@@ -3,6 +3,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
@@ -20,7 +21,13 @@ pub enum DownloadError {
     Network(String),
     Checksum { file: String },
     Io(String),
+    /// The volume has less free space than `needed` bytes.
+    NoSpace { needed: u64, available: u64 },
+    Cancelled,
 }
+
+/// Free space kept on the volume beyond the model itself.
+pub const SPACE_MARGIN: u64 = 200 * 1024 * 1024;
 
 pub fn models_dir(app_data: &Path) -> PathBuf {
     app_data.join("voice-models")
@@ -120,7 +127,7 @@ fn download_file(
     base: u64,
     total: u64,
     on_progress: &dyn Fn(u64, u64),
-    open: OpenPart,
+    hooks: &Hooks,
 ) -> Result<(), DownloadError> {
     let final_path = dir.join(file.rel_path);
     let part_path = dir.join(format!("{}.part", file.rel_path));
@@ -130,13 +137,17 @@ fn download_file(
         std::fs::create_dir_all(parent).map_err(io)?;
     }
     remove_if_exists(&part_path).map_err(io)?;
-    let mut out = open(&part_path).map_err(io)?;
+    let mut out = (hooks.open)(&part_path).map_err(io)?;
     let mut hasher = Sha256::new();
     let mut received: u64 = 0;
     // Set when the sink aborts the transfer (write failure or oversized body).
     let mut abort: Option<DownloadError> = None;
 
     let fetched = fetch.get(file.url, &mut |chunk| {
+        if hooks.cancelled.load(Ordering::SeqCst) {
+            abort = Some(DownloadError::Cancelled);
+            return Err(std::io::Error::other("download cancelled"));
+        }
         if let Err(e) = out.write_all(chunk) {
             abort = Some(DownloadError::Io(e.to_string()));
             return Err(e);
@@ -156,6 +167,7 @@ fn download_file(
     let result = match (fetched, abort) {
         (_, Some(e)) => Err(e),
         (Err(e), None) => Err(DownloadError::Network(e.to_string())),
+        (Ok(()), None) if hooks.cancelled.load(Ordering::SeqCst) => Err(DownloadError::Cancelled),
         (Ok(()), None) => {
             if received != file.bytes || hex(&hasher.finalize()) != file.sha256.to_lowercase() {
                 Err(DownloadError::Checksum {
@@ -179,46 +191,93 @@ fn download_file(
     result
 }
 
-pub fn download_spec(
+/// The parts of a download that touch the system, swapped out by tests.
+struct Hooks<'a> {
+    open: OpenPart<'a>,
+    /// Free bytes on the volume holding the directory; `None` if unknown.
+    free_space: &'a dyn Fn(&Path) -> Option<u64>,
+    /// Checked before each file and each chunk.
+    cancelled: &'a AtomicBool,
+}
+
+/// Free bytes for an unprivileged user on the volume holding `dir`.
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `path` is a valid C string and `st` a writable statvfs.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    // Field widths differ between platforms.
+    #[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
+    Some(u64::from(st.f_bavail).saturating_mul(st.f_frsize as u64))
+}
+
+/// Fails when the volume cannot hold the files still missing plus `SPACE_MARGIN`.
+/// Unknown free space does not block the download.
+fn ensure_space(dir: &Path, spec: &ModelSpec, hooks: &Hooks) -> Result<(), DownloadError> {
+    let missing: u64 = spec.files.iter().filter(|f| !file_installed(dir, f)).map(|f| f.bytes).sum();
+    if missing == 0 {
+        return Ok(());
+    }
+    let needed = missing + SPACE_MARGIN;
+    match (hooks.free_space)(dir) {
+        Some(available) if available < needed => Err(DownloadError::NoSpace { needed, available }),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+fn download_spec(
     dir: &Path,
     spec: &ModelSpec,
     fetch: &dyn Fetch,
     on_progress: &dyn Fn(u64, u64),
 ) -> Result<(), DownloadError> {
-    download_spec_with(dir, spec, fetch, on_progress, &create_part)
+    let cancelled = AtomicBool::new(false);
+    let hooks = Hooks { open: &create_part, free_space: &free_space, cancelled: &cancelled };
+    download_spec_with(dir, spec, fetch, on_progress, &hooks)
 }
 
-/// `download_spec` writing each `.part` file through `open`.
 fn download_spec_with(
     dir: &Path,
     spec: &ModelSpec,
     fetch: &dyn Fetch,
     on_progress: &dyn Fn(u64, u64),
-    open: OpenPart,
+    hooks: &Hooks,
 ) -> Result<(), DownloadError> {
     std::fs::create_dir_all(dir).map_err(|e| DownloadError::Io(e.to_string()))?;
+    ensure_space(dir, spec, hooks)?;
     let total = total_bytes(spec);
     let mut base = 0;
     for file in spec.files {
+        if hooks.cancelled.load(Ordering::SeqCst) {
+            return Err(DownloadError::Cancelled);
+        }
         if file_installed(dir, file) {
             base += file.bytes;
             on_progress(base, total);
             continue;
         }
-        download_file(dir, file, fetch, base, total, on_progress, open)?;
+        download_file(dir, file, fetch, base, total, on_progress, hooks)?;
         base += file.bytes;
     }
     on_progress(total, total);
     Ok(())
 }
 
+/// Downloads `id` into `dir`. Fails fast without enough free space; stops
+/// at the next chunk once `cancelled` is set, leaving no partial file.
 pub fn download(
     dir: &Path,
     id: ModelId,
     fetch: &dyn Fetch,
     on_progress: &dyn Fn(u64, u64),
+    cancelled: &AtomicBool,
 ) -> Result<(), DownloadError> {
-    download_spec(dir, spec(id), fetch, on_progress)
+    let hooks = Hooks { open: &create_part, free_space: &free_space, cancelled };
+    download_spec_with(dir, spec(id), fetch, on_progress, &hooks)
 }
 
 /// No bytes for this long aborts the download.
@@ -616,7 +675,7 @@ mod tests {
             opened.set(true);
             Ok(Box::new(FailingPart { _file: std::fs::File::create(p)?, ok_writes: 1 }))
         };
-        let r = download_spec_with(tmp.path(), test_spec(), &fetch, &|_, _| {}, &open);
+        let r = download_spec_with(tmp.path(), test_spec(), &fetch, &|_, _| {}, &hooks(&open));
         assert!(opened.get());
         assert_eq!(r, Err(DownloadError::Io("disk full".into())));
         assert!(files_in(tmp.path()).is_empty(), "{:?}", files_in(tmp.path()));
@@ -658,7 +717,7 @@ mod tests {
                 log: log.clone(),
             }))
         };
-        download_spec_with(tmp.path(), test_spec(), &ok_fetch(), &|_, _| {}, &open).unwrap();
+        download_spec_with(tmp.path(), test_spec(), &ok_fetch(), &|_, _| {}, &hooks(&open)).unwrap();
         assert_eq!(*log.borrow(), vec![false], "synced once, before the rename");
         assert!(is_installed_spec(tmp.path(), test_spec()));
     }
@@ -683,9 +742,106 @@ mod tests {
         let open = |p: &Path| -> std::io::Result<Box<dyn PartFile>> {
             Ok(Box::new(NoSync(std::fs::File::create(p)?)))
         };
-        let r = download_spec_with(tmp.path(), test_spec(), &ok_fetch(), &|_, _| {}, &open);
+        let r = download_spec_with(tmp.path(), test_spec(), &ok_fetch(), &|_, _| {}, &hooks(&open));
         assert_eq!(r, Err(DownloadError::Io("fsync failed".into())));
         assert!(files_in(tmp.path()).is_empty(), "{:?}", files_in(tmp.path()));
+    }
+
+    static NOT_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+    /// Real hooks except `open`: unknown free space, never cancelled.
+    fn hooks<'a>(open: OpenPart<'a>) -> Hooks<'a> {
+        Hooks { open, free_space: &|_| None, cancelled: &NOT_CANCELLED }
+    }
+
+    /// Counts the chunks the sink accepted; sends up to 1000.
+    struct Counting {
+        accepted: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Fetch for Counting {
+        fn get(
+            &self,
+            _url: &str,
+            sink: &mut dyn FnMut(&[u8]) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            for chunk in CONTENT.chunks(1) {
+                sink(chunk)?;
+                self.accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_cancelled_download_stops_at_the_next_chunk_and_leaves_no_part() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cancelled = AtomicBool::new(false);
+        let fetch = Counting { accepted: Default::default() };
+        let h = Hooks { open: &create_part, free_space: &|_| None, cancelled: &cancelled };
+        // Cancel as soon as the first chunk is in.
+        let r = download_spec_with(tmp.path(), test_spec(), &fetch, &|_, _| {
+            cancelled.store(true, std::sync::atomic::Ordering::SeqCst)
+        }, &h);
+        assert_eq!(r, Err(DownloadError::Cancelled));
+        assert_eq!(fetch.accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(files_in(tmp.path()).is_empty(), "{:?}", files_in(tmp.path()));
+        assert!(!is_installed_spec(tmp.path(), test_spec()));
+    }
+
+    #[test]
+    fn a_download_cancelled_before_it_starts_fetches_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cancelled = AtomicBool::new(true);
+        let fetch = Counting { accepted: Default::default() };
+        let h = Hooks { open: &create_part, free_space: &|_| None, cancelled: &cancelled };
+        let r = download_spec_with(tmp.path(), test_spec(), &fetch, &|_, _| {}, &h);
+        assert_eq!(r, Err(DownloadError::Cancelled));
+        assert_eq!(fetch.accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(files_in(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn too_little_free_space_fails_before_fetching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let needed = CONTENT.len() as u64 + SPACE_MARGIN;
+        let free = |_: &Path| Some(needed - 1);
+        let fetch = Counting { accepted: Default::default() };
+        let h = Hooks { open: &create_part, free_space: &free, cancelled: &NOT_CANCELLED };
+        let r = download_spec_with(tmp.path(), test_spec(), &fetch, &|_, _| {}, &h);
+        assert_eq!(r, Err(DownloadError::NoSpace { needed, available: needed - 1 }));
+        assert_eq!(fetch.accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn exactly_enough_free_space_downloads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let needed = CONTENT.len() as u64 + SPACE_MARGIN;
+        let free = |_: &Path| Some(needed);
+        let h = Hooks { open: &create_part, free_space: &free, cancelled: &NOT_CANCELLED };
+        download_spec_with(tmp.path(), test_spec(), &ok_fetch(), &|_, _| {}, &h).unwrap();
+        assert!(is_installed_spec(tmp.path(), test_spec()));
+    }
+
+    #[test]
+    fn space_needed_counts_only_files_not_yet_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec = spec_of(&[("a.bin", b"first file"), ("b.bin", b"second file!")]);
+        std::fs::write(tmp.path().join("a.bin"), b"first file").unwrap();
+        let free = |_: &Path| Some(12 + SPACE_MARGIN);
+        let fetch = UrlFetch {
+            bodies: vec![("a.bin", b"first file"), ("b.bin", b"second file!")],
+            requested: Default::default(),
+        };
+        let h = Hooks { open: &create_part, free_space: &free, cancelled: &NOT_CANCELLED };
+        download_spec_with(tmp.path(), spec, &fetch, &|_, _| {}, &h).unwrap();
+        assert!(is_installed_spec(tmp.path(), spec));
+    }
+
+    #[test]
+    fn free_space_of_a_real_dir_is_known() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(free_space(tmp.path()).is_some_and(|b| b > 0));
     }
 
     #[test]

@@ -9,9 +9,9 @@
 //! it is emitted before the `voice-state` that reflects T being finished.
 
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -237,6 +237,8 @@ pub struct ModelProgress {
     pub total: u64,
     pub done: bool,
     pub error: Option<String>,
+    /// The final event of a download the user cancelled (no error shown).
+    pub cancelled: bool,
 }
 
 /// One method per frontend event. Implementations must not block: they are
@@ -303,12 +305,14 @@ struct Inner<C: Capture> {
     hold_take: Option<u64>,
 }
 
-type Downloading = Arc<Mutex<HashSet<ModelId>>>;
+/// Running downloads, each with the flag that cancels it.
+type Downloading = Arc<Mutex<HashMap<ModelId, Arc<AtomicBool>>>>;
 
 /// A running download of `id`. Dropping it (also on panic) releases the claim.
 pub struct DownloadClaim {
     set: Downloading,
     id: ModelId,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl Drop for DownloadClaim {
@@ -364,7 +368,7 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
             models_dir: models_dir.clone(),
             mic,
             window_exists,
-            downloading: Arc::new(Mutex::new(HashSet::new())),
+            downloading: Arc::new(Mutex::new(HashMap::new())),
         });
         let (tx, rx) = mpsc::channel();
         let weak = Arc::downgrade(&core);
@@ -541,20 +545,36 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
 
     /// Claims `id` for downloading. `None` if a download of it is running.
     pub fn claim_download(&self, id: ModelId) -> Option<DownloadClaim> {
-        lock(&self.downloading).insert(id).then(|| DownloadClaim {
+        let mut running = lock(&self.downloading);
+        if running.contains_key(&id) {
+            return None;
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        running.insert(id, Arc::clone(&cancelled));
+        Some(DownloadClaim {
             set: Arc::clone(&self.downloading),
             id,
+            cancelled,
         })
     }
 
+    /// Asks the running download of `id` to stop. `false` if none is running.
+    pub fn cancel_download(&self, id: ModelId) -> bool {
+        lock(&self.downloading)
+            .get(&id)
+            .map(|flag| flag.store(true, Ordering::SeqCst))
+            .is_some()
+    }
+
     pub fn is_downloading(&self, id: ModelId) -> bool {
-        lock(&self.downloading).contains(&id)
+        lock(&self.downloading).contains_key(&id)
     }
 
     /// Downloads the claimed model, emitting throttled progress, then a final
     /// `done` event, then releasing the claim, then calling `then` (the runtime
     /// broadcasts the status there). A panic in the download ends it the same
-    /// way, as an error. Blocks for the whole download: call from a blocking thread.
+    /// way, as an error. A cancelled download ends `Ok` with `cancelled` set and
+    /// no error. Blocks for the whole download: call from a blocking thread.
     pub fn run_download<F: Fetch>(
         &self,
         claim: DownloadClaim,
@@ -562,6 +582,7 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         then: impl FnOnce(),
     ) -> Result<(), String> {
         let id = claim.id;
+        let cancelled = Arc::clone(&claim.cancelled);
         let total: u64 = spec(id).files.iter().map(|f| f.bytes).sum();
         let received = Cell::new(0u64);
         let throttle = Throttle::new(PROGRESS_EVERY);
@@ -576,21 +597,28 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
                             total,
                             done: false,
                             error: None,
+                            cancelled: false,
                         });
                     }
                 };
-                models::download(&self.models_dir, id, &fetch, &on_progress)
-                    .map_err(|e| download_error_text(&e))
+                match models::download(&self.models_dir, id, &fetch, &on_progress, &cancelled) {
+                    Ok(()) => Ok(false),
+                    Err(DownloadError::Cancelled) => Ok(true),
+                    Err(e) => Err(download_error_text(&e)),
+                }
             })
         };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
             .unwrap_or_else(|_| Err("download panicked".to_string()));
+        let was_cancelled = outcome == Ok(true);
+        let result = outcome.map(|_| ());
         self.events.model_progress(ModelProgress {
             model: id,
             received: received.get(),
             total,
             done: true,
             error: result.as_ref().err().cloned(),
+            cancelled: was_cancelled,
         });
         drop(claim);
         then();
@@ -607,7 +635,7 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         // Unload before taking the lock: it waits for the worker.
         self.unload_model(id);
         let downloading = lock(&self.downloading);
-        if downloading.contains(&id) {
+        if downloading.contains_key(&id) {
             return Ok(false);
         }
         models::delete(&self.models_dir, id)?;
@@ -797,6 +825,15 @@ pub fn download_error_text(e: &DownloadError) -> String {
         DownloadError::Network(m) => format!("network: {m}"),
         DownloadError::Checksum { file } => format!("checksum mismatch for {file}"),
         DownloadError::Io(m) => format!("disk: {m}"),
+        DownloadError::NoSpace { needed, available } => {
+            let mb = |b: &u64| b / (1024 * 1024);
+            format!(
+                "not enough free disk space: needs {} MB, {} MB available",
+                mb(needed),
+                mb(available)
+            )
+        }
+        DownloadError::Cancelled => "cancelled".to_string(),
     }
 }
 
@@ -805,7 +842,7 @@ pub fn download_error_text(e: &DownloadError) -> String {
 pub(crate) mod tests {
     use super::*;
     use crate::voice::engine::Transcriber;
-    use std::collections::VecDeque;
+    use std::collections::{HashSet, VecDeque};
 
     // ---- fakes ----
 
@@ -1559,6 +1596,66 @@ pub(crate) mod tests {
         }
     }
 
+    /// Sends chunks, cancelling the download right after the first one.
+    struct CancelAfterFirst {
+        core: Arc<TestCore>,
+        sent: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Fetch for CancelAfterFirst {
+        fn get(
+            &self,
+            _url: &str,
+            sink: &mut dyn FnMut(&[u8]) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            for _ in 0..50 {
+                sink(&[0u8; 16])?;
+                if self.sent.fetch_add(1, Ordering::SeqCst) == 0 {
+                    assert!(self.core.cancel_download(ModelId::WhisperTurbo));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_cancelled_download_stops_quietly_and_releases_the_claim() {
+        let r = rig(Script::default(), Opts { installed: false, ..Opts::default() });
+        let id = ModelId::WhisperTurbo;
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetch = CancelAfterFirst { core: Arc::clone(&r.core), sent: Arc::clone(&sent) };
+        let claim = r.core.claim_download(id).unwrap();
+        let result = r.core.run_download(claim, Ok(fetch), || {});
+        assert_eq!(result, Ok(()));
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
+        let last = r.rec.progress().last().cloned().unwrap();
+        assert!(last.done && last.cancelled, "{last:?}");
+        assert_eq!(last.error, None);
+        assert!(!r.core.is_downloading(id));
+        assert!(!models::is_installed(r.dir.path(), id));
+        let left: Vec<_> = std::fs::read_dir(r.dir.path()).unwrap().collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[test]
+    fn cancel_without_a_running_download_does_nothing() {
+        let r = rig(Script::default(), Opts { installed: false, ..Opts::default() });
+        assert!(!r.core.cancel_download(ModelId::WhisperTurbo));
+        // A later download is not born cancelled.
+        let claim = r.core.claim_download(ModelId::WhisperTurbo).unwrap();
+        let _ = r.core.run_download(claim, Ok(BadFetch), || {});
+        let last = r.rec.progress().last().cloned().unwrap();
+        assert!(!last.cancelled);
+        assert!(last.error.is_some());
+    }
+
+    #[test]
+    fn no_space_error_names_what_is_needed() {
+        let mb = 1024 * 1024;
+        let text = download_error_text(&DownloadError::NoSpace { needed: 748 * mb, available: 100 * mb });
+        assert_eq!(text, "not enough free disk space: needs 748 MB, 100 MB available");
+    }
+
     #[test]
     fn delete_is_refused_while_downloading() {
         let r = rig(Script::default(), Opts::default());
@@ -1670,10 +1767,14 @@ pub(crate) mod tests {
         );
         assert_eq!(
             serde_json::to_value(ModelProgress {
-                model: ModelId::WhisperTurbo, received: 1, total: 2, done: false, error: None
+                model: ModelId::WhisperTurbo, received: 1, total: 2, done: false, error: None,
+                cancelled: false
             })
             .unwrap(),
-            serde_json::json!({ "model": "whisper-turbo", "received": 1, "total": 2, "done": false, "error": null })
+            serde_json::json!({
+                "model": "whisper-turbo", "received": 1, "total": 2, "done": false, "error": null,
+                "cancelled": false
+            })
         );
     }
 

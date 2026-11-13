@@ -344,6 +344,14 @@ impl VoiceService {
         });
     }
 
+    /// Stops a running download of `model` at its next chunk; its final
+    /// `voice-model-progress` has `cancelled` set. No-op if none is running.
+    pub fn cancel_download(&self, model: ModelId) {
+        if let Some(rt) = &self.0 {
+            rt.core.cancel_download(model);
+        }
+    }
+
     /// Refused (status unchanged) while that model is downloading.
     pub fn delete_model(&self, model: ModelId) -> VoiceStatus {
         let Some(rt) = &self.0 else { return unsupported_status() };
