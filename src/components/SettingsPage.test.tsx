@@ -108,12 +108,14 @@ describe('settingsSectionForShortcut', () => {
     expect(settingsSectionForShortcut(4, [])).toBeNull()
   })
 
-  test('with dictation supported, Dictation comes fourth and the projects move up one', () => {
+  test('Dictation has no Cmd+digit, so the numbers never shift when it is supported', () => {
+    const digits = [1, 2, 3, 4, 5, 6]
+    const before = digits.map((digit) => settingsSectionForShortcut(digit, ['p1', 'p2']))
     setDictationAvailable(true)
+    const after = digits.map((digit) => settingsSectionForShortcut(digit, ['p1', 'p2']))
 
-    expect([1, 2, 3, 4, 5, 6].map((digit) => settingsSectionForShortcut(digit, ['p1', 'p2'])))
-      .toEqual(['general', 'appearance', 'accounts', 'dictation', 'p1', 'p2'])
-    expect(settingsSectionForShortcut(7, ['p1', 'p2'])).toBeNull()
+    expect(after).toEqual(['general', 'appearance', 'accounts', 'p1', 'p2', null])
+    expect(after).toEqual(before)
   })
 
   test('a digit that is no key maps to nothing', () => {
@@ -147,11 +149,12 @@ describe('SettingsPage Dictation section', () => {
     expect(screen.queryByText('Lifecycle Hooks')).toBeNull()
   })
 
-  test('the section shortcut opens it', () => {
+  test('it has no shortcut: Cmd+4 still opens the first project; the nav opens Dictation', () => {
     setDictationAvailable(true)
     render(() => <SettingsPage />)
 
-    selectSettingsSection(settingsSectionForShortcut(4, [project.id])!)
+    expect(settingsSectionForShortcut(4, [project.id])).toBe(project.id)
+    fireEvent.click(screen.getByRole('button', { name: 'Dictation' }))
 
     expect(title()).toBe('Dictation')
   })

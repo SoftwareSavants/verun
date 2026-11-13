@@ -43,18 +43,18 @@ const builtInLabel = (section: string): string | undefined =>
   Object.prototype.hasOwnProperty.call(BUILT_IN_LABELS, section) ? BUILT_IN_LABELS[section] : undefined
 
 /**
- * The sections before the projects, in nav order: Cmd+1 opens the first.
- * Dictation is there only where it is supported.
+ * The built-in sections with a Cmd+digit, in nav order: Cmd+1 opens the first.
+ * Dictation is in the nav (where supported) but has no digit, so the project
+ * numbers are the same on every Mac and do not move once the voice status loads.
  */
-const builtInSections = (): string[] =>
-  ['general', 'appearance', 'accounts', ...(dictationAvailable() ? ['dictation'] : [])]
+const SHORTCUT_SECTIONS = ['general', 'appearance', 'accounts']
 
 /**
  * The section Cmd+`digit` opens in Settings: the built-in ones first, then the
  * projects in nav order. `null` when there is no such section.
  */
 export function settingsSectionForShortcut(digit: number, projectIds: string[]): string | null {
-  return [...builtInSections(), ...projectIds][digit - 1] ?? null
+  return [...SHORTCUT_SECTIONS, ...projectIds][digit - 1] ?? null
 }
 
 // Module-level signals so Layout can drive section switching and save via keyboard shortcuts
