@@ -40,6 +40,8 @@ export interface VoiceStatus {
   state: VoiceState
   models: ModelStatus[]
   languages: LanguageStatus[]
+  /** The same in every window until the app quits; take ids restart with each run. */
+  runId: string
 }
 
 /**

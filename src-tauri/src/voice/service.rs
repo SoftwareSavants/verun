@@ -158,6 +158,15 @@ pub struct VoiceStatus {
     pub state: VoiceState,
     pub models: Vec<ModelStatus>,
     pub languages: Vec<LanguageStatus>,
+    /// The same for every window until the app quits. Take ids restart with
+    /// each run, so a take pin kept across windows is honoured only in its run.
+    pub run_id: &'static str,
+}
+
+/// This run of the app (see `VoiceStatus::run_id`).
+pub fn run_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }
 
 /// What `voice_status` reports where dictation is not built.
@@ -174,6 +183,7 @@ pub fn unsupported_status() -> VoiceStatus {
         state: VoiceState::Idle,
         models: Vec::new(),
         languages: language_status(None),
+        run_id: run_id(),
     }
 }
 
@@ -540,6 +550,7 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
             state,
             models: models::status(&self.models_dir),
             languages: language_status(Some(&self.models_dir)),
+            run_id: run_id(),
         }
     }
 
@@ -1675,6 +1686,16 @@ pub(crate) mod tests {
         drop(claim);
         assert!(r.core.delete_model(id).unwrap());
         assert!(!models::is_installed(r.dir.path(), id));
+    }
+
+    #[test]
+    fn status_carries_one_id_for_this_run_of_the_app() {
+        let r = rig(Script::default(), Opts::default());
+        let a = serde_json::to_value(r.core.status(true, FnSystemAction::None)).unwrap();
+        let b = serde_json::to_value(unsupported_status()).unwrap();
+        let id = a["runId"].as_str().unwrap();
+        assert_eq!(id.len(), 36, "{id}");
+        assert_eq!(b["runId"], a["runId"]);
     }
 
     #[test]

@@ -54,7 +54,7 @@ const makeTarget = (sid: string | null = 's1'): TestTarget => ({
 const registerDictationTarget = register
 
 const status = (over: Partial<VoiceStatus> = {}): VoiceStatus => ({
-  supported: true, enabled: true, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none',
+  supported: true, enabled: true, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none', runId: 'run-1',
   microphone: 'granted', state: 'idle', models: [], languages: [], ...over,
 })
 
@@ -601,7 +601,7 @@ describe('pins of a window that closed', () => {
   test('a pin is stored while its take is out and removed on its terminal event', () => {
     registerDictationTarget(makeTarget('a'))
     rec(1)
-    expect(stored()).toEqual({ 1: { targetId: 'session:a', sessionId: 'a' } })
+    expect(stored()).toEqual({ 1: { targetId: 'session:a', sessionId: 'a', run: 'run-1' } })
     transcript('x', 1)
     expect(stored()).toEqual({})
   })
@@ -619,15 +619,15 @@ describe('pins of a window that closed', () => {
   })
 
   test('global idle clears only the stored pins this window created', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 9: { targetId: 'session:b', sessionId: 'b' } }))
+    localStorage.setItem(KEY, JSON.stringify({ 9: { targetId: 'session:b', sessionId: 'b', run: 'run-1' } }))
     registerDictationTarget(makeTarget('a'))
     rec(1)
     state('idle', null)
-    expect(stored()).toEqual({ 9: { targetId: 'session:b', sessionId: 'b' } })
+    expect(stored()).toEqual({ 9: { targetId: 'session:b', sessionId: 'b', run: 'run-1' } })
   })
 
   test('an orphaned transcript with a stored pin for a live session goes to its draft', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', sessionId: 'a' } }))
+    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', sessionId: 'a', run: 'run-1' } }))
     vi.mocked(sessionById).mockReturnValue({ id: 'a' } as never)
     saveDraftMessage('a', 'draft')
     transcript('more', 7)
@@ -637,7 +637,7 @@ describe('pins of a window that closed', () => {
   })
 
   test('an orphaned transcript whose session is gone is dropped and forgotten', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', sessionId: 'a' } }))
+    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', sessionId: 'a', run: 'run-1' } }))
     vi.mocked(sessionById).mockReturnValue(undefined)
     transcript('lost', 7)
     expect(loadDraftMessage('a')).toBeNull()
@@ -646,10 +646,27 @@ describe('pins of a window that closed', () => {
   })
 
   test('an orphaned transcript with no stored pin shows the dropped toast', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 8: { targetId: 'new-task', sessionId: null } }))
+    localStorage.setItem(KEY, JSON.stringify({ 8: { targetId: 'new-task', sessionId: null, run: 'run-1' } }))
     transcript('lost', 7)
     expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
-    expect(stored()).toEqual({ 8: { targetId: 'new-task', sessionId: null } })
+    expect(stored()).toEqual({ 8: { targetId: 'new-task', sessionId: null, run: 'run-1' } })
+  })
+
+  test('a stored pin from an earlier run of the app is never honoured', () => {
+    // Take ids restart with each run: take 7 of the last run is not this run's take 7.
+    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', sessionId: 'a', run: 'run-0' } }))
+    vi.mocked(sessionById).mockReturnValue({ id: 'a' } as never)
+    saveDraftMessage('a', 'draft')
+    transcript('stray', 7)
+    expect(loadDraftMessage('a')).toBe('draft')
+    expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
+  })
+
+  test('storing a pin drops the pins of earlier runs', () => {
+    localStorage.setItem(KEY, JSON.stringify({ 9: { targetId: 'session:b', sessionId: 'b', run: 'run-0' } }))
+    registerDictationTarget(makeTarget('a'))
+    rec(1)
+    expect(stored()).toEqual({ 1: { targetId: 'session:a', sessionId: 'a', run: 'run-1' } })
   })
 
   test('unreadable stored pins are ignored', () => {

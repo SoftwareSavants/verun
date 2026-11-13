@@ -37,7 +37,7 @@ vi.mock('../lib/ipc', () => ({ voiceSetLanguage: mocks.voiceSetLanguage }))
 import { DictationControl } from './DictationControl'
 
 const status = (over: Partial<VoiceStatus> = {}): VoiceStatus => ({
-  supported: true, enabled: true, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none',
+  supported: true, enabled: true, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none', runId: 'run-1',
   microphone: 'granted', state: 'idle', models: [],
   languages: [
     { code: 'en', model: 'whisper-turbo', installed: true },

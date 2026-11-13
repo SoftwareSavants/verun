@@ -263,10 +263,15 @@ const label = () => windowContext.windowLabel
 /**
  * Every window's pins, also kept in localStorage (one origin for all Verun
  * windows) so the main window can deliver a take whose window closed: the
- * backend sends that transcript to the main window.
+ * backend sends that transcript to the main window. Each carries the run it
+ * was written in: take ids restart with every run, so a pin left by an
+ * earlier run (quit mid-take) is never honoured and is dropped on the next write.
  */
 const STORED_PINS_KEY = 'verun:voicePins'
-interface StoredPin { targetId: string; sessionId: string | null }
+interface StoredPin { targetId: string; sessionId: string | null; run: string | null }
+
+const currentRun = (): string | null => status()?.runId ?? null
+const ofThisRun = (p: StoredPin | undefined): p is StoredPin => !!p && p.run !== null && p.run === currentRun()
 /** Takes whose stored pin this window wrote. */
 const storedHere = new Set<number>()
 
@@ -282,6 +287,9 @@ function readStoredPins(): Record<string, StoredPin> {
 function writeStoredPins(update: (pins: Record<string, StoredPin>) => void) {
   try {
     const all = readStoredPins()
+    if (currentRun() !== null) {
+      for (const take of Object.keys(all)) if (!ofThisRun(all[take])) delete all[take]
+    }
     update(all)
     localStorage.setItem(STORED_PINS_KEY, JSON.stringify(all))
   } catch (e) {
@@ -298,7 +306,7 @@ function forgetStoredPins(takes: number[]) {
 function pin(take: number, t: DictationTarget) {
   setPins(new Map(pins()).set(take, t))
   storedHere.add(take)
-  writeStoredPins(all => { all[take] = { targetId: t.id, sessionId: t.sessionId } })
+  writeStoredPins(all => { all[take] = { targetId: t.id, sessionId: t.sessionId, run: currentRun() } })
 }
 
 /** Remove and return the pin for `take`; the recording take is over once it has a terminal event. */
@@ -314,11 +322,11 @@ function release(take: number): DictationTarget | undefined {
   return t
 }
 
-/** The stored pin of a take this window does not hold (its window closed), removed as it is read. */
+/** The stored pin of a take this window does not hold (its window closed), removed as it is read. Only this run's. */
 function takeStoredPin(take: number): StoredPin | undefined {
   const found = readStoredPins()[take]
   if (found) forgetStoredPins([take])
-  return found
+  return ofThisRun(found) ? found : undefined
 }
 
 function handleError(error: VoiceError) {
