@@ -5,6 +5,7 @@ const ipc = vi.hoisted(() => ({
   claudeCloudAvailability: vi.fn(), refreshAgents: vi.fn().mockResolvedValue(undefined),
   getRepoInfo: vi.fn().mockResolvedValue({ branches: ['main'] }),
   beginCloudImport: vi.fn(), cancelCloudImport: vi.fn().mockResolvedValue(undefined),
+  voiceSetTarget: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('../lib/ipc', () => ipc)
 vi.mock('../store/projects', () => ({ projectById: () => ({ repoPath: '/repo', baseBranch: 'main' }), updateProjectDefaultAgentInStore: vi.fn() }))
