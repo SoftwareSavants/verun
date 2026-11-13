@@ -5,7 +5,7 @@ import * as ipc from '../lib/ipc'
 import { windowContext } from '../lib/windowContext'
 import type {
   Language, VoiceError, VoiceErrorEvent, VoiceLevelEvent, VoiceState, VoiceStateEvent,
-  VoiceStatus, VoiceTranscriptEvent,
+  VoiceStatus, VoiceTakeDroppedEvent, VoiceTranscriptEvent,
 } from '../types/voice'
 import { sessionById } from './sessions'
 import { appendToDraft } from './sessionDrafts'
@@ -19,11 +19,18 @@ export interface DictationTarget {
 }
 
 const [status, setStatus] = createSignal<VoiceStatus | null>(null)
-const [state, setState] = createSignal<VoiceState>('idle')
 const [level, setLevel] = createSignal(0)
+/** The take this window is recording right now. */
+const [recordingTake, setRecordingTake] = createSignal<number | null>(null)
+/** Take id -> the target that was visible when it started. Replaced on change so reads are reactive. */
+const [pins, setPins] = createSignal<ReadonlyMap<number, DictationTarget>>(new Map())
+
 export const voiceStatus: Accessor<VoiceStatus | null> = status
-export const voiceState: Accessor<VoiceState> = state
-export const voiceLevel: Accessor<number> = level
+
+export const voiceState: Accessor<VoiceState> = () =>
+  recordingTake() !== null ? 'recording' : pins().size > 0 ? 'transcribing' : 'idle'
+
+export const voiceLevel: Accessor<number> = () => (voiceState() === 'recording' ? level() : 0)
 
 const [setupRequest, setSetupRequest] = createSignal<{ language?: Language } | null>(null)
 export const dictationSetupRequest: Accessor<{ language?: Language } | null> = setupRequest
@@ -34,9 +41,7 @@ export function openDictationSetup(language?: Language): void {
 }
 
 // Registered targets, oldest first; the last one is the visible composer.
-const targets: DictationTarget[] = []
-// One pin per take, in arrival order; each transcript consumes the oldest.
-let pins: DictationTarget[] = []
+let targets: DictationTarget[] = []
 
 export function registerDictationTarget(t: DictationTarget): () => void {
   targets.push(t)
@@ -48,40 +53,52 @@ export function registerDictationTarget(t: DictationTarget): () => void {
 
 const label = () => windowContext.windowLabel
 
+function pin(take: number, t: DictationTarget) {
+  setPins(new Map(pins()).set(take, t))
+}
+
+/** Remove and return the pin for `take`; the recording take is over once it has a terminal event. */
+function release(take: number): DictationTarget | undefined {
+  if (recordingTake() === take) setRecordingTake(null)
+  const t = pins().get(take)
+  if (t) {
+    const next = new Map(pins())
+    next.delete(take)
+    setPins(next)
+  }
+  return t
+}
+
 function handleError(error: VoiceError) {
-  if (error === 'model-missing') return openDictationSetup()
+  if (error === 'model-missing' || error === 'disabled') return openDictationSetup()
   if (error === 'mic-denied') addToast('Microphone access is off for Verun. Turn it on in System Settings.', 'error')
   else if (error === 'mic-unavailable') addToast('No microphone found, or it stopped responding.', 'error')
   else addToast('Dictation failed. Try again.', 'error')
 }
 
-function onState({ state: next, window }: VoiceStateEvent) {
-  if (next === 'idle' && window === null) {
-    pins = []
-  } else if (window !== label()) {
-    return
-  }
-  setState(next)
-  if (next !== 'recording') setLevel(0)
-  if (next === 'idle') pins = []
-  if (next === 'recording') {
-    const target = targets[targets.length - 1]
-    if (target) {
-      pins.push(target)
-    } else {
-      ipc.voiceCancel().catch(e => console.error('voice cancel:', e))
-      addToast('Dictation works in the chat box and the new task box.', 'info')
-    }
+function onState({ state, window, take }: VoiceStateEvent) {
+  // Any state event supersedes a recording this window had; only a recording event for us restarts it.
+  setRecordingTake(null)
+  if (state === 'idle' && window === null) setPins(new Map())
+  if (state !== 'recording' || window !== label() || take === null) return
+  const target = targets[targets.length - 1]
+  if (target) {
+    pin(take, target)
+    setRecordingTake(take)
+  } else {
+    ipc.voiceCancel().catch(e => console.error('voice cancel:', e))
+    addToast('Dictation works in the chat box and the new task box.', 'info')
   }
 }
 
-function onTranscript({ window, text }: VoiceTranscriptEvent) {
+function onTranscript({ window, take, text }: VoiceTranscriptEvent) {
   if (window !== label()) return
-  const target = pins.shift()
-  if (!target) return
-  if (targets.includes(target)) return target.insert(text)
-  if (target.sessionId && sessionById(target.sessionId)) {
-    appendToDraft(target.sessionId, text)
+  const pinned = release(take)
+  // A remounted composer for the same chat has a new object with the same id.
+  const live = pinned && [...targets].reverse().find(t => t.id === pinned.id)
+  if (live) return live.insert(text)
+  if (pinned?.sessionId && sessionById(pinned.sessionId)) {
+    appendToDraft(pinned.sessionId, text)
     addToast('Dictation saved to the draft of the chat you were in.', 'info')
   } else {
     addToast('Dictation dropped: that chat is gone.', 'info')
@@ -89,30 +106,60 @@ function onTranscript({ window, text }: VoiceTranscriptEvent) {
 }
 
 let initialized = false
+let unlisteners: Array<() => void> = []
+let statusEventSeen = false
 
 export async function initVoice(): Promise<void> {
   if (initialized) return
   initialized = true
-  await Promise.all([
-    listen<VoiceStateEvent>('voice-state', e => onState(e.payload)),
-    listen<VoiceLevelEvent>('voice-level', e => { if (state() === 'recording') setLevel(e.payload.level) }),
-    listen<VoiceTranscriptEvent>('voice-transcript', e => onTranscript(e.payload)),
-    listen<VoiceErrorEvent>('voice-error', e => {
-      if (e.payload.window !== label()) return
-      pins = []
-      handleError(e.payload.error)
-    }),
-    listen<VoiceStatus>('voice-status-changed', e => setStatus(e.payload)),
-  ])
-  setStatus(await ipc.voiceStatus())
+  try {
+    const results = await Promise.allSettled([
+      listen<VoiceStateEvent>('voice-state', e => onState(e.payload)),
+      listen<VoiceLevelEvent>('voice-level', e => { setLevel(e.payload.level) }),
+      listen<VoiceTranscriptEvent>('voice-transcript', e => onTranscript(e.payload)),
+      listen<VoiceErrorEvent>('voice-error', e => {
+        if (e.payload.window !== label()) return
+        if (e.payload.take !== null) release(e.payload.take)
+        handleError(e.payload.error)
+      }),
+      listen<VoiceTakeDroppedEvent>('voice-take-dropped', e => {
+        if (e.payload.window === label()) release(e.payload.take)
+      }),
+      listen<VoiceStatus>('voice-status-changed', e => { statusEventSeen = true; setStatus(e.payload) }),
+    ])
+    unlisteners = results.flatMap(r => (r.status === 'fulfilled' ? [r.value] : []))
+    const failure = results.find(r => r.status === 'rejected')
+    if (failure) throw (failure as PromiseRejectedResult).reason
+    const initial = await ipc.voiceStatus()
+    if (!statusEventSeen) setStatus(initial)
+  } catch (e) {
+    unlisteners.forEach(u => u())
+    unlisteners = []
+    initialized = false
+    throw e
+  }
 }
 
 export function toggleDictation(): void {
   const s = status()
   if (!s || !s.enabled) return openDictationSetup()
-  if (state() === 'recording') {
+  if (recordingTake() !== null) {
     ipc.voiceEnd().catch(e => console.error('voice end:', e))
     return
   }
   ipc.voiceBegin(label()).catch((e: VoiceError) => handleError(e))
+}
+
+/** Test-only: drop all module state so tests never leak into each other. */
+export function __resetVoiceForTests(): void {
+  unlisteners.forEach(u => u())
+  unlisteners = []
+  initialized = false
+  statusEventSeen = false
+  targets = []
+  setStatus(null)
+  setLevel(0)
+  setRecordingTake(null)
+  setPins(new Map())
+  setSetupRequest(null)
 }
