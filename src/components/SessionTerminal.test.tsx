@@ -48,6 +48,7 @@ vi.mock('./ShellTerminal', () => ({
 }))
 
 import { SessionTerminal } from './SessionTerminal'
+import { markSeqWritten } from '../store/terminals'
 import { toasts, setToasts } from '../store/ui'
 
 async function flush() {
@@ -228,7 +229,7 @@ describe('SessionTerminal', () => {
     expect(ipcMocks.claudeTerminalClose).not.toHaveBeenCalled()
   })
 
-  test('shows the booting-claude overlay until the first pty-output arrives', async () => {
+  test('shows the booting-claude overlay until the terminal shows output', async () => {
     ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
     const { queryByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
@@ -237,43 +238,28 @@ describe('SessionTerminal', () => {
     expect(queryByTestId('shell-terminal')).toBeTruthy()
     expect(queryByTestId('claude-terminal-loading')).toBeTruthy()
 
-    // First byte from claude.
-    for (const h of ptyOutputHandlers) {
-      h({ payload: { terminalId: 'term-1', data: 'Welcome to Claude Code\n', seq: 22 } })
-    }
+    // Output for another PTY, or nothing written yet, keeps it up.
+    markSeqWritten('other-term', 5)
+    markSeqWritten('term-1', 0)
     await flush()
+    expect(queryByTestId('claude-terminal-loading')).toBeTruthy()
 
+    // First bytes from claude land in its xterm.
+    markSeqWritten('term-1', 22)
+    await flush()
     expect(queryByTestId('claude-terminal-loading')).toBeNull()
   })
 
-  test('overlay ignores pty-output for unrelated terminals', async () => {
-    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
+  test('coming back to a running Claude whose terminal already shows output has no overlay', async () => {
+    // The backend reuses the live PTY and the xterm rejoins with its output on
+    // screen. An idle Claude prints nothing new, so waiting for the next
+    // pty-output kept "Starting Claude Code..." up until a key was pressed.
+    markSeqWritten('term-live', 4096)
+    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-live', sessionId: 's-1' })
     const { queryByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
     await flush()
-    expect(queryByTestId('claude-terminal-loading')).toBeTruthy()
-
-    for (const h of ptyOutputHandlers) {
-      h({ payload: { terminalId: 'other-term', data: 'noise', seq: 5 } })
-    }
-    await flush()
-
-    // Still loading - the byte was for a different PTY.
-    expect(queryByTestId('claude-terminal-loading')).toBeTruthy()
-  })
-
-  test('overlay treats empty-data events as not-yet-arrived', async () => {
-    // Some keepalive / no-op pty-output payloads carry an empty data string.
-    // Don't false-trigger the "ready" state on those.
-    ipcMocks.claudeTerminalOpen.mockResolvedValue({ terminalId: 'term-1', sessionId: 's-1' })
-    const { queryByTestId } = render(() => <SessionTerminal sessionId="s-1" />)
-    await flush()
-
-    for (const h of ptyOutputHandlers) {
-      h({ payload: { terminalId: 'term-1', data: '', seq: 0 } })
-    }
-    await flush()
-
-    expect(queryByTestId('claude-terminal-loading')).toBeTruthy()
+    expect(queryByTestId('shell-terminal')).toBeTruthy()
+    expect(queryByTestId('claude-terminal-loading')).toBeNull()
   })
 
   test('drag-drop forwards quoted paths to the PTY', async () => {
