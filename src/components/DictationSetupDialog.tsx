@@ -51,14 +51,19 @@ const Wizard: Component<{ status: VoiceStatus; request: DictationSetupRequest }>
   const model = () => props.status.models.find(m => m.id === languageStatus(language())?.model) ?? null
   const codes = stableKeys(() => props.status.languages.map(l => l.code))
 
-  // The language is known from why setup opened, or from a download already
-  // running or failed for it (setup reopened mid-download shows the download).
+  // The language is known from why setup opened, or from a download in play for
+  // it: setup reopened mid-download shows the download. A failed one does so only
+  // when turning dictation on; adding a language still offers the list.
   const languageDecided = () => {
     if (languageConfirmed() || languageKnown) return true
     const m = model()
-    return m !== null && downloadPhase(m) !== 'idle'
+    if (m === null) return false
+    const phase = downloadPhase(m)
+    return phase === 'running' || phase === 'finishing' || (phase === 'failed' && turnsOn)
   }
 
+  // The microphone step shows for every reason (a language download is useless
+  // without a microphone); the Accessibility step only when turning dictation on.
   const step = (): Step => {
     const s = props.status
     if (s.microphone !== 'granted') return 'microphone'

@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   toggleDictation: vi.fn(),
   openDictationSetup: vi.fn(),
   voiceSetLanguage: vi.fn(),
+  setDictationLanguage: vi.fn(),
 }))
 
 // The store's signals, driven by each test.
@@ -27,6 +28,7 @@ vi.mock('../store/voice', async () => {
     voiceLevel: level,
     toggleDictation: mocks.toggleDictation,
     openDictationSetup: mocks.openDictationSetup,
+    setDictationLanguage: mocks.setDictationLanguage,
   }
 })
 vi.mock('../lib/ipc', () => ({ voiceSetLanguage: mocks.voiceSetLanguage }))
@@ -49,6 +51,7 @@ const mic = () => screen.getByRole('button', { name: 'Dictate' })
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.voiceSetLanguage.mockResolvedValue(status({ language: 'fr' }))
+  mocks.setDictationLanguage.mockResolvedValue(undefined)
   voice.setStatus(status())
   voice.setState('idle')
   voice.setLevel(0)
@@ -139,8 +142,20 @@ describe('DictationControl', () => {
     expect(fireEvent.mouseDown(screen.getByRole('menuitemradio', { name: 'French' }))).toBe(false)
     expect(fireEvent.mouseDown(screen.getByRole('menuitem', { name: 'Add language...' }))).toBe(false)
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'French' }))
-    expect(mocks.voiceSetLanguage).toHaveBeenCalledWith('fr')
+    // Through the store, like the Settings select, so a pending choice from setup is dropped.
+    expect(mocks.setDictationLanguage).toHaveBeenCalledWith('fr')
+    expect(mocks.voiceSetLanguage).not.toHaveBeenCalled()
     expect(screen.queryByRole('menuitemradio')).toBeNull()
+  })
+
+  test('a status event keeps the menu rows, so a focused item stays focused', () => {
+    render(() => <DictationControl />)
+    fireEvent.click(screen.getByRole('button', { name: 'Dictation language: English' }))
+    const french = screen.getByRole('menuitemradio', { name: 'French' })
+    french.focus()
+    voice.setStatus(status())
+    expect(french.isConnected).toBe(true)
+    expect(document.activeElement).toBe(french)
   })
 
   test('Add language... opens dictation setup', () => {

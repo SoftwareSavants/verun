@@ -1,12 +1,12 @@
 import { Show, For, createSignal } from 'solid-js'
 import { Mic, Loader2, Check, Plus } from 'lucide-solid'
 import { clsx } from 'clsx'
-import { voiceStatus, voiceState, voiceLevel, toggleDictation, openDictationSetup } from '../store/voice'
+import { voiceStatus, voiceState, voiceLevel, toggleDictation, openDictationSetup, setDictationLanguage } from '../store/voice'
 import { holdKeyName } from '../lib/holdKeyName'
 import { LANGUAGE_NAMES } from '../lib/voiceLanguages'
-import * as ipc from '../lib/ipc'
 import type { Language } from '../types/voice'
 import { Popover } from './Popover'
+import { stableKeys } from './DictationParts'
 
 // Each bar follows the level with its own gain, so speech reads as movement.
 const BAR_GAINS = [0.6, 1, 0.75]
@@ -18,13 +18,15 @@ export function DictationControl() {
     const s = voiceStatus()
     return s?.supported ? s : null
   }
+  // Keyed by code, so a status event does not remount the menu rows (and drop focus).
+  const installedCodes = stableKeys(() => voiceStatus()?.languages.filter(l => l.installed).map(l => l.code) ?? [])
   const stateLabel = () => {
     const state = voiceState()
     return state === 'recording' ? 'Recording' : state === 'transcribing' ? 'Transcribing' : undefined
   }
   const choose = (code: Language) => {
     setMenuOpen(false)
-    ipc.voiceSetLanguage(code).catch(e => console.error('voice set language:', e))
+    void setDictationLanguage(code)
   }
   const addLanguage = () => {
     setMenuOpen(false)
@@ -51,9 +53,9 @@ export function DictationControl() {
               </button>
               <Popover open={menuOpen()} onClose={() => setMenuOpen(false)} class="py-1 w-48 absolute bottom-full right-0 mb-1">
                 <div role="menu" aria-label="Dictation language">
-                  <For each={status().languages.filter(l => l.installed)}>
-                    {lang => {
-                      const selected = () => status().language === lang.code
+                  <For each={installedCodes()}>
+                    {code => {
+                      const selected = () => status().language === code
                       return (
                         <button
                           type="button"
@@ -64,9 +66,9 @@ export function DictationControl() {
                             selected() ? 'bg-accent/10 text-text-primary' : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
                           )}
                           onMouseDown={e => e.preventDefault()}
-                          onClick={() => choose(lang.code)}
+                          onClick={() => choose(code)}
                         >
-                          <span class="flex-1 min-w-0 truncate">{LANGUAGE_NAMES[lang.code]}</span>
+                          <span class="flex-1 min-w-0 truncate">{LANGUAGE_NAMES[code]}</span>
                           <Show when={selected()}><Check size={13} class="text-accent-hover flex-shrink-0" aria-hidden="true" /></Show>
                         </button>
                       )

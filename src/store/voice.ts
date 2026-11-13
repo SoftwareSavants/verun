@@ -44,6 +44,8 @@ export const modelDownloads: Accessor<Partial<Record<ModelId, ModelDownload>>> =
 function setDownload(model: ModelId, d: ModelDownload) {
   setDownloads({ ...downloads(), [model]: d })
   forgetInstalled()
+  // A failed download ends the choice that was waiting for it.
+  if (d.done && d.error && pendingModel() === model) setPendingLanguage(null)
 }
 
 /** A finished download is done with once the status shows its model installed. */
@@ -60,9 +62,19 @@ function forgetInstalled() {
   setDownloads(next)
 }
 
-/** A language the user chose whose model was not installed yet; set once it is. */
+/**
+ * The user's latest language choice, made in setup, whose model was not
+ * installed yet; set once it is. Only ever the latest choice with its download
+ * in play: a newer choice, a failed download, or leaving setup before the
+ * download runs drops it.
+ */
 const [pendingLanguage, setPendingLanguage] = createSignal<Language | null>(null)
 export const pendingDictationLanguage: Accessor<Language | null> = pendingLanguage
+
+function pendingModel(): ModelId | null {
+  const pending = pendingLanguage()
+  return (pending && status()?.languages.find(l => l.code === pending)?.model) || null
+}
 
 function applyStatus(s: VoiceStatus) {
   setStatus(s)
@@ -92,9 +104,18 @@ async function act(run: () => Promise<VoiceStatus>): Promise<void> {
 /** Re-reads the status (permissions may have changed in System Settings). */
 export const refreshVoiceStatus = () => act(ipc.voiceStatus)
 export const setDictationEnabled = (enabled: boolean) => act(() => ipc.voiceSetEnabled(enabled))
-export function setDictationLanguage(language: Language): Promise<void> {
+/** The language a `voice_set_language` call is on its way to set, so it is not sent twice. */
+let languageInFlight: Language | null = null
+
+/** Sets the language now (a newer choice than any pending one, which it drops). */
+export async function setDictationLanguage(language: Language): Promise<void> {
   setPendingLanguage(null)
-  return act(() => ipc.voiceSetLanguage(language))
+  languageInFlight = language
+  try {
+    await act(() => ipc.voiceSetLanguage(language))
+  } finally {
+    if (languageInFlight === language) languageInFlight = null
+  }
 }
 
 /**
@@ -102,6 +123,10 @@ export function setDictationLanguage(language: Language): Promise<void> {
  * the model shows installed, so dictation keeps working in the old one meanwhile.
  */
 export async function chooseDictationLanguage(language: Language): Promise<void> {
+  if (languageInFlight === language) {
+    setPendingLanguage(null)
+    return
+  }
   const s = status()
   if (s?.languages.find(l => l.code === language)?.installed) {
     if (s.language !== language) await setDictationLanguage(language)
@@ -126,6 +151,8 @@ export async function requestMicrophone(): Promise<void> {
 
 // One window `focus` listener however many views want the status re-read on focus.
 let focusWatchers = 0
+/** Bumped by the test reset, so a stop function from before it does nothing. */
+let focusGeneration = 0
 const onWindowFocus = () => { void refreshVoiceStatus() }
 
 /**
@@ -134,9 +161,10 @@ const onWindowFocus = () => { void refreshVoiceStatus() }
  */
 export function watchVoiceStatusOnFocus(): () => void {
   if (focusWatchers++ === 0) window.addEventListener('focus', onWindowFocus)
+  const generation = focusGeneration
   let stopped = false
   return () => {
-    if (stopped) return
+    if (stopped || generation !== focusGeneration) return
     stopped = true
     if (--focusWatchers === 0) window.removeEventListener('focus', onWindowFocus)
   }
@@ -178,7 +206,16 @@ export interface DictationSetupRequest {
 
 const [setupRequest, setSetupRequest] = createSignal<DictationSetupRequest | null>(null)
 export const dictationSetupRequest: Accessor<DictationSetupRequest | null> = setupRequest
-export function clearDictationSetupRequest(): void { setSetupRequest(null) }
+/**
+ * Closes setup. A pending language stays only while its model's download runs
+ * (the dialog says it continues in the background); otherwise it is dropped.
+ */
+export function clearDictationSetupRequest(): void {
+  setSetupRequest(null)
+  const model = pendingModel()
+  const download = model ? downloads()[model] : undefined
+  if (!download || download.done) setPendingLanguage(null)
+}
 /** Opens the setup dialog (mounted in every window). */
 export function openDictationSetup(request: DictationSetupRequest = { reason: 'enable' }): void {
   setSetupRequest({ ...request })
@@ -317,4 +354,8 @@ export function __resetVoiceForTests(): void {
   setSetupRequest(null)
   setDownloads({})
   setPendingLanguage(null)
+  languageInFlight = null
+  if (focusWatchers > 0) window.removeEventListener('focus', onWindowFocus)
+  focusWatchers = 0
+  focusGeneration++
 }

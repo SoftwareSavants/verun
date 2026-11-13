@@ -477,6 +477,18 @@ describe('status actions', () => {
 })
 
 describe('focus re-check', () => {
+  test('the test reset drops every watcher and the window listener', () => {
+    watchVoiceStatusOnFocus()
+    __resetVoiceForTests()
+    const before = vi.mocked(ipc.voiceStatus).mock.calls.length
+    window.dispatchEvent(new Event('focus'))
+    expect(ipc.voiceStatus).toHaveBeenCalledTimes(before)
+    const stop = watchVoiceStatusOnFocus()
+    window.dispatchEvent(new Event('focus'))
+    expect(ipc.voiceStatus).toHaveBeenCalledTimes(before + 1)
+    stop()
+  })
+
   test('one status read per focus however many watch, none after the last stops', async () => {
     const before = vi.mocked(ipc.voiceStatus).mock.calls.length
     const stopA = watchVoiceStatusOnFocus()

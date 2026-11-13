@@ -35,6 +35,7 @@ import {
 } from '../store/voice'
 import { DictationSetupDialog } from './DictationSetupDialog'
 import { DictationSettings } from './DictationSettings'
+import { DictationControl } from './DictationControl'
 import type { Language, VoiceStatus } from '../types/voice'
 
 const CODES: Language[] = ['en', 'fr', 'es', 'ar', 'zh', 'hi', 'pt', 'ru', 'bn', 'ur', 'ja', 'de']
@@ -417,5 +418,108 @@ describe('entry points', () => {
     await flush()
     expect(ipc.voiceBegin).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Allow microphone' })).toBeTruthy()
+  })
+})
+
+describe('a pending language is applied only for the latest choice, with its download in play', () => {
+  // Synthetic: English works today, Japanese waits for the model.
+  const waiting = () => ({ ...status({ enabled: true, missing: ['ja'] }), models: status({ installed: false }).models })
+  const ready = () => status({ enabled: true })
+  const chooseJapanese = async () => {
+    await setup(waiting(), { reason: 'add-language' })
+    fireEvent.click(screen.getByLabelText(/Japanese/))
+    click('Continue')
+    await flush()
+  }
+  const appliedJapanese = () => vi.mocked(ipc.voiceSetLanguage).mock.calls.filter(c => c[0] === 'ja').length
+
+  test('a newer choice in the composer switcher drops it', async () => {
+    await chooseJapanese()
+    render(() => <DictationControl />)
+    click('Dictation language: English')
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'French' }))
+    await flush()
+    expect(ipc.voiceSetLanguage).toHaveBeenCalledWith('fr')
+    setStatus(ready())
+    await flush()
+    expect(appliedJapanese()).toBe(0)
+  })
+
+  test('closing setup before the download starts drops it', async () => {
+    await chooseJapanese()
+    click('Close')
+    setStatus(ready())
+    await flush()
+    expect(appliedJapanese()).toBe(0)
+  })
+
+  test('closing setup with its download running keeps it: applied once the download completes', async () => {
+    await chooseJapanese()
+    click('Download (574 MB)')
+    progress({ received: 1 })
+    click('Close')
+    progress({ received: 574041195, done: true })
+    setStatus(ready())
+    await flush()
+    expect(appliedJapanese()).toBe(1)
+  })
+
+  test('a failed download drops it, even if the model arrives later', async () => {
+    await chooseJapanese()
+    click('Download (574 MB)')
+    progress({ received: 1, done: true, error: 'Connection reset' })
+    setStatus(ready())
+    await flush()
+    expect(appliedJapanese()).toBe(0)
+  })
+
+  test('Done does not send the language again when the status path already sent it', async () => {
+    await chooseJapanese()
+    click('Download (574 MB)')
+    progress({ received: 574041195, done: true })
+    // The status path sends `ja`; its reply has not arrived yet.
+    vi.mocked(ipc.voiceSetLanguage).mockReturnValue(new Promise(() => {}))
+    setStatus(ready())
+    await flush()
+    click('Done')
+    await flush()
+    expect(appliedJapanese()).toBe(1)
+  })
+})
+
+describe('after a failed download', () => {
+  const failedThenOpen = async (request: DictationSetupRequest) => {
+    vi.mocked(ipc.voiceStatus).mockResolvedValue(status({ enabled: true, installed: false }))
+    await initVoice()
+    progress({ received: 1, done: true, error: 'Connection reset' })
+    render(() => <DictationSetupDialog />)
+    openDictationSetup(request)
+    await flush()
+  }
+
+  test('Add language... still shows the language list', async () => {
+    await failedThenOpen({ reason: 'add-language' })
+    expect(screen.getByRole('radiogroup', { name: 'Language' })).toBeTruthy()
+  })
+
+  test('turning it on goes back to the failed download', async () => {
+    await failedThenOpen({ reason: 'enable' })
+    expect(screen.queryByRole('radiogroup')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+})
+
+describe('the hold key permission is only asked when turning dictation on', () => {
+  test.each([
+    ['add-language', { reason: 'add-language' }],
+    ['language', { reason: 'language', language: 'fr' }],
+  ] as const)('%s with no Accessibility goes to Done', async (_, request) => {
+    await setup(status({ enabled: true, accessibility: false }), request as DictationSetupRequest)
+    if (request.reason === 'add-language') {
+      click('Continue')
+      await flush()
+    }
+    expect(screen.queryByRole('button', { name: 'Open System Settings' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy()
   })
 })
