@@ -41,8 +41,6 @@ export interface VoiceStatus {
   state: VoiceState
   models: ModelStatus[]
   languages: LanguageStatus[]
-  /** The same in every window until the app quits; take ids restart with each run. */
-  runId: string
 }
 
 /**
@@ -69,10 +67,13 @@ export interface VoiceLevelEvent {
 
 /** `voice-transcript`: emitted in `seq` order; empty ones become `voice-take-dropped`. */
 export interface VoiceTranscriptEvent {
+  /** The window that delivers it: the take's own, or the main window once that closed. */
   window: string
   take: number
   seq: number
   text: string
+  /** The draft the take was begun for; null if its window showed no target then. */
+  draft: string | null
 }
 
 /** `voice-error`: `take` is null when no take had started (a refused begin). */
@@ -80,6 +81,7 @@ export interface VoiceErrorEvent {
   window: string | null
   take: number | null
   error: VoiceError
+  draft: string | null
 }
 
 export type VoiceDropReason = 'too-short' | 'silent' | 'empty' | 'cancelled'
@@ -89,6 +91,7 @@ export interface VoiceTakeDroppedPayload {
   window: string
   take: number
   reason: VoiceDropReason
+  draft: string | null
 }
 export type VoiceTakeDroppedEvent = VoiceTakeDroppedPayload
 

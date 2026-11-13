@@ -15,7 +15,11 @@ import { addToast } from './ui'
 export interface DictationTarget {
   /** Stable id: `session:<sid>` or `new-task:<projectId>`. */
   id: string
-  /** Where a take for this target goes once it is no longer the live one (see `sessionDrafts`). */
+  /**
+   * The draft a take begun here is pinned to (the backend carries it in the
+   * take's events). The take goes to the live target with this draft, or to the
+   * draft itself once none is registered (see `sessionDrafts`).
+   */
   draftId: string
   insert(take: string): void
 }
@@ -24,8 +28,8 @@ const [status, setStatus] = createSignal<VoiceStatus | null>(null)
 const [level, setLevel] = createSignal(0)
 /** The take this window is recording right now. */
 const [recordingTake, setRecordingTake] = createSignal<number | null>(null)
-/** Take id -> the target that was visible when it started. Replaced on change so reads are reactive. */
-const [pins, setPins] = createSignal<ReadonlyMap<number, DictationTarget>>(new Map())
+/** Takes of this window still waiting for their terminal event. Replaced on change so reads are reactive. */
+const [takesOut, setTakesOut] = createSignal<ReadonlySet<number>>(new Set<number>())
 
 export const voiceStatus: Accessor<VoiceStatus | null> = status
 
@@ -215,7 +219,7 @@ export function cancelDictationDownload(model: ModelId): void {
 }
 
 export const voiceState: Accessor<VoiceState> = () =>
-  recordingTake() !== null ? 'recording' : pins().size > 0 ? 'transcribing' : 'idle'
+  recordingTake() !== null ? 'recording' : takesOut().size > 0 ? 'transcribing' : 'idle'
 
 export const voiceLevel: Accessor<number> = () => (voiceState() === 'recording' ? level() : 0)
 
@@ -254,27 +258,31 @@ let targets: DictationTarget[] = []
 
 const label = () => windowContext.windowLabel
 
-/** Whether the backend was last told this window has a target; null before the first report. */
-let reportedTarget: boolean | null = null
+/** The visible target's draft, which a take begun now is for; null with none. */
+const visibleDraft = (): string | null => targets[targets.length - 1]?.draftId ?? null
+
+/** The draft the backend was last told this window shows; undefined before the first report. */
+let reportedDraft: string | null | undefined
 let reportQueued = false
 
-function sendTarget(available: boolean) {
-  reportedTarget = available
-  ipc.voiceSetTarget(label(), available).catch(e => console.error('voice set target:', e))
+function sendTarget(draft: string | null) {
+  reportedDraft = draft
+  ipc.voiceSetTarget(label(), draft).catch(e => console.error('voice set target:', e))
 }
 
 /**
- * Tells the backend whether this window has a target once the current changes
- * settle (a chat switch swaps targets in one go), and only when that changed:
- * the backend opens no microphone for a hold in a window without one.
+ * Tells the backend the draft of this window's visible target once the
+ * current changes settle (a chat switch swaps targets in one go), and only
+ * when it changed. A hold-key take is pinned to it when it begins, and a hold
+ * in a window without one opens no microphone.
  */
 function reportTarget() {
   if (reportQueued) return
   reportQueued = true
   queueMicrotask(() => {
     reportQueued = false
-    const available = targets.length > 0
-    if (available !== reportedTarget) sendTarget(available)
+    const draft = visibleDraft()
+    if (draft !== reportedDraft) sendTarget(draft)
   })
 }
 
@@ -288,73 +296,13 @@ export function registerDictationTarget(t: DictationTarget): () => void {
   }
 }
 
-/**
- * Every window's pins, also kept in localStorage (one origin for all Verun
- * windows) so the main window can deliver a take whose window closed: the
- * backend sends that transcript to the main window. Each carries the run it
- * was written in: take ids restart with every run, so a pin left by an
- * earlier run (quit mid-take) is never honoured and is dropped on the next write.
- */
-const STORED_PINS_KEY = 'verun:voicePins'
-interface StoredPin { targetId: string; draftId: string; run: string | null }
-
-const currentRun = (): string | null => status()?.runId ?? null
-const ofThisRun = (p: StoredPin | undefined): p is StoredPin => !!p && p.run !== null && p.run === currentRun()
-/** Takes whose stored pin this window wrote. */
-const storedHere = new Set<number>()
-
-function readStoredPins(): Record<string, StoredPin> {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(STORED_PINS_KEY) ?? '{}')
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, StoredPin> : {}
-  } catch {
-    return {}
-  }
-}
-
-function writeStoredPins(update: (pins: Record<string, StoredPin>) => void) {
-  try {
-    const all = readStoredPins()
-    if (currentRun() !== null) {
-      for (const take of Object.keys(all)) if (!ofThisRun(all[take])) delete all[take]
-    }
-    update(all)
-    localStorage.setItem(STORED_PINS_KEY, JSON.stringify(all))
-  } catch (e) {
-    console.error('voice stored pins:', e)
-  }
-}
-
-function forgetStoredPins(takes: number[]) {
-  for (const take of takes) storedHere.delete(take)
-  if (takes.length === 0 || !takes.some(take => String(take) in readStoredPins())) return
-  writeStoredPins(all => { for (const take of takes) delete all[take] })
-}
-
-function pin(take: number, t: DictationTarget) {
-  setPins(new Map(pins()).set(take, t))
-  storedHere.add(take)
-  writeStoredPins(all => { all[take] = { targetId: t.id, draftId: t.draftId, run: currentRun() } })
-}
-
-/** Remove and return the pin for `take`; the recording take is over once it has a terminal event. */
-function release(take: number): DictationTarget | undefined {
+/** The take is over: it had its terminal event. */
+function release(take: number) {
   if (recordingTake() === take) setRecordingTake(null)
-  const t = pins().get(take)
-  if (t) {
-    const next = new Map(pins())
-    next.delete(take)
-    setPins(next)
-  }
-  forgetStoredPins([take])
-  return t
-}
-
-/** The stored pin of a take this window does not hold (its window closed), removed as it is read. Only this run's. */
-function takeStoredPin(take: number): StoredPin | undefined {
-  const found = readStoredPins()[take]
-  if (found) forgetStoredPins([take])
-  return ofThisRun(found) ? found : undefined
+  if (!takesOut().has(take)) return
+  const next = new Set(takesOut())
+  next.delete(take)
+  setTakesOut(next)
 }
 
 function handleError(error: VoiceError) {
@@ -374,42 +322,39 @@ function handleError(error: VoiceError) {
 function onState({ state, window, take }: VoiceStateEvent) {
   // Any state event supersedes a recording this window had; only a recording event for us restarts it.
   setRecordingTake(null)
-  if (state === 'idle' && window === null) {
-    setPins(new Map())
-    forgetStoredPins([...storedHere])
-  }
+  if (state === 'idle' && window === null) setTakesOut(new Set<number>())
   if (state !== 'recording' || window !== label() || take === null) return
-  const target = targets[targets.length - 1]
-  if (target) {
-    pin(take, target)
+  if (targets.length > 0) {
+    setTakesOut(new Set(takesOut()).add(take))
     // The meter starts from silence, not from the last take's final level.
     setLevel(0)
     setRecordingTake(take)
   } else {
+    // The composer went away as the take began: the backend pinned it to nothing.
     ipc.voiceCancel().catch(e => console.error('voice cancel:', e))
     addToast('Dictation works in the chat box and the new task box.', 'info')
   }
 }
 
-function onTranscript({ window, take, text }: VoiceTranscriptEvent) {
+/**
+ * The backend sends a transcript to exactly one window: the one the take began
+ * in, or the main window once that closed. It goes to the live target of the
+ * take's draft in this window, else to that draft.
+ */
+function onTranscript({ window, take, text, draft }: VoiceTranscriptEvent) {
   if (window !== label()) return
-  const held = pins().has(take)
-  const pinned = held ? release(take) : undefined
+  release(take)
   // Nothing to insert. Every target and draft comes through here, so none can
   // turn a blank take into a deleted selection (an empty insertText does that).
-  if (!text.trim()) {
-    if (!held) takeStoredPin(take)
-    return
-  }
-  // A remounted composer for the same chat has a new object with the same id.
-  const live = pinned && [...targets].reverse().find(t => t.id === pinned.id)
+  if (!text.trim()) return
+  // A remounted composer for the same chat has a new object with the same draft.
+  const live = draft !== null && [...targets].reverse().find(t => t.draftId === draft)
   if (live) return live.insert(text)
   // Its box is hidden, unmounted or sending, or the take is from a window that
   // closed (sent to this one): it goes to that box's draft.
-  const draftId = held ? pinned?.draftId : takeStoredPin(take)?.draftId
-  if (typeof draftId === 'string' && draftExists(draftId)) {
-    appendToDraft(draftId, text)
-    addToast(newTaskDraftProject(draftId) !== null
+  if (draft !== null && draftExists(draft)) {
+    appendToDraft(draft, text)
+    addToast(newTaskDraftProject(draft) !== null
       ? 'Dictation saved to the new task draft.'
       : 'Dictation saved to the draft of the chat you were in.', 'info')
   } else {
@@ -436,17 +381,12 @@ export async function initVoice(): Promise<void> {
       listen<VoiceLevelEvent>('voice-level', e => { setLevel(e.payload.level) }),
       listen<VoiceTranscriptEvent>('voice-transcript', e => onTranscript(e.payload)),
       listen<VoiceErrorEvent>('voice-error', e => {
-        // The take is over in every window, also for a stored pin whose window closed.
-        if (e.payload.window !== label()) {
-          if (e.payload.take !== null) forgetStoredPins([e.payload.take])
-          return
-        }
+        if (e.payload.window !== label()) return
         if (e.payload.take !== null) release(e.payload.take)
         handleError(e.payload.error)
       }),
       listen<VoiceTakeDroppedEvent>('voice-take-dropped', e => {
         if (e.payload.window === label()) release(e.payload.take)
-        else forgetStoredPins([e.payload.take])
       }),
       listen<VoiceStatus>('voice-status-changed', e => { statusEventSeen = true; applyStatus(e.payload) }),
       listen<VoiceModelProgressEvent>('voice-model-progress', e => {
@@ -459,7 +399,7 @@ export async function initVoice(): Promise<void> {
     const failure = results.find(r => r.status === 'rejected')
     if (failure) throw (failure as PromiseRejectedResult).reason
     // The backend may know an older page of this window (a reload): report afresh.
-    sendTarget(targets.length > 0)
+    sendTarget(visibleDraft())
     const initial = await ipc.voiceStatus()
     if (!statusEventSeen) applyStatus(initial)
   } catch (e) {
@@ -482,7 +422,7 @@ export function toggleDictation(): void {
     return
   }
   beginInFlight = true
-  ipc.voiceBegin(label())
+  ipc.voiceBegin(label(), visibleDraft())
     .catch((e: VoiceError) => handleError(e))
     .finally(() => { beginInFlight = false })
 }
@@ -494,18 +434,17 @@ export function __resetVoiceForTests(): void {
   initialized = false
   statusEventSeen = false
   targets = []
-  reportedTarget = null
+  reportedDraft = undefined
   reportQueued = false
   setStatus(null)
   setLevel(0)
   setRecordingTake(null)
-  setPins(new Map())
+  setTakesOut(new Set<number>())
   setSetupRequest(null)
   setDownloads({})
   setPendingLanguage(null)
   languageInFlight = null
   beginInFlight = false
-  storedHere.clear()
   accessibilityWatch = null
   if (focusWatchers > 0) window.removeEventListener('focus', onWindowFocus)
   focusWatchers = 0

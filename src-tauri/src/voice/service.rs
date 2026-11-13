@@ -9,7 +9,7 @@
 //! it is emitted before the `voice-state` that reflects T being finished.
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -158,15 +158,6 @@ pub struct VoiceStatus {
     pub state: VoiceState,
     pub models: Vec<ModelStatus>,
     pub languages: Vec<LanguageStatus>,
-    /// The same for every window until the app quits. Take ids restart with
-    /// each run, so a take pin kept across windows is honoured only in its run.
-    pub run_id: &'static str,
-}
-
-/// This run of the app (see `VoiceStatus::run_id`).
-pub fn run_id() -> &'static str {
-    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }
 
 /// What `voice_status` reports where dictation is not built.
@@ -183,7 +174,6 @@ pub fn unsupported_status() -> VoiceStatus {
         state: VoiceState::Idle,
         models: Vec::new(),
         languages: language_status(None),
-        run_id: run_id(),
     }
 }
 
@@ -209,6 +199,8 @@ pub struct TranscriptPayload {
     pub take: u64,
     pub seq: u64,
     pub text: String,
+    /// The draft the take was begun for (see `VoiceCore::set_target`).
+    pub draft: Option<String>,
 }
 
 /// `take` is null for an error before any take existed (a refused begin).
@@ -218,6 +210,8 @@ pub struct ErrorPayload {
     pub window: Option<String>,
     pub take: Option<u64>,
     pub error: VoiceError,
+    /// The take's draft; null when no take had started.
+    pub draft: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -237,6 +231,7 @@ pub struct TakeDroppedPayload {
     pub window: String,
     pub take: u64,
     pub reason: DropReason,
+    pub draft: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -316,6 +311,8 @@ struct Inner<C: Capture> {
     /// A hold armed in a window with no target: its window and key-down time.
     /// It opened no microphone; a deliberate one gets a notice on release.
     untargeted_hold: Option<(String, Instant)>,
+    /// Take id -> the draft it is for, until its terminal event carries it.
+    drafts: HashMap<u64, String>,
 }
 
 /// Running downloads, each with the flag that cancels it.
@@ -343,10 +340,10 @@ pub struct VoiceCore<C: Capture, E: VoiceEvents> {
     mic: MicCheck,
     window_exists: WindowCheck,
     downloading: Downloading,
-    /// Labels of windows that show a dictation target, as their frontend
-    /// reports. Its own lock, never held with another, so reporting never
+    /// Window label -> the draft id of the dictation target it shows, as its
+    /// frontend reports. Its own lock, never held with another, so reporting never
     /// waits for a microphone opening under `inner`.
-    targets: Mutex<HashSet<String>>,
+    targets: Mutex<HashMap<String, String>>,
 }
 
 fn idle() -> StatePayload {
@@ -381,13 +378,14 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
                 shown: idle(),
                 hold_take: None,
                 untargeted_hold: None,
+                drafts: HashMap::new(),
             }),
             events,
             models_dir: models_dir.clone(),
             mic,
             window_exists,
             downloading: Arc::new(Mutex::new(HashMap::new())),
-            targets: Mutex::new(HashSet::new()),
+            targets: Mutex::new(HashMap::new()),
         });
         let (tx, rx) = mpsc::channel();
         let weak = Arc::downgrade(&core);
@@ -418,14 +416,15 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         lock(&self.inner).settings.language = language;
     }
 
-    /// Whether the window `label` shows a dictation target (a composer).
-    pub fn set_target(&self, label: &str, available: bool) {
+    /// The draft id of the dictation target (a composer) the window `label`
+    /// shows, or `None` when it shows none. A hold-key take is pinned to it
+    /// when it begins.
+    pub fn set_target(&self, label: &str, draft: Option<String>) {
         let mut targets = lock(&self.targets);
-        if available {
-            targets.insert(label.to_string());
-        } else {
-            targets.remove(label);
-        }
+        match draft {
+            Some(draft) => targets.insert(label.to_string(), draft),
+            None => targets.remove(label),
+        };
     }
 
     pub fn set_hold_key(&self, key: HoldKey) {
@@ -455,16 +454,16 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         }
         match action {
             HoldAction::Begin { window, down_at } => {
-                let targeted = lock(&self.targets).contains(&window);
-                if !targeted {
+                let Some(draft) = lock(&self.targets).get(&window).cloned() else {
                     lock(&self.inner).untargeted_hold = Some((window, down_at));
                     return;
-                }
-                if let Err(error) = self.begin_take(window.clone(), down_at, true) {
+                };
+                if let Err(error) = self.begin_take(window.clone(), Some(draft), down_at, true) {
                     self.events.error(ErrorPayload {
                         window: Some(window),
                         take: None,
                         error,
+                        draft: None,
                     });
                 }
             }
@@ -476,6 +475,7 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
                             window: Some(window),
                             take: None,
                             error: VoiceError::NoTarget,
+                            draft: None,
                         });
                     }
                 } else if Self::hold_take_recording(&inner) {
@@ -500,11 +500,20 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
     /// not emitted. A begin while already recording for `window` is a no-op;
     /// for another window it is `Busy`. May block
     /// while the microphone opens: call from a blocking thread.
-    pub fn begin(&self, window: String, now: Instant) -> Result<(), VoiceError> {
-        self.begin_take(window, now, false)
+    /// The take is pinned to `draft`, or without one to the draft of the
+    /// target the window reported.
+    pub fn begin(&self, window: String, draft: Option<String>, now: Instant) -> Result<(), VoiceError> {
+        let draft = draft.or_else(|| lock(&self.targets).get(&window).cloned());
+        self.begin_take(window, draft, now, false)
     }
 
-    fn begin_take(&self, window: String, now: Instant, from_hold: bool) -> Result<(), VoiceError> {
+    fn begin_take(
+        &self,
+        window: String,
+        draft: Option<String>,
+        now: Instant,
+        from_hold: bool,
+    ) -> Result<(), VoiceError> {
         let mut inner = lock(&self.inner);
         if !inner.settings.enabled {
             return Err(VoiceError::Disabled);
@@ -521,11 +530,11 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
             return Err(VoiceError::ModelMissing);
         }
         inner.dictation.begin(window, lang, now)?;
-        inner.hold_take = if from_hold {
-            inner.dictation.recording().map(|t| t.take)
-        } else {
-            None
-        };
+        let take = inner.dictation.recording().map(|t| t.take);
+        if let (Some(take), Some(draft)) = (take, draft) {
+            inner.drafts.insert(take, draft);
+        }
+        inner.hold_take = if from_hold { take } else { None };
         self.show_state(&mut inner);
         Ok(())
     }
@@ -590,7 +599,6 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
             state,
             models: models::status(&self.models_dir),
             languages: language_status(Some(&self.models_dir)),
-            run_id: run_id(),
         }
     }
 
@@ -700,8 +708,9 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         Ok(true)
     }
 
-    fn dropped(&self, t: TakeRef, reason: DropReason) {
+    fn dropped(&self, inner: &mut Inner<C>, t: TakeRef, reason: DropReason) {
         self.events.take_dropped(TakeDroppedPayload {
+            draft: inner.drafts.remove(&t.take),
             window: t.window,
             take: t.take,
             reason,
@@ -711,9 +720,10 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
     fn end_locked(&self, inner: &mut Inner<C>, now: Instant) {
         match inner.dictation.end(now) {
             EndOutcome::NotRecording => {}
-            EndOutcome::TooShort(t) => self.dropped(t, DropReason::TooShort),
-            EndOutcome::Silent(t) => self.dropped(t, DropReason::Silent),
+            EndOutcome::TooShort(t) => self.dropped(inner, t, DropReason::TooShort),
+            EndOutcome::Silent(t) => self.dropped(inner, t, DropReason::Silent),
             EndOutcome::Failed { take, error } => self.events.error(ErrorPayload {
+                draft: inner.drafts.remove(&take.take),
                 window: Some(take.window),
                 take: Some(take.take),
                 error,
@@ -725,7 +735,7 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
 
     fn cancel_locked(&self, inner: &mut Inner<C>) {
         if let Some(t) = inner.dictation.cancel() {
-            self.dropped(t, DropReason::Cancelled);
+            self.dropped(inner, t, DropReason::Cancelled);
         }
         self.show_state(inner);
     }
@@ -764,28 +774,33 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
                 window: Some(window),
                 take: Some(id),
                 error: VoiceError::Engine("transcription worker stopped".into()),
+                draft: inner.drafts.remove(&id),
             });
         }
     }
 
     /// Called by the worker when a take is done.
     fn finished(&self, take: &PendingTake, result: Result<String, VoiceError>) {
+        let draft = lock(&self.inner).drafts.remove(&take.take);
         match result {
             Ok(text) if text.is_empty() => self.events.take_dropped(TakeDroppedPayload {
                 window: take.window.clone(),
                 take: take.take,
                 reason: DropReason::Empty,
+                draft,
             }),
             Ok(text) => self.events.transcript(TranscriptPayload {
                 window: self.deliver_to(&take.window),
                 take: take.take,
                 seq: take.seq,
                 text,
+                draft,
             }),
             Err(error) => self.events.error(ErrorPayload {
                 window: Some(take.window.clone()),
                 take: Some(take.take),
                 error,
+                draft,
             }),
         }
         let mut inner = lock(&self.inner);
@@ -1027,6 +1042,8 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub(crate) struct Recorder {
         events: Mutex<Vec<Ev>>,
+        /// The draft of each terminal event with a take, in order.
+        drafts: Mutex<Vec<(u64, Option<String>)>>,
         #[allow(clippy::type_complexity)]
         on_progress: Mutex<Option<Box<dyn Fn(&ModelProgress) + Send>>>,
     }
@@ -1034,6 +1051,9 @@ pub(crate) mod tests {
     impl Recorder {
         fn push(&self, e: Ev) {
             self.events.lock().unwrap().push(e);
+        }
+        pub(crate) fn drafts(&self) -> Vec<(u64, Option<String>)> {
+            self.drafts.lock().unwrap().clone()
         }
         pub(crate) fn all(&self) -> Vec<Ev> {
             self.events.lock().unwrap().clone()
@@ -1084,12 +1104,17 @@ pub(crate) mod tests {
             self.push(Ev::Level);
         }
         fn transcript(&self, p: TranscriptPayload) {
+            self.drafts.lock().unwrap().push((p.take, p.draft.clone()));
             self.push(Ev::Transcript(p.window, p.take, p.seq, p.text));
         }
         fn error(&self, p: ErrorPayload) {
+            if let Some(take) = p.take {
+                self.drafts.lock().unwrap().push((take, p.draft.clone()));
+            }
             self.push(Ev::Error(p.window, p.take, p.error));
         }
         fn take_dropped(&self, p: TakeDroppedPayload) {
+            self.drafts.lock().unwrap().push((p.take, p.draft.clone()));
             self.push(Ev::Dropped(p.window, p.take, p.reason));
         }
         fn model_progress(&self, p: ModelProgress) {
@@ -1170,7 +1195,7 @@ pub(crate) mod tests {
         );
         // The windows the hold-key tests hold in show a composer.
         for w in ["main", "task-2", "task-7", "b"] {
-            core.set_target(w, true);
+            core.set_target(w, Some(format!("draft:{w}")));
         }
         Rig { core, rec, cap, script, dir, closed }
     }
@@ -1184,7 +1209,7 @@ pub(crate) mod tests {
     }
 
     fn take(core: &TestCore, window: &str, at: Instant) {
-        core.begin(window.to_string(), at).unwrap();
+        core.begin(window.to_string(), None, at).unwrap();
         core.end(at + ms(400));
     }
 
@@ -1231,7 +1256,7 @@ pub(crate) mod tests {
 
         take(&r.core, "a", t0);
         assert_eq!(r.core.state(), VoiceState::Transcribing);
-        r.core.begin("b".into(), t0 + ms(1000)).unwrap();
+        r.core.begin("b".into(), None, t0 + ms(1000)).unwrap();
         assert_eq!(r.core.state(), VoiceState::Recording);
         r.core.end(t0 + ms(1400));
         // The first take is still held by the gate, so nothing is out yet.
@@ -1264,13 +1289,13 @@ pub(crate) mod tests {
         r.core.flush();
         take(&r.core, "w", s(1)); // 2: empty transcript
         r.core.flush();
-        r.core.begin("w".into(), s(2)).unwrap(); // 3: too short
+        r.core.begin("w".into(), None, s(2)).unwrap(); // 3: too short
         r.core.end(s(2) + ms(100));
         r.cap.next_stop(Ok(vec![0.0; 16_000]));
         take(&r.core, "w", s(3)); // 4: silent
         r.cap.next_stop(Err(VoiceError::MicUnavailable));
         take(&r.core, "w", s(4)); // 5: capture failed
-        r.core.begin("w".into(), s(5)).unwrap(); // 6: cancelled
+        r.core.begin("w".into(), None, s(5)).unwrap(); // 6: cancelled
         r.core.cancel();
         take(&r.core, "w", s(6)); // 7: engine error
         r.core.flush();
@@ -1309,7 +1334,7 @@ pub(crate) mod tests {
     fn begin_without_installed_model_is_model_missing_and_does_not_record() {
         let r = rig(Script::default(), Opts { installed: false, ..Opts::default() });
         let t0 = Instant::now();
-        assert_eq!(r.core.begin("main".into(), t0), Err(VoiceError::ModelMissing));
+        assert_eq!(r.core.begin("main".into(), None, t0), Err(VoiceError::ModelMissing));
         assert_eq!(r.cap.starts(), 0);
         assert_eq!(r.core.state(), VoiceState::Idle);
         // The mic-button path returns the error and emits nothing.
@@ -1327,7 +1352,7 @@ pub(crate) mod tests {
     fn begin_with_denied_mic_is_mic_denied() {
         let r = rig(Script::default(), Opts { mic: MicPermission::Denied, ..Opts::default() });
         let t0 = Instant::now();
-        assert_eq!(r.core.begin("main".into(), t0), Err(VoiceError::MicDenied));
+        assert_eq!(r.core.begin("main".into(), None, t0), Err(VoiceError::MicDenied));
         assert_eq!(r.cap.starts(), 0);
         r.core.hold(begin_hold("main", t0), t0);
         assert_eq!(r.cap.starts(), 0);
@@ -1341,7 +1366,7 @@ pub(crate) mod tests {
             Opts { enabled: false, mic: MicPermission::Denied, installed: false },
         );
         // Disabled wins over the permission and model checks.
-        assert_eq!(r.core.begin("main".into(), Instant::now()), Err(VoiceError::Disabled));
+        assert_eq!(r.core.begin("main".into(), None, Instant::now()), Err(VoiceError::Disabled));
         assert_eq!(r.cap.starts(), 0);
         assert!(r.rec.all().is_empty());
     }
@@ -1426,7 +1451,7 @@ pub(crate) mod tests {
     fn hold_key_events_leave_a_mic_button_take_alone() {
         let r = rig(Script::texts(&["kept"]), Opts::default());
         let t0 = Instant::now();
-        r.core.begin("main".into(), t0).unwrap();
+        r.core.begin("main".into(), None, t0).unwrap();
         // Fn held past the arming delay while the mic-button take records, then
         // released (a long tap), then Fn+arrow.
         r.core.hold(begin_hold("main", t0 + ms(1000)), t0 + ms(1150));
@@ -1457,14 +1482,14 @@ pub(crate) mod tests {
     fn begin_while_another_window_records_is_busy_and_leaves_that_take_alone() {
         let r = rig(Script::default(), Opts::default());
         let t0 = Instant::now();
-        r.core.begin("a".into(), t0).unwrap();
+        r.core.begin("a".into(), None, t0).unwrap();
         // The mic button in window b returns the error.
-        assert_eq!(r.core.begin("b".into(), t0 + ms(10)), Err(VoiceError::Busy));
+        assert_eq!(r.core.begin("b".into(), None, t0 + ms(10)), Err(VoiceError::Busy));
         // The hold key in window b gets it as a voice-error for b.
         r.core.hold(begin_hold("b", t0 + ms(20)), t0 + ms(170));
         assert_eq!(r.rec.errors(), vec![(Some("b".into()), None, VoiceError::Busy)]);
         // The same window again is still a no-op.
-        assert_eq!(r.core.begin("a".into(), t0 + ms(30)), Ok(()));
+        assert_eq!(r.core.begin("a".into(), None, t0 + ms(30)), Ok(()));
         assert_eq!(r.cap.starts(), 1);
         assert_eq!(r.rec.states(), vec![rec_state("a", 1)]);
         assert_eq!(serde_json::to_value(VoiceError::Busy).unwrap(), "busy");
@@ -1474,7 +1499,7 @@ pub(crate) mod tests {
     fn a_hold_in_a_window_with_no_composer_opens_no_mic_and_notices_a_deliberate_hold() {
         let r = rig(Script::default(), Opts::default());
         let t0 = Instant::now();
-        r.core.set_target("editor", false);
+        r.core.set_target("editor", None);
         // Held past the arming delay, released after MIN_HOLD with no other key.
         r.core.hold(begin_hold("editor", t0), t0 + ms(150));
         assert_eq!(r.cap.starts(), 0);
@@ -1505,24 +1530,73 @@ pub(crate) mod tests {
     fn a_window_whose_composer_went_away_or_closed_has_no_target() {
         let r = rig(Script::texts(&["hi"]), Opts::default());
         let t0 = Instant::now();
-        r.core.set_target("task-9", true);
-        r.core.set_target("task-9", false);
+        r.core.set_target("task-9", Some("draft:task-9".into()));
+        r.core.set_target("task-9", None);
         r.core.hold(begin_hold("task-9", t0), t0 + ms(150));
         r.core.hold(HoldAction::Cancel, t0 + ms(200));
-        r.core.set_target("task-9", true);
+        r.core.set_target("task-9", Some("draft:task-9".into()));
         r.core.window_closed("task-9");
         r.core.hold(begin_hold("task-9", t0 + ms(1000)), t0 + ms(1150));
         assert_eq!(r.cap.starts(), 0);
         // The mic button is not affected: it only exists where a composer is.
-        r.core.begin("task-9".into(), t0 + ms(2000)).unwrap();
+        r.core.begin("task-9".into(), None, t0 + ms(2000)).unwrap();
         assert_eq!(r.cap.starts(), 1);
+    }
+
+    fn some(d: &str) -> Option<String> {
+        Some(d.to_string())
+    }
+
+    #[test]
+    fn a_hold_take_carries_the_draft_its_window_showed_when_it_began() {
+        let r = rig(Script::texts(&["one"]), Opts::default());
+        let t0 = Instant::now();
+        r.core.set_target("main", some("s1"));
+        r.core.hold(begin_hold("main", t0), t0 + ms(150));
+        // The user switches chat while recording: the take stays with s1.
+        r.core.set_target("main", some("s2"));
+        r.core.hold(HoldAction::End, t0 + ms(400));
+        r.core.flush();
+        // Too short, then a failed capture: both for s2.
+        let t1 = t0 + ms(1000);
+        r.core.hold(begin_hold("main", t1), t1 + ms(150));
+        r.core.hold(HoldAction::End, t1 + ms(200));
+        r.cap.next_stop(Err(VoiceError::MicUnavailable));
+        let t2 = t0 + ms(2000);
+        r.core.hold(begin_hold("main", t2), t2 + ms(150));
+        r.core.hold(HoldAction::End, t2 + ms(400));
+        assert_eq!(r.rec.drafts(), vec![(1, some("s1")), (2, some("s2")), (3, some("s2"))]);
+        assert_eq!(r.rec.transcripts(), vec![tr("main", 1, 1, "one")]);
+    }
+
+    #[test]
+    fn a_mic_button_take_carries_the_draft_it_was_begun_for() {
+        let r = rig(Script::texts(&["x"]), Opts::default());
+        let t0 = Instant::now();
+        r.core.begin("main".into(), some("new-task:p"), t0).unwrap();
+        r.core.cancel();
+        // Without one it takes the draft the window reported.
+        take(&r.core, "main", t0 + ms(1000));
+        r.core.flush();
+        assert_eq!(r.rec.drafts(), vec![(1, some("new-task:p")), (2, some("draft:main"))]);
+    }
+
+    #[test]
+    fn a_transcript_rerouted_from_a_closed_window_keeps_its_draft() {
+        let r = rig(Script::texts(&["orphan"]), Opts::default());
+        r.core.begin("task-3".into(), some("s9"), Instant::now()).unwrap();
+        r.core.end(Instant::now() + ms(400));
+        r.close_window("task-3");
+        r.core.flush();
+        assert_eq!(r.rec.transcripts(), vec![tr(MAIN_WINDOW, 1, 1, "orphan")]);
+        assert_eq!(r.rec.drafts(), vec![(1, some("s9"))]);
     }
 
     #[test]
     fn closing_the_recording_window_cancels_its_take() {
         let r = rig(Script::default(), Opts::default());
         let t0 = Instant::now();
-        r.core.begin("b".into(), t0).unwrap();
+        r.core.begin("b".into(), None, t0).unwrap();
         r.core.window_closed("a");
         assert_eq!(r.core.state(), VoiceState::Recording);
         assert_eq!(r.cap.cancels(), 0);
@@ -1579,7 +1653,7 @@ pub(crate) mod tests {
     fn overdue_take_is_ended_by_tick() {
         let r = rig(Script::texts(&["long"]), Opts::default());
         let t0 = Instant::now();
-        r.core.begin("main".into(), t0).unwrap();
+        r.core.begin("main".into(), None, t0).unwrap();
         r.core.tick(t0 + Duration::from_secs(299));
         assert_eq!(r.core.state(), VoiceState::Recording);
         r.core.tick(t0 + Duration::from_secs(300));
@@ -1609,7 +1683,7 @@ pub(crate) mod tests {
         r.core.flush();
         assert_eq!(r.script.loads(), 1);
 
-        r.core.begin("main".into(), t0 + ms(1000)).unwrap();
+        r.core.begin("main".into(), None, t0 + ms(1000)).unwrap();
         r.core.set_enabled(false);
         assert_eq!(r.core.state(), VoiceState::Idle);
         assert_eq!(r.rec.dropped(), vec![("main".into(), 2, DropReason::Cancelled)]);
@@ -1825,16 +1899,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn status_carries_one_id_for_this_run_of_the_app() {
-        let r = rig(Script::default(), Opts::default());
-        let a = serde_json::to_value(r.core.status(true, FnSystemAction::None)).unwrap();
-        let b = serde_json::to_value(unsupported_status()).unwrap();
-        let id = a["runId"].as_str().unwrap();
-        assert_eq!(id.len(), 36, "{id}");
-        assert_eq!(b["runId"], a["runId"]);
-    }
-
-    #[test]
     fn status_reports_what_macos_does_with_fn() {
         let r = rig(Script::default(), Opts::default());
         let json = serde_json::to_value(r.core.status(true, FnSystemAction::Emoji)).unwrap();
@@ -1911,25 +1975,25 @@ pub(crate) mod tests {
         );
         assert_eq!(
             serde_json::to_value(TranscriptPayload {
-                window: "main".into(), take: 4, seq: 2, text: "hi".into()
+                window: "main".into(), take: 4, seq: 2, text: "hi".into(), draft: Some("s1".into())
             })
             .unwrap(),
-            serde_json::json!({ "window": "main", "take": 4, "seq": 2, "text": "hi" })
+            serde_json::json!({ "window": "main", "take": 4, "seq": 2, "text": "hi", "draft": "s1" })
         );
         assert_eq!(
             serde_json::to_value(ErrorPayload {
-                window: None, take: None, error: VoiceError::Engine("x".into())
+                window: None, take: None, error: VoiceError::Engine("x".into()), draft: None
             })
             .unwrap(),
-            serde_json::json!({ "window": null, "take": null, "error": { "engine": "x" } })
+            serde_json::json!({ "window": null, "take": null, "error": { "engine": "x" }, "draft": null })
         );
         assert_eq!(serde_json::to_value(VoiceError::Disabled).unwrap(), "disabled");
         assert_eq!(
             serde_json::to_value(TakeDroppedPayload {
-                window: "w".into(), take: 9, reason: DropReason::TooShort
+                window: "w".into(), take: 9, reason: DropReason::TooShort, draft: Some("new-task:p".into())
             })
             .unwrap(),
-            serde_json::json!({ "window": "w", "take": 9, "reason": "too-short" })
+            serde_json::json!({ "window": "w", "take": 9, "reason": "too-short", "draft": "new-task:p" })
         );
         assert_eq!(
             serde_json::to_value(ModelProgress {

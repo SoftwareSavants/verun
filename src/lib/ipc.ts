@@ -774,11 +774,12 @@ export const voiceSetLanguage = (language: Language) =>
 export const voiceSetHoldKey = (key: HoldKey) =>
   invoke<VoiceStatus>('voice_set_hold_key', { key })
 /** Starts recording for the composer in window `window` (mic button). */
-export const voiceBegin = (window: string) =>
-  invoke<void>('voice_begin', { window })
-/** Whether `window` shows a dictation target; a hold in a window without one opens no microphone. */
-export const voiceSetTarget = (window: string, available: boolean) =>
-  invoke<void>('voice_set_target', { window, available })
+/** The take is pinned to `draft`, the visible target's draft. */
+export const voiceBegin = (window: string, draft: string | null) =>
+  invoke<void>('voice_begin', { window, draft })
+/** The draft of the dictation target `window` shows, or null; a hold in a window without one opens no microphone. */
+export const voiceSetTarget = (window: string, draft: string | null) =>
+  invoke<void>('voice_set_target', { window, draft })
 export const voiceEnd = () =>
   invoke<void>('voice_end')
 export const voiceCancel = () =>

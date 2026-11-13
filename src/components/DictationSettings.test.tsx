@@ -35,7 +35,7 @@ const CODES: Language[] = ['en', 'fr', 'es', 'ar', 'zh', 'hi', 'pt', 'ru', 'bn',
 function status(over: Partial<VoiceStatus> & { installed?: boolean } = {}): VoiceStatus {
   const { installed = true, ...rest } = over
   return {
-    supported: true, enabled: false, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none', runId: 'run-1',
+    supported: true, enabled: false, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none',
     microphone: 'granted', state: 'idle',
     models: [{ id: 'whisper-turbo', displayName: 'Whisper Turbo', installed, bytes: 574041195 }],
     languages: CODES.map(code => ({ code, model: 'whisper-turbo', installed })),

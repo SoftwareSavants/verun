@@ -315,11 +315,11 @@ impl VoiceService {
     }
 
     /// Mic-button path: errors are returned to the caller, not emitted.
-    pub fn begin(&self, window: String) -> Result<(), VoiceError> {
+    pub fn begin(&self, window: String, draft: Option<String>) -> Result<(), VoiceError> {
         let Some(rt) = &self.0 else {
             return Err(VoiceError::Engine("unsupported".into()));
         };
-        rt.core.begin(window, Instant::now())?;
+        rt.core.begin(window, draft, Instant::now())?;
         let _ = rt.control.send(Control::Wake);
         Ok(())
     }
@@ -336,11 +336,11 @@ impl VoiceService {
         }
     }
 
-    /// Whether the window `label` shows a dictation target. Never blocks
-    /// for long: the frontend calls it on every change, in order.
-    pub fn set_target(&self, label: &str, available: bool) {
+    /// The draft id of the dictation target the window `label` shows, if
+    /// any. Never blocks for long: the frontend calls it on every change, in order.
+    pub fn set_target(&self, label: &str, draft: Option<String>) {
         if let Some(rt) = &self.0 {
-            rt.core.set_target(label, available);
+            rt.core.set_target(label, draft);
         }
     }
 
@@ -714,7 +714,7 @@ mod tests {
         let r = rig(Script::default(), Opts::default());
         let mut c = control(&r);
         let t0 = Instant::now();
-        r.core.begin("main".into(), t0).unwrap();
+        r.core.begin("main".into(), None, t0).unwrap();
         c.step(Some(Control::Wake), t0, main_window);
         let at = |n| t0 + ms(n);
         // A tap, Fn+arrow, a long press released, a long press then another key.
@@ -789,7 +789,7 @@ mod tests {
     fn reset_leaves_a_mic_button_take_alone() {
         let r = rig(Script::default(), Opts::default());
         let mut c = control(&r);
-        r.core.begin("main".into(), Instant::now()).unwrap();
+        r.core.begin("main".into(), None, Instant::now()).unwrap();
         c.step(Some(Control::Reset), Instant::now(), main_window);
         assert_eq!(r.core.state(), VoiceState::Recording);
     }
@@ -799,7 +799,7 @@ mod tests {
         let r = rig(Script::default(), Opts::default());
         let mut c = control(&r);
         let t0 = Instant::now();
-        r.core.begin("b".into(), t0).unwrap();
+        r.core.begin("b".into(), None, t0).unwrap();
         c.step(Some(Control::WindowClosed("a".into())), t0, main_window);
         assert_eq!(r.core.state(), VoiceState::Recording);
         assert_eq!(r.cap.cancels(), 0);

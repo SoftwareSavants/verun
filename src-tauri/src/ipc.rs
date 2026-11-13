@@ -4258,15 +4258,19 @@ pub async fn voice_set_hold_key(app: AppHandle, key: HoldKey) -> Result<VoiceSta
 }
 
 #[tauri::command]
-pub async fn voice_begin(app: AppHandle, window: String) -> Result<(), VoiceError> {
-    voice_blocking(app, move |v| v.begin(window)).await?
+pub async fn voice_begin(
+    app: AppHandle,
+    window: String,
+    draft: Option<String>,
+) -> Result<(), VoiceError> {
+    voice_blocking(app, move |v| v.begin(window, draft)).await?
 }
 
 /// Sync, so it runs on the main thread in the order the window sent it; it
 /// only takes a short lock that nothing holds for long.
 #[tauri::command]
-pub fn voice_set_target(app: AppHandle, window: String, available: bool) {
-    app.state::<VoiceService>().set_target(&window, available);
+pub fn voice_set_target(app: AppHandle, window: String, draft: Option<String>) {
+    app.state::<VoiceService>().set_target(&window, draft);
 }
 
 #[tauri::command]

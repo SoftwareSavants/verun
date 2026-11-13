@@ -42,12 +42,13 @@ const fire = (event: string, payload: unknown) => listeners.get(event)!({ payloa
 const state = (state: string, window: string | null = 'main', take: number | null = null) =>
   fire('voice-state', { state, window, take })
 const rec = (take: number, window = 'main') => state('recording', window, take)
-const transcript = (text: string, take: number, window = 'main') =>
-  fire('voice-transcript', { window, take, seq: take, text })
-const failed = (take: number | null, error: unknown, window: string | null = 'main') =>
-  fire('voice-error', { window, take, error })
-const dropped = (take: number, window = 'main') =>
-  fire('voice-take-dropped', { window, take, reason: 'silent' })
+/** `draft` is what the backend pinned the take to when it began. */
+const transcript = (text: string, take: number, window = 'main', draft: string | null = null) =>
+  fire('voice-transcript', { window, take, seq: take, text, draft })
+const failed = (take: number | null, error: unknown, window: string | null = 'main', draft: string | null = null) =>
+  fire('voice-error', { window, take, error, draft })
+const dropped = (take: number, window = 'main', draft: string | null = null) =>
+  fire('voice-take-dropped', { window, take, reason: 'silent', draft })
 
 type TestTarget = DictationTarget & { insert: ReturnType<typeof vi.fn> }
 const makeTarget = (sid: string | null = 's1'): TestTarget => ({
@@ -57,7 +58,7 @@ const makeTarget = (sid: string | null = 's1'): TestTarget => ({
 const registerDictationTarget = register
 
 const status = (over: Partial<VoiceStatus> = {}): VoiceStatus => ({
-  supported: true, enabled: true, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none', runId: 'run-1',
+  supported: true, enabled: true, language: 'en', holdKey: 'fn', accessibility: true, fnSystemAction: 'none',
   microphone: 'granted', state: 'idle', models: [], languages: [], ...over,
 })
 
@@ -126,12 +127,12 @@ describe('initVoice', () => {
 })
 
 describe('delivery', () => {
-  test('goes to the target registered at recording start', () => {
+  test('goes to the live target of the draft the take was pinned to', () => {
     const a = makeTarget('a'); const b = makeTarget('b')
     registerDictationTarget(a)
     rec(1)
     registerDictationTarget(b)
-    transcript('hello', 1)
+    transcript('hello', 1, 'main', 'a')
     expect(a.insert).toHaveBeenCalledWith('hello')
     expect(b.insert).not.toHaveBeenCalled()
   })
@@ -143,7 +144,7 @@ describe('delivery', () => {
     off()
     vi.mocked(sessionById).mockReturnValue({ id: 'a' } as never)
     saveDraftMessage('a', 'draft')
-    transcript('more', 1)
+    transcript('more', 1, 'main', 'a')
     expect(a.insert).not.toHaveBeenCalled()
     expect(loadDraftMessage('a')).toBe('draft more')
     expect(addToast).toHaveBeenCalledWith('Dictation saved to the draft of the chat you were in.', 'info')
@@ -155,7 +156,7 @@ describe('delivery', () => {
     rec(1)
     off()
     vi.mocked(sessionById).mockReturnValue(undefined)
-    transcript('lost', 1)
+    transcript('lost', 1, 'main', 'a')
     expect(loadDraftMessage('a')).toBeNull()
     expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
   })
@@ -166,7 +167,7 @@ describe('delivery', () => {
     rec(1)
     off() // hidden behind a task, unmounted, or sending
     vi.mocked(projectById).mockReturnValue({ id: 'p' } as never)
-    transcript('fix login', 1)
+    transcript('fix login', 1, 'main', 'new-task:p')
     expect(a.insert).not.toHaveBeenCalled()
     expect(loadDraftMessage('new-task:p')).toBe('fix login')
     expect(addToast).toHaveBeenCalledWith('Dictation saved to the new task draft.', 'info')
@@ -180,7 +181,7 @@ describe('delivery', () => {
     const b: TestTarget = { id: 'new-task:q', draftId: 'new-task:q', insert: vi.fn() as never }
     registerDictationTarget(b)
     vi.mocked(projectById).mockReturnValue({ id: 'p' } as never)
-    transcript('for p', 1)
+    transcript('for p', 1, 'main', 'new-task:p')
     expect(b.insert).not.toHaveBeenCalled()
     expect(loadDraftMessage('new-task:q')).toBeNull()
     expect(loadDraftMessage('new-task:p')).toBe('for p')
@@ -192,12 +193,12 @@ describe('delivery', () => {
     rec(1)
     off()
     vi.mocked(projectById).mockReturnValue(undefined)
-    transcript('lost', 1)
+    transcript('lost', 1, 'main', 'new-task:p')
     expect(loadDraftMessage('new-task:p')).toBeNull()
     expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
   })
 
-  test('remount: a new target with the same id receives the text, no draft write', () => {
+  test('remount: a new target for the same draft receives the text, no draft write', () => {
     const old = makeTarget('a')
     const off = registerDictationTarget(old)
     rec(1)
@@ -205,7 +206,7 @@ describe('delivery', () => {
     const fresh = makeTarget('a')
     registerDictationTarget(fresh)
     vi.mocked(sessionById).mockReturnValue({ id: 'a' } as never)
-    transcript('hi', 1)
+    transcript('hi', 1, 'main', 'a')
     expect(fresh.insert).toHaveBeenCalledWith('hi')
     expect(old.insert).not.toHaveBeenCalled()
     expect(loadDraftMessage('a')).toBeNull()
@@ -216,14 +217,14 @@ describe('delivery', () => {
     const live = makeTarget('a')
     registerDictationTarget(live)
     rec(1)
-    transcript('  \n ', 1)
+    transcript('  \n ', 1, 'main', 'a')
     expect(live.insert).not.toHaveBeenCalled()
     const hidden = makeTarget(null)
     const off = registerDictationTarget(hidden)
     rec(2)
     off()
     vi.mocked(projectById).mockReturnValue({ id: 'p' } as never)
-    transcript(' ', 2)
+    transcript(' ', 2, 'main', 'new-task:p')
     expect(loadDraftMessage('new-task:p')).toBeNull()
     expect(addToast).not.toHaveBeenCalled()
     expect(voiceState()).toBe('idle')
@@ -235,7 +236,8 @@ describe('delivery', () => {
     expect(addToast).toHaveBeenCalledWith('Dictation works in the chat box and the new task box.', 'info')
   })
 
-  test('a transcript with no pin shows the dropped toast', () => {
+  test('a transcript with no draft shows the dropped toast', () => {
+    registerDictationTarget(makeTarget('a'))
     transcript('orphan', 9)
     expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
   })
@@ -247,9 +249,9 @@ describe('delivery', () => {
     state('transcribing', 'main')
     registerDictationTarget(b)
     rec(2)
-    transcript('two', 2)
+    transcript('two', 2, 'main', 'b')
     expect(b.insert).toHaveBeenCalledWith('two')
-    transcript('one', 1)
+    transcript('one', 1, 'main', 'a')
     expect(a.insert).toHaveBeenCalledWith('one')
   })
 
@@ -259,58 +261,68 @@ describe('delivery', () => {
     rec(1)
     registerDictationTarget(b)
     rec(2)
-    failed(1, { engine: 'x' })
-    transcript('two', 2)
+    failed(1, { engine: 'x' }, 'main', 'a')
+    transcript('two', 2, 'main', 'b')
     expect(b.insert).toHaveBeenCalledWith('two')
     expect(a.insert).not.toHaveBeenCalled()
   })
 
-  test('a dropped take 2 does not shift take 3 onto take 2 target', () => {
+  test('a dropped take leaves the others transcribing until their own terminal event', () => {
     const a = makeTarget('a'); const b = makeTarget('b'); const c = makeTarget('c')
     registerDictationTarget(a); rec(1)
     registerDictationTarget(b); rec(2)
     registerDictationTarget(c); rec(3)
-    dropped(2)
-    transcript('three', 3)
+    state('transcribing', 'main')
+    dropped(2, 'main', 'b')
+    expect(voiceState()).toBe('transcribing')
+    transcript('three', 3, 'main', 'c')
     expect(c.insert).toHaveBeenCalledWith('three')
     expect(b.insert).not.toHaveBeenCalled()
-    transcript('one', 1)
+    transcript('one', 1, 'main', 'a')
     expect(a.insert).toHaveBeenCalledWith('one')
+    expect(voiceState()).toBe('idle')
   })
 
-  test('voice-take-dropped removes the pin silently', () => {
+  test('voice-take-dropped ends the take silently', () => {
     registerDictationTarget(makeTarget('a'))
     rec(1)
-    dropped(1)
+    dropped(1, 'main', 'a')
     expect(addToast).not.toHaveBeenCalled()
     expect(voiceState()).toBe('idle')
   })
 
-  test('an error with a null take touches no pins', () => {
+  test('an error with a null take leaves the take out', () => {
     const a = makeTarget('a')
     registerDictationTarget(a)
     rec(1)
     failed(null, { engine: 'x' })
-    transcript('x', 1)
+    expect(voiceState()).toBe('recording')
+    transcript('x', 1, 'main', 'a')
     expect(a.insert).toHaveBeenCalledWith('x')
   })
 
-  test('global idle clears all pins', () => {
-    const a = makeTarget('a')
-    registerDictationTarget(a)
+  test('global idle ends every take of this window', () => {
+    registerDictationTarget(makeTarget('a'))
     rec(1)
+    state('transcribing', 'main')
+    rec(2)
     state('idle', null)
     expect(voiceState()).toBe('idle')
-    transcript('x', 1)
+  })
+
+  test('the newest live target of the draft wins', () => {
+    const a = makeTarget('a'); const b = makeTarget('a')
+    registerDictationTarget(a); registerDictationTarget(b)
+    rec(1); transcript('x', 1, 'main', 'a')
+    expect(b.insert).toHaveBeenCalled()
     expect(a.insert).not.toHaveBeenCalled()
   })
 
-  test('the most recently registered target wins', () => {
-    const a = makeTarget('a'); const b = makeTarget('b')
-    registerDictationTarget(a); registerDictationTarget(b)
-    rec(1); transcript('x', 1)
-    expect(b.insert).toHaveBeenCalled()
-    expect(a.insert).not.toHaveBeenCalled()
+  test('the mic button pins its take to the visible target\'s draft', () => {
+    registerDictationTarget(makeTarget('a'))
+    registerDictationTarget(makeTarget(null))
+    toggleDictation()
+    expect(ipc.voiceBegin).toHaveBeenCalledWith('main', 'new-task:p')
   })
 })
 
@@ -319,23 +331,28 @@ describe('target availability goes to the backend', () => {
   const settle = () => new Promise<void>(r => queueMicrotask(r))
 
   test('init reports this window, with no target yet', () => {
-    expect(pushes()).toEqual([['main', false]])
+    expect(pushes()).toEqual([['main', null]])
   })
 
-  test('a composer appearing and going away is reported once each, after the change settles', async () => {
+  test('the visible target\'s draft is reported once per change, after the change settles', async () => {
     vi.mocked(ipc.voiceSetTarget).mockClear()
     const off = registerDictationTarget(makeTarget())
     expect(pushes()).toEqual([])
     await settle()
-    expect(pushes()).toEqual([['main', true]])
-    // Switching chats swaps targets in one go: nothing changes for the backend.
+    expect(pushes()).toEqual([['main', 's1']])
+    // Switching chats swaps targets in one go: only the new draft is reported.
     off()
     const off2 = registerDictationTarget(makeTarget('s2'))
     await settle()
-    expect(pushes()).toEqual([['main', true]])
+    expect(pushes()).toEqual([['main', 's1'], ['main', 's2']])
+    // A remount of the same chat changes nothing for the backend.
     off2()
+    const off3 = registerDictationTarget(makeTarget('s2'))
     await settle()
-    expect(pushes()).toEqual([['main', true], ['main', false]])
+    expect(pushes()).toEqual([['main', 's1'], ['main', 's2']])
+    off3()
+    await settle()
+    expect(pushes()).toEqual([['main', 's1'], ['main', 's2'], ['main', null]])
   })
 
   test('a deliberate hold with no composer gets the notice', () => {
@@ -352,11 +369,11 @@ describe('state', () => {
     rec(1, 'task-1')
     expect(voiceState()).toBe('idle')
     rec(2)
-    transcript('nope', 1, 'task-1')
+    transcript('nope', 1, 'task-1', 'a')
     expect(a.insert).not.toHaveBeenCalled()
-    failed(1, 'mic-denied', 'task-1')
+    failed(1, 'mic-denied', 'task-1', 'a')
     expect(addToast).not.toHaveBeenCalled()
-    transcript('yes', 2)
+    transcript('yes', 2, 'main', 'a')
     expect(a.insert).toHaveBeenCalledWith('yes')
   })
 
@@ -368,7 +385,7 @@ describe('state', () => {
     expect(voiceState()).not.toBe('recording')
   })
 
-  test('transcribing while a pin is outstanding, idle after its terminal event', () => {
+  test('transcribing while a take is out, idle after its terminal event', () => {
     registerDictationTarget(makeTarget())
     rec(1)
     expect(voiceState()).toBe('recording')
@@ -454,7 +471,7 @@ describe('toggleDictation', () => {
 
   test('begins for this window when idle', () => {
     toggleDictation()
-    expect(ipc.voiceBegin).toHaveBeenCalledWith('main')
+    expect(ipc.voiceBegin).toHaveBeenCalledWith('main', null)
   })
 
   test('ends when this window is recording', () => {
@@ -685,96 +702,52 @@ describe('Accessibility granted after setup', () => {
   })
 })
 
-describe('pins of a window that closed', () => {
-  const KEY = 'verun:voicePins'
-  const stored = () => JSON.parse(localStorage.getItem(KEY) ?? '{}')
-
-  test('a pin is stored while its take is out and removed on its terminal event', () => {
-    registerDictationTarget(makeTarget('a'))
-    rec(1)
-    expect(stored()).toEqual({ 1: { targetId: 'session:a', draftId: 'a', run: 'run-1' } })
-    transcript('x', 1)
-    expect(stored()).toEqual({})
-  })
-
-  test('a normal take leaves no stored pin behind', () => {
-    registerDictationTarget(makeTarget('a'))
-    rec(1)
-    state('transcribing', 'main')
-    dropped(1)
-    rec(2)
-    failed(2, { engine: 'x' })
-    rec(3)
-    state('idle', null)
-    expect(stored()).toEqual({})
-  })
-
-  test('global idle clears only the stored pins this window created', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 9: { targetId: 'session:b', draftId: 'b', run: 'run-1' } }))
-    registerDictationTarget(makeTarget('a'))
-    rec(1)
-    state('idle', null)
-    expect(stored()).toEqual({ 9: { targetId: 'session:b', draftId: 'b', run: 'run-1' } })
-  })
-
-  test('an orphaned transcript with a stored pin for a live session goes to its draft', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', draftId: 'a', run: 'run-1' } }))
+describe('a take from a window that closed', () => {
+  // The backend sends its transcript to the main window, with the take's draft.
+  test('goes to the draft it was pinned to', () => {
     vi.mocked(sessionById).mockReturnValue({ id: 'a' } as never)
     saveDraftMessage('a', 'draft')
-    transcript('more', 7)
+    transcript('more', 7, 'main', 'a')
     expect(loadDraftMessage('a')).toBe('draft more')
     expect(addToast).toHaveBeenCalledWith('Dictation saved to the draft of the chat you were in.', 'info')
-    expect(stored()).toEqual({})
   })
 
-  test('an orphaned transcript whose session is gone is dropped and forgotten', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', draftId: 'a', run: 'run-1' } }))
+  test('goes into the main window\'s composer when it shows that chat', () => {
+    const a = makeTarget('a')
+    registerDictationTarget(a)
+    transcript('here', 7, 'main', 'a')
+    expect(a.insert).toHaveBeenCalledWith('here')
+    expect(loadDraftMessage('a')).toBeNull()
+  })
+
+  test('a new-task draft goes to that project\'s draft', () => {
+    vi.mocked(projectById).mockReturnValue({ id: 'p' } as never)
+    transcript('from the closed window', 4, 'main', 'new-task:p')
+    expect(loadDraftMessage('new-task:p')).toBe('from the closed window')
+  })
+
+  test('is dropped when its chat is gone', () => {
     vi.mocked(sessionById).mockReturnValue(undefined)
-    transcript('lost', 7)
+    transcript('lost', 7, 'main', 'a')
     expect(loadDraftMessage('a')).toBeNull()
     expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
-    expect(stored()).toEqual({})
   })
 
-  test('an orphaned transcript with no stored pin shows the dropped toast', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 8: { targetId: 'new-task:p', draftId: 'new-task:p', run: 'run-1' } }))
-    transcript('lost', 7)
-    expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
-    expect(stored()).toEqual({ 8: { targetId: 'new-task:p', draftId: 'new-task:p', run: 'run-1' } })
-  })
-
-  test('a stored pin from an earlier run of the app is never honoured', () => {
-    // Take ids restart with each run: take 7 of the last run is not this run's take 7.
-    localStorage.setItem(KEY, JSON.stringify({ 7: { targetId: 'session:a', draftId: 'a', run: 'run-0' } }))
+  test('is delivered by one window only: another window ignores it', () => {
+    const a = makeTarget('a')
+    registerDictationTarget(a)
     vi.mocked(sessionById).mockReturnValue({ id: 'a' } as never)
-    saveDraftMessage('a', 'draft')
-    transcript('stray', 7)
-    expect(loadDraftMessage('a')).toBe('draft')
-    expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
+    transcript('elsewhere', 7, 'task-1', 'a')
+    expect(a.insert).not.toHaveBeenCalled()
+    expect(loadDraftMessage('a')).toBeNull()
   })
 
-  test('storing a pin drops the pins of earlier runs', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 9: { targetId: 'session:b', draftId: 'b', run: 'run-0' } }))
+  test('nothing about takes is kept in localStorage', () => {
     registerDictationTarget(makeTarget('a'))
     rec(1)
-    expect(stored()).toEqual({ 1: { targetId: 'session:a', draftId: 'a', run: 'run-1' } })
-  })
-
-  test('an orphaned transcript with a stored new-task pin goes to that project\'s draft', () => {
-    localStorage.setItem(KEY, JSON.stringify({ 4: { targetId: 'new-task:p', draftId: 'new-task:p', run: 'run-1' } }))
-    vi.mocked(projectById).mockReturnValue({ id: 'p' } as never)
-    transcript('from the closed window', 4)
-    expect(loadDraftMessage('new-task:p')).toBe('from the closed window')
-    expect(stored()).toEqual({})
-  })
-
-  test('unreadable stored pins are ignored', () => {
-    localStorage.setItem(KEY, 'not json')
-    registerDictationTarget(makeTarget('a'))
-    rec(1)
-    transcript('x', 1)
-    transcript('y', 5)
-    expect(addToast).toHaveBeenCalledWith('Dictation dropped: that chat is gone.', 'info')
+    transcript('x', 1, 'main', 'a')
+    rec(2)
+    expect(localStorage.length).toBe(0)
   })
 })
 
