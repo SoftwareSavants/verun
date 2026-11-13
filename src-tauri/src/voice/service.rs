@@ -436,6 +436,10 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         let mut inner = lock(&self.inner);
         inner.settings.enabled = enabled;
         if !enabled {
+            // Its release will never come (the listener goes) and the Reset's
+            // Cancel arrives disabled: forget it, or it would swallow the end
+            // of the first hold after dictation is back on.
+            inner.untargeted_hold = None;
             if let Some(worker) = &inner.worker {
                 let _ = worker.send(Job::Unload);
             }
@@ -454,7 +458,10 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         }
         match action {
             HoldAction::Begin { window, down_at } => {
-                let Some(draft) = lock(&self.targets).get(&window).cloned() else {
+                let draft = lock(&self.targets).get(&window).cloned();
+                // A new hold replaces any no-composer hold whose end was missed.
+                lock(&self.inner).untargeted_hold = None;
+                let Some(draft) = draft else {
                     lock(&self.inner).untargeted_hold = Some((window, down_at));
                     return;
                 };
@@ -1508,6 +1515,37 @@ pub(crate) mod tests {
         assert_eq!(r.cap.starts(), 0);
         assert_eq!(r.rec.all(), vec![Ev::Error(Some("editor".into()), None, VoiceError::NoTarget)]);
         assert_eq!(serde_json::to_value(VoiceError::NoTarget).unwrap(), "no-target");
+    }
+
+    #[test]
+    fn a_no_composer_hold_cut_off_by_disabling_does_not_swallow_the_next_release() {
+        let r = rig(Script::texts(&["kept"]), Opts::default());
+        let t0 = Instant::now();
+        // Fn held in Settings, then dictation switched off mid-hold: the
+        // listener goes, so its release never comes; its Reset arrives disabled.
+        r.core.hold(begin_hold("settings", t0), t0 + ms(150));
+        r.core.set_enabled(false);
+        r.core.hold(HoldAction::Cancel, t0 + ms(200));
+        r.core.set_enabled(true);
+        let t1 = t0 + ms(5000);
+        r.core.hold(begin_hold("main", t1), t1 + ms(150));
+        r.core.hold(HoldAction::End, t1 + ms(600));
+        assert_ne!(r.core.state(), VoiceState::Recording, "the mic stayed open");
+        r.core.flush();
+        assert_eq!(r.rec.transcripts(), vec![tr("main", 1, 1, "kept")]);
+        assert!(r.rec.errors().is_empty(), "{:?}", r.rec.errors());
+    }
+
+    #[test]
+    fn a_targeted_hold_replaces_a_leftover_no_composer_hold() {
+        let r = rig(Script::default(), Opts::default());
+        let t0 = Instant::now();
+        // A Begin with no End or Cancel in between (a missed release).
+        r.core.hold(begin_hold("settings", t0), t0 + ms(150));
+        r.core.hold(begin_hold("main", t0 + ms(1000)), t0 + ms(1150));
+        r.core.hold(HoldAction::Cancel, t0 + ms(1400));
+        assert_eq!(r.rec.dropped(), vec![("main".into(), 1, DropReason::Cancelled)]);
+        assert!(r.rec.errors().is_empty());
     }
 
     #[test]
