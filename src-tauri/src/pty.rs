@@ -478,6 +478,52 @@ pub fn resize_pty(
     Ok(())
 }
 
+/// How long a redraw keeps the terminal one column narrower. Node reads the
+/// size when SIGWINCH arrives and redraws only if it changed, so the
+/// narrower size has to be seen before the real one comes back.
+const REDRAW_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// A redraw in progress: the size to restore, and the one it set.
+pub struct RedrawNudge {
+    original: PtySize,
+    narrowed: PtySize,
+}
+
+fn set_size(map: &ActivePtyMap, terminal_id: &str, size: PtySize) -> Option<()> {
+    map.get(terminal_id)?.master.lock().ok()?.resize(size).ok()
+}
+
+fn current_size(map: &ActivePtyMap, terminal_id: &str) -> Option<PtySize> {
+    map.get(terminal_id)?.master.lock().ok()?.get_size().ok()
+}
+
+/// First half of a redraw: one column narrower.
+pub fn start_redraw(map: &ActivePtyMap, terminal_id: &str) -> Option<RedrawNudge> {
+    let original = current_size(map, terminal_id)?;
+    let cols = if original.cols > 1 { original.cols - 1 } else { original.cols + 1 };
+    let narrowed = PtySize { cols, ..original };
+    set_size(map, terminal_id, narrowed)?;
+    Some(RedrawNudge { original, narrowed })
+}
+
+/// Second half: back to the real size, unless the terminal was resized meanwhile.
+pub fn finish_redraw(map: &ActivePtyMap, terminal_id: &str, nudge: RedrawNudge) {
+    if current_size(map, terminal_id) == Some(nudge.narrowed) {
+        set_size(map, terminal_id, nudge.original);
+    }
+}
+
+/// Make the program in `terminal_id` repaint its screen, as a resize does.
+pub fn request_redraw(map: &ActivePtyMap, terminal_id: &str) {
+    let Some(nudge) = start_redraw(map, terminal_id) else { return };
+    let map = Arc::clone(map);
+    let terminal_id = terminal_id.to_owned();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(REDRAW_SETTLE).await;
+        finish_redraw(&map, &terminal_id, nudge);
+    });
+}
+
 fn kill_handle(handle: PtyHandle) {
     handle.output.close();
     if let Ok(mut child) = handle.child.lock() {
@@ -978,6 +1024,31 @@ mod tests {
 
         assert!(map.contains_key("t1"));
         assert!(!is_running(&map, "t1"));
+    }
+
+    fn size_of(map: &ActivePtyMap, id: &str) -> (u16, u16) {
+        let size = map.get(id).unwrap().master.lock().unwrap().get_size().unwrap();
+        (size.rows, size.cols)
+    }
+
+    #[test]
+    fn a_redraw_narrows_the_terminal_by_a_column_then_puts_it_back() {
+        let map = new_active_pty_map();
+        insert_test_pty(&map, "t1", Arc::new(OutputBuffer::default()));
+        let nudge = start_redraw(&map, "t1").unwrap();
+        assert_eq!(size_of(&map, "t1"), (24, 79));
+        finish_redraw(&map, "t1", nudge);
+        assert_eq!(size_of(&map, "t1"), (24, 80));
+    }
+
+    #[test]
+    fn a_resize_during_a_redraw_is_kept() {
+        let map = new_active_pty_map();
+        insert_test_pty(&map, "t1", Arc::new(OutputBuffer::default()));
+        let nudge = start_redraw(&map, "t1").unwrap();
+        resize_pty(&map, "t1", 30, 100).unwrap();
+        finish_redraw(&map, "t1", nudge);
+        assert_eq!(size_of(&map, "t1"), (30, 100));
     }
 
     #[test]

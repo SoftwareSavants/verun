@@ -17,6 +17,9 @@ struct State {
     closed: bool,
     finished: Option<Option<u32>>,
     exit_sent: bool,
+    /// The program repaints its whole screen when the terminal is resized
+    /// (Claude Code): output it printed unseen is redrawn, not noted.
+    redraws_itself: bool,
 }
 
 pub struct OutputBuffer {
@@ -37,6 +40,7 @@ impl Default for OutputBuffer {
                 closed: false,
                 finished: None,
                 exit_sent: false,
+                redraws_itself: false,
             }),
             space: Condvar::new(),
             changed: Notify::new(),
@@ -52,19 +56,28 @@ pub struct Batch {
 }
 
 impl OutputBuffer {
+    /// See `redraws_itself` on `State`.
+    pub fn set_redraws_itself(&self) {
+        self.state.lock().unwrap().redraws_itself = true;
+    }
+
     /// Resume at the receiving xterm's replay checkpoint. Ownership changes
     /// invalidate the old batch token, so a late ACK cannot release new data.
-    pub fn attach(&self, window: &str, after_seq: u64) {
+    /// `true` when the program should be asked to redraw: it redraws itself
+    /// and part of what it printed since the checkpoint is gone.
+    pub fn attach(&self, window: &str, after_seq: u64) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.closed {
-            return;
+            return false;
         }
         state.owner = Some(window.to_owned());
         state.cursor = after_seq.min(state.buffer.total_written());
         state.in_flight = None;
+        let redraw = state.redraws_itself && state.cursor < state.buffer.start();
         drop(state);
         self.space.notify_all();
         self.changed.notify_one();
+        redraw
     }
 
     pub fn detach(&self, window: &str) {
@@ -123,7 +136,9 @@ impl OutputBuffer {
         }
         // Read only the next window; materializing the whole 256 KB replay
         // buffer every flush tick was the dominant cost per attached terminal.
-        let omitted = state.cursor < state.buffer.start();
+        // A note written into a program's own screen drawing breaks its
+        // layout; one that redraws itself is asked to on attach instead.
+        let omitted = state.cursor < state.buffer.start() && !state.redraws_itself;
         let mut data = if omitted {
             "\x1b[0m\r\n[Verun: earlier output omitted while terminal was not open]\r\n".to_owned()
         } else {
@@ -262,6 +277,34 @@ mod tests {
             output.acknowledge("main", batch.sequence);
         }
         assert!(bytes.ends_with("latest"));
+    }
+
+    #[test]
+    fn a_shell_that_missed_output_gets_the_note_and_no_redraw() {
+        let output = OutputBuffer::default();
+        output.push(&"a".repeat(REPLAY_BUFFER_CAP));
+        output.push("latest");
+        assert!(!output.attach("main", 0));
+        assert!(output.next_batch().unwrap().data.contains("earlier output omitted"));
+    }
+
+    #[test]
+    fn a_program_that_redraws_itself_gets_a_redraw_instead_of_the_note() {
+        let output = OutputBuffer::default();
+        output.set_redraws_itself();
+        // Caught up: nothing missed, nothing to redraw.
+        output.push("frame");
+        assert!(!output.attach("main", 0));
+        output.detach("main");
+        output.push(&"a".repeat(REPLAY_BUFFER_CAP));
+        output.push("latest");
+        assert!(output.attach("main", 0));
+        let mut bytes = String::new();
+        while let Some(batch) = output.next_batch() {
+            bytes.push_str(&batch.data);
+            output.acknowledge("main", batch.sequence);
+        }
+        assert!(!bytes.contains("earlier output omitted"));
     }
 
     #[test]

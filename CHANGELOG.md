@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A Claude terminal that printed a lot while it was not shown no longer gets an "earlier output omitted" line through its screen on return; Claude is asked to redraw instead (shell terminals keep the note)
+
 ## 0.16.6 - 2026-11-12
 
 - Fork a Claude session onto another account: the fork menu picks which account the fork runs on, copying the transcript into that account's home
