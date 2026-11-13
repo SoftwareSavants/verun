@@ -28,6 +28,7 @@ Choose models per session, including Claude Opus 5.5, GPT-6.1 Sol, and GPT-6 Ast
 
 - **Subagents in chat** - each Claude subagent is one quiet block showing its type, task, live progress and result; expand it to see its own tool calls. Background agents and shells still running after a turn are listed above the composer
 - **Steps** - queue follow-up prompts while an agent is working; arm them to auto-send on idle, or fire manually
+- **Voice dictation** - hold a key (Fn by default, or Right Option / Right Command) or click the mic in the chat or new-task box, speak, and release: the words land in the composer for you to review before sending. Transcribed on-device with Whisper, in 12 languages; audio is never saved or sent anywhere. Off by default and Apple Silicon only; turning it on downloads a ~574 MB model once. Separate from Claude Code's own `/voice` in terminal sessions
 - **Side question (`/btw`)** - type `/btw <question>` mid-stream (or click the "Ask sideways" button that appears in the corner of the chat while Claude is working) to ask an ephemeral question - the answer shows in a floating panel and never enters conversation history
 - **Fork from any message** - hover any past reply to rewind the conversation in place, or branch into a new task with the worktree restored to the code as it was at that exact turn. Verun takes a git snapshot at every turn, so you can undo an entire direction - not just a line of code. With more than one Claude account, a fork can run on another account, and a session that hits its usage limit offers "Continue on <account>" in chat and in the terminal view
 - **Tool approval** - configurable trust levels per task: supervised, normal, or full auto
@@ -83,7 +84,7 @@ bash scripts/setup.sh
 pnpm tauri build
 ```
 
-Requires [Rust](https://rustup.rs), Node.js 18+, pnpm, and Xcode Command Line Tools (macOS).
+Requires [Rust](https://rustup.rs), Node.js 18+, pnpm, and Xcode Command Line Tools (macOS). Apple Silicon builds also need [CMake](https://cmake.org) (`brew install cmake`) for the dictation engine.
 
 ## How it works
 

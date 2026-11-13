@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Voice dictation in the chat box and the new-task box: hold a key anywhere in Verun, speak, release, and the words land in the composer without sending, so you review and press Enter; holding again adds to the same message, and a mic button does the same by mouse. Speech is transcribed on your Mac with Whisper and never saved or sent anywhere; English, French, Spanish, Arabic, Chinese, Hindi, Portuguese, Russian, Bengali, Urdu, Japanese and German, picked in Settings or from a switcher beside the mic
+- Dictation is off by default, on Apple Silicon Macs only: turn it on in Settings > Dictation or press the mic button, which walks through microphone permission, language, a one-time 574 MB model download and, for the hold key (Fn, Right Option or Right Command), Accessibility permission. The model unloads after 5 idle minutes and can be deleted in Settings
+- Building from source on Apple Silicon needs cmake for whisper.cpp (`brew install cmake`)
+
 ## 0.16.6 - 2026-11-12
 
 - Fork a Claude session onto another account: the fork menu picks which account the fork runs on, copying the transcript into that account's home
