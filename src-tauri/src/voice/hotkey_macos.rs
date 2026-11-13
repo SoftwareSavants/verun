@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 
-use core_foundation::base::TCFType;
+use core_foundation::base::{CFRelease, CFRetain, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::number::CFNumber;
@@ -30,6 +30,7 @@ extern "C" {
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGEventTapEnable(tap: *mut c_void, enable: bool);
+    fn CGEventTapIsEnabled(tap: *mut c_void) -> bool;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -116,6 +117,9 @@ pub fn open_accessibility_settings() {
 /// Dropping it stops the tap's run loop, joins the thread and removes the tap.
 pub struct HotkeyListener {
     run_loop: CFRunLoop,
+    /// The tap's mach port, as an address, retained by us (released on drop)
+    /// so it stays valid after the thread drops the tap.
+    port: usize,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -129,7 +133,7 @@ impl HotkeyListener {
         if !accessibility_granted() {
             return None;
         }
-        let (tx, rx) = mpsc::channel::<Option<CFRunLoop>>();
+        let (tx, rx) = mpsc::channel::<Option<(CFRunLoop, usize)>>();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -137,8 +141,9 @@ impl HotkeyListener {
             .spawn(move || run_tap(key, on_event, tx, thread_stop))
             .ok()?;
         match rx.recv() {
-            Ok(Some(run_loop)) => Some(HotkeyListener {
+            Ok(Some((run_loop, port))) => Some(HotkeyListener {
                 run_loop,
+                port,
                 stop,
                 thread: Some(thread),
             }),
@@ -147,6 +152,17 @@ impl HotkeyListener {
                 None
             }
         }
+    }
+}
+
+impl HotkeyListener {
+    /// Whether the tap still delivers events. macOS disables it for good when
+    /// Verun is toggled off (and on) in Accessibility while it runs.
+    pub fn is_alive(&self) -> bool {
+        let Some(thread) = &self.thread else { return false };
+        // SAFETY: `port` is a CFMachPort we hold a retain on; an invalidated
+        // one reads as disabled.
+        !thread.is_finished() && unsafe { CGEventTapIsEnabled(self.port as *mut c_void) }
     }
 }
 
@@ -160,6 +176,8 @@ impl Drop for HotkeyListener {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        // SAFETY: balances the retain taken in `run_tap` before `port` was sent.
+        unsafe { CFRelease(self.port as CFTypeRef) };
     }
 }
 
@@ -167,7 +185,7 @@ impl Drop for HotkeyListener {
 fn run_tap(
     key: HoldKey,
     on_event: impl Fn(KeyEvent) + Send + 'static,
-    ready: mpsc::Sender<Option<CFRunLoop>>,
+    ready: mpsc::Sender<Option<(CFRunLoop, usize)>>,
     stop: Arc<AtomicBool>,
 ) {
     // The callback re-enables the tap when macOS disables it, so it needs the
@@ -217,12 +235,15 @@ fn run_tap(
         let _ = ready.send(None);
         return;
     };
-    port.store(tap.mach_port().as_concrete_TypeRef() as usize, Ordering::Release);
+    let port_addr = tap.mach_port().as_concrete_TypeRef() as usize;
+    port.store(port_addr, Ordering::Release);
+    // SAFETY: a live CFMachPort; the listener releases this retain on drop.
+    unsafe { CFRetain(port_addr as CFTypeRef) };
     let run_loop = CFRunLoop::get_current();
     // SAFETY: kCFRunLoopCommonModes is a constant CFString exported by CoreFoundation.
     run_loop.add_source(&source, unsafe { kCFRunLoopCommonModes });
     tap.enable();
-    let _ = ready.send(Some(run_loop));
+    let _ = ready.send(Some((run_loop, port_addr)));
     // Bounded slices so a stop that raced ahead of the loop is still noticed.
     while !stop.load(Ordering::Acquire) {
         // SAFETY: kCFRunLoopDefaultMode is a constant CFString exported by CoreFoundation.

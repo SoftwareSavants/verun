@@ -136,6 +136,11 @@ mod platform {
     impl Drop for Listener {
         fn drop(&mut self) {}
     }
+    impl Listener {
+        pub fn is_alive(&self) -> bool {
+            true
+        }
+    }
 
     pub fn accessibility_granted() -> bool {
         false
@@ -250,7 +255,19 @@ impl VoiceService {
         }
     }
 
-    /// Re-checks Accessibility and attaches the listener once it is granted.
+    /// A Verun window gained focus (the user may be back from System
+    /// Settings): re-checks the listener as `status` does, broadcasting the
+    /// status only if it changed. Blocks while a dead listener's thread exits.
+    pub fn window_focused(&self) {
+        if let Some(rt) = &self.0 {
+            if rt.ensure_listener(&mut rt.listener()) {
+                rt.changed();
+            }
+        }
+    }
+
+    /// Re-checks Accessibility and the listener's tap: attaches the listener
+    /// once permission is granted, and replaces one whose tap died.
     pub fn status(&self) -> VoiceStatus {
         let Some(rt) = &self.0 else { return unsupported_status() };
         let started = rt.ensure_listener(&mut rt.listener());
@@ -408,21 +425,33 @@ impl Running {
     }
 
     /// With the listener lock held: starts the listener with the current key
-    /// when enabled, permitted and not running. True if it started one.
+    /// when enabled, permitted and not running. A listener whose tap died or
+    /// whose permission is gone is dropped first (and replaced once permission
+    /// is back). True if it started or dropped one.
     fn ensure_listener(&self, slot: &mut Option<platform::Listener>) -> bool {
-        if slot.is_some() {
-            return false;
-        }
         let settings = self.core.settings();
-        if !settings.enabled || !platform::accessibility_granted() {
+        if !settings.enabled && slot.is_none() {
             return false;
         }
+        let granted = platform::accessibility_granted();
+        let replaced = match plan_listener(settings.enabled, granted, slot.as_ref().map(|l| l.is_alive())) {
+            ListenerPlan::Keep => return false,
+            ListenerPlan::Start => false,
+            ListenerPlan::Replace { restart } => {
+                self.stop_listener(slot);
+                if !restart {
+                    return true;
+                }
+                true
+            }
+        };
         let tx = self.control.clone();
         // Runs on the tap thread: only a clock read and a non-blocking send.
         *slot = platform::start_listener(settings.hold_key, move |ev| {
             let _ = tx.send(Control::Key(ev, Instant::now()));
         });
-        slot.is_some()
+        // Dropping a dead one changed things even if no new one started.
+        replaced || slot.is_some()
     }
 
     /// With the listener lock held: drops the listener (blocks while its
@@ -436,6 +465,29 @@ impl Running {
         }
         drop(old);
         let _ = self.control.send(Control::Reset);
+    }
+}
+
+/// What `ensure_listener` does with the listener slot.
+#[derive(Debug, PartialEq, Eq)]
+enum ListenerPlan {
+    Keep,
+    /// Start one (the slot is empty).
+    Start,
+    /// Drop the one there; start a new one if `restart`.
+    Replace { restart: bool },
+}
+
+/// `alive` is `None` with no listener, else whether its tap still works. A
+/// listener whose tap macOS disabled for good (Verun toggled off and on in
+/// Accessibility) or whose permission is gone counts as absent.
+fn plan_listener(enabled: bool, granted: bool, alive: Option<bool>) -> ListenerPlan {
+    let wanted = enabled && granted;
+    match alive {
+        None if wanted => ListenerPlan::Start,
+        None => ListenerPlan::Keep,
+        Some(true) if wanted => ListenerPlan::Keep,
+        Some(_) => ListenerPlan::Replace { restart: wanted },
     }
 }
 
@@ -563,6 +615,21 @@ mod tests {
 
     fn no_window() -> Option<String> {
         None
+    }
+
+    #[test]
+    fn a_dead_or_unpermitted_listener_is_replaced_once_permission_is_back() {
+        use ListenerPlan::*;
+        assert_eq!(plan_listener(true, true, None), Start);
+        assert_eq!(plan_listener(true, false, None), Keep);
+        assert_eq!(plan_listener(false, true, None), Keep);
+        assert_eq!(plan_listener(true, true, Some(true)), Keep);
+        // The tap died while permission is there: recreate it.
+        assert_eq!(plan_listener(true, true, Some(false)), Replace { restart: true });
+        // Permission is gone: tear it down, start nothing until it is back.
+        assert_eq!(plan_listener(true, false, Some(true)), Replace { restart: false });
+        assert_eq!(plan_listener(true, false, Some(false)), Replace { restart: false });
+        assert_eq!(plan_listener(false, true, Some(true)), Replace { restart: false });
     }
 
     #[test]

@@ -349,6 +349,15 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            // Back from System Settings, say: a hold-key tap macOS disabled is replaced.
+            if let WindowEvent::Focused(true) = event {
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Some(voice) = app.try_state::<voice::runtime::VoiceService>() {
+                        voice.window_focused();
+                    }
+                });
+            }
             if let WindowEvent::Destroyed = event {
                 if let Some(map) = window.try_state::<pty::ActivePtyMap>() {
                     pty::detach_window(&map, window.label());
