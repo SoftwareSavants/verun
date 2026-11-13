@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Pasting (in a terminal or the chat box) reads the clipboard in-process instead of starting `osascript` each time, which cost 100-300 ms per paste and more under load
+- A terminal you switch back to catches up on its missed output without pausing 30 ms between batches
+
 ## 0.16.6 - 2026-11-12
 
 - Fork a Claude session onto another account: the fork menu picks which account the fork runs on, copying the transcript into that account's home
