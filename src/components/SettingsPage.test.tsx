@@ -20,6 +20,19 @@ vi.mock('./AccountsSettings', () => ({
     return el
   },
 }))
+vi.mock('./DictationSettings', () => ({
+  DictationSettings: () => {
+    const el = document.createElement('div')
+    el.setAttribute('data-testid', 'dictation-settings')
+    return el
+  },
+}))
+// Dictation shows only where it is supported (Apple Silicon); off unless a test turns it on.
+vi.mock('../store/voice', async () => {
+  const { createSignal } = await import('solid-js')
+  const [available, setAvailable] = createSignal(false)
+  return { dictationAvailable: available, __setAvailable: setAvailable }
+})
 vi.mock('./ProjectAccountsSettings', async () => {
   const { createEffect } = await import('solid-js')
   return {
@@ -36,6 +49,9 @@ import { SettingsPage, selectSettingsSection, settingsSectionForShortcut } from 
 import { setProjects } from '../store/projects'
 import { openSettings, setShowSettings, setSettingsSectionRequest } from '../store/ui'
 import type { Project } from '../types'
+import * as voiceStore from '../store/voice'
+
+const setDictationAvailable = (voiceStore as unknown as { __setAvailable: (v: boolean) => void }).__setAvailable
 
 const project: Project = {
   id: 'p-001',
@@ -66,6 +82,7 @@ beforeEach(() => {
   setShowSettings(false)
   setSettingsSectionRequest(null)
   selectSettingsSection('general')
+  setDictationAvailable(false)
 })
 
 afterEach(() => cleanup())
@@ -91,10 +108,52 @@ describe('settingsSectionForShortcut', () => {
     expect(settingsSectionForShortcut(4, [])).toBeNull()
   })
 
+  test('with dictation supported, Dictation comes fourth and the projects move up one', () => {
+    setDictationAvailable(true)
+
+    expect([1, 2, 3, 4, 5, 6].map((digit) => settingsSectionForShortcut(digit, ['p1', 'p2'])))
+      .toEqual(['general', 'appearance', 'accounts', 'dictation', 'p1', 'p2'])
+    expect(settingsSectionForShortcut(7, ['p1', 'p2'])).toBeNull()
+  })
+
   test('a digit that is no key maps to nothing', () => {
     expect(settingsSectionForShortcut(0, ['p1'])).toBeNull()
     expect(settingsSectionForShortcut(-1, ['p1'])).toBeNull()
     expect(settingsSectionForShortcut(Number.NaN, ['p1'])).toBeNull()
+  })
+})
+
+describe('SettingsPage Dictation section', () => {
+  const navLabels = () => screen
+    .getAllByRole('button')
+    .map((b) => b.textContent)
+    .filter((text) => ['General', 'Appearance', 'Accounts', 'Dictation', 'my-app'].includes(text ?? ''))
+
+  test('is hidden where dictation is not supported', () => {
+    render(() => <SettingsPage />)
+    expect(navLabels()).toEqual(['General', 'Appearance', 'Accounts', 'my-app'])
+    expect(settingsSectionForShortcut(4, [project.id])).toBe(project.id)
+  })
+
+  test('sits after Accounts and opens the dictation settings, titled Dictation', () => {
+    setDictationAvailable(true)
+    render(() => <SettingsPage />)
+    expect(navLabels()).toEqual(['General', 'Appearance', 'Accounts', 'Dictation', 'my-app'])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dictation' }))
+
+    expect(title()).toBe('Dictation')
+    expect(screen.getByTestId('dictation-settings')).toBeTruthy()
+    expect(screen.queryByText('Lifecycle Hooks')).toBeNull()
+  })
+
+  test('the section shortcut opens it', () => {
+    setDictationAvailable(true)
+    render(() => <SettingsPage />)
+
+    selectSettingsSection(settingsSectionForShortcut(4, [project.id])!)
+
+    expect(title()).toBe('Dictation')
   })
 })
 

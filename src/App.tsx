@@ -6,7 +6,7 @@ import { Layout } from './components/Layout'
 import { TaskWindowShell } from './components/TaskWindowShell'
 import { SelectionMenu } from './components/SelectionMenu'
 import { ConfirmDialog } from './components/ConfirmDialog'
-import { FileConflictDialog } from './components/FileConflictDialog'
+import { WindowDialogs } from './components/WindowDialogs'
 import { ToastContainer } from './components/ToastContainer'
 import { ResourceMonitor } from './components/ResourceMonitor'
 import { initTheme } from './lib/theme'
@@ -92,7 +92,7 @@ const MainApp: Component = () => {
         onConfirm={() => ipc.quitApp()}
         onCancel={closeQuitDialog}
       />
-      <FileConflictDialog />
+      <WindowDialogs />
     </>
   )
 }

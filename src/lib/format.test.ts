@@ -1,5 +1,5 @@
 import { describe, it, test, expect } from 'vitest'
-import { formatCost, formatTokens, formatDurationShort, formatBytes, formatPct, formatClock, formatAgo } from './format'
+import { formatCost, formatTokens, formatDurationShort, formatBytes, formatPct, formatClock, formatAgo, formatDownloadSize } from './format'
 
 describe('formatCost', () => {
   it('uses 4 decimals for sub-cent amounts', () => {
@@ -122,5 +122,17 @@ describe('formatAgo', () => {
     expect(formatAgo(now - 3 * 3600_000, now)).toBe('3h')
     expect(formatAgo(now - 2 * 86400_000, now)).toBe('2d')
     expect(formatAgo(now - 20 * 86400_000, now)).toBe('Oct 22')
+  })
+})
+
+describe('formatDownloadSize', () => {
+  test('decimal megabytes, rounded', () => {
+    expect(formatDownloadSize(574041195)).toBe('574 MB')
+    expect(formatDownloadSize(1_500_000)).toBe('2 MB')
+    expect(formatDownloadSize(0)).toBe('0 MB')
+  })
+
+  test('gigabytes from 1000 MB, one decimal', () => {
+    expect(formatDownloadSize(1_620_000_000)).toBe('1.6 GB')
   })
 })

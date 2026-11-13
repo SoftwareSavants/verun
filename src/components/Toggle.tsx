@@ -3,11 +3,16 @@ import { Component } from 'solid-js'
 interface Props {
   checked: boolean
   onChange: (checked: boolean) => void
+  /** Accessible name, when no visible label wraps the switch. */
+  label?: string
 }
 
 export const Toggle: Component<Props> = (props) => {
   return (
     <button
+      type="button"
+      aria-label={props.label}
+      aria-pressed={props.checked}
       class="w-9 h-5 rounded-full transition-colors relative"
       classList={{ 'bg-accent': props.checked, 'bg-surface-3': !props.checked }}
       onClick={() => props.onChange(!props.checked)}

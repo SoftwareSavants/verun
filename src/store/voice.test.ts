@@ -12,6 +12,10 @@ vi.mock('../lib/ipc', () => ({
   voiceBegin: vi.fn(),
   voiceEnd: vi.fn(),
   voiceCancel: vi.fn(),
+  voiceSetEnabled: vi.fn(),
+  voiceDownloadModel: vi.fn(),
+  voiceDeleteModel: vi.fn(),
+  voiceRequestMicrophone: vi.fn(),
 }))
 vi.mock('./ui', () => ({ addToast: vi.fn() }))
 vi.mock('./sessions', () => ({ sessionById: vi.fn() }))
@@ -23,6 +27,8 @@ import { loadDraftMessage, saveDraftMessage } from './sessionDrafts'
 import {
   initVoice, registerDictationTarget as register, toggleDictation, voiceState, voiceLevel, voiceStatus,
   dictationSetupRequest, __resetVoiceForTests, type DictationTarget,
+  modelDownloads, downloadDictationModel, deleteDictationModel, refreshVoiceStatus, setDictationEnabled,
+  requestMicrophone, dictationAvailable,
 } from './voice'
 import type { VoiceStatus } from '../types/voice'
 
@@ -86,7 +92,7 @@ describe('initVoice', () => {
     await expect(initVoice()).rejects.toThrow('x')
     await initVoice()
     expect(voiceStatus()?.enabled).toBe(true)
-    expect(listeners.size).toBe(6)
+    expect(listeners.size).toBe(7)
   })
 
   test('a rejected listen can be retried', async () => {
@@ -96,7 +102,7 @@ describe('initVoice', () => {
     await expect(initVoice()).rejects.toThrow('nope')
     await initVoice()
     expect(voiceStatus()?.enabled).toBe(true)
-    expect(listeners.size).toBe(6)
+    expect(listeners.size).toBe(7)
   })
 
   test('an older initial snapshot does not overwrite a newer status event', async () => {
@@ -360,5 +366,98 @@ describe('toggleDictation', () => {
     toggleDictation()
     await vi.waitFor(() => expect(dictationSetupRequest()).toEqual({}))
     expect(addToast).not.toHaveBeenCalled()
+  })
+})
+
+describe('model downloads', () => {
+  const model = { id: 'whisper-turbo' as const, displayName: 'Whisper Turbo', installed: false, bytes: 574041195 }
+  const progress = (over: Record<string, unknown>) =>
+    fire('voice-model-progress', { model: 'whisper-turbo', received: 0, total: 100, done: false, error: null, ...over })
+
+  test('voice-model-progress events are tracked per model', () => {
+    expect(modelDownloads()['whisper-turbo']).toBeUndefined()
+    progress({ received: 40 })
+    expect(modelDownloads()['whisper-turbo']).toEqual({ received: 40, total: 100, done: false, error: null })
+    progress({ received: 100, done: true, error: 'disk full' })
+    expect(modelDownloads()['whisper-turbo']).toEqual({ received: 100, total: 100, done: true, error: 'disk full' })
+  })
+
+  test('a finished download is forgotten once status shows the model installed', () => {
+    progress({ received: 100, done: true })
+    expect(modelDownloads()['whisper-turbo']?.done).toBe(true)
+    fire('voice-status-changed', status({ models: [{ ...model, installed: true }] }))
+    expect(modelDownloads()['whisper-turbo']).toBeUndefined()
+  })
+
+  test('starting a download shows it as running at once and asks the backend', () => {
+    vi.mocked(ipc.voiceDownloadModel).mockResolvedValue(undefined)
+    fire('voice-status-changed', status({ models: [model] }))
+    downloadDictationModel('whisper-turbo')
+    expect(ipc.voiceDownloadModel).toHaveBeenCalledWith('whisper-turbo')
+    expect(modelDownloads()['whisper-turbo']).toEqual({ received: 0, total: 574041195, done: false, error: null })
+  })
+
+  test('starting again after an error clears the error', () => {
+    vi.mocked(ipc.voiceDownloadModel).mockResolvedValue(undefined)
+    progress({ done: true, error: 'boom' })
+    downloadDictationModel('whisper-turbo')
+    expect(modelDownloads()['whisper-turbo']?.error).toBeNull()
+    expect(modelDownloads()['whisper-turbo']?.done).toBe(false)
+  })
+
+  test('a running download keeps its progress when asked again', () => {
+    vi.mocked(ipc.voiceDownloadModel).mockResolvedValue(undefined)
+    progress({ received: 60 })
+    downloadDictationModel('whisper-turbo')
+    expect(modelDownloads()['whisper-turbo']?.received).toBe(60)
+  })
+
+  test('a rejected download reads as a failed one', async () => {
+    vi.mocked(ipc.voiceDownloadModel).mockRejectedValue('no network')
+    downloadDictationModel('whisper-turbo')
+    await vi.waitFor(() => expect(modelDownloads()['whisper-turbo']?.error).toBe('no network'))
+    expect(modelDownloads()['whisper-turbo']?.done).toBe(true)
+  })
+
+  test('deleting a model applies the status it returns', async () => {
+    vi.mocked(ipc.voiceDeleteModel).mockResolvedValue(status({ models: [model] }))
+    await deleteDictationModel('whisper-turbo')
+    expect(ipc.voiceDeleteModel).toHaveBeenCalledWith('whisper-turbo')
+    expect(voiceStatus()?.models).toEqual([model])
+  })
+})
+
+describe('status actions', () => {
+  test('refreshVoiceStatus re-reads the status', async () => {
+    vi.mocked(ipc.voiceStatus).mockResolvedValue(status({ accessibility: false }))
+    await refreshVoiceStatus()
+    expect(voiceStatus()?.accessibility).toBe(false)
+  })
+
+  test('setDictationEnabled applies the status it returns', async () => {
+    vi.mocked(ipc.voiceSetEnabled).mockResolvedValue(status({ enabled: false }))
+    await setDictationEnabled(false)
+    expect(ipc.voiceSetEnabled).toHaveBeenCalledWith(false)
+    expect(voiceStatus()?.enabled).toBe(false)
+  })
+
+  test('a failed action toasts', async () => {
+    vi.mocked(ipc.voiceSetEnabled).mockRejectedValue('nope')
+    await setDictationEnabled(true)
+    expect(addToast).toHaveBeenCalledWith('Dictation: nope', 'error')
+  })
+
+  test('requestMicrophone asks, then re-reads the status', async () => {
+    vi.mocked(ipc.voiceRequestMicrophone).mockResolvedValue('granted')
+    vi.mocked(ipc.voiceStatus).mockResolvedValue(status({ microphone: 'granted', enabled: false }))
+    await requestMicrophone()
+    expect(ipc.voiceRequestMicrophone).toHaveBeenCalled()
+    expect(voiceStatus()?.enabled).toBe(false)
+  })
+
+  test('dictationAvailable follows supported', () => {
+    expect(dictationAvailable()).toBe(true)
+    fire('voice-status-changed', status({ supported: false }))
+    expect(dictationAvailable()).toBe(false)
   })
 })

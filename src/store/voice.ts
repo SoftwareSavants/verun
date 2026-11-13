@@ -4,8 +4,8 @@ import { listen } from '@tauri-apps/api/event'
 import * as ipc from '../lib/ipc'
 import { windowContext } from '../lib/windowContext'
 import type {
-  Language, VoiceError, VoiceErrorEvent, VoiceLevelEvent, VoiceState, VoiceStateEvent,
-  VoiceStatus, VoiceTakeDroppedEvent, VoiceTranscriptEvent,
+  HoldKey, Language, ModelId, VoiceError, VoiceErrorEvent, VoiceLevelEvent, VoiceModelProgressEvent,
+  VoiceState, VoiceStateEvent, VoiceStatus, VoiceTakeDroppedEvent, VoiceTranscriptEvent,
 } from '../types/voice'
 import { sessionById } from './sessions'
 import { appendToDraft } from './sessionDrafts'
@@ -27,6 +27,94 @@ const [pins, setPins] = createSignal<ReadonlyMap<number, DictationTarget>>(new M
 
 export const voiceStatus: Accessor<VoiceStatus | null> = status
 
+/** Dictation exists on this Mac (Apple Silicon); everything about it is hidden otherwise. */
+export const dictationAvailable: Accessor<boolean> = () => status()?.supported === true
+
+/** A model download this app has seen, from `voice-model-progress`. */
+export interface ModelDownload {
+  received: number
+  total: number
+  done: boolean
+  error: string | null
+}
+const [downloads, setDownloads] = createSignal<Partial<Record<ModelId, ModelDownload>>>({})
+/** Per model: the running download, or how the last one ended until the model shows installed. */
+export const modelDownloads: Accessor<Partial<Record<ModelId, ModelDownload>>> = downloads
+
+function setDownload(model: ModelId, d: ModelDownload) {
+  setDownloads({ ...downloads(), [model]: d })
+  forgetInstalled()
+}
+
+/** A finished download is done with once the status shows its model installed. */
+function forgetInstalled() {
+  const installed = new Set(status()?.models.filter(m => m.installed).map(m => m.id))
+  const current = downloads()
+  const stale = (Object.keys(current) as ModelId[]).filter(id => {
+    const d = current[id]
+    return d?.done && !d.error && installed.has(id)
+  })
+  if (stale.length === 0) return
+  const next = { ...current }
+  for (const id of stale) delete next[id]
+  setDownloads(next)
+}
+
+function applyStatus(s: VoiceStatus) {
+  setStatus(s)
+  forgetInstalled()
+}
+
+/** A rejected voice command as text: errors come as a string or `{ engine }`. */
+function errorText(e: unknown): string {
+  if (e && typeof e === 'object' && 'engine' in e) return String((e as { engine: unknown }).engine)
+  return String(e)
+}
+
+/** Runs a status-returning command and shows its result; a failure is a toast. */
+async function act(run: () => Promise<VoiceStatus>): Promise<void> {
+  try {
+    applyStatus(await run())
+  } catch (e) {
+    addToast(`Dictation: ${errorText(e)}`, 'error')
+  }
+}
+
+/** Re-reads the status (permissions may have changed in System Settings). */
+export const refreshVoiceStatus = () => act(ipc.voiceStatus)
+export const setDictationEnabled = (enabled: boolean) => act(() => ipc.voiceSetEnabled(enabled))
+export const setDictationLanguage = (language: Language) => act(() => ipc.voiceSetLanguage(language))
+export const setDictationHoldKey = (key: HoldKey) => act(() => ipc.voiceSetHoldKey(key))
+/** Refused by the backend (status unchanged) while that model is downloading. */
+export const deleteDictationModel = (model: ModelId) => act(() => ipc.voiceDeleteModel(model))
+
+/** Shows the system prompt if the user was never asked, then re-reads the status. */
+export async function requestMicrophone(): Promise<void> {
+  try {
+    await ipc.voiceRequestMicrophone()
+  } catch (e) {
+    console.error('voice request microphone:', e)
+  }
+  await refreshVoiceStatus()
+}
+
+export function openAccessibilitySettings(): void {
+  ipc.voiceOpenAccessibilitySettings().catch(e => console.error('voice open accessibility settings:', e))
+}
+
+/** Starts a download (a running one is left alone); progress arrives as events. */
+export function downloadDictationModel(model: ModelId): void {
+  const running = downloads()[model]
+  if (!running || running.done) {
+    const bytes = status()?.models.find(m => m.id === model)?.bytes ?? 0
+    setDownload(model, { received: 0, total: bytes, done: false, error: null })
+  }
+  ipc.voiceDownloadModel(model).catch(e => {
+    const d = downloads()[model]
+    setDownload(model, { received: d?.received ?? 0, total: d?.total ?? 0, done: true, error: errorText(e) })
+  })
+}
+
 export const voiceState: Accessor<VoiceState> = () =>
   recordingTake() !== null ? 'recording' : pins().size > 0 ? 'transcribing' : 'idle'
 
@@ -35,7 +123,7 @@ export const voiceLevel: Accessor<number> = () => (voiceState() === 'recording' 
 const [setupRequest, setSetupRequest] = createSignal<{ language?: Language } | null>(null)
 export const dictationSetupRequest: Accessor<{ language?: Language } | null> = setupRequest
 export function clearDictationSetupRequest(): void { setSetupRequest(null) }
-/** Placeholder: a later task's dialog reads `dictationSetupRequest`. */
+/** Opens the setup dialog (mounted in every window), for `language` when given. */
 export function openDictationSetup(language?: Language): void {
   setSetupRequest(language ? { language } : {})
 }
@@ -125,13 +213,17 @@ export async function initVoice(): Promise<void> {
       listen<VoiceTakeDroppedEvent>('voice-take-dropped', e => {
         if (e.payload.window === label()) release(e.payload.take)
       }),
-      listen<VoiceStatus>('voice-status-changed', e => { statusEventSeen = true; setStatus(e.payload) }),
+      listen<VoiceStatus>('voice-status-changed', e => { statusEventSeen = true; applyStatus(e.payload) }),
+      listen<VoiceModelProgressEvent>('voice-model-progress', e => {
+        const { model, received, total, done, error } = e.payload
+        setDownload(model, { received, total, done, error })
+      }),
     ])
     unlisteners = results.flatMap(r => (r.status === 'fulfilled' ? [r.value] : []))
     const failure = results.find(r => r.status === 'rejected')
     if (failure) throw (failure as PromiseRejectedResult).reason
     const initial = await ipc.voiceStatus()
-    if (!statusEventSeen) setStatus(initial)
+    if (!statusEventSeen) applyStatus(initial)
   } catch (e) {
     unlisteners.forEach(u => u())
     unlisteners = []
@@ -162,4 +254,5 @@ export function __resetVoiceForTests(): void {
   setRecordingTake(null)
   setPins(new Map())
   setSetupRequest(null)
+  setDownloads({})
 }
