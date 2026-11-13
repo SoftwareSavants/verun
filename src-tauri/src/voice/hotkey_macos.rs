@@ -8,6 +8,8 @@ use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 
 use core_foundation::base::TCFType;
+use core_foundation::boolean::CFBoolean;
+use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::number::CFNumber;
 use core_foundation::propertylist::{CFPropertyList, CFPropertyListRef};
 use core_foundation::string::{CFString, CFStringRef};
@@ -21,7 +23,8 @@ use super::hold::{classify, fn_action_from_pref, FnSystemAction, HoldKey, KeyEve
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
-    fn AXIsProcessTrusted() -> u8;
+    fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> u8;
+    static kAXTrustedCheckOptionPrompt: CFStringRef;
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -51,13 +54,45 @@ pub fn fn_system_action() -> FnSystemAction {
     fn_action_from_pref(value.downcast::<CFNumber>().and_then(|n| n.to_i64()))
 }
 
-/// Whether Verun may observe global key events. Never prompts.
-pub fn accessibility_granted() -> bool {
-    // SAFETY: plain C call with no arguments or preconditions.
-    unsafe { AXIsProcessTrusted() != 0 }
+/// Whether an Accessibility check may show the system prompt. macOS lists an
+/// app in Privacy & Security > Accessibility only once it has asked with the
+/// prompt (or the user added it by hand), so the button that sends the user
+/// there asks; nothing else ever does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AxPrompt {
+    Never,
+    /// Only from a user's click. Shows the prompt if Verun is not trusted yet.
+    IfUntrusted,
 }
 
+/// The options dictionary for `AXIsProcessTrustedWithOptions`.
+fn trust_options(prompt: AxPrompt) -> CFDictionary<CFString, CFBoolean> {
+    // SAFETY: a constant CFString exported by ApplicationServices.
+    let key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
+    let value = if prompt == AxPrompt::IfUntrusted {
+        CFBoolean::true_value()
+    } else {
+        CFBoolean::false_value()
+    };
+    CFDictionary::from_CFType_pairs(&[(key, value)])
+}
+
+fn ax_trusted(prompt: AxPrompt) -> bool {
+    let options = trust_options(prompt);
+    // SAFETY: `options` is a valid CFDictionary that outlives the call.
+    unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) != 0 }
+}
+
+/// Whether Verun may observe global key events. Never prompts.
+pub fn accessibility_granted() -> bool {
+    ax_trusted(AxPrompt::Never)
+}
+
+/// Call only from the user's click on the Accessibility button: asks macOS
+/// (which adds Verun to the Accessibility list, prompting if it is not
+/// trusted yet), then opens that pane of System Settings.
 pub fn open_accessibility_settings() {
+    ax_trusted(AxPrompt::IfUntrusted);
     match std::process::Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
         .spawn()
@@ -198,4 +233,21 @@ fn run_tap(
     // `tap` drops below, invalidating the port.
     drop(source);
     drop(tap);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prompt_value(prompt: AxPrompt) -> Option<bool> {
+        // SAFETY: a constant CFString exported by ApplicationServices.
+        let key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
+        trust_options(prompt).find(&key).map(|v| bool::from(v.clone()))
+    }
+
+    #[test]
+    fn only_the_click_path_asks_with_the_prompt() {
+        assert_eq!(prompt_value(AxPrompt::Never), Some(false));
+        assert_eq!(prompt_value(AxPrompt::IfUntrusted), Some(true));
+    }
 }
