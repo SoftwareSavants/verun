@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Claude Fable 5.2 (`claude-fable-5-2`) in the Claude model picker, right after the Opus 5.5 default; Fable 5.1 stays selectable as previous-generation
+
 ## 0.16.6 - 2026-11-12
 
 - Fork a Claude session onto another account: the fork menu picks which account the fork runs on, copying the transcript into that account's home
