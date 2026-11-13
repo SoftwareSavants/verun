@@ -265,9 +265,13 @@ const visibleDraft = (): string | null => targets[targets.length - 1]?.draftId ?
 let reportedDraft: string | null | undefined
 let reportQueued = false
 
+/** Counted as reported while the call is out, so it is not sent twice; a failed one is forgotten and sent again on the next change. */
 function sendTarget(draft: string | null) {
   reportedDraft = draft
-  ipc.voiceSetTarget(label(), draft).catch(e => console.error('voice set target:', e))
+  ipc.voiceSetTarget(label(), draft).catch(e => {
+    if (reportedDraft === draft) reportedDraft = undefined
+    console.error('voice set target:', e)
+  })
 }
 
 /**

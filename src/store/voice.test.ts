@@ -355,6 +355,21 @@ describe('target availability goes to the backend', () => {
     expect(pushes()).toEqual([['main', 's1'], ['main', 's2'], ['main', null]])
   })
 
+  test('a report that failed is sent again on the next change, even to the same draft', async () => {
+    vi.mocked(ipc.voiceSetTarget).mockClear()
+    vi.mocked(ipc.voiceSetTarget).mockRejectedValueOnce(new Error('ipc down'))
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const off = registerDictationTarget(makeTarget())
+    await settle()
+    await vi.waitFor(() => expect(err).toHaveBeenCalled())
+    // A remount of the same chat: nothing changed, but the backend never heard.
+    off()
+    registerDictationTarget(makeTarget())
+    await settle()
+    expect(pushes()).toEqual([['main', 's1'], ['main', 's1']])
+    err.mockRestore()
+  })
+
   test('a deliberate hold with no composer gets the notice', () => {
     failed(null, 'no-target')
     expect(addToast).toHaveBeenCalledWith('Dictation works in the chat box and the new task box.', 'info')
