@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 - 2026-11-13
 
 - Voice dictation in the chat and new-task boxes: hold Fn (or Right Option / Right Command) or click the mic, speak, and the text lands in the draft, transcribed on your Mac by Whisper in 12 languages
 - Dictation is off by default, Apple Silicon only: Settings > Dictation or the mic button walks through microphone, language, a one-time 574 MB model and Accessibility for the hold key
