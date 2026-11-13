@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- macOS inline predictive text is off in Verun's windows: its suggestion panel held clicks and keys (Send, Enter) on the main thread until it closed, which read as a freeze of a second or two
 - Pasting (in a terminal or the chat box) reads the clipboard in-process instead of starting `osascript` each time, which cost 100-300 ms per paste and more under load
 - A terminal you switch back to catches up on its missed output without pausing 30 ms between batches
 
