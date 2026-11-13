@@ -488,8 +488,12 @@ impl<C: Capture + 'static, E: VoiceEvents> ControlState<C, E> {
     }
 
     /// Handles `msg` (`None` for a timeout) at `now`. `focused` is asked only
-    /// for a hold-key press.
+    /// for a hold-key press. A pending hold arms only on a timeout, when the
+    /// queue is empty: after a message, its release may be queued right behind
+    /// it (the thread lagging past the arm delay), and the next key event arms
+    /// it by its own time if it is really due.
     fn step(&mut self, msg: Option<Control>, now: Instant, focused: impl FnOnce() -> Option<String>) {
+        let timed_out = msg.is_none();
         match msg {
             Some(Control::Key(ev, at)) => {
                 // A deadline that passed before this event arms first.
@@ -509,8 +513,10 @@ impl<C: Capture + 'static, E: VoiceEvents> ControlState<C, E> {
             }
             Some(Control::Wake) | None => {}
         }
-        let armed = self.detector.on_time(now);
-        self.core.hold(armed, now);
+        if timed_out {
+            let armed = self.detector.on_time(now);
+            self.core.hold(armed, now);
+        }
         self.core.tick(now);
         if self.core.state() == VoiceState::Recording {
             if self.level_throttle.ready(now) {
@@ -657,14 +663,39 @@ mod tests {
         let r = rig(Script::default(), Opts::default());
         let mut c = control(&r);
         let t0 = Instant::now();
-        // The old key's press is drained late, after its arm delay: it begins a take.
-        c.step(key(HoldDown, t0), t0 + ms(200), main_window);
+        // The old key's press arms on a timeout: it begins a take.
+        c.step(key(HoldDown, t0), t0, main_window);
+        c.step(None, t0 + ms(200), main_window);
         assert_eq!(r.core.state(), VoiceState::Recording);
-        // The listener was replaced; the Reset queued behind that press arrives.
+        // The listener was replaced; the Reset queued behind the old key events arrives.
         c.step(Some(Control::Reset), t0 + ms(210), main_window);
         assert_eq!(r.rec.dropped(), vec![("main".into(), 1, DropReason::Cancelled)]);
         assert_eq!(r.core.state(), VoiceState::Idle);
         assert_eq!(c.wait(t0 + ms(210)), None);
+    }
+
+    #[test]
+    fn a_press_drained_late_does_not_arm_before_its_queued_release() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        // The control thread lagged: it sees a 100 ms tap 200 ms after the press.
+        c.step(key(HoldDown, t0), t0 + ms(200), main_window);
+        c.step(key(HoldUp, t0 + ms(100)), t0 + ms(201), main_window);
+        c.step(None, t0 + ms(400), main_window);
+        assert_eq!(r.cap.starts(), 0);
+        assert!(r.rec.all().is_empty(), "{:?}", r.rec.all());
+    }
+
+    #[test]
+    fn a_press_drained_late_arms_on_the_next_timeout() {
+        let r = rig(Script::default(), Opts::default());
+        let mut c = control(&r);
+        let t0 = Instant::now();
+        c.step(key(HoldDown, t0), t0 + ms(200), main_window);
+        assert_eq!(c.wait(t0 + ms(200)), Some(Duration::ZERO));
+        c.step(None, t0 + ms(200), main_window);
+        assert_eq!(r.rec.states(), vec![rec_state("main", 1)]);
     }
 
     #[test]
