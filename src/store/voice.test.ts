@@ -210,6 +210,23 @@ describe('delivery', () => {
     expect(addToast).not.toHaveBeenCalled()
   })
 
+  test('a whitespace-only take is nothing: no target or draft gets it, so no selection is replaced', () => {
+    const live = makeTarget('a')
+    registerDictationTarget(live)
+    rec(1)
+    transcript('  \n ', 1)
+    expect(live.insert).not.toHaveBeenCalled()
+    const hidden = makeTarget(null)
+    const off = registerDictationTarget(hidden)
+    rec(2)
+    off()
+    vi.mocked(projectById).mockReturnValue({ id: 'p' } as never)
+    transcript(' ', 2)
+    expect(loadDraftMessage('new-task:p')).toBeNull()
+    expect(addToast).not.toHaveBeenCalled()
+    expect(voiceState()).toBe('idle')
+  })
+
   test('recording with no target cancels and toasts', () => {
     rec(1)
     expect(ipc.voiceCancel).toHaveBeenCalled()

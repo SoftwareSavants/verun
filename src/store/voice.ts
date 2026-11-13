@@ -367,6 +367,12 @@ function onTranscript({ window, take, text }: VoiceTranscriptEvent) {
   if (window !== label()) return
   const held = pins().has(take)
   const pinned = held ? release(take) : undefined
+  // Nothing to insert. Every target and draft comes through here, so none can
+  // turn a blank take into a deleted selection (an empty insertText does that).
+  if (!text.trim()) {
+    if (!held) takeStoredPin(take)
+    return
+  }
   // A remounted composer for the same chat has a new object with the same id.
   const live = pinned && [...targets].reverse().find(t => t.id === pinned.id)
   if (live) return live.insert(text)
