@@ -338,7 +338,8 @@ function handleError(error: VoiceError) {
     void refreshVoiceStatus().then(() => openDictationSetup({ reason: 'model-missing' }))
     return
   }
-  if (error === 'mic-denied') addToast('Microphone access is off for Verun. Turn it on in System Settings.', 'error')
+  if (error === 'busy') addToast('Dictation is already recording in another window.', 'info')
+  else if (error === 'mic-denied') addToast('Microphone access is off for Verun. Turn it on in System Settings.', 'error')
   else if (error === 'mic-unavailable') addToast('No microphone found, or it stopped responding.', 'error')
   else addToast('Dictation failed. Try again.', 'error')
 }

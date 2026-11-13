@@ -13,7 +13,8 @@ export type MicPermission = 'granted' | 'denied' | 'undetermined'
 /** What macOS itself does on Fn (Keyboard settings, the Globe key); 'unknown' when it cannot be read. */
 export type FnSystemAction = 'none' | 'input-source' | 'emoji' | 'dictation' | 'unknown'
 
-export type VoiceError = 'mic-denied' | 'mic-unavailable' | 'model-missing' | 'disabled' | { engine: string }
+/** `busy`: a take is recording for another window. */
+export type VoiceError = 'mic-denied' | 'mic-unavailable' | 'model-missing' | 'disabled' | 'busy' | { engine: string }
 
 export interface ModelStatus {
   id: ModelId

@@ -463,7 +463,8 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
     }
 
     /// Starts recording for `window` (mic-button path). Errors are returned,
-    /// not emitted. A begin while already recording is a no-op. May block
+    /// not emitted. A begin while already recording for `window` is a no-op;
+    /// for another window it is `Busy`. May block
     /// while the microphone opens: call from a blocking thread.
     pub fn begin(&self, window: String, now: Instant) -> Result<(), VoiceError> {
         self.begin_take(window, now, false)
@@ -474,8 +475,9 @@ impl<C: Capture + 'static, E: VoiceEvents> VoiceCore<C, E> {
         if !inner.settings.enabled {
             return Err(VoiceError::Disabled);
         }
-        if inner.dictation.recording().is_some() {
-            return Ok(());
+        if let Some(t) = inner.dictation.recording() {
+            // A repeat in the recording window is a no-op; another window is told.
+            return if t.window == window { Ok(()) } else { Err(VoiceError::Busy) };
         }
         if (self.mic)() == MicPermission::Denied {
             return Err(VoiceError::MicDenied);
@@ -1407,6 +1409,23 @@ pub(crate) mod tests {
         r.core.hold(HoldAction::End, t0 + ms(1500));
         r.core.flush();
         assert_eq!(r.rec.transcripts(), vec![tr("main", 1, 1, "one"), tr("main", 2, 2, "two")]);
+    }
+
+    #[test]
+    fn begin_while_another_window_records_is_busy_and_leaves_that_take_alone() {
+        let r = rig(Script::default(), Opts::default());
+        let t0 = Instant::now();
+        r.core.begin("a".into(), t0).unwrap();
+        // The mic button in window b returns the error.
+        assert_eq!(r.core.begin("b".into(), t0 + ms(10)), Err(VoiceError::Busy));
+        // The hold key in window b gets it as a voice-error for b.
+        r.core.hold(begin_hold("b", t0 + ms(20)), t0 + ms(170));
+        assert_eq!(r.rec.errors(), vec![(Some("b".into()), None, VoiceError::Busy)]);
+        // The same window again is still a no-op.
+        assert_eq!(r.core.begin("a".into(), t0 + ms(30)), Ok(()));
+        assert_eq!(r.cap.starts(), 1);
+        assert_eq!(r.rec.states(), vec![rec_state("a", 1)]);
+        assert_eq!(serde_json::to_value(VoiceError::Busy).unwrap(), "busy");
     }
 
     #[test]

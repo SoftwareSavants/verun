@@ -24,6 +24,8 @@ pub enum VoiceError {
     ModelMissing,
     /// Dictation is turned off.
     Disabled,
+    /// A take is recording for another window.
+    Busy,
     Engine(String),
 }
 

@@ -398,6 +398,17 @@ describe('errors', () => {
     failed(null, error)
     expect(addToast).toHaveBeenCalledWith(msg, 'error')
   })
+
+  test('busy is a notice that another window is recording', () => {
+    failed(null, 'busy')
+    expect(addToast).toHaveBeenCalledWith('Dictation is already recording in another window.', 'info')
+  })
+
+  test('a busy mic-button begin shows the same notice', async () => {
+    vi.mocked(ipc.voiceBegin).mockRejectedValueOnce('busy')
+    toggleDictation()
+    await vi.waitFor(() => expect(addToast).toHaveBeenCalledWith('Dictation is already recording in another window.', 'info'))
+  })
 })
 
 describe('toggleDictation', () => {
