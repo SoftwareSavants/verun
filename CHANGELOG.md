@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Switching to a terminal no longer shows it blank or garbled until something is resized: a terminal shown again, or the window coming back, gets a fresh renderer instead of clearing the glyph cache every terminal shares
+
 ## 0.17.0 - 2026-11-13
 
 - Verun needs macOS 10.15 (Catalina) or later
