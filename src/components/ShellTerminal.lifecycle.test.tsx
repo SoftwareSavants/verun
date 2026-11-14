@@ -16,11 +16,12 @@ const ipcMocks = vi.hoisted(() => ({
 }))
 vi.mock('../lib/ipc', () => ipcMocks)
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
+const webgl = vi.hoisted(() => ({ disposed: new Set<object>() }))
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
     onContextLoss() {}
     activate() {}
-    dispose() {}
+    dispose() { webgl.disposed.add(this) }
   },
 }))
 
@@ -58,5 +59,36 @@ describe('<ShellTerminal /> output subscription', () => {
     expect(ipcMocks.ptyListen).toHaveBeenCalledWith('lifecycle-1', 0)
     second.unmount()
     getXtermEntry('lifecycle-1')?.term.dispose()
+  })
+})
+
+// xterm's WebGL renderers share one glyph atlas. Clearing it from one terminal
+// leaves every other renderer drawing cells from glyphs that are gone (blank or
+// garbled text, backgrounds intact), and a refresh keeps those cells. Only a
+// fresh renderer redraws them.
+describe('<ShellTerminal /> WebGL renderer', () => {
+  test('a terminal shown again gets a fresh renderer', () => {
+    const first = render(() => <ShellTerminal terminalId="renderer-1" />)
+    const before = getXtermEntry('renderer-1')!.webglAddon!
+    first.unmount()
+    const second = render(() => <ShellTerminal terminalId="renderer-1" />)
+    const after = getXtermEntry('renderer-1')!.webglAddon
+    expect(after).toBeDefined()
+    expect(after).not.toBe(before)
+    expect(webgl.disposed.has(before)).toBe(true)
+    second.unmount()
+    getXtermEntry('renderer-1')?.term.dispose()
+  })
+
+  test('coming back to the window renews the renderer and never clears the shared atlas', () => {
+    const view = render(() => <ShellTerminal terminalId="renderer-2" />)
+    const entry = getXtermEntry('renderer-2')!
+    const before = entry.webglAddon
+    const clear = vi.spyOn(entry.term, 'clearTextureAtlas')
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(clear).not.toHaveBeenCalled()
+    expect(entry.webglAddon).not.toBe(before)
+    view.unmount()
+    entry.term.dispose()
   })
 })
