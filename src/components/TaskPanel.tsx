@@ -987,8 +987,10 @@ export const TaskPanel: Component = () => {
                     </For>
                   </div>
 
-                  {/* Main content — chat or editor. Side borders extend the active tab's frame. */}
+                  {/* Main content — chat or editor. Side borders extend the active tab's frame.
+                      A file dropped anywhere on it goes to the chat composer. */}
                   <div
+                    data-chat-drop-zone
                     class="relative -mt-px flex-1 flex flex-col min-h-0 overflow-hidden rounded-t-md bg-surface-0 border-t-1 border-t-solid border-t-outline/8 border-l-1 border-l-solid border-l-outline/8 border-r-1 border-r-solid border-r-outline/8"
                     style="isolation: isolate; clip-path: inset(0 round 4px 4px 0 0);"
                   >

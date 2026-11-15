@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Drop a file anywhere on a chat, not just on its input box, to mention it (images attach); files also drag from the file tree onto the chat
+
 ## 0.17.0 - 2026-11-13
 
 - Verun needs macOS 10.15 (Catalina) or later
