@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The fork menu on a chat reply opens under its button into the chat, instead of being cut off at the chat's right edge over your message; every anchored menu now renders above the panes so none can be clipped
+
 ## 0.17.0 - 2026-11-13
 
 - Verun needs macOS 10.15 (Catalina) or later

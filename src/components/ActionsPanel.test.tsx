@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
-import { render, cleanup, fireEvent } from '@solidjs/testing-library'
+import { render, cleanup, fireEvent, screen } from '@solidjs/testing-library'
 import type { AccountSelection, WorkflowRun } from '../types'
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -347,7 +347,8 @@ describe('<ActionsPanel /> fixing a failed job with Claude', () => {
 
   async function chooseFix(view: Awaited<ReturnType<typeof renderFailedJob>>, option: 'Fix in this session' | 'Fix in new session') {
     fireEvent.click(view.container.querySelector('[title="Fix with Claude"]') as HTMLElement)
-    fireEvent.click(view.getByText(option))
+    // The menu is anchored, so it renders at the top of the document.
+    fireEvent.click(screen.getByText(option))
     await flush()
     await flush()
   }
