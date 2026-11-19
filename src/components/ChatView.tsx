@@ -13,7 +13,7 @@ import { openFile } from '../store/editorView'
 import { AgentBlockView } from './AgentBlockView'
 import { UnseenDivider, UnseenJump, TurnOutline } from './ChatCatchUp'
 import { turnOutline, unseenAnchor, loadSeen, markSeen } from '../lib/chatCatchUp'
-import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp, MessageCircleQuestion, Loader2, Sparkles } from 'lucide-solid'
+import { ChevronDown, ChevronRight, AlertTriangle, Copy, Check, ArrowUp, ArrowDown, X, GitBranch, RotateCw, Plus, ChevronUp, MessageCircleQuestion, Loader2, Sparkles, ChevronLeft } from 'lucide-solid'
 import { FileMentionBadge } from './FileMentionBadge'
 import { ImageViewer } from './ImageViewer'
 import { BlobImage } from './BlobImage'
@@ -813,11 +813,28 @@ export const ForkButton: Component<{ sessionId: string; messageUuid: string }> =
     }
   }
 
+  // Anchored under the button, right edges aligned: the button sits at a
+  // reply's right edge, so the menu opens into the chat, never over the panel
+  // beside it, and is never cut off by the chat pane.
+  const [anchor, setAnchor] = createSignal<{ x: number; y: number } | null>(null)
+  const toggle = (e: MouseEvent) => {
+    if (open()) return close()
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setAnchor({ x: rect.right, y: rect.bottom + 4 })
+    setOpen(true)
+  }
+  /** The new-task submenu opens to the left, into the chat, unless that runs off the window. */
+  const placeSubmenu = (el: HTMLElement) => requestAnimationFrame(() => {
+    if (el.getBoundingClientRect().left >= 8) return
+    el.style.right = 'auto'
+    el.style.left = 'calc(100% - 4px)'
+  })
+
   return (
     <div class="relative">
       <button
         class="p-1 rounded-md text-text-dim hover:text-text-muted hover:bg-surface-2 transition-colors"
-        onClick={() => setOpen(o => !o)}
+        onClick={toggle}
         title="Fork from this message"
         disabled={busy()}
       >
@@ -826,7 +843,9 @@ export const ForkButton: Component<{ sessionId: string; messageUuid: string }> =
       <Popover
         open={open()}
         onClose={close}
-        class="py-1 min-w-44 absolute bottom-full left-0 mb-1"
+        pos={anchor() ?? undefined}
+        align="end"
+        class="py-1 min-w-44"
       >
         <Show when={accountChoices().length > 0}>
           <div role="radiogroup" aria-label="Account" class="px-1.5 pt-0.5 pb-1.5 mb-1 border-b-1 border-b-solid border-b-outline/8 flex flex-col gap-0.5">
@@ -870,12 +889,13 @@ export const ForkButton: Component<{ sessionId: string; messageUuid: string }> =
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => setSubmenuOpen(v => !v)}
           >
+            <ChevronLeft size={11} class="text-text-dim shrink-0 -ml-1" />
             <span class="flex-1 truncate">Fork in a new task</span>
-            <ChevronRight size={11} class="text-text-dim shrink-0" />
           </button>
           <Show when={submenuOpen()}>
             <div
-              class="absolute -top-1 left-[calc(100%-4px)] py-1 min-w-48 bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl animate-in"
+              ref={placeSubmenu}
+              class="absolute -top-1 right-[calc(100%-4px)] py-1 min-w-48 bg-surface-2 ring-1 ring-outline/8 rounded-md shadow-xl animate-in"
               onMouseDown={(e) => e.preventDefault()}
             >
               <button
