@@ -58,3 +58,13 @@ test('empty columns shrink so space follows the work', () => {
   expect(screen.getAllByRole('region', { name: 'Done' })[0].className).toContain('flex-none')
   expect(screen.getAllByRole('region', { name: 'Running' })[1].className).not.toContain('flex-none')
 })
+// The board's cards are rebuilt as new objects on every status change. A card
+// whose element was replaced mid-click (press on the old, release on the new)
+// opened nothing.
+test('a card keeps its element when the cards are rebuilt and it stays in its column', () => {
+  const [rows, setRows] = createSignal(cards)
+  render(() => <TaskBoard cards={rows()} groups={[]} onOpen={() => {}} onClose={() => {}} />)
+  const before = screen.getByText('Review billing').closest('button')
+  setRows(cards.map(c => ({ ...c })))
+  expect(screen.getByText('Review billing').closest('button')).toBe(before)
+})

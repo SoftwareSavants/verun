@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Clicking a task in the sidebar's Recent view or on the task board no longer sometimes does nothing while agents run: rows were rebuilt on every status change, and a click that straddled a rebuild was lost
+
 ## 0.17.0 - 2026-11-13
 
 - Verun needs macOS 10.15 (Catalina) or later
