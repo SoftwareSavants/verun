@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Clicking a task in the sidebar's Recent view or on the task board no longer sometimes does nothing while agents run: rows were rebuilt on every status change, and a click that straddled a rebuild was lost
+- Switching to a terminal no longer shows it blank or garbled until something is resized: a terminal shown again, or the window coming back, gets a fresh renderer instead of clearing the glyph cache every terminal shares
 
 ## 0.17.0 - 2026-11-13
 

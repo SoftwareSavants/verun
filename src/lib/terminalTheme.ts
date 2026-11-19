@@ -91,14 +91,13 @@ export function subscribeXtermToAppearance(
     term.options.fontFamily = cfg.fontFamily
     term.options.fontSize = cfg.fontSize
     term.options.cursorBlink = cfg.cursorBlink
-    // Swap the renderer first so it activates against the just-written theme
-    // (its constructor caches `themeService.colors` once at activate time).
-    reloadRenderer?.()
-    // The WebGL renderer caches a texture atlas keyed on font + theme. Without
-    // invalidating it, font/color changes don't visibly repaint until the next
-    // resize. The canvas renderer ignores this method.
-    const t = term as XTerm & { clearTextureAtlas?: () => void }
-    t.clearTextureAtlas?.()
+    // A WebGL terminal swaps its renderer, after the theme is written (the
+    // renderer reads it once, when created); the new one picks the atlas for
+    // the new font and theme. Never clear the atlas instead: it is shared by
+    // every WebGL terminal, and the others would draw glyphs that are gone.
+    // The DOM renderer ignores clearTextureAtlas.
+    if (reloadRenderer) reloadRenderer()
+    else (term as XTerm & { clearTextureAtlas?: () => void }).clearTextureAtlas?.()
     onResize?.()
     // fitAddon.fit() only triggers an internal refresh if rows/cols changed.
     // Force a full repaint of the visible buffer so theme/font tweaks land
