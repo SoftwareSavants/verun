@@ -129,40 +129,38 @@ function initialFit(entry: XtermEntry, terminalId: string) {
 }
 
 /**
- * Replace a terminal's WebGL renderer with a fresh instance carrying the
- * current theme. Setting `term.options.theme = newTheme` fires xterm's
- * `onChangeColors`, but xterm v6's WebglRenderer keeps its texture atlas,
- * cell model, and rectangle-batch buffers across that event — visible cells
- * keep painting with the colors baked in at construction time. The canonical
- * fix used by VS Code is to swap the renderer entirely; doing that via the
- * WebglAddon's lifecycle gives us a clean `setRenderer(...)` → `_fullRefresh()`
- * sequence that paints the whole grid in the new palette.
+ * Replace a terminal's WebGL renderer with a fresh instance. This is how a
+ * terminal is repainted, never `clearTextureAtlas()`:
+ *
+ * - xterm's WebGL renderers share one glyph atlas per font and theme. Clearing
+ *   it from one terminal rebuilds only that terminal's cells; every other
+ *   renderer keeps cells pointing at glyphs that are gone, and draws them
+ *   blank or garbled (backgrounds intact) until each row changes or a resize
+ *   rebuilds it. `term.refresh()` does not help: it skips cells it thinks are
+ *   unchanged.
+ * - A fresh renderer rebuilds every cell, on a new WebGL context, against the
+ *   atlas for the current font, theme and pixel ratio (a change of any of them
+ *   picks another atlas). It also takes a new theme, which xterm v6's renderer
+ *   only reads when it is created.
  */
-function reloadWebglAddon(entry: import('../store/terminals').XtermEntry): void {
+function renewRenderer(entry: XtermEntry): void {
   if (!entry.webglFactory) return
   entry.webglAddon?.dispose()
   entry.webglAddon = entry.webglFactory()
 }
 
 /**
- * Force-redraw triggers that fix WebGL texture-atlas drift without relying on
- * the user resizing the window. VS Code (`xtermTerminal.ts: forceRedraw()`)
- * and Tabby (`xtermFrontend.ts: displayMetricsChanged$`) both wire these.
- *
- * - **DPR change**: dragging the window between Retina and non-Retina displays
- *   invalidates the cached glyph bitmaps.
- * - **visibilitychange**: WebKit may suspend the WebGL context when the
- *   window is hidden; on return the atlas can be stale.
- *
- * `clearTextureAtlas()` is safe even when WebGL never loaded - it's a no-op
- * for the DOM renderer.
+ * Repaint when a cached glyph may be stale: the window comes back (WebKit may
+ * have dropped the WebGL context while it was hidden) or the display's pixel
+ * ratio changes (window dragged to another screen). VS Code and Tabby wire the
+ * same triggers.
  */
-function attachAtlasLifecycle(term: XTerm): () => void {
-  const onVisibility = () => { if (!document.hidden) term.clearTextureAtlas() }
+function attachRendererLifecycle(entry: XtermEntry): () => void {
+  const onVisibility = () => { if (!document.hidden) renewRenderer(entry) }
   document.addEventListener('visibilitychange', onVisibility)
 
   const dprMql = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
-  const onDpr = () => term.clearTextureAtlas()
+  const onDpr = () => renewRenderer(entry)
   dprMql.addEventListener('change', onDpr)
 
   return () => {
@@ -273,6 +271,10 @@ export const ShellTerminal: Component<Props> = (props) => {
       // width, writes the narrow output into xterm's scrollback, and the
       // history stays wrapped forever. Let the ResizeObserver handle any
       // real size changes instead.
+      // Hidden, it missed whatever happened to the shared glyph atlas meanwhile
+      // (another terminal cleared it, or it grew and merged pages): its cells
+      // may point at glyphs that are gone. A fresh renderer redraws them all.
+      renewRenderer(existing)
       requestAnimationFrame(() => {
         existing.term.scrollToBottom()
         existing.term.focus()
@@ -280,13 +282,10 @@ export const ShellTerminal: Component<Props> = (props) => {
       resizeObserver = attachResizeObserver(terminalRef, existing, props.terminalId)
       unsubAppearance = subscribeXtermToAppearance(
         existing.term,
-        () => {
-          existing.fitAddon.fit()
-          existing.term.clearTextureAtlas()
-        },
-        () => reloadWebglAddon(existing),
+        () => existing.fitAddon.fit(),
+        () => renewRenderer(existing),
       )
-      unsubLifecycle = attachAtlasLifecycle(existing.term)
+      unsubLifecycle = attachRendererLifecycle(existing)
       return
     }
 
@@ -365,22 +364,16 @@ export const ShellTerminal: Component<Props> = (props) => {
     }
     const initialWebgl = makeWebgl()
 
-    const entry: import('../store/terminals').XtermEntry = {
-      term, fitAddon, searchAddon, webglAddon: initialWebgl, webglFactory: makeWebgl,
-    }
-    // Re-register so the registry sees the WebGL handle alongside the term.
-    registerXterm(props.terminalId, term, fitAddon, searchAddon, initialWebgl, makeWebgl)
+    // The registry's entry is the one every later renderer swap updates.
+    const entry = registerXterm(props.terminalId, term, fitAddon, searchAddon, initialWebgl, makeWebgl)
     initialFit(entry, props.terminalId)
     resizeObserver = attachResizeObserver(terminalRef, entry, props.terminalId)
     unsubAppearance = subscribeXtermToAppearance(
       term,
-      () => {
-        fitAddon.fit()
-        term.clearTextureAtlas()
-      },
-      () => reloadWebglAddon(entry),
+      () => fitAddon.fit(),
+      () => renewRenderer(entry),
     )
-    unsubLifecycle = attachAtlasLifecycle(term)
+    unsubLifecycle = attachRendererLifecycle(entry)
   })
 
   onCleanup(() => {
