@@ -522,10 +522,10 @@ export const Sidebar: Component = () => {
             </section>
           </Show>
           <Show when={!projectQuery().trim() && sidebarView() === 'recent'}>
-            <RecentTaskList recent={recentView().recent} quiet={recentView().quiet} row={r => renderTaskRow(r.task, () => <>
-              <span class="truncate">{projectById(r.task.projectId)?.name}</span>
+            <RecentTaskList recent={recentView().recent} quiet={recentView().quiet} row={r => renderTaskRow(r().task, () => <>
+              <span class="truncate">{projectById(r().task.projectId)?.name}</span>
               <span aria-hidden="true" class="shrink-0">·</span>
-              <span class="tabular-nums shrink-0">{formatAgo(r.lastActive, minute())}</span>
+              <span class="tabular-nums shrink-0">{formatAgo(r().lastActive, minute())}</span>
             </>)} />
           </Show>
           <Show when={projectQuery().trim()}>

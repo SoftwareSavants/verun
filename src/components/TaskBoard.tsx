@@ -1,4 +1,5 @@
 import { For, Show, createMemo, createSignal } from 'solid-js'
+import { ForById } from './ForById'
 import { Search, X } from 'lucide-solid'
 import { Select } from './Select'
 import { TaskStatusIcon } from './TaskStatusIcon'
@@ -78,21 +79,21 @@ export function TaskBoard(props: {
             <span class={`text-xs tabular-nums ${urgent() ? 'text-status-waiting' : 'text-text-dim'}`}>{cards().length}</span>
           </div>
           <div class="flex-1 min-h-0 overflow-y-auto space-y-1.5">
-            <For each={cards()}>{card => <button type="button"
+            <ForById each={cards()}>{card => <button type="button"
               class="block w-full text-left rounded-md bg-surface-1 ring-1 ring-outline/6 px-2.5 py-2 hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent transition-colors"
-              title={`${card.name}\n${card.projectName} · ${card.branch}`} onClick={() => props.onOpen(card.id)}>
+              title={`${card().name}\n${card().projectName} · ${card().branch}`} onClick={() => props.onOpen(card().id)}>
               <span class="flex items-center gap-2 min-w-0">
-                <span><TaskStatusIcon kind={card.kind} label={card.label} /></span>
-                <span class="text-[13px] font-medium text-text-primary leading-snug truncate">{card.name}</span>
+                <span><TaskStatusIcon kind={card().kind} label={card().label} /></span>
+                <span class="text-[13px] font-medium text-text-primary leading-snug truncate">{card().name}</span>
               </span>
               <span class="flex items-center gap-1.5 mt-1 pl-5 text-[11px] min-w-0">
-                <span class="text-text-muted truncate">{card.projectName}</span>
-                <Show when={showsLabel(card)}>
+                <span class="text-text-muted truncate">{card().projectName}</span>
+                <Show when={showsLabel(card())}>
                   <span class="text-text-dim">·</span>
-                  <span class={`shrink-0 font-medium ${card.column === 'attention' ? (card.kind === 'input' ? 'text-status-waiting' : 'text-status-error') : 'text-text-muted'}`}>{card.label}</span>
+                  <span class={`shrink-0 font-medium ${card().column === 'attention' ? (card().kind === 'input' ? 'text-status-waiting' : 'text-status-error') : 'text-text-muted'}`}>{card().label}</span>
                 </Show>
               </span>
-            </button>}</For>
+            </button>}</ForById>
             <Show when={cards().length === 0}><p class="text-[11px] text-text-dim px-1 py-3">{query() || projectScope() !== 'all' || groupScope() !== 'all' ? 'No matching tasks.' : column.empty}</p></Show>
           </div>
         </section>
