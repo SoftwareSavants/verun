@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.1 - 2026-11-19
 
 - Drop a file anywhere on a chat, not just on its input box, to mention it (images attach); files also drag from the file tree onto the chat
 - The fork menu on a chat reply opens under its button into the chat, instead of being cut off at the chat's right edge over your message; every anchored menu now renders above the panes so none can be clipped
