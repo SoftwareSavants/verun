@@ -2,6 +2,8 @@ import { Component, For, Show, createEffect, on, onCleanup, createSignal, create
 import { createVirtualizer } from '@tanstack/solid-virtual'
 import { Folder, FolderOpen, ChevronRight, ChevronDown, ExternalLink, RefreshCw, ClipboardCopy, FileText, Tag } from 'lucide-solid'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { FileDragGhost } from './FileDragGhost'
+import { beginFileDrag } from '../store/fileDrag'
 import { problemSeverityForPath } from '../store/problems'
 import { getFileIcon } from '../lib/fileIcons'
 import {
@@ -301,6 +303,7 @@ export const FileTree: Component<Props> = (props) => {
 
   return (
     <div ref={scrollRef} class="h-full overflow-auto relative outline-none" tabIndex={0} onKeyDown={handleKeyDown}>
+      <FileDragGhost />
       <div
         style={{
           height: `${virtualizer.getTotalSize()}px`,
@@ -347,6 +350,8 @@ export const FileTree: Component<Props> = (props) => {
                             ? 'inset 2px 0 0 #2d6e4f'
                             : undefined,
                         }}
+                        // Drag it onto the chat to mention it there.
+                        onPointerDown={(e) => beginFileDrag(e, [getFullPath(n().entry.relativePath)])}
                         onClick={() => { setSelectedIndex(virtualRow.index); handleClick(n().entry) }}
                         onDblClick={() => handleDoubleClick(n().entry)}
                         onContextMenu={(e) => {

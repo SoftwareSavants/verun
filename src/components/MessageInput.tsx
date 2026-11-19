@@ -39,6 +39,7 @@ import { McpStatusChip } from './McpStatusChip'
 import { accountKey, inheritedSelection } from '../lib/accounts'
 import { openNewSession } from '../lib/newSession'
 import { typeText } from '../lib/typeText'
+import { fileDrag, onFileDrop } from '../store/fileDrag'
 import { registerDictationTarget } from '../store/voice'
 import { insertDictation, dictationInsertText } from '../lib/dictationInsert'
 import { serializeComposer, composerSelection, composerRangeOffsets, composerEndRange, moveOutOfMentions } from '../lib/composerText'
@@ -1674,32 +1675,51 @@ export const MessageInput: Component<Props> = (props) => {
     return true
   }
 
-  // File drops arrive as native Tauri events (with paths) — the webview never
-  // sees them as DOM drops. Only the visible composer under the cursor reacts.
+  // Files dropped anywhere on the chat land here: from Finder as native Tauri
+  // events (with paths; the webview never sees them as DOM drops), and from
+  // Verun's file tree as a pointer drag (store/fileDrag). Only the visible
+  // composer whose chat is under the pointer reacts.
   let composerRoot: HTMLDivElement | undefined
-  const isOverComposer = (position?: { x: number; y: number }) => {
-    if (!composerRoot?.getClientRects().length) return false
-    if (!position) return true
-    const scale = window.devicePixelRatio || 1
-    const x = position.x / scale
-    const y = position.y / scale
-    const rect = composerRoot.getBoundingClientRect()
+  /** The chat view around this composer, or the composer alone outside one. */
+  const dropZone = () => composerRoot?.closest<HTMLElement>('[data-chat-drop-zone]') ?? composerRoot
+  /** Whether client point (x, y) is over the visible drop zone; no point means anywhere. */
+  const isOverDropZone = (x?: number, y?: number) => {
+    const zone = dropZone()
+    if (!zone?.getClientRects().length) return false
+    if (x === undefined || y === undefined) return true
+    const rect = zone.getBoundingClientRect()
     return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
   }
+  /** Tauri reports drop positions in physical pixels. */
+  const isNativeOverDropZone = (position?: { x: number; y: number }) => {
+    const scale = window.devicePixelRatio || 1
+    return position ? isOverDropZone(position.x / scale, position.y / scale) : isOverDropZone()
+  }
+  /** A file tree drag is over this chat. */
+  const fileTreeDragOver = () => {
+    const d = fileDrag()
+    return !!d && isOverDropZone(d.x, d.y)
+  }
+  const showDropTarget = () => dragOver() || fileTreeDragOver()
   onMount(() => {
     const target = { target: { kind: 'Webview' as const, label: getCurrentWebview().label } }
     const unlisteners: Promise<UnlistenFn>[] = [
       listen<{ paths: string[]; position?: { x: number; y: number } }>('tauri://drag-over', (ev) => {
-        setDragOver(isOverComposer(ev.payload.position))
+        setDragOver(isNativeOverDropZone(ev.payload.position))
       }, target),
       listen('tauri://drag-leave', () => setDragOver(false), target),
       listen<{ paths: string[]; position?: { x: number; y: number } }>('tauri://drag-drop', (ev) => {
         setDragOver(false)
         const paths = ev.payload.paths ?? []
-        if (paths.length === 0 || !isOverComposer(ev.payload.position)) return
+        if (paths.length === 0 || !isNativeOverDropZone(ev.payload.position)) return
         void addFilePaths(paths)
       }, target),
     ]
+    onCleanup(onFileDrop((paths, x, y) => {
+      if (!isOverDropZone(x, y)) return false
+      void addFilePaths(paths)
+      return true
+    }))
     onCleanup(() => { for (const u of unlisteners) u.then(fn => fn()).catch(() => {}) })
   })
 
@@ -2344,7 +2364,7 @@ export const MessageInput: Component<Props> = (props) => {
           ? 'border border-amber-500/40 shadow-[0_0_0_2px_rgba(245,158,11,0.12)]'
           : planMode()
             ? 'border border-accent/40 shadow-[0_0_0_2px_rgba(59,130,246,0.15)]'
-            : dragOver()
+            : showDropTarget()
               ? 'border border-accent/50 bg-accent/5'
               : ''
       )}>
@@ -2435,7 +2455,7 @@ export const MessageInput: Component<Props> = (props) => {
         <div class="relative">
           <Show when={!message()}>
             <div class="absolute inset-0 text-sm text-text-dim leading-normal px-3.5 pt-3 pb-2 pointer-events-none select-none">
-              {dragOver()
+              {showDropTarget()
                 ? 'Drop files here...'
                 : props.sessionId
                   ? 'Ask for changes, @reference files, use /skills'
