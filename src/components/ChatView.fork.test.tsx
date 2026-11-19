@@ -165,4 +165,19 @@ describe('ForkButton', () => {
     openMenu()
     expect(screen.queryByRole('radiogroup')).toBeNull()
   })
+
+  // The chat pane clips what it holds (rounded corners), and the fork button
+  // sits at a reply's right edge: a menu inside the pane was cut off there.
+  test('the menu opens outside the clipped chat pane, under its button and right-aligned to it', () => {
+    const { container } = render(() => <div style="clip-path: inset(0)"><ForkButton sessionId="s-001" messageUuid="m-001" /></div>)
+    const buttons = screen.getAllByTitle('Fork from this message')
+    const button = buttons[buttons.length - 1]
+    button.getBoundingClientRect = () => ({ left: 700, top: 400, right: 720, bottom: 420, width: 20, height: 20, x: 700, y: 400, toJSON() {} }) as DOMRect
+    fireEvent.click(button)
+    const menu = screen.getByText('Fork in this task').closest('.fixed') as HTMLElement
+    expect(menu).toBeTruthy()
+    expect(container.contains(menu)).toBe(false)
+    expect(menu.style.right).toBe(`${window.innerWidth - 720}px`)
+    expect(menu.style.top).toBe('424px')
+  })
 })

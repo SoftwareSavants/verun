@@ -118,9 +118,11 @@ export function registerXterm(
   searchAddon?: SearchAddon,
   webglAddon?: WebglAddon,
   webglFactory?: () => WebglAddon | undefined,
-) {
-  xtermInstances.set(terminalId, { term, fitAddon, searchAddon, webglAddon, webglFactory })
+): XtermEntry {
+  const entry: XtermEntry = { term, fitAddon, searchAddon, webglAddon, webglFactory }
+  xtermInstances.set(terminalId, entry)
   rejoinXterm(terminalId)
+  return entry
 }
 
 export function getXtermEntry(terminalId: string): XtermEntry | undefined {

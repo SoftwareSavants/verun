@@ -50,6 +50,8 @@ export async function seedChat() {
       '| `src/styles/code.css` | line-number counter |',
     ].join('\n') },
     { kind: 'turnEnd', status: 'completed', timestamp: now - 420_000, cost: 0.41, inputTokens: 18_200, outputTokens: 2_100, durationMs: 180_000 } as unknown as OutputItem,
+    // A fork point, so the reply has its fork menu.
+    { kind: 'turnSnapshot', messageUuid: 'demo-msg-1' },
     { kind: 'userMessage', text: 'Run the whole suite.', timestamp: now - 120_000 },
     tool('t4', 'Bash', { command: 'pnpm test', description: 'Run the full test suite' }),
     result('t4', 'FAIL src/components/ChatView.render.test.tsx > renders code with line numbers\nAssertionError: expected "1" to be undefined', true),
